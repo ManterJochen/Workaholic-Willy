@@ -5,7 +5,7 @@
  * `new WebSocket('ws://<host>/v1/events')` are the same code in development and in production, so the
  * client never carries a base URL, and no build flag can point the console at a different cell than
  * the one it is standing in front of. `ws: true` is load-bearing -- the run stream is a WebSocket, and
- * without it the Pick screen works in production and silently fails in `npm run dev`.
+ * without it the cockpit's run stream works in production and silently fails in `npm run dev`.
  *
  * **Two entries**, because the demo page is not a route of the console. It has no navigation, no
  * config, no write path, and a viewer must not be one mis-click from a Connect button. Keeping them
@@ -49,6 +49,9 @@ export default defineConfig({
     // exist for ("optional field absent -> .map of undefined") only appears during a real render.
     environment: 'jsdom',
     globals: false,
+    // A stylesheet imported as text (`?raw`) is read as written, so a test can pin a rule jsdom cannot draw (the
+    // stop row's layer over the Diagnostics drawer's backdrop); every other stylesheet stays empty in the tests.
+    css: { include: [/\.css\?raw$/] },
   },
   server: {
     port: 5173,

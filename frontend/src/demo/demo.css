@@ -1,144 +1,178 @@
 /*
- * The room view's layout. Everything else it needs — the palette, the status pills, the viewfinder —
- * comes from `styles.css`, which this page imports first.
+ * The audience window: the logo's look at full strength, for a projector or a TV across a hall.
  *
- * **It deliberately restates nothing.** The previous version of this file hard-coded its own dark
- * ground and its own five status hex values, and it was UNLAYERED, so its `body` rule beat the
- * console's `@layer base` one no matter which order they loaded in. That is how a page ends up with a
- * second, drifting copy of a palette whose whole purpose is that one status has one colour. This file
- * now sets LAYOUT and TYPE SCALE only; every colour is a token, so the demo page follows the same
- * light/dark switch as the console.
+ * The whole window is the camera stage: black, the live image full-bleed and never cropped (`contain`: a part at the
+ * edge of the frame stays in view), the banner's L-shaped HUD corner marks around it in the neon lime, the Willy mark
+ * and the WORKAHOLIC WILLY wordmark over its top, and one big caption over its foot: the verb in white, what it is about
+ * in the lime (the warning hue for the hands-off countdown). Over it, only what an audience must read: a grasp overlay
+ * pinned for 5 s with its band, the card of a stop or a question, and the STILL GRINDING readout.
  *
- * The type scale is the one thing that IS different, and for a measurable reason: this page is read
- * from the back of a room rather than from a desk chair. The narration line and the three figures are
- * sized so they carry at a few metres; everything around them is deliberately quiet so they can.
+ * Every size follows the window, with no ceiling: `--u` is one hundredth of a 16:9 frame that fits the window (1vw on a
+ * 16:9 screen, less on a wider one), so a 3840x2160 window at 100 % reads exactly like 1920x1080, and an ultra-wide one
+ * like the 16:9 frame inside it; a floor in rem keeps a small window readable. So the same page reads on a laptop and
+ * on a 4K projector.
+ *
+ * The window is always dark (`main.tsx` stamps it): the black stage is the brand. Colours are the shell's tokens, the
+ * stage's own (`--stage`, `--stage-fg`, `--stage-accent`) for everything drawn over the picture.
  */
 
 @layer components {
-  .demo {
-    max-width: 1500px;
-    margin: 0 auto;
-    padding: clamp(1rem, 2.5vw, 2rem);
-    display: grid;
-    gap: clamp(0.9rem, 1.8vw, 1.5rem);
-    min-height: 100vh;
-    grid-template-rows: auto 1fr auto auto;
+  .aud {
+    --u: min(1vw, 1.7778vh);
+    position: fixed; inset: 0;
+    display: grid; grid-template: minmax(0, 1fr) / minmax(0, 1fr);
+    overflow: hidden;
+    font-family: var(--font-sans);
   }
 
-  /* ── header ─────────────────────────────────────────────────────────────────────────────── */
-  .demo-head {
-    display: flex; align-items: center; justify-content: space-between; gap: 1rem;
-    flex-wrap: wrap;
-    padding-bottom: 0.9rem;
-    border-bottom: 1px solid var(--line);
+  .aud-stage {
+    position: relative; display: grid; place-items: center; min-height: 0;
+    --hud-inset: max(0.8rem, calc(var(--u) * 1.6));
+    --hud-size: max(1.6rem, calc(var(--u) * 2.83));
+    --hud-weight: max(2px, calc(var(--u) * 0.208));
   }
-  .demo-brand { display: flex; align-items: center; gap: 0.7rem; }
-  .demo-mark {
-    width: 38px; height: 38px; flex: none;
-    border-radius: 11px;
-    background: var(--brand-wash);
-    box-shadow: var(--shadow-sm);
-    display: grid; place-items: center;
-    color: #fff; font-weight: 700; font-size: 18px; letter-spacing: -0.03em;
-  }
-  .demo-title { font-size: clamp(17px, 2vw, 22px); font-weight: 650; letter-spacing: -0.02em; }
-  .demo-sub { font-size: 12px; color: var(--fg-subtle); }
-  .demo-badge .pill { font-size: 12px; padding: 0.25rem 0.7rem 0.25rem 0.6rem; }
+  .aud-live { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .aud-stage.dimmed .aud-live { filter: brightness(0.38) saturate(0.6); transition: filter 400ms var(--ease-calm); }
 
-  /* ── the two halves ─────────────────────────────────────────────────────────────────────── */
-  .demo-body {
-    display: grid;
-    grid-template-columns: minmax(0, 1.25fr) minmax(320px, 1fr);
-    gap: clamp(0.9rem, 2vw, 1.6rem);
-    align-items: start;
-  }
-  @media (max-width: 900px) { .demo-body { grid-template-columns: 1fr; } }
+  .aud-nolive { display: grid; justify-items: center; gap: max(1.2rem, calc(var(--u) * 1)); color: var(--stage-fg);
+                text-align: center; font-size: max(1rem, calc(var(--u) * 1.33)); opacity: 0.8; padding: 2rem; }
+  .aud-nolive-mark { width: max(6rem, calc(var(--u) * 10.83)); height: auto; aspect-ratio: 1;
+                     filter: drop-shadow(0 0 1.4rem color-mix(in srgb, var(--brand-neon) 35%, transparent)); }
 
-  .demo-view .viewfinder { gap: 0.5rem; }
-  /* Taller than the console's 4:3 box: on this page the picture IS the content. */
-  .demo-view .vf-stage { border-radius: var(--radius-panel); box-shadow: var(--shadow-sm); }
-  .demo-view .vf-badges .pill { font-size: 11px; }
-  .demo-view .vf-says { font-size: 13px; }
-
-  .demo-side { display: grid; gap: clamp(0.7rem, 1.5vw, 1.1rem); }
-
-  /* ── the instruction ────────────────────────────────────────────────────────────────────── */
-  .demo-ask { display: flex; gap: 0.5rem; flex-wrap: wrap; }
-  .demo-ask input[type='text'] { flex: 1; min-width: 180px; font-size: 15px; padding: 0.55rem 0.75rem; }
-  .demo-ask input[type='number'] { width: 76px; font-size: 15px; padding: 0.55rem 0.6rem; }
-  .demo-ask button { font-size: 14px; padding: 0.55rem 1.2rem; }
-
-  .demo-error { margin: 0; }
-  .demo-hint { margin-top: -0.3rem; font-size: 12px; color: var(--fg-subtle); }
-
-  /* ── the narration: the largest thing on the page, on purpose ───────────────────────────── */
-  .demo-now {
-    padding: clamp(0.8rem, 1.6vw, 1.2rem);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-panel);
-    background: var(--panel);
-    box-shadow: var(--shadow-sm);
-    font-size: clamp(17px, 2.3vw, 26px);
-    font-weight: 600;
-    line-height: 1.3;
-    letter-spacing: -0.015em;
-    text-wrap: balance;
-    min-height: 3.4em;
-    display: flex; align-items: center;
+  /* ── the top: the mark and the wordmark, the state of the picture and the cell ─────────────────────────────── */
+  .aud-head {
+    position: absolute; z-index: 3;
+    top: max(1.4rem, calc(var(--u) * 2.6)); left: max(1.6rem, calc(var(--u) * 3)); right: max(1.6rem, calc(var(--u) * 3));
+    display: flex; align-items: center; justify-content: space-between; gap: max(1rem, calc(var(--u) * 0.833)); flex-wrap: wrap;
   }
+  .aud-brand { display: flex; align-items: center; gap: max(0.6rem, calc(var(--u) * 1)); }
+  .aud-mark { width: max(2.8rem, calc(var(--u) * 4.4)); height: auto; aspect-ratio: 1;
+              filter: drop-shadow(0 0 0.8rem color-mix(in srgb, var(--brand-neon) 40%, transparent)); }
+  .aud-wordmark {
+    font-family: var(--font-display); font-weight: 900; font-style: italic; text-transform: uppercase;
+    font-size: max(1.15rem, calc(var(--u) * 2.1)); letter-spacing: 0.015em; line-height: 1;
+    color: var(--stage-fg); text-shadow: 0 2px 14px rgb(0 0 0 / 0.75); white-space: nowrap;
+  }
+  .aud-wordmark em { position: relative; font-style: inherit; color: var(--stage-accent); }
+  .aud-wordmark em::after {
+    content: ""; position: absolute; left: 4%; right: -6%; bottom: -0.2em; height: 0.15em; border-radius: 0.1em;
+    background: linear-gradient(90deg, transparent, var(--stage-accent) 30%, var(--stage-accent));
+    transform: skewX(-24deg) rotate(-2deg); opacity: 0.85;
+  }
+  .aud-chips { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: max(0.5rem, calc(var(--u) * 0.417)); }
+  .aud-chip {
+    display: inline-flex; align-items: center; gap: 0.55em;
+    padding: 0.35em 0.8em; border-radius: 0.3em;
+    font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: max(0.75rem, calc(var(--u) * 0.875));
+    letter-spacing: 0.04em; color: var(--stage-fg);
+    background: rgb(3 4 3 / 0.74); border: 1px solid rgb(238 242 238 / 0.18); backdrop-filter: blur(4px);
+  }
+  .aud-chip-dot { width: 0.55em; height: 0.55em; border-radius: 9999px; background: var(--fg-subtle); flex: none; }
+  .aud-chip.live { color: var(--stage-accent); border-color: color-mix(in srgb, var(--stage-accent) 45%, transparent); }
+  .aud-chip.live .aud-chip-dot { background: var(--stage-accent); box-shadow: 0 0 0.6em var(--stage-accent);
+                                 animation: aud-pulse 1.6s var(--ease-calm) infinite; }
+  .aud-chip.warn { color: var(--warn); }
+  /* What is on the other end, on a solid plate like the chips beside it: the pill's own tint is see-through, and over a
+     bright camera image (aluminium, a lit table) its words washed out on the projector. */
+  .aud-prov { display: inline-flex; border-radius: 9999px; background: rgb(3 4 3 / 0.86); box-shadow: 0 2px 10px rgb(0 0 0 / 0.45); }
+  .aud-prov .pill { font-size: max(0.7rem, calc(var(--u) * 0.79)); padding: 0.3em 0.75em; color: var(--stage-fg); }
+  @keyframes aud-pulse { 50% { opacity: 0.35; } }
 
-  /* ── the three figures ──────────────────────────────────────────────────────────────────── */
-  .demo-figures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.6rem; }
-  @media (max-width: 520px) { .demo-figures { grid-template-columns: 1fr; } }
-  .demo-figure {
-    padding: 0.7rem 0.85rem;
-    border: 1px solid var(--line);
-    border-radius: var(--radius-panel);
-    background: var(--panel);
-    box-shadow: var(--shadow-xs);
-    min-width: 0;
+  /* ── a grasp as it was decided: its own picture over the stage, for 5 s, with its band ───────────────────── */
+  .aud-pin {
+    position: absolute; z-index: 4; margin: 0;
+    top: max(5rem, calc(var(--u) * 7.5)); right: max(1.6rem, calc(var(--u) * 3));
+    width: calc(var(--u) * 36);
+    border: 2px solid var(--stage-accent); border-radius: 0.4rem; overflow: hidden;
+    background: var(--stage); box-shadow: 0 1.2rem 3rem rgb(0 0 0 / 0.6);
+    animation: aud-in 320ms var(--ease-calm);
   }
-  .demo-figure-value {
-    font-size: clamp(22px, 3vw, 34px); font-weight: 600; line-height: 1.1;
-    letter-spacing: -0.02em; overflow-wrap: anywhere;
+  .aud-pin img { display: block; width: 100%; height: auto; }
+  .aud-pin figcaption {
+    padding: 0.5em 0.8em; background: rgb(3 4 3 / 0.9); color: var(--stage-fg);
+    font-family: var(--font-mono); font-size: max(0.75rem, calc(var(--u) * 0.875)); border-top: 1px solid var(--stage-accent);
   }
-  .demo-figure-label {
-    margin-top: 0.15rem;
-    font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-muted);
-  }
-  /* The denominator. A rate without one is a number nobody can argue with, which is the problem. */
-  .demo-figure-note { font-size: 11px; color: var(--fg-subtle); }
+  @keyframes aud-in { from { opacity: 0; transform: translateY(-0.6rem); } to { opacity: 1; transform: none; } }
 
-  /* ── the feed ───────────────────────────────────────────────────────────────────────────── */
-  .demo-feed {
-    border: 1px solid var(--line);
-    border-radius: var(--radius-panel);
-    background: var(--panel);
-    max-height: 26vh;
-    overflow-y: auto;
+  /* ── a stop or a question: large, read-only, over the dimmed picture ──────────────────────────────────────── */
+  .aud-card {
+    position: absolute; z-index: 5; left: 50%; top: 46%; transform: translate(-50%, -50%);
+    width: min(calc(var(--u) * 53.33), 86vw); display: grid; gap: max(0.5rem, calc(var(--u) * 0.917));
+    padding: max(1.4rem, calc(var(--u) * 2.5)) max(1.6rem, calc(var(--u) * 2.83));
+    background: rgb(8 10 9 / 0.94); color: var(--stage-fg);
+    border: 1px solid rgb(238 242 238 / 0.16); border-left: max(0.45rem, calc(var(--u) * 0.375)) solid var(--alarm);
+    border-radius: 0.5rem;
+    box-shadow: 0 2rem 5rem rgb(0 0 0 / 0.7);
+    --hud-inset: calc(max(0.9rem, calc(var(--u) * 0.75)) * -1);
+    --hud-size: max(2rem, calc(var(--u) * 1.67));
+    --hud-weight: max(3px, calc(var(--u) * 0.156));
   }
-  .demo-line {
-    display: grid; grid-template-columns: 46px 1fr; gap: 0.7rem;
-    padding: 0.45rem 0.9rem;
-    border-top: 1px solid var(--line);
-    font-size: 14px;
-  }
-  .demo-line:first-child { border-top: none; }
-  .demo-seq { font-family: var(--font-mono); font-size: 11px; color: var(--fg-subtle);
-              text-align: right; padding-top: 3px; }
-  .demo-line.warn > span:last-child    { color: var(--warn); }
-  .demo-line.error > span:last-child   { color: var(--alarm); }
-  .demo-line.success > span:last-child { color: var(--ok); font-weight: 600; }
-  .demo-line.faint { grid-template-columns: 1fr; color: var(--fg-subtle); padding: 0.9rem; }
+  .aud-card.ask { border-left-color: var(--warn); }
+  .aud-card-head { display: flex; align-items: center; gap: max(1rem, calc(var(--u) * 0.833)); }
+  .aud-card-icon { color: var(--alarm); flex: none; width: max(2.1rem, calc(var(--u) * 1.77)); height: auto; }
+  .aud-card.ask .aud-card-icon { color: var(--warn); }
+  .aud-card h2 { margin: 0; font-size: max(2rem, calc(var(--u) * 3.67)); font-weight: 800; line-height: 1.05; letter-spacing: -0.01em; }
+  .aud-card p { margin: 0; }
+  .aud-card-where { font-family: var(--font-mono); font-size: max(0.95rem, calc(var(--u) * 1.25)); color: var(--fg-muted); }
+  .aud-card-said { font-size: max(1.15rem, calc(var(--u) * 1.75)); line-height: 1.35; }
+  .aud-card-next { font-size: max(1rem, calc(var(--u) * 1.417)); color: var(--stage-accent); font-weight: 650; }
 
-  /* ── footer ─────────────────────────────────────────────────────────────────────────────── */
-  .demo-foot {
-    display: flex; align-items: center; justify-content: space-between; gap: 1rem;
-    flex-wrap: wrap;
-    padding-top: 0.8rem;
-    border-top: 1px solid var(--line);
-    font-size: 12px; color: var(--fg-subtle);
+  /* ── the foot: the caption and the readout ───────────────────────────────────────────────────────────────── */
+  .aud-bottom {
+    position: absolute; z-index: 3;
+    left: max(1.6rem, calc(var(--u) * 3)); right: max(1.6rem, calc(var(--u) * 3)); bottom: max(1.4rem, calc(var(--u) * 2.8));
+    display: flex; align-items: flex-end; justify-content: space-between; gap: max(1rem, calc(var(--u) * 2.5));
   }
-  .demo-foot-left { display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap; }
-  .demo-outcomes { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+  .aud-caption { min-width: 0; display: grid; gap: max(0.3rem, calc(var(--u) * 0.583)); }
+  .aud-verb {
+    margin: 0; font-family: var(--font-display);
+    font-size: max(2.2rem, calc(var(--u) * 4.8)); font-weight: 800; line-height: 1.02; letter-spacing: -0.015em;
+    color: var(--stage-fg); text-shadow: 0 3px 22px rgb(0 0 0 / 0.85); text-wrap: balance;
+  }
+  .aud-verb em { font-style: normal; color: var(--stage-accent); }
+  .tone-stop .aud-verb em { color: var(--alarm); }
+  .tone-ask .aud-verb em { color: var(--warn); }
+  /* The hands-off countdown: a motion the robot is about to start by itself. A warning, never the lime of a step. */
+  .tone-warn .aud-verb, .tone-warn .aud-verb em { color: var(--warn); }
+  .aud-sub-line { margin: 0; font-size: max(1rem, calc(var(--u) * 1.583)); color: var(--stage-fg); opacity: 0.85;
+                  text-shadow: 0 2px 12px rgb(0 0 0 / 0.8); }
+  .aud-counters {
+    margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0.2rem 0;
+    font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: max(0.95rem, calc(var(--u) * 1.333));
+    color: #cfd7cf; text-shadow: 0 2px 10px rgb(0 0 0 / 0.85);
+  }
+  .aud-counters > span + span::before { content: "·"; margin: 0 0.6em; color: var(--stage-accent); }
+  .aud-target { color: var(--stage-fg); font-weight: 700; }
+
+  .aud-steps { display: flex; flex-wrap: wrap; gap: 0.4em; margin: 0.3em 0 0; padding: 0; list-style: none;
+               font-size: max(0.8rem, calc(var(--u) * 0.958)); }
+  .aud-step {
+    padding: 0.3em 0.85em; border-radius: 9999px;
+    font-weight: 600; color: rgb(238 242 238 / 0.6);
+    background: rgb(3 4 3 / 0.6); border: 1px solid rgb(238 242 238 / 0.16);
+  }
+  .aud-step.done { color: var(--stage-fg); border-color: color-mix(in srgb, var(--stage-accent) 50%, transparent); }
+  .aud-step.active { color: #0c1003; background: var(--stage-accent); border-color: var(--stage-accent);
+                     box-shadow: 0 0 1.2em color-mix(in srgb, var(--stage-accent) 55%, transparent); }
+  .aud-step.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
+  .aud-step.failed { color: var(--alarm); border-color: color-mix(in srgb, var(--alarm) 55%, transparent); }
+
+  /* The STILL GRINDING card: the banner's readout, read from the back of the room. Its frame and dot follow its size. */
+  .aud-grind {
+    flex: none; min-width: max(min(26rem, 40vw), calc(var(--u) * 21.67));
+    font-size: max(0.9rem, calc(var(--u) * 1.125));
+    padding: 1.04em 1.33em;
+    --cut: 0.52em;
+    background: var(--stage-accent);
+  }
+  .aud-grind::before { background: rgb(5 7 6 / 0.93); }
+  .aud-grind .readout-title { color: var(--stage-accent); }
+  .aud-grind .readout-title::before { background: var(--stage-accent); width: 0.41em; height: 0.41em; }
+  .aud-grind .readout-row .v { color: var(--stage-accent); }
+
+  @media (max-width: 900px) {
+    .aud-bottom { flex-direction: column; align-items: stretch; }
+    .aud-grind { min-width: 0; }
+    .aud-pin { width: 60vw; }
+  }
 }

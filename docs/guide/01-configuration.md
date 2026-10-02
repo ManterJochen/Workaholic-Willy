@@ -190,8 +190,9 @@ cell has to state.
 | `sim` | the simulated cell, with the camera inventory and the model overlays the simulator needs |
 | `ur5e,eth2` | the same bench with two fixed RGB-D cameras, fused; `eth2` alone is the fusion half and names no arm |
 
-`console_dummy` is the desk profile: a dummy arm and a dummy hand that command nothing. The two desk
-programs in [`examples/simulation/`](../../examples/README.md) run on it.
+`console_dummy` is the desk profile: a dummy arm and a dummy hand that command nothing, and two poses written by
+hand, "Ablage links" (its default place) and "Parkposition", so the console's desk runs a task as shipped. The two
+desk programs in [`examples/simulation/`](../../examples/README.md) run on it.
 
 [`config/robot/robot.ur5e.yaml`](../../config/robot/robot.ur5e.yaml) draws a line worth adopting for
 your own bench. A wrong value that fails closed ships as a worked example with its assumption stated:
@@ -369,6 +370,11 @@ addresses refuse a write while the cell is connected. Ask it what it accepts:
 python -c "from src.config.edit import WRITABLE; print([w.path for w in WRITABLE])"
 ```
 
+**A taught pose has a door of its own.** `robot.named_poses` and `robot.default_place_pose` are never in
+`WRITABLE` and never a `PATCH`: `set_named_pose` and `set_default_place_pose` (`ConfigTree.write_named_pose`,
+`write_default_place_pose`) write them, all or nothing, into the **last layer** of the chain only, and refuse a
+chain whose last layer git does not keep out (`no_layer`). Clearing the default place writes `"__null__"`.
+
 ---
 
 ## 5. Worked example: a config for a new cell
@@ -486,6 +492,50 @@ refuses an unknown name, a quaternion that is none, and one whose tool +X stands
 vertical, naming the key; reading it loads no grasping package. Unset, the default, nothing is turned and
 `robot.tool_down` closes along x, exactly as `Pose.tool_down`. No shipped profile sets it: the owner's cell
 sets `"-y"` in its own profile on the cell PC.
+
+**Poses taught at the cell.** The operator console teaches a pose by hand (Setup, "Pose einlernen"): a person
+guides the arm there, the exact guard and the planner screen it while it holds, and only a clear pose, or one in
+the planner's band, is written, under `robot.named_poses`:
+
+```yaml
+robot:
+  named_poses:
+    drop_left:                              # the NAME: what the YAML and the command reader answer with
+      joints_deg: [-60.0, -95.0, -120.0, -55.0, 90.0, 0.0]
+      label: "Ablage links"                 # what the chat, the cards and a spoken command say
+      taught_at: "2026-10-01T09:12:00+02:00"
+      screen: clear                         # clear | band; an unscreened or refused pose is never written
+      note: ""
+  default_place_pose: drop_left             # where a task sets its part down when its command names no target
+```
+
+- **The name** is an ASCII identifier of at most 32 characters: no Python keyword, never `home` (Home stays
+  `robot.home_joint_positions`), no word YAML reads as true, false or null, no `__dunder__`.
+- **The label** is free text, Unicode and spaces allowed, at most 40 characters, with no newline and no `" #"`.
+  A pose answers to its name and its label, and the load refuses two poses that share a word, whatever the case.
+- **The joints** are degrees, under the looks' rules. Layers merge a pose key by key, so a pose a later layer
+  names with its joints alone keeps a lower layer's screen: a task screens every pose again before it moves.
+- **A place pose says where the part's bottom is let go**: a task raises the tool over it by the part's hang.
+- **`default_place_pose`** names one of them, or `null` for none, and a task that names no place is then refused
+  (`no_place_declared`). A name that is no pose of the tree is refused at load.
+- **Where they are written.** Into the **last layer of the chain** and nowhere else, which must be the cell's own
+  and kept out of git: end the chain in `cell` (`--profile ur10,hande,cell`) with `robot/robot.cell.yaml`, which
+  `.gitignore` already covers (`config/**/*.cell.yaml`). A chain with no layer, or a last layer git tracks or does
+  not ignore, is refused before the arm is freed (`no_layer`). The console never renames or deletes a pose: edit
+  the YAML. A joint list written by hand as a block cannot be rewritten in place; write it as a flow list.
+
+**The carried part.** `robot.safety.planning_world.payload.length_mm` is how far the longest part hangs past the
+fingertips. It ships `null`, and with no length every lift, carry and place is planned as if the hand were empty:
+between the close and the release only the planner holds the part. So the desk check's `carried part` row blocks
+a real cuRobo UR tree, and **the console refuses every task** (`carried_part_not_modelled`) until it is declared;
+a cell that carries nothing says `enabled: false` instead
+([hande_gripper_bringup.md](../runbooks/hande_gripper_bringup.md), step 6).
+
+**Halt now.** `robot.ur.brake_on_halt` decides what the console's "Sofort anhalten" does to a move already in
+flight. **Off, as shipped**, every move is sent exactly as it always was: the halt latches the arm, the move in
+flight runs to its end, and nothing after it is sent. On, the move in flight is also braked under control.
+Either way it is not an emergency stop. Switch it on in the cell's own profile only once the URSim measurements
+have passed ([04](04-robot-and-safety.md), section 8).
 
 **Suction.** A vacuum end-effector uses `robot.gripper.vacuum.*`, read only when `robot.gripper.vendor`
 is `"vacuum"`. Under any other vendor that block validates green and is ignored, and every field in it
@@ -683,6 +733,10 @@ cameras from `robot.sim.cameras`. A green `cam.yaml` is not evidence that a came
 - A green `python -m src.config` says nothing about the presets.
 - `robot.look_joint_positions_deg` is degrees; radians there read as small degrees, and only the desk
   check's `looks` row says so.
+- A taught pose is written into the chain's last layer only, and that layer must be git-ignored: end the
+  console's chain in `cell`.
+- A task needs `robot.safety.planning_world.payload.length_mm`; the console refuses every task without it.
+- `robot.ur.brake_on_halt` ships `false`: leave it until the URSim measurements have passed.
 
 **Adding a new field?** The rules are in [`src/config/README.md`](../../src/config/README.md): a
 schema field with a default that changes no behaviour, its documentation on the schema field rather

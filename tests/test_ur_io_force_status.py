@@ -38,8 +38,8 @@ _RECV_API = [
     "isEmergencyStopped", "isProtectiveStopped",
 ]
 _CTRL_API = [
-    "disconnect", "endTeachMode", "getForwardKinematics", "getInverseKinematics", "getJointTorques",
-    "isProgramRunning", "isSteady", "kickWatchdog", "moveJ", "moveL", "setPayload",
+    "disconnect", "endTeachMode", "getAsyncOperationProgressEx", "getForwardKinematics", "getInverseKinematics",
+    "getJointTorques", "isProgramRunning", "isSteady", "kickWatchdog", "moveJ", "moveL", "setPayload",
     "setWatchdog", "stopJ", "stopL", "stopScript", "teachMode",
 ]
 _IO_API = [

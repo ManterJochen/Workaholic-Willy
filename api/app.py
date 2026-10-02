@@ -28,18 +28,28 @@ from api import __version__
 from api.cell import NoRobotConfigured, console
 from api.constants import API_LOG_DIR, APP_LOG_FILE
 from api.routers import cell as cell_router
+from api.routers import codes as codes_router
+from api.routers import commands as commands_router
 from api.routers import config as config_router
 from api.routers import diagnostics as diagnostics_router
 from api.routers import history as history_router
+from api.routers import jaws as jaws_router
+from api.routers import live as live_router
 from api.routers import media as media_router
 from api.routers import pick as pick_router
+from api.routers import poses as poses_router
 from api.routers import preflight as preflight_router
+from api.routers import task as task_router
 from api.schemas import ErrorOut
 from src.utility.log_cfg import create_logger
 
 __all__ = ["create_app"]
 
 logger = create_logger("ConsoleApp", APP_LOG_FILE, log_dir=API_LOG_DIR)
+
+#: How long the shutdown waits for a run it abandoned to end: the run's thread writes its stop record as it ends, and the
+#: record is what gates the next start of the server (``Console.stop_file``).
+RUN_JOIN_ON_SHUTDOWN_S = 10.0
 
 _DESCRIPTION = """\
 The optional operator console for Willy the Workaholic.
@@ -51,6 +61,12 @@ safety toggles are read-only here and edited in YAML, next to the comments that 
 There is deliberately **no E-stop endpoint**. A stop that travels over a socket depends on latency, an
 open tab and an awake laptop; offering one would invite someone to rely on it instead of the physical
 mushroom button.
+
+"Halt now" is ``POST /v1/cell/brake``: it stops the run and latches the arm, so nothing after the move in
+flight is sent; only where ``robot.ur.brake_on_halt`` is on (off as shipped) does it brake that move under
+control. It is **not an emergency stop**; the red button stays the safety halt. Nothing moves without a
+person's click, and nothing moves on its own after a stop: a person confirms the cell is clear, then chooses
+Restart or Home. ``python -m api`` keeps the stop in a file, so it outlives a restart of the server too.
 """
 
 
@@ -68,9 +84,27 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
     Best-effort by construction: ``release()`` swallows what it cannot fix, because a shutdown that
     fails to shut down is worse than a device that fails to close.
+
+    Before the release, the same ordered teardown a Disconnect runs (build plan item 18,
+    ``api.cell.take_down``): a jaws question waiting is cancelled, a teach ended, a planner start joined,
+    the run abandoned and, where the arm brakes a move in flight, braked. Then the abandoned run is given
+    :data:`RUN_JOIN_ON_SHUTDOWN_S` to end: its thread writes the stop record as it ends, and a record
+    written before the process goes is one the next start reads back (``Console.stop_file``).
     """
     yield
-    logger.info("Shutting down: releasing the cell and closing its camera.")
+    logger.info("Shutting down: taking the cell down in order, then releasing it and closing its camera.")
+    from api import cell as cell_module  # noqa: PLC0415
+
+    cell = console()
+    active = cell.registry.active()
+    try:
+        cell_module.take_down(cell, "the console server is shutting down, so the run stops and nothing of it "
+                                    "starts again. Look at the arm and the jaws before the next start.")
+    except Exception as exc:  # noqa: BLE001 (the process is going away; report, do not propagate)
+        logger.warning("Taking the cell down during shutdown raised: %s: %s", type(exc).__name__, exc)
+    if active is not None and not cell.registry.join(active.id, RUN_JOIN_ON_SHUTDOWN_S):
+        logger.error("Run %s did not end within %.0f s of the shutdown: its stop record may not be kept for the next "
+                     "start. Look at the arm and the jaws before anything moves.", active.id, RUN_JOIN_ON_SHUTDOWN_S)
     try:
         console().session.release()
     except Exception as exc:  # noqa: BLE001 (the process is going away; report, do not propagate)
@@ -155,7 +189,11 @@ def create_app() -> FastAPI:
             content={
                 "code": "bad_request",
                 "message": "the request body or query does not match this endpoint.",
-                "detail": {"errors": exc.errors()},
+                # Where and why, never the rejected input itself: it may be no JSON at all (a ``NaN`` the body's bound
+                # refused, an exception in ``ctx``), and an answer that cannot be written would turn a 422 into a 500.
+                "detail": {"errors": [{"type": str(e.get("type", "")), "loc": [str(p) if not isinstance(p, int) else p
+                                                                                for p in e.get("loc", ())],
+                                       "msg": str(e.get("msg", ""))} for e in exc.errors()]},
             },
         )
 
@@ -175,9 +213,15 @@ def create_app() -> FastAPI:
     app.include_router(pick_router.router, prefix="/v1")
     app.include_router(media_router.router, prefix="/v1")
     app.include_router(history_router.router, prefix="/v1")
+    app.include_router(codes_router.router, prefix="/v1")
+    app.include_router(task_router.router, prefix="/v1")
+    app.include_router(jaws_router.router, prefix="/v1")
+    app.include_router(live_router.router, prefix="/v1")
+    app.include_router(poses_router.router, prefix="/v1")
+    app.include_router(commands_router.router, prefix="/v1")
     _mount_console(app)
 
-    logger.info("Console app built (version %s), 7 routers mounted under /v1.", __version__)
+    logger.info("Console app built (version %s), 13 routers mounted under /v1.", __version__)
     return app
 
 

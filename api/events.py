@@ -21,6 +21,11 @@ about.
 Two audiences, one envelope. ``human`` is a plain sentence for the operator; ``data`` is the machine
 payload. Both, always: the person watching a demo reads one, the person diagnosing a failure reads the
 other, and an envelope that carries only one of them forces the other to guess.
+
+One stream belongs to no run. The hub takes any string key, and :data:`CELL_STREAM` carries what happens to the cell
+itself: the jaws question and its answer, a brake pressed with no run, the recovery record written and ended, "the
+cell is clear", the planner's state. A client reads it as it reads a run: ``WS /v1/events?run_id=cell``. Run ids are
+``run-<hex>``, so no run can ever be called that.
 """
 
 from __future__ import annotations
@@ -28,11 +33,16 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-__all__ = ["EventEnvelope", "EventHub", "Severity"]
+__all__ = ["CELL_STREAM", "EventEnvelope", "EventHub", "Severity"]
+
+#: The key of the cell's own stream: the events that belong to no run (the jaws question, a brake with no run, the
+#: recovery record, "the cell is clear", the planner's state). Never a run id: those are ``run-<hex>``.
+CELL_STREAM = "cell"
 
 #: Events kept per run. At five stage events per attempt and five attempts per pick, this holds dozens
 #: of picks: more than a browser needs to catch up after a sleep. It bounds one run and nothing else.
@@ -111,22 +121,30 @@ class EventHub:
         self,
         run_id: str,
         event_type: str,
+        /,
         *,
         human: str = "",
         severity: Severity = Severity.INFO,
         step: str = "",
         step_index: int | None = None,
         step_total: int | None = None,
-        **data: Any,
+        data: Mapping[str, Any] | None = None,
+        **fields: Any,
     ) -> EventEnvelope:
-        """Append one event and wake anything waiting. Never raises for an unknown run."""
+        """Append one event and wake anything waiting. Never raises for an unknown run.
+
+        The machine payload is ``data`` and the keyword ``fields``, merged. The stream and the type are positional
+        only, so the payload may carry a ``run_id`` of its own (an event on the cell's stream names the run it is
+        about); a payload whose keys are the envelope's own (a run's ``step``) goes in ``data``, whole.
+        """
+        payload = {**(data or {}), **fields}
         with self._lock:
             seq = self._next_seq.get(run_id, 1)
             self._next_seq[run_id] = seq + 1
             envelope = EventEnvelope(
                 type=event_type, run_id=run_id, seq=seq, ts=time.time(),
                 severity=severity, human=human, step=step,
-                step_index=step_index, step_total=step_total, data=dict(data),
+                step_index=step_index, step_total=step_total, data=payload,
             )
             self._history.setdefault(run_id, deque(maxlen=self._capacity)).append(envelope)
             self._published.notify_all()

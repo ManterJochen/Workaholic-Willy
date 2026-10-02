@@ -866,7 +866,22 @@ class TheGeneratedViewAndTheMoveBackTests(unittest.TestCase):
     the last resort, through the pick loop's own ``generated_view.go_to_generated_view``: screened by the arm before it
     moves, the smallest turn first, driven on the straight joint line alone and never planned around; and the move back
     to the look the part was last seen from on that line (``move_back_to_look``), or the pick approaches from where the
-    arm stands. From the east look alone the cube's grasp closes across the two faces it does not face."""
+    arm stands. From the east look alone the cube's grasp closes across the two faces it does not face.
+
+    The turns below are named for the grasp these looks judged before side approaches came (the cell fixes, 2026-10-01:
+    ``robot.grasping.side_approaches``, on in a tree, ranks the cube's grasps by the room they keep and judges another
+    one, whose contact face another turn shows). What is under test here is the view and the move back, so the cell
+    runs with side approaches off; what they rank is ``test_a_side_grasp_*``'s.
+    """
+
+    def setUp(self) -> None:
+        from unittest import mock
+
+        cell = _hande()
+        upright = cell.model_copy(update={"grasping": cell.grasping.model_copy(update={"side_approaches": False})})
+        patcher = mock.patch(f"{__name__}._cell", lambda: upright)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_the_view_turns_to_the_unseen_contact_face_and_both_faces_still_refuses_what_it_did_not_show(self) -> None:
         arm = _OrbitingArm(self, EAST)

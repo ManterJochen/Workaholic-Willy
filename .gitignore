@@ -54,6 +54,12 @@ assets/models/ct2/
 frontend/node_modules/
 api/static/
 
+# The cell's own config layer: the last layer of its profile chain (--profile ur10,hande,cell reads
+# robot/robot.cell.yaml), where the console writes the poses taught at the cell (owner decision Q10).
+# It belongs to one cell and never to the repository, and the console refuses to teach into a layer
+# git does not keep out.
+config/**/*.cell.yaml
+
 # The fitted grasp ranker's TREES.
 assets/models/grasp_ranker/**/*.json
 !assets/models/grasp_ranker/**/*.card.json

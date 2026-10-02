@@ -144,12 +144,18 @@ class _EngineAdapter:
     def set_transform(self, obj: Any, R: np.ndarray, t: np.ndarray) -> None:
         obj.setTransform(self._transform(R, t))
 
-    def box_object(self, half_extents: np.ndarray, center: np.ndarray, yaw_rad: float = 0.0) -> Any:
-        """A box of ``half_extents`` about ``center``, turned about base Z by ``yaw_rad``."""
+    def box_object(
+        self, half_extents: np.ndarray, center: np.ndarray, yaw_rad: float = 0.0, rotation: "np.ndarray | None" = None,
+    ) -> Any:
+        """A box of ``half_extents`` about ``center``, turned about base Z by ``yaw_rad``, or by the whole ``rotation``
+        (a 3x3 whose columns are its axes in BASE) where one is given: a support surface's solid tilts."""
         m = self._m
         size = 2.0 * np.asarray(half_extents, dtype=np.float64)
-        c, s = float(np.cos(yaw_rad)), float(np.sin(yaw_rad))
-        turn = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+        if rotation is not None:
+            turn = np.asarray(rotation, dtype=np.float64).reshape(3, 3)
+        else:
+            c, s = float(np.cos(yaw_rad)), float(np.sin(yaw_rad))
+            turn = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
         return m.CollisionObject(m.Box(*size), self._transform(turn, np.asarray(center, dtype=np.float64)))
 
     def distance(self, a: Any, b: Any) -> float:
@@ -264,7 +270,9 @@ class MeshSelfCollisionBackend:
                 d = a.distance(self._models[ni], self._models[nj])
                 if d < min_distance_mm:
                     return (f"{ni}|{nj}", d)
-        # ---- link against fixture: the box as it stands, turned where it is; the sphere about its enclosure ----
+        # ---- link against fixture: the box as it stands, turned or tilted where it is; the sphere about its
+        # enclosure, which holds the turned or tilted box too, so the broadphase never culls a box the exact query
+        # would refuse ----
         for fx in fixtures:
             fc = np.asarray(fx.center_mm, dtype=np.float64)
             fr = float(np.linalg.norm(np.asarray(fx.half_extents_mm, dtype=np.float64)))
@@ -272,7 +280,8 @@ class MeshSelfCollisionBackend:
             if turned is None:
                 box = a.box_object(np.asarray(fx.half_extents_mm, dtype=np.float64), fc)
             else:
-                box = a.box_object(np.asarray(turned.half_extents_mm, dtype=np.float64), fc, float(turned.yaw_rad))
+                box = a.box_object(np.asarray(turned.half_extents_mm, dtype=np.float64), fc, float(turned.yaw_rad),
+                                   getattr(turned, "rotation", None))
             for name in self._names:
                 if broadphase and (float(np.linalg.norm(wc[name] - fc))
                                    - self._sph_r[name] - fr > min_distance_mm):

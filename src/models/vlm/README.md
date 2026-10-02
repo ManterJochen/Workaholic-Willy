@@ -25,6 +25,19 @@ backend = TwoStageBackend(detector=Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-In
 [`routing/`](../routing/README.md) decides which prompts reach this route when both are configured, and
 [route_hard_prompts.py](../../../examples/offline/perception/route_hard_prompts.py) shows the switch.
 
+**The same copy reads the operator's commands.** A process holds one Qwen3-VL (`shared_vlm()`): the build takes
+its grounder from it, and the console's command reader asks it a text-only question, so a cell whose detector is
+the VLM reads commands with the copy it detects with:
+
+```python
+from src.models.vlm import shared_vlm, understand
+
+vlm = models.pipeline.zero_shot.vlm                 # the models section the cell was built with
+ask = shared_vlm().asker_for(vlm, may_load=True)    # the model's text answer to one question
+reading = understand("Leg den grünen Würfel in die blaue Kiste", ask=ask, poses={"Ablage links": "ablage_links"})
+print(reading)                                      # object 'green cube', place 'blue bin', scope once
+```
+
 ## Why the route exists
 
 A phrase grounder does not fail on a prompt it cannot represent. It returns a confident box on the wrong
@@ -85,11 +98,55 @@ model asserted the box, and it keeps a detector's box threshold from discarding 
 model's own order is kept as its only ranking. The prompt tells the model: "If no object matches,
 return an empty array []. Do not guess."
 
+## Reading a command
+
+[`command.py`](command.py) reads an operator's sentence, German or English, into a task card, and moves
+nothing: `understand(text, ask=, poses=)` calls `ask` and nothing else, and no robot, camera or console module is
+imported. The owner reads commands only through the VLM: no word list reads the sentence.
+
+- **The question.** The whole sentence goes to the model with one fixed instruction (`COMMAND_INSTRUCTION`,
+  1,286 tokens) and the taught poses as spoken label to name pairs, so a spoken "Ablage links" comes back as its
+  name. `Qwen3VLGrounder.answer_text(system, user)` asks it with no image, the answer prefilled with `{`, at
+  most 160 new tokens, greedy.
+- **Hard checks, one retry.** The answer must be one JSON object with exactly the instruction's keys. A missing or
+  extra key, a scope other than `once` and `until_empty`, a place and a pose that contradict each other, or a
+  phrase for the detector that is not English or carries a quantifier is asked again once, saying what was wrong;
+  a German command's phrase made of the command's own words alone was copied, not translated. Word lists check
+  the answer, never the sentence: `GERMAN_WORDS` (German part, colour and material words the router reads as
+  English), `SHARED_WORDS` (words English shares, such as "Box", which are no copy) and `ANY_PART_WORDS` (a word
+  for any part names none, so the card asks what to pick). A second bad answer is "not understood", and the card
+  is filled in by hand.
+- **Read narrowly.** A place whose own words are a taught pose's label is that pose, with no second question. A
+  place said as Home is no place: Home is where the arm returns, and the note says so. A counted command ("nimm
+  drei Würfel") is read as `once` with the note that a count is not supported.
+- **Soft notes**, in `NOTE_ORDER`: `object_not_in_sentence`, `place_not_in_sentence`, `pose_unknown`,
+  `count_not_supported`, `retried`. The card marks them "bitte prüfen".
+- **`read_command`** is the console's door: the availability rule (`reader_availability`) first, then the
+  reader through the shared copy. Its refusals are the console's codes: `vlm_not_loaded`, `vlm_unavailable` (also
+  `VlmAnswerFailedError`, a loaded model that failed while it answered, VRAM mostly) and `vlm_model_missing`.
+
+**One copy per process, kept per weights** ([`holder.py`](holder.py)): `grounder_for(vlm)` is the build's door, and
+only a build switches the weights, unloading the copy it replaces. A command and `load_for` ("Laden") never load
+beside a copy of other weights: they refuse with "rebuild the cell" (`VlmCopyConflictError`). A cell that detects
+with the VLM loads the copy at its first command; any other cell refuses a command until a person loads it, and
+the console's build of such a cell calls `release_unless_requested(vlm)`, which unloads a copy a command or another
+cell loaded and keeps one a person loaded (`vlm_detects(models)` says which kind a cell is). A routed build lets
+a copy of other weights go itself (`release_other_than`). `unload()` hands the memory back: 0.01 GB stays
+allocated. `forget()` drops what the holder knows and unloads nothing: a test's teardown.
+
 ## Traps
 
 **The checkpoint shares the card.** The model sits beside the segmenter and, in simulation, the renderer.
 The 4B checkpoint in bf16 held 8.93 GB of VRAM on an RTX 5080; the 8B checkpoint's bf16 weights,
 17.5 GB, do not fit that card, so the two were not compared there, and the FP8 variants were not measured.
+Measured on that card against the real 4B weights: a load of 6.3 to 7.3 s, a peak of 9.8 to 9.9 GB while a
+command is answered, about 2.2 s per command on a free card and 5.5 to 19 s while another GPU job runs, answers
+of 53 to 73 tokens. The cell PC's card is unmeasured, beside SAM2, Whisper, the cuRobo sidecar and the desktop.
+
+**The `on_unavailable` contract does not fire through the composed stack.** `TwoStageBackend` turns a detector
+that raises, a VLM that cannot load included, into "no objects" before `GuardedVlmBackend` sees it, and counts it
+(`failures`, `last_failure`): a pick reads nothing found, and the console's task ends `detector_failed` on the
+count instead of "nothing left". Whether the guard should see the load error first is open.
 
 **The schema default and the shipped value differ.** The schema names the 4B FP8 variant;
 [`config/models/object.yaml`](../../../config/models/object.yaml) ships the 4B bf16 checkpoint, which
@@ -107,6 +164,7 @@ one-off pause mid-session. `preload: true` loads it when the cell is built, exce
 | The route picking the intended object, and the grounding table above | measured in simulation |
 | The coordinate space, against real weights on a synthetic scene (IoU about 0.87) | measured in simulation (`tests/test_vlm_inference.py`) |
 | The route on a real cell's camera | run on a physical cell: a wrist D415 on a UR10 (CB3); no measurement is kept here |
+| The command reader against the real 4B weights: German part nouns translated, a spoken label read back as the pose's name, the load and the VRAM | measured on the development box's RTX 5080 (`tests/test_vlm_command_inference.py`); not on the cell PC |
 
 The parser, the coordinate space and the unavailability contract are also tested without a GPU, and no
 module here imports torch or transformers at import time, so a cell that never sends a hard prompt never
@@ -116,13 +174,18 @@ pays for the model. `tests/test_vlm_inference.py` needs CUDA and the weights, an
 
 | File | Holds |
 | --- | --- |
-| [`qwen.py`](qwen.py) | `Qwen3VLGrounder`: `detect_all(bgr, prompt)`, the shape GroundingDINO has; loads on first call unless `preload` |
+| [`qwen.py`](qwen.py) | `Qwen3VLGrounder`: `detect_all(bgr, prompt)`, the shape GroundingDINO has; `answer_text`, a text-only answer; a load guarded by a lock, one inference at a time, `unload()`; loads on first call unless `preload` |
+| [`holder.py`](holder.py) | `VlmHolder` and `shared_vlm()`: the process's one copy, shared by detection and the command reader; `grounder_for`, `status_for`, `load_for`, `asker_for`, `release_unless_requested`, `forget` |
+| [`command.py`](command.py) | the command reader: `understand`, `read_command`, `COMMAND_INSTRUCTION`, the answer model, the checks, the retry and the notes |
 | [`parsing.py`](parsing.py) | `parse_grounding_response`, `CoordinateSpace`, `VLM_NOMINAL_SCORE`; runs without a GPU |
-| [`availability.py`](availability.py) | `GuardedVlmBackend` and `VlmUnavailableError`; the fallback is built only when needed |
+| [`availability.py`](availability.py) | `GuardedVlmBackend` and `VlmUnavailableError`; the fallback is built only when needed; `reader_availability`, whether a command can be read now, and the reader's refusals |
 
 ## Details
 
 - [`../routing/`](../routing/README.md) decides which route a prompt needs, before any weights load
 - [`../README.md`](../README.md) is the perception layer and its factory
 - Weights: `python scripts/model_weights/fetch.py vlm-4b`
-- Tests: `tests/test_vlm_grounding.py`, `tests/test_vlm_inference.py`
+- The console's commands: [`api/README.md`](../../../api/README.md), Commands
+- Tests: `tests/test_vlm_grounding.py`, `tests/test_vlm_inference.py`, `tests/test_vlm_command.py`,
+  `tests/test_vlm_holder.py`, `tests/test_vlm_command_inference.py` (real weights, skips without them),
+  `tests/test_a_failed_detector_is_not_nothing_found.py`, `tests/test_a_clean_holder_loads_nothing_at_build.py`

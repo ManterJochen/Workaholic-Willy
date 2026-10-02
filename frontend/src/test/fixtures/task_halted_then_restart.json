@@ -1,0 +1,1027 @@
+{
+  "about": "Captured by scripts/console/capture_event_log.py on the scripted cell of tests/_console_task_fakes.py through the real console: halt now pressed during the grasp's line in (the move in flight runs to its end, nothing after it is sent), the stop card's record, 'the cell is clear', the jaws answered open, and the Restart, whose first motion is the planned move home, placing the part.",
+  "scenario": "task_halted_then_restart",
+  "events": [
+    {
+      "type": "run_started",
+      "run_id": "run-7c1d00aa42",
+      "seq": 1,
+      "ts": 1790856000.0,
+      "severity": "info",
+      "human": "Task run started.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "kind": "task",
+        "plan": {
+          "object": "green cube",
+          "object_said": "den grünen Würfel",
+          "place": {
+            "kind": "pose",
+            "pose": "drop_left",
+            "pose_label": "Ablage links",
+            "pose_joints_deg": [
+              -60.0,
+              -95.0,
+              -120.0,
+              -55.0,
+              90.0,
+              0.0
+            ],
+            "phrase": null,
+            "said": null
+          },
+          "return_to": "home",
+          "return_label": null,
+          "return_joints_deg": null,
+          "scope": "once",
+          "options": {
+            "multi_view": true,
+            "both_faces": false,
+            "closing_axis": null,
+            "push_mm": 30.0,
+            "record_views": false,
+            "rim_air_mm": null,
+            "pick_anything": false,
+            "overlay": true
+          },
+          "command": {
+            "text": "Leg den grünen Würfel auf die Ablage links",
+            "source": "spoken",
+            "language": "de",
+            "parsed": true,
+            "edited": []
+          },
+          "first_motion": "look",
+          "countdown": false
+        }
+      }
+    },
+    {
+      "type": "task.pose_screened",
+      "run_id": "run-7c1d00aa42",
+      "seq": 2,
+      "ts": 1790856000.05,
+      "severity": "info",
+      "human": "The place pose 'drop_left' is clear.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "pose": "drop_left",
+        "role": "place",
+        "verdict": "clear",
+        "detail": "clear: scripted clear (screened at the taught pose itself: the cell declares no carried part's hang)",
+        "nearby_deg": null
+      }
+    },
+    {
+      "type": "task.part_started",
+      "run_id": "run-7c1d00aa42",
+      "seq": 3,
+      "ts": 1790856000.1,
+      "severity": "info",
+      "human": "Looking for part 1 of 1.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "part": 1,
+        "of": 1,
+        "pick": 1
+      }
+    },
+    {
+      "type": "pick.pick_started",
+      "run_id": "run-7c1d00aa42",
+      "seq": 4,
+      "ts": 1790856000.15,
+      "severity": "info",
+      "human": "Starting a pick.",
+      "step": "pick_started",
+      "step_index": null,
+      "step_total": 5,
+      "data": {
+        "attempt_total": 5
+      }
+    },
+    {
+      "type": "pick.attempt_started",
+      "run_id": "run-7c1d00aa42",
+      "seq": 5,
+      "ts": 1790856000.2,
+      "severity": "info",
+      "human": "Attempt 1 of 5.",
+      "step": "attempt_started",
+      "step_index": 0,
+      "step_total": 5,
+      "data": {
+        "attempt": 0,
+        "attempt_total": 5
+      }
+    },
+    {
+      "type": "pick.perceived",
+      "run_id": "run-7c1d00aa42",
+      "seq": 6,
+      "ts": 1790856000.25,
+      "severity": "info",
+      "human": "Camera frame acquired: 3 object(s) segmented.",
+      "step": "perceived",
+      "step_index": 0,
+      "step_total": null,
+      "data": {
+        "attempt": 0,
+        "segmentation_count": 3,
+        "look": "look_1"
+      }
+    },
+    {
+      "type": "pick.ranked",
+      "run_id": "run-7c1d00aa42",
+      "seq": 7,
+      "ts": 1790856000.3,
+      "severity": "info",
+      "human": "Ranked 14 grasp candidate(s), best score 0.87.",
+      "step": "ranked",
+      "step_index": 0,
+      "step_total": null,
+      "data": {
+        "attempt": 0,
+        "candidate_count": 14,
+        "target_index": 0,
+        "score": 0.87,
+        "looks": [
+          "look_1"
+        ],
+        "looks_fused": [
+          "look_1"
+        ],
+        "jaw_faces_seen": [
+          true,
+          false
+        ]
+      }
+    },
+    {
+      "type": "pick.executing",
+      "run_id": "run-7c1d00aa42",
+      "seq": 8,
+      "ts": 1790856000.35,
+      "severity": "info",
+      "human": "Moving to the grasp at x=150 y=-650 z=20 mm.",
+      "step": "executing",
+      "step_index": 0,
+      "step_total": null,
+      "data": {
+        "attempt": 0,
+        "target_index": 0,
+        "score": 0.87,
+        "position_mm": [
+          150.0,
+          -650.0,
+          20.0
+        ],
+        "overlay": "/v1/runs/run-7c1d00aa42/overlays/1"
+      }
+    },
+    {
+      "type": "run_halt_requested",
+      "run_id": "run-7c1d00aa42",
+      "seq": 9,
+      "ts": 1790856000.4,
+      "severity": "warn",
+      "human": "Halt now: the run commands nothing more, and the arm refuses every next motion until a person confirms the cell is clear. Not an emergency stop; the red button is.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "reason": "the operator pressed halt now in the console",
+        "in_motion": true,
+        "requested_at": 1790856000.4,
+        "braking": false
+      }
+    },
+    {
+      "type": "pick.attempt_finished",
+      "run_id": "run-7c1d00aa42",
+      "seq": 10,
+      "ts": 1790856000.45,
+      "severity": "warn",
+      "human": "Attempt ended: execution_failed. Nothing moved: halted: the operator pressed halt now in the console; nothing was sent (cancelled)",
+      "step": "attempt_finished",
+      "step_index": 0,
+      "step_total": null,
+      "data": {
+        "attempt": 0,
+        "action": "execution_failed",
+        "outcome": "PickOutcome.EXECUTION_FAILED",
+        "motion_status": "cancelled",
+        "motion_message": "halted: the operator pressed halt now in the console; nothing was sent"
+      }
+    },
+    {
+      "type": "pick.pick_finished",
+      "run_id": "run-7c1d00aa42",
+      "seq": 11,
+      "ts": 1790856000.5,
+      "severity": "info",
+      "human": "Pick finished: PickOutcome.EXECUTION_FAILED.",
+      "step": "pick_finished",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "outcome": "PickOutcome.EXECUTION_FAILED"
+      }
+    },
+    {
+      "type": "pick_result",
+      "run_id": "run-7c1d00aa42",
+      "seq": 12,
+      "ts": 1790856000.55,
+      "severity": "warn",
+      "human": "Pick 1: execution_failed. execution_failed",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "outcome": "execution_failed",
+        "succeeded": false,
+        "reason": "execution_failed",
+        "looks": [],
+        "looks_fused": [],
+        "hand_eye_warn_mm": 6.0,
+        "controller_stopped": false,
+        "gripper_fault": "",
+        "needs_person": false,
+        "both_faces": false,
+        "fused_views": [],
+        "push_stopped": false,
+        "found_nothing": false,
+        "only_excluded": false,
+        "part": 1,
+        "pick": 1,
+        "detector_failed": false,
+        "overlay": "/v1/runs/run-7c1d00aa42/overlays/1"
+      }
+    },
+    {
+      "type": "run_error",
+      "run_id": "run-7c1d00aa42",
+      "seq": 13,
+      "ts": 1790856000.6,
+      "severity": "error",
+      "human": "The run stopped: the console halted the arm (the operator pressed halt now in the console): halt now was pressed; nothing more is commanded, the jaws included. The last pick said: execution_failed",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "error": "the console halted the arm (the operator pressed halt now in the console): halt now was pressed; nothing more is commanded, the jaws included. The last pick said: execution_failed",
+        "stop_code": "halted"
+      }
+    },
+    {
+      "type": "cell.recovery",
+      "run_id": "cell",
+      "seq": 1,
+      "ts": 1790856000.65,
+      "severity": "error",
+      "human": "The task run run-7c1d00aa42 stopped where the arm stands (halted). Nothing moves until a person confirms the cell is clear; then Restart or Home, whose first motion is the planned move home.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "run_id": "run-7c1d00aa42",
+        "kind": "task",
+        "stop_code": "halted",
+        "at": 1790856000.65
+      }
+    },
+    {
+      "type": "run_finished",
+      "run_id": "run-7c1d00aa42",
+      "seq": 14,
+      "ts": 1790856000.7,
+      "severity": "warn",
+      "human": "Task run failed: halted.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "id": "run-7c1d00aa42",
+        "prompt": "green cube",
+        "requested_picks": 0,
+        "state": "failed",
+        "started_at": 1790856000.0,
+        "finished_at": 1790856000.65,
+        "succeeded": 0,
+        "attempted": 1,
+        "outcomes": [
+          "execution_failed"
+        ],
+        "error": "the console halted the arm (the operator pressed halt now in the console): halt now was pressed; nothing more is commanded, the jaws included. The last pick said: execution_failed",
+        "stop_requested": false,
+        "kind": "task",
+        "stop_code": "halted",
+        "stop_class": "problem",
+        "plan": {
+          "object": "green cube",
+          "object_said": "den grünen Würfel",
+          "place": {
+            "kind": "pose",
+            "pose": "drop_left",
+            "pose_label": "Ablage links",
+            "pose_joints_deg": [
+              -60.0,
+              -95.0,
+              -120.0,
+              -55.0,
+              90.0,
+              0.0
+            ],
+            "phrase": null,
+            "said": null
+          },
+          "return_to": "home",
+          "return_label": null,
+          "return_joints_deg": null,
+          "scope": "once",
+          "options": {
+            "multi_view": true,
+            "both_faces": false,
+            "closing_axis": null,
+            "push_mm": 30.0,
+            "record_views": false,
+            "rim_air_mm": null,
+            "pick_anything": false,
+            "overlay": true
+          },
+          "command": {
+            "text": "Leg den grünen Würfel auf die Ablage links",
+            "source": "spoken",
+            "language": "de",
+            "parsed": true,
+            "edited": []
+          },
+          "first_motion": "look",
+          "countdown": false
+        },
+        "parts_placed": 0,
+        "holding": false,
+        "restart_of": null,
+        "halt_requested": true,
+        "step": "grasp",
+        "refusal": null
+      }
+    },
+    {
+      "type": "cell.acknowledged",
+      "run_id": "cell",
+      "seq": 2,
+      "ts": 1790856000.75,
+      "severity": "info",
+      "human": "A person confirmed the cell is clear: halted, recovery cleared.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "cleared": [
+          "halted",
+          "recovery"
+        ],
+        "jaws_emptied": false
+      }
+    },
+    {
+      "type": "run_started",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 1,
+      "ts": 1790856000.8,
+      "severity": "info",
+      "human": "Task run started.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "kind": "task",
+        "plan": {
+          "object": "green cube",
+          "object_said": "den grünen Würfel",
+          "place": {
+            "kind": "pose",
+            "pose": "drop_left",
+            "pose_label": "Ablage links",
+            "pose_joints_deg": [
+              -60.0,
+              -95.0,
+              -120.0,
+              -55.0,
+              90.0,
+              0.0
+            ],
+            "phrase": null,
+            "said": null
+          },
+          "return_to": "home",
+          "return_label": null,
+          "return_joints_deg": null,
+          "scope": "once",
+          "options": {
+            "multi_view": true,
+            "both_faces": false,
+            "closing_axis": null,
+            "push_mm": 30.0,
+            "record_views": false,
+            "rim_air_mm": null,
+            "pick_anything": false,
+            "overlay": true
+          },
+          "command": {
+            "text": "Leg den grünen Würfel auf die Ablage links",
+            "source": "spoken",
+            "language": "de",
+            "parsed": true,
+            "edited": []
+          },
+          "first_motion": "return",
+          "countdown": false
+        },
+        "restart_of": "run-7c1d00aa42"
+      }
+    },
+    {
+      "type": "task.pose_screened",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 2,
+      "ts": 1790856000.85,
+      "severity": "info",
+      "human": "The place pose 'drop_left' is clear.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "pose": "drop_left",
+        "role": "place",
+        "verdict": "clear",
+        "detail": "clear: scripted clear (screened at the taught pose itself: the cell declares no carried part's hang)",
+        "nearby_deg": null
+      }
+    },
+    {
+      "type": "task.return_started",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 3,
+      "ts": 1790856000.9,
+      "severity": "info",
+      "human": "Returning home.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "to": "home",
+        "note": ""
+      }
+    },
+    {
+      "type": "task.returned",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 4,
+      "ts": 1790856000.95,
+      "severity": "info",
+      "human": "Back home.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "to": "home",
+        "note": ""
+      }
+    },
+    {
+      "type": "cell.recovery_ended",
+      "run_id": "cell",
+      "seq": 3,
+      "ts": 1790856001.0,
+      "severity": "success",
+      "human": "The arm is back at its return pose (restart); the stop of run run-7c1d00aa42 is behind it.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "run_id": "run-7c1d00aa42",
+        "by": "restart",
+        "ended_by": "run-9e2b44f0c3"
+      }
+    },
+    {
+      "type": "task.part_started",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 5,
+      "ts": 1790856001.05,
+      "severity": "info",
+      "human": "Looking for part 1 of 1.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "part": 1,
+        "of": 1,
+        "pick": 1
+      }
+    },
+    {
+      "type": "pick.pick_started",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 6,
+      "ts": 1790856001.1,
+      "severity": "info",
+      "human": "Starting a pick.",
+      "step": "pick_started",
+      "step_index": null,
+      "step_total": 5,
+      "data": {
+        "attempt_total": 5
+      }
+    },
+    {
+      "type": "pick.attempt_started",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 7,
+      "ts": 1790856001.15,
+      "severity": "info",
+      "human": "Attempt 1 of 5.",
+      "step": "attempt_started",
+      "step_index": 0,
+      "step_total": 5,
+      "data": {
+        "attempt": 0,
+        "attempt_total": 5
+      }
+    },
+    {
+      "type": "pick.perceived",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 8,
+      "ts": 1790856001.2,
+      "severity": "info",
+      "human": "Camera frame acquired: 3 object(s) segmented.",
+      "step": "perceived",
+      "step_index": 0,
+      "step_total": null,
+      "data": {
+        "attempt": 0,
+        "segmentation_count": 3,
+        "look": "look_1"
+      }
+    },
+    {
+      "type": "pick.ranked",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 9,
+      "ts": 1790856001.25,
+      "severity": "info",
+      "human": "Ranked 14 grasp candidate(s), best score 0.87.",
+      "step": "ranked",
+      "step_index": 0,
+      "step_total": null,
+      "data": {
+        "attempt": 0,
+        "candidate_count": 14,
+        "target_index": 0,
+        "score": 0.87,
+        "looks": [
+          "look_1"
+        ],
+        "looks_fused": [
+          "look_1"
+        ],
+        "jaw_faces_seen": [
+          true,
+          false
+        ]
+      }
+    },
+    {
+      "type": "pick.executing",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 10,
+      "ts": 1790856001.3,
+      "severity": "info",
+      "human": "Moving to the grasp at x=150 y=-650 z=20 mm.",
+      "step": "executing",
+      "step_index": 0,
+      "step_total": null,
+      "data": {
+        "attempt": 0,
+        "target_index": 0,
+        "score": 0.87,
+        "position_mm": [
+          150.0,
+          -650.0,
+          20.0
+        ],
+        "overlay": "/v1/runs/run-9e2b44f0c3/overlays/1"
+      }
+    },
+    {
+      "type": "pick.attempt_finished",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 11,
+      "ts": 1790856001.35,
+      "severity": "info",
+      "human": "Attempt ended: executed.",
+      "step": "attempt_finished",
+      "step_index": 0,
+      "step_total": null,
+      "data": {
+        "attempt": 0,
+        "action": "executed",
+        "outcome": "PickOutcome.EXECUTED"
+      }
+    },
+    {
+      "type": "pick.pick_finished",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 12,
+      "ts": 1790856001.4,
+      "severity": "info",
+      "human": "Pick finished: PickOutcome.EXECUTED.",
+      "step": "pick_finished",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "outcome": "PickOutcome.EXECUTED"
+      }
+    },
+    {
+      "type": "pick_result",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 13,
+      "ts": 1790856001.45,
+      "severity": "success",
+      "human": "Pick 1: succeeded.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "outcome": "succeeded",
+        "succeeded": true,
+        "reason": "",
+        "looks": [
+          "look_1"
+        ],
+        "looks_fused": [
+          "look_1"
+        ],
+        "jaw_faces_seen": [
+          true,
+          false
+        ],
+        "hand_eye_gap_mm": 2.1,
+        "hand_eye_warn_mm": 6.0,
+        "hold_measured": false,
+        "controller_stopped": false,
+        "gripper_fault": "",
+        "needs_person": false,
+        "both_faces": false,
+        "grasp_pose": {
+          "position_mm": [
+            150.0,
+            -650.0,
+            20.0
+          ],
+          "quaternion_xyzw": [
+            1.0,
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "object_centre_mm": [
+          150.0,
+          -650.0,
+          20.0
+        ],
+        "fused_views": [],
+        "push_stopped": false,
+        "found_nothing": false,
+        "only_excluded": false,
+        "part": 1,
+        "pick": 1,
+        "detector_failed": false,
+        "overlay": "/v1/runs/run-9e2b44f0c3/overlays/1"
+      }
+    },
+    {
+      "type": "task.drop_planned",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 14,
+      "ts": 1790856001.5,
+      "severity": "info",
+      "human": "The drop stands 20 mm above the taught pose: the part's hang.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "kind": "pose",
+        "pose_mm": [
+          300.0,
+          -400.0,
+          170.0
+        ],
+        "rim_mm": null,
+        "hang_mm": 20.0,
+        "air_mm": null,
+        "verdict": "clear"
+      }
+    },
+    {
+      "type": "task.place_started",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 15,
+      "ts": 1790856001.55,
+      "severity": "info",
+      "human": "Placing the part at 'drop_left'.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "place": "pose:drop_left"
+      }
+    },
+    {
+      "type": "task.placed",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 16,
+      "ts": 1790856001.6,
+      "severity": "success",
+      "human": "Placed: the jaws opened at the drop (no sensor: the release is not measured).",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "outcome": "executed",
+        "no_sensor": true,
+        "line_out_refused": false
+      }
+    },
+    {
+      "type": "task.return_started",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 17,
+      "ts": 1790856001.65,
+      "severity": "info",
+      "human": "Returning home.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "to": "home",
+        "note": ""
+      }
+    },
+    {
+      "type": "task.returned",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 18,
+      "ts": 1790856001.7,
+      "severity": "info",
+      "human": "Back home.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "to": "home",
+        "note": ""
+      }
+    },
+    {
+      "type": "task.part_finished",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 19,
+      "ts": 1790856001.75,
+      "severity": "success",
+      "human": "Part 1 is placed.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "part": 1,
+        "placed": true,
+        "duration_s": 24.6
+      }
+    },
+    {
+      "type": "run_finished",
+      "run_id": "run-9e2b44f0c3",
+      "seq": 20,
+      "ts": 1790856001.8,
+      "severity": "success",
+      "human": "Task run finished: finished.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "id": "run-9e2b44f0c3",
+        "prompt": "green cube",
+        "requested_picks": 0,
+        "state": "finished",
+        "started_at": 1790856000.8,
+        "finished_at": 1790856001.8,
+        "succeeded": 1,
+        "attempted": 1,
+        "outcomes": [
+          "succeeded"
+        ],
+        "error": "",
+        "stop_requested": false,
+        "kind": "task",
+        "stop_code": "finished",
+        "stop_class": "done",
+        "plan": {
+          "object": "green cube",
+          "object_said": "den grünen Würfel",
+          "place": {
+            "kind": "pose",
+            "pose": "drop_left",
+            "pose_label": "Ablage links",
+            "pose_joints_deg": [
+              -60.0,
+              -95.0,
+              -120.0,
+              -55.0,
+              90.0,
+              0.0
+            ],
+            "phrase": null,
+            "said": null
+          },
+          "return_to": "home",
+          "return_label": null,
+          "return_joints_deg": null,
+          "scope": "once",
+          "options": {
+            "multi_view": true,
+            "both_faces": false,
+            "closing_axis": null,
+            "push_mm": 30.0,
+            "record_views": false,
+            "rim_air_mm": null,
+            "pick_anything": false,
+            "overlay": true
+          },
+          "command": {
+            "text": "Leg den grünen Würfel auf die Ablage links",
+            "source": "spoken",
+            "language": "de",
+            "parsed": true,
+            "edited": []
+          },
+          "first_motion": "return",
+          "countdown": false
+        },
+        "parts_placed": 1,
+        "holding": false,
+        "restart_of": "run-7c1d00aa42",
+        "halt_requested": false,
+        "step": "return",
+        "refusal": null
+      }
+    }
+  ],
+  "runs": {
+    "run-7c1d00aa42": {
+      "id": "run-7c1d00aa42",
+      "prompt": "green cube",
+      "requested_picks": 0,
+      "state": "failed",
+      "started_at": 1790856000.0,
+      "finished_at": 1790856000.65,
+      "succeeded": 0,
+      "attempted": 1,
+      "outcomes": [
+        "execution_failed"
+      ],
+      "error": "the console halted the arm (the operator pressed halt now in the console): halt now was pressed; nothing more is commanded, the jaws included. The last pick said: execution_failed",
+      "stop_requested": false,
+      "kind": "task",
+      "stop_code": "halted",
+      "stop_class": "problem",
+      "plan": {
+        "object": "green cube",
+        "object_said": "den grünen Würfel",
+        "place": {
+          "kind": "pose",
+          "pose": "drop_left",
+          "pose_label": "Ablage links",
+          "pose_joints_deg": [
+            -60.0,
+            -95.0,
+            -120.0,
+            -55.0,
+            90.0,
+            0.0
+          ],
+          "phrase": null,
+          "said": null
+        },
+        "return_to": "home",
+        "return_label": null,
+        "return_joints_deg": null,
+        "scope": "once",
+        "options": {
+          "multi_view": true,
+          "both_faces": false,
+          "closing_axis": null,
+          "push_mm": 30.0,
+          "record_views": false,
+          "rim_air_mm": null,
+          "pick_anything": false,
+          "overlay": true
+        },
+        "command": {
+          "text": "Leg den grünen Würfel auf die Ablage links",
+          "source": "spoken",
+          "language": "de",
+          "parsed": true,
+          "edited": []
+        },
+        "first_motion": "look",
+        "countdown": false
+      },
+      "parts_placed": 0,
+      "holding": false,
+      "restart_of": null,
+      "halt_requested": true,
+      "step": "grasp",
+      "refusal": null
+    },
+    "run-9e2b44f0c3": {
+      "id": "run-9e2b44f0c3",
+      "prompt": "green cube",
+      "requested_picks": 0,
+      "state": "finished",
+      "started_at": 1790856000.8,
+      "finished_at": 1790856001.8,
+      "succeeded": 1,
+      "attempted": 1,
+      "outcomes": [
+        "succeeded"
+      ],
+      "error": "",
+      "stop_requested": false,
+      "kind": "task",
+      "stop_code": "finished",
+      "stop_class": "done",
+      "plan": {
+        "object": "green cube",
+        "object_said": "den grünen Würfel",
+        "place": {
+          "kind": "pose",
+          "pose": "drop_left",
+          "pose_label": "Ablage links",
+          "pose_joints_deg": [
+            -60.0,
+            -95.0,
+            -120.0,
+            -55.0,
+            90.0,
+            0.0
+          ],
+          "phrase": null,
+          "said": null
+        },
+        "return_to": "home",
+        "return_label": null,
+        "return_joints_deg": null,
+        "scope": "once",
+        "options": {
+          "multi_view": true,
+          "both_faces": false,
+          "closing_axis": null,
+          "push_mm": 30.0,
+          "record_views": false,
+          "rim_air_mm": null,
+          "pick_anything": false,
+          "overlay": true
+        },
+        "command": {
+          "text": "Leg den grünen Würfel auf die Ablage links",
+          "source": "spoken",
+          "language": "de",
+          "parsed": true,
+          "edited": []
+        },
+        "first_motion": "return",
+        "countdown": false
+      },
+      "parts_placed": 1,
+      "holding": false,
+      "restart_of": "run-7c1d00aa42",
+      "halt_requested": false,
+      "step": "return",
+      "refusal": null
+    }
+  }
+}

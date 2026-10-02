@@ -1541,7 +1541,11 @@ class TheMoveBackTests(unittest.TestCase):
                 cell = _Cell(looks=(LOOK_PLUS_X, far), boxes=(CUBE, self.OTHER), grasps_on=(), uncertain_on=(0,),
                              arm=arm)
 
-                with self.assertLogs(level="WARNING") as said:
+                if driven:
+                    # The generated view's own logger, by name: it is a robot logger and does not propagate to the root.
+                    with self.assertLogs("src.robot.execution.generated_view", level="WARNING") as said:
+                        report = cell.run()
+                else:
                     report = cell.run()
 
                 self.assertIs(PickOutcome.EXECUTED, report.outcome)

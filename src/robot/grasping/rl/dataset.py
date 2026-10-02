@@ -657,7 +657,9 @@ def write_manifest(manifest: DatasetManifest, path: Path) -> str:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(manifest.to_json(), sort_keys=True, indent=2)
-    path.write_text(payload + "\n", encoding="utf-8")
+    # LF on every platform: docs/baselines/** is -text, so git keeps the bytes written here, and the digest below is
+    # of the LF payload.
+    path.write_text(payload + "\n", encoding="utf-8", newline="\n")
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     logger.info(
         "Wrote dataset manifest %r to %s (%d bytes, sha256 %s)",

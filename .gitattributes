@@ -19,3 +19,7 @@ tests/data/replay/** -text
 # held by scripts/curobo/ur_ros2_description.sha256. A CRLF checkout would change every YAML's
 # bytes and fail that pin.
 scripts/curobo/ur_ros2_description/** -text
+
+# A shell script runs under bash, which refuses a CRLF line end: scripts/ursim/ursim.sh checked out on Windows
+# (core.autocrlf=true) failed with "$'\r': command not found" until a copy was stripped by hand.
+*.sh text eol=lf

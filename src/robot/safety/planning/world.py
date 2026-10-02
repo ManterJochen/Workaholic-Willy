@@ -39,7 +39,8 @@ class PlanningWorldError(ValueError):
 
 
 def planner_cuboid(
-    name: str, centre_mm: Sequence[float], dims_mm: Sequence[float], *, yaw_rad: float = 0.0
+    name: str, centre_mm: Sequence[float], dims_mm: Sequence[float], *, yaw_rad: float = 0.0,
+    rotation: "Sequence[float] | None" = None,
 ) -> dict[str, Any]:
     """One box in the planner wire format: metres, WXYZ, base frame.
 
@@ -49,15 +50,57 @@ def planner_cuboid(
     so a turned box costs nothing here and stops an axis-aligned hull around a diagonal
     part from blocking the space beside it.
 
-    The turn is about base Z only. Everything in a cell stands on something.
+    Everything in a cell stands on something, so the turn is about base Z, by ``yaw_rad``. The one
+    box that tilts is the solid of a surface the parts stand on, which follows the surface as the
+    camera read it (``support_surfaces``): ``rotation`` is its whole turn, nine numbers row-major
+    whose columns are the box's axes in BASE, and the quaternion is written from it, ``yaw_rad``
+    unread. The sidecar takes the pose's quaternion as it is.
     """
-    half = float(yaw_rad) / 2.0
-    rotation = (math.cos(half), 0.0, 0.0, math.sin(half))
+    if rotation is not None:
+        quaternion = _quaternion_wxyz(rotation)
+    else:
+        half = float(yaw_rad) / 2.0
+        quaternion = (math.cos(half), 0.0, 0.0, math.sin(half))
     return {
         "name": name,
         "dims_m": [float(d) / 1000.0 for d in dims_mm],
-        "pose": [float(c) / 1000.0 for c in centre_mm] + list(rotation),
+        "pose": [float(c) / 1000.0 for c in centre_mm] + list(quaternion),
     }
+
+
+def _quaternion_wxyz(rotation: Sequence[float]) -> tuple[float, float, float, float]:
+    """The unit quaternion, WXYZ with W not negative, of a row-major 3x3 rotation (Shepperd's method).
+
+    Refuses a matrix that is not a rotation, because a box written from one is a box nobody can say where it is."""
+    m = [float(v) for v in rotation]
+    if len(m) != 9 or not all(math.isfinite(v) for v in m):
+        raise PlanningWorldError(f"a box's rotation is nine finite numbers, got {list(rotation)!r}")
+    r = [[m[0], m[1], m[2]], [m[3], m[4], m[5]], [m[6], m[7], m[8]]]
+    for i in range(3):
+        for j in range(3):
+            dot = sum(r[k][i] * r[k][j] for k in range(3))
+            if abs(dot - (1.0 if i == j else 0.0)) > 1e-6:
+                raise PlanningWorldError(f"a box's rotation must be orthonormal, got {m!r}")
+    det = (r[0][0] * (r[1][1] * r[2][2] - r[1][2] * r[2][1]) - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
+           + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]))
+    if det < 0.0:
+        raise PlanningWorldError(f"a box's rotation must keep its handedness, got determinant {det:.6f}")
+    trace = r[0][0] + r[1][1] + r[2][2]
+    if trace > 0.0:
+        s = 2.0 * math.sqrt(trace + 1.0)
+        w, x, y, z = 0.25 * s, (r[2][1] - r[1][2]) / s, (r[0][2] - r[2][0]) / s, (r[1][0] - r[0][1]) / s
+    elif r[0][0] > r[1][1] and r[0][0] > r[2][2]:
+        s = 2.0 * math.sqrt(1.0 + r[0][0] - r[1][1] - r[2][2])
+        w, x, y, z = (r[2][1] - r[1][2]) / s, 0.25 * s, (r[0][1] + r[1][0]) / s, (r[0][2] + r[2][0]) / s
+    elif r[1][1] > r[2][2]:
+        s = 2.0 * math.sqrt(1.0 + r[1][1] - r[0][0] - r[2][2])
+        w, x, y, z = (r[0][2] - r[2][0]) / s, (r[0][1] + r[1][0]) / s, 0.25 * s, (r[1][2] + r[2][1]) / s
+    else:
+        s = 2.0 * math.sqrt(1.0 + r[2][2] - r[0][0] - r[1][1])
+        w, x, y, z = (r[1][0] - r[0][1]) / s, (r[0][2] + r[2][0]) / s, (r[1][2] + r[2][1]) / s, 0.25 * s
+    norm = math.sqrt(w * w + x * x + y * y + z * z)
+    sign = -1.0 if w < 0.0 else 1.0
+    return (sign * w / norm, sign * x / norm, sign * y / norm, sign * z / norm)
 
 
 def merge_planner_worlds(

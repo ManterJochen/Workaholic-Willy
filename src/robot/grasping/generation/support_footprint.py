@@ -36,11 +36,25 @@ The gripper dimensions are taken from :class:`ParallelJawGripperModel` rather th
 restated copy drifts: an independent one is ~8 mm too lenient toward the table. There is one
 measurement and every consumer reads it.
 
-Pure and deterministic: numpy only. BASE millimetres throughout, Z up along the support normal.
+A refused grasp is counted (``refusals``), by cause and by the obstacle set it met: the points a caller
+handed as seen, the points it declared, and the target's own low fragments. A pick that gets no grasp
+can then say whether a neighbour the camera saw boxed the part in, a declared body did, or the part is
+too short for the hand (the owner's cell, 2026-10-01: SFE dropped every obstacle hit uncounted).
+
+Side approaches (``side_approaches``, the owner's "gleichwertig nach Geometrie", 2026-10-01) offer every
+tilt the hand fits at, not only the first, and rank them equal by geometry: a tilted grasp wins only
+where it keeps more room, vertical wins ties. Only space a depth ray saw counts as clear, because the
+camera world takes an occlusion shadow for free space and the guard would judge the approach against
+that same free shadow.
+
+Pure and deterministic: numpy, and SciPy's KD-tree where present for the side-approach clearance (a
+NumPy scan otherwise, the same answer). BASE millimetres throughout, Z up along the support normal.
 """
 
 from __future__ import annotations
 
+import math
+from collections.abc import Callable, Mapping
 from typing import Any, Final
 
 from dataclasses import dataclass
@@ -54,6 +68,9 @@ from src.robot.grasping.geometry.grasp_frame import pose_from_grasp_axes
 __all__ = [
     "DEFAULT_FLOOR_MARGIN_MM",
     "DEFAULT_MAX_CANDIDATES",
+    "REFUSAL_CAUSES",
+    "SIDE_APPROACH_SCORE_WEIGHTS",
+    "CorridorSeen",
     "SupportFootprintCandidate",
     "SupportFootprintJaw",
     "SupportPrism",
@@ -85,10 +102,46 @@ _FRAGMENT_LINK_MM: Final[float] = 6.0
 #: Approach tilts away from straight-down, in preference order: the first that yields a candidate for
 #: an (axis, anchor) wins, so within one anchor a reachable vertical grasp is never traded for a
 #: tilted one. Across anchors the final ``found.sort`` by blended score decides, and ``upright`` is
-#: only 0.15 of that blend, so a tilted candidate from another anchor can still rank first.
+#: only 0.15 of that blend, so a tilted candidate from another anchor can still rank first. With side
+#: approaches every tilt that fits is a candidate, and the ladder is the order a tie is broken in.
 _TILTS_DEG = (0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0)
 #: Where along the perpendicular extent to place the closing line: the middle and both thirds.
 _FRACS = (0.0, -0.35, 0.35)
+
+#: Every cause a refused build is counted under, ``generate_support_footprint_grasps(refusals=...)``. An obstacle
+#: refusal names the set it met: ``seen_*`` the points a caller handed as observed (``obstacle_points_base_mm``),
+#: ``declared_*`` the points it declared (``rigid_obstacle_points_base_mm``), ``own_fragments`` the target's own low
+#: fragments the footprint left out; ``*_fingers`` the closed fingers at the part, ``*_corridor`` the open fingers on
+#: their way in. ``table``: the hand reaches within the support clearance. ``span``: the closing line finds no span
+#: around the anchor. ``cone``: a contact outside the friction cone. ``prism``: a finger inside the part. ``aperture``:
+#: the part is wider than the stroke allows or thinner than the hand closes. ``unseen_corridor``: with side approaches,
+#: a tilted corridor through space no depth ray reached.
+REFUSAL_CAUSES: Final[tuple[str, ...]] = (
+    "seen_fingers", "seen_corridor", "declared_fingers", "declared_corridor", "own_fragments",
+    "table", "span", "cone", "prism", "aperture", "unseen_corridor",
+)
+#: The obstacle-set names :meth:`_ObstacleSet.met` gives, to the cause a finger hit and a corridor hit count under.
+_FINGER_CAUSES: Final[Mapping[str, str]] = {"seen": "seen_fingers", "declared": "declared_fingers",
+                                            "own": "own_fragments"}
+_CORRIDOR_CAUSES: Final[Mapping[str, str]] = {"seen": "seen_corridor", "declared": "declared_corridor",
+                                              "own": "own_fragments"}
+
+#: Who says whether a depth ray reached a point: ``(N, 3)`` BASE millimetres in, one ``bool`` per point out, true where
+#: the measured depth along that point's pixel ray reaches at least to it. The caller builds it from the frame the part
+#: was seen in (the cell-fix plan's contract 5: 5 mm tolerance); SFE never builds one.
+CorridorSeen = Callable[[np.ndarray], np.ndarray]
+
+#: How the five margins are blended with side approaches on, in the order of ``_SCORE_WEIGHTS``: friction-cone slack
+#: 0.35, aperture left 0.20, clearance 0.35, upright 0, centred 0.10. Upright weighs nothing, because the owner wants the
+#: approaches equal by geometry (2026-10-01); clearance takes its weight and is the room the grasp keeps, the smaller of
+#: the fingertip's height over the support and the open corridor's least distance to an obstacle point. Prototyped on a
+#: 40 mm cylinder beside a wall (``R_SCOPE/b_wall_prototype.out``, the cell-fix plan's evidence): no wall, rank 0
+#: vertical; a wall 12 mm off, rank 0 tilted 30 degrees away from it with a vertical candidate still listed.
+SIDE_APPROACH_SCORE_WEIGHTS: Final[tuple[float, float, float, float, float]] = (0.35, 0.20, 0.35, 0.0, 0.10)
+#: The room that scores the full clearance term, millimetres: the table term's 20 mm, the guard's 5 mm four times over.
+_CLEARANCE_FULL_MM: Final[float] = 20.0
+#: A candidate tilted this far off vertical or more is offered, with side approaches, only through space a depth ray saw.
+_SEEN_FROM_TILT_DEG: Final[float] = 15.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -540,12 +593,13 @@ class _Obstacles:
     this same cloud today and only hands it to a post-hoc filter.
     """
 
-    __slots__ = ("cell", "keys", "origin", "dims")
+    __slots__ = ("cell", "keys", "origin", "dims", "reach")
 
     def __init__(self, points: np.ndarray | None,
                  cell_mm: float = 12.0, margin_mm: float = 12.0) -> None:
         self.cell = cell_mm
         self.keys: np.ndarray | None = None
+        self.reach = 0
         if points is None or np.size(points) == 0:
             return
         p = np.asarray(points, dtype=np.float64).reshape(-1, 3)
@@ -553,6 +607,7 @@ class _Obstacles:
         if p.shape[0] == 0:
             return
         r = int(np.ceil(margin_mm / cell_mm))
+        self.reach = r
         self.origin = p.min(axis=0) - cell_mm * (r + 1)
         k = np.unique(np.floor((p - self.origin) / cell_mm).astype(np.int64), axis=0)
         self.dims = k.max(axis=0) + r + 2
@@ -575,6 +630,37 @@ class _Obstacles:
         idx = np.clip(np.searchsorted(self.keys, flat), 0, self.keys.size - 1)
         return bool((self.keys[idx] == flat).any())
 
+    def keys_of(self, points: np.ndarray | None) -> np.ndarray:
+        """The keys of the cells ``points`` fill in this grid, dilated as the grid dilates: ``points`` are a part of what
+        it was built from, so the keys of the parts together are exactly :attr:`keys`. Empty where there are none."""
+        none = np.zeros(0, dtype=np.int64)
+        if self.keys is None or points is None or np.size(points) == 0:
+            return none
+        p = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        p = p[np.isfinite(p).all(axis=1)]
+        if p.shape[0] == 0:
+            return none
+        r = self.reach
+        k = np.unique(np.floor((p - self.origin) / self.cell).astype(np.int64), axis=0)
+        offs = np.array([(dx, dy, dz) for dx in range(-r, r + 1)
+                         for dy in range(-r, r + 1) for dz in range(-r, r + 1)], dtype=np.int64)
+        big = (k[:, None, :] + offs[None, :, :]).reshape(-1, 3)
+        big = big[(big >= 0).all(axis=1) & (big < self.dims).all(axis=1)]
+        return np.unique(big[:, 0] * self.dims[1] * self.dims[2] + big[:, 1] * self.dims[2] + big[:, 2])
+
+    def hits_among(self, points: np.ndarray, keys: np.ndarray) -> bool:
+        """:meth:`hits`, against ``keys`` (from :meth:`keys_of`) instead of every cell of the grid."""
+        if self.keys is None or keys.size == 0:
+            return False
+        k = np.floor((points - self.origin) / self.cell).astype(np.int64)
+        ok = (k >= 0).all(axis=1) & (k < self.dims).all(axis=1)
+        if not ok.any():
+            return False
+        k = k[ok]
+        flat = k[:, 0] * self.dims[1] * self.dims[2] + k[:, 1] * self.dims[2] + k[:, 2]
+        idx = np.clip(np.searchsorted(keys, flat), 0, keys.size - 1)
+        return bool((keys[idx] == flat).any())
+
 
 class _ObstacleSet:
     """Two obstacle grids, because two kinds of obstacle deserve two dilations.
@@ -589,16 +675,115 @@ class _ObstacleSet:
     So declared geometry gets its own grid at 4 mm with no dilation, and it still reaches the
     generator: a filter can refuse a grasp but cannot move it somewhere legal, and avoiding the wall
     while choosing the grasp is the point.
+
+    The rigid grid holds two sets in one, the caller's declared points and the target's own low
+    fragments, and stays one grid so that a verdict is the one it always was. Where refusals are
+    counted, :meth:`label` marks which of its cells hold which set, so a hit can say whom it met.
     """
 
-    __slots__ = ("sparse", "rigid")
+    __slots__ = ("sparse", "rigid", "declared", "own")
 
     def __init__(self, sparse: _Obstacles, rigid: _Obstacles) -> None:
         self.sparse = sparse
         self.rigid = rigid
+        self.declared: np.ndarray | None = None
+        self.own: np.ndarray | None = None
 
     def hits(self, points: np.ndarray) -> bool:
         return self.sparse.hits(points) or self.rigid.hits(points)
+
+    def label(self, declared: np.ndarray | None, own: np.ndarray | None) -> None:
+        """Mark the rigid grid's cells by the set that fills them: ``declared`` and ``own`` are the two parts it was
+        built from, so their cells together are all of its cells."""
+        self.declared = self.rigid.keys_of(declared)
+        self.own = self.rigid.keys_of(own)
+
+    def met(self, points: np.ndarray) -> tuple[str, ...]:
+        """Which sets ``points`` meet, of ``seen``, ``declared`` and ``own`` in that order, after :meth:`label`.
+
+        Empty exactly where :meth:`hits` is false: the rigid grid's cells are the declared cells and the own cells
+        together, because both were cut from one grid with one origin."""
+        assert self.declared is not None and self.own is not None, "label() the set before asking whom a hit met"
+        met: list[str] = []
+        if self.sparse.hits(points):
+            met.append("seen")
+        if self.rigid.hits_among(points, self.declared):
+            met.append("declared")
+        if self.rigid.hits_among(points, self.own):
+            met.append("own")
+        return tuple(met)
+
+    def refuse(self, points: np.ndarray, refusals: dict[str, int] | None, causes: Mapping[str, str]) -> bool:
+        """Whether ``points`` meet an obstacle; where ``refusals`` counts, each set met counts once under its cause."""
+        if refusals is None:
+            return self.hits(points)
+        met = self.met(points)
+        for name in met:
+            refusals[causes[name]] = refusals.get(causes[name], 0) + 1
+        return bool(met)
+
+
+class _Room:
+    """How far a corridor stays from the nearest obstacle point, up to the room that scores in full.
+
+    Built once per object over every obstacle point SFE holds, seen, declared and the target's own
+    fragments, for the side-approach clearance. SciPy's KD-tree where it imports, else a scan of the
+    points near the corridor, which gives the same distance.
+    """
+
+    __slots__ = ("points", "tree")
+
+    def __init__(self, *clouds: np.ndarray | None) -> None:
+        parts = []
+        for cloud in clouds:
+            if cloud is None or np.size(cloud) == 0:
+                continue
+            p = np.asarray(cloud, dtype=np.float64).reshape(-1, 3)
+            parts.append(p[np.isfinite(p).all(axis=1)])
+        joined = np.vstack(parts) if parts else np.zeros((0, 3), dtype=np.float64)
+        self.points: np.ndarray | None = joined if joined.shape[0] else None
+        self.tree: Any = None
+        if self.points is not None:
+            try:
+                from scipy.spatial import cKDTree  # noqa: PLC0415 (only side approaches pay for the import)
+            except Exception:  # pragma: no cover (SciPy is pinned; the scan below gives the same distance)
+                self.tree = None
+            else:
+                self.tree = cKDTree(self.points)
+
+    def least_mm(self, samples: np.ndarray) -> float:
+        """The least distance from ``samples`` to an obstacle point; ``inf`` where none lies within
+        ``_CLEARANCE_FULL_MM``, which scores the same as any distance past it."""
+        if self.points is None or samples.shape[0] == 0:
+            return math.inf
+        if self.tree is not None:
+            distances, _ = self.tree.query(samples, k=1, distance_upper_bound=_CLEARANCE_FULL_MM)
+            least = float(np.min(distances))
+            return least if least <= _CLEARANCE_FULL_MM else math.inf
+        lo = samples.min(axis=0) - _CLEARANCE_FULL_MM
+        hi = samples.max(axis=0) + _CLEARANCE_FULL_MM
+        near = self.points[np.all((self.points >= lo) & (self.points <= hi), axis=1)]
+        least = math.inf
+        for start in range(0, near.shape[0], 4096):
+            delta = samples[:, None, :] - near[None, start:start + 4096, :]
+            least = min(least, float(np.sqrt(np.einsum("ijk,ijk->ij", delta, delta).min())))
+        return least if least <= _CLEARANCE_FULL_MM else math.inf
+
+
+@dataclass(frozen=True, slots=True)
+class _Side:
+    """What a side-approach build needs beyond today's: who says a corridor sample was seen (``None``: nobody can, so
+    no tilt is explored past the first that fits) and the obstacle points the clearance is measured to."""
+
+    seen: CorridorSeen | None
+    room: _Room
+
+
+def _refused(refusals: dict[str, int] | None, cause: str) -> "SupportFootprintCandidate | None":
+    """Count one refused build under ``cause`` where the caller counts; always ``None``, the refused build's answer."""
+    if refusals is not None:
+        refusals[cause] = refusals.get(cause, 0) + 1
+    return None
 
 
 # --------------------------------------------------------------------------- one candidate
@@ -668,24 +853,25 @@ def _build(prism: SupportPrism, anchor: np.ndarray, axis: np.ndarray, approach: 
            jaw: SupportFootprintJaw, obstacles: "_ObstacleSet",
            support_height_mm: float, *, palm_aware: bool = False,
            score_weights: tuple[float, float, float, float, float] | None = None,
+           refusals: dict[str, int] | None = None, side: _Side | None = None, tilt_deg: float = 0.0,
            ) -> SupportFootprintCandidate | None:
     binormal = np.cross(approach, axis)
     binormal /= max(float(np.linalg.norm(binormal)), _EPS)
     contacts = _pad_contacts(prism, anchor, axis, approach, binormal, jaw)
     if contacts is None:
-        return None
+        return _refused(refusals, "span")
     t_enter, t_exit, contact_b, contact_a, low_pad_z = contacts
     span = t_exit - t_enter
     if not (t_enter - 2.0 <= 0.0 <= t_exit + 2.0):
-        return None
+        return _refused(refusals, "span")
     if span > jaw.aperture_mm - jaw.width_safety_mm or span < jaw.min_width_mm:
-        return None
+        return _refused(refusals, "aperture")
 
     cone = jaw.cone_rad
     worst = max(float(np.arccos(np.clip(prism.normal_at(contact_a) @ axis, -1.0, 1.0))),
                 float(np.arccos(np.clip(prism.normal_at(contact_b) @ -axis, -1.0, 1.0))))
     if worst > cone:
-        return None
+        return _refused(refusals, "cone")
 
     half_thickness = jaw.finger_thickness_mm / 2.0
     closed = np.concatenate([
@@ -704,11 +890,7 @@ def _build(prism: SupportPrism, anchor: np.ndarray, axis: np.ndarray, approach: 
         # this can refuse a candidate and can never admit one that was refused before.
         low = min(low, _palm_low_mm(anchor, approach, binormal, jaw))
     if low < support_height_mm + jaw.table_clearance_mm:
-        return None
-    if obstacles.hits(closed):
-        return None
-    if prism.contains(closed, margin_mm=-1.0 - prism.inflate).any():
-        return None
+        return _refused(refusals, "table")
 
     # A real jaw arrives open and closes at the end, so the corridor is checked at the aperture, not
     # at the final width. That also removes the reconstruction's one-sided thinness from the
@@ -719,10 +901,17 @@ def _build(prism: SupportPrism, anchor: np.ndarray, axis: np.ndarray, approach: 
         _finger_points(anchor + open_half * axis, approach, binormal, jaw, reach, 8.0),
         _finger_points(anchor - open_half * axis, approach, binormal, jaw, reach, 8.0)])
     swept = swept[swept[:, 2] >= support_height_mm]
-    if obstacles.hits(swept):
+    # The way in is asked before the closed fingers, so a refusal counts where the hand meets something
+    # first: a part boxed in by its neighbours counts its corridor. A candidate needs both clear and the
+    # checks change nothing, so the order decides only what a refusal is counted under.
+    if obstacles.refuse(swept, refusals, _CORRIDOR_CAUSES):
         return None
+    if obstacles.refuse(closed, refusals, _FINGER_CAUSES):
+        return None
+    if prism.contains(closed, margin_mm=-1.0 - prism.inflate).any():
+        return _refused(refusals, "prism")
     if prism.contains(swept, margin_mm=-1.0 - prism.inflate).any():
-        return None
+        return _refused(refusals, "prism")
 
     # The same corridor at the pre-grasp width, against the object only. A controller that
     # pre-positions at span + margin instead of fully open must also get in, so the plan does not
@@ -734,15 +923,35 @@ def _build(prism: SupportPrism, anchor: np.ndarray, axis: np.ndarray, approach: 
             _finger_points(anchor - narrow * axis, approach, binormal, jaw, reach, 8.0)])
         swept_narrow = swept_narrow[swept_narrow[:, 2] >= support_height_mm]
         if prism.contains(swept_narrow, margin_mm=-1.0 - prism.inflate).any():
-            return None
+            return _refused(refusals, "prism")
 
-    # Rank on measured margins only. The weights and their measurement are at ``_SCORE_WEIGHTS``.
+    # With side approaches, only space a depth ray saw counts as clear: the camera world takes an
+    # occlusion shadow for free space, and the guard would judge this approach against that same free
+    # shadow. A vertical grasp is not asked, as it never was.
+    room = math.inf
+    if side is not None:
+        if side.seen is not None and tilt_deg >= _SEEN_FROM_TILT_DEG and swept.shape[0]:
+            seen = np.asarray(side.seen(swept), dtype=bool).reshape(-1)
+            if seen.shape[0] != swept.shape[0]:
+                raise ValueError(f"corridor_seen answered {seen.shape[0]} verdict(s) for {swept.shape[0]} point(s)")
+            if not bool(seen.all()):
+                return _refused(refusals, "unseen_corridor")
+        room = side.room.least_mm(swept)
+
+    # Rank on measured margins only. The weights and their measurement are at ``_SCORE_WEIGHTS``; with
+    # side approaches at ``SIDE_APPROACH_SCORE_WEIGHTS``, where the third term is the room the grasp keeps.
     cone_slack = 1.0 - worst / cone                                 # depth inside the friction cone
     width_margin = 1.0 - span / jaw.aperture_mm                     # aperture left over
-    table_margin = min(1.0, (low - support_height_mm) / 20.0)       # fingertip off the table
+    if side is None:
+        table_margin = min(1.0, (low - support_height_mm) / 20.0)   # fingertip off the table
+    else:
+        table_margin = min(1.0, min(low - support_height_mm, room) / _CLEARANCE_FULL_MM)
     upright = max(0.0, float(-approach @ np.array([0.0, 0.0, 1.0])))
     centred = 1.0 - min(1.0, abs(t_enter + t_exit) / max(span, 1.0))
-    w = _SCORE_WEIGHTS if score_weights is None else score_weights
+    if score_weights is not None:
+        w = score_weights
+    else:
+        w = _SCORE_WEIGHTS if side is None else SIDE_APPROACH_SCORE_WEIGHTS
     score = (w[0] * cone_slack + w[1] * width_margin + w[2] * table_margin
              + w[3] * upright + w[4] * centred)
     return SupportFootprintCandidate(
@@ -764,6 +973,9 @@ def generate_support_footprint_grasps(
     palm_aware: bool = False,
     score_weights: tuple[float, float, float, float, float] | None = None,
     floor_margin_mm: float = DEFAULT_FLOOR_MARGIN_MM,
+    refusals: dict[str, int] | None = None,
+    side_approaches: bool = False,
+    corridor_seen: CorridorSeen | None = None,
 ) -> list[SupportFootprintCandidate]:
     """Ranked candidates in BASE, from a masked target cloud and the rest of the scene as obstacles.
 
@@ -779,10 +991,28 @@ def generate_support_footprint_grasps(
     of a neighbour whose gaps the dilation covers; on the 45-degree ray-cast behind
     :func:`reconstruct_support_prism` either grid gave the same candidates, 2026-09-23.
 
+    ``refusals``, where given, is filled with one count per refused build under its cause, every
+    cause of :data:`REFUSAL_CAUSES` present and counts added to what the dict already holds. An
+    obstacle refusal counts once under each set it met, so one build that meets a seen and a declared
+    point counts under both. ``None`` counts nothing and is byte-identical to the generator before the
+    counters.
+
+    ``side_approaches`` offers every tilt the hand fits at instead of the first, and ranks by
+    :data:`SIDE_APPROACH_SCORE_WEIGHTS` (upright weighs nothing; clearance is the room the grasp keeps,
+    to the support and to every obstacle point), sorted by score to 0.001 and then by tilt, so
+    vertical wins a tie. A candidate tilted 15 degrees or more whose open corridor passes a point
+    ``corridor_seen`` says no depth ray reached is refused (``unseen_corridor``). Without
+    ``corridor_seen`` no tilt past the first that fits is offered: the candidates are the ones the
+    generator offers with side approaches off, ranked as above. Off, the default, is byte-identical
+    to the generator before side approaches.
+
     Returns an empty list when the cloud is too sparse to reconstruct or admits no legal grasp,
     which is a real answer and not a failure. Refusing beats proposing a grasp that goes under the
     support surface.
     """
+    if refusals is not None:
+        for cause in REFUSAL_CAUSES:
+            refusals.setdefault(cause, 0)
     jaw = jaw or SupportFootprintJaw.from_model()
     prism = reconstruct_support_prism(cloud_base_mm, support_height_mm, inflate_mm=inflate_mm,
                                       floor_margin_mm=floor_margin_mm)
@@ -796,6 +1026,11 @@ def generate_support_footprint_grasps(
         _Obstacles(obstacle_points_base_mm),
         _Obstacles(rigid, cell_mm=4.0, margin_mm=0.0),
     )
+    if refusals is not None:
+        obstacles.label(declared=rigid_obstacle_points_base_mm, own=prism.trimmed)
+    side = _Side(seen=corridor_seen, room=_Room(obstacle_points_base_mm, rigid)) if side_approaches else None
+    # Every tilt that fits is a candidate only where a depth ray can vouch for the space a tilt sweeps.
+    every_tilt = side is not None and side.seen is not None
     found: list[SupportFootprintCandidate] = []
 
     for raw_axis in closing_axes(prism):
@@ -843,14 +1078,20 @@ def generate_support_footprint_grasps(
                         approach /= float(np.linalg.norm(approach))
                         candidate = _build(prism, anchor, axis, approach, jaw, obstacles,
                                            support_height_mm, palm_aware=palm_aware,
-                                           score_weights=score_weights)
+                                           score_weights=score_weights, refusals=refusals,
+                                           side=side, tilt_deg=tilt)
                         if candidate is not None:
                             found.append(candidate)
                             hit = True
-                    if hit:
+                    if hit and not every_tilt:
                         break   # tilts are in preference order: the first that works is the one
 
-    found.sort(key=lambda c: -c.score)
+    if side is None:
+        found.sort(key=lambda c: -c.score)
+    else:
+        # Equal by geometry: the score to 0.001, then the tilt, so vertical wins a tie. ``approach[2]`` is
+        # -cos(tilt) and rises with it; rounded, so float noise cannot reorder one rung of the ladder.
+        found.sort(key=lambda c: (-round(c.score, 3), round(float(c.approach[2]), 9)))
     kept: list[SupportFootprintCandidate] = []
     for candidate in found:
         duplicate = any(

@@ -46,14 +46,15 @@ import logging
 import math
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
 from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Frame, Pose
-from src.robot.core.keep_out import SegmentationOffer
+from src.robot.constants import create_robot_logger
+from src.robot.core.keep_out import KeepOutBox, SegmentationOffer
 from src.robot.core.shutter_motion import camera_to_base_at_shutter
 from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps
 from src.robot.grasping.geometry.closing_axis import (
@@ -72,7 +73,12 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
 
 __all__ = ["SET_DOWN_AIR_MM", "Located", "LocatedObject", "LocatedOrientation", "Locator", "LocatorRefused", "SetDown"]
 
-logger = logging.getLogger(__name__)
+#: The locator's own lines, to the robot log and ``locator.log`` (RC6 of the cell-fix plan: they reached no file).
+logger: logging.Logger = create_robot_logger(__name__, "locator.log")
+
+#: How far past a target's measured surface its keep-out box reaches when a scene asks what it stands on, millimetres:
+#: the camera world's margin, so the part's own top is never taken for its support.
+_TARGET_BOX_MARGIN_MM = 15.0
 
 #: The gap left between a set-down part and what it lands on when the hand opens, millimetres: the owner's choice for
 #: example 13 (2026-09-24). The part comes down to it and drops that far, so a camera that reads the target's top
@@ -329,6 +335,16 @@ class SetDown:
 
 
 @dataclass(frozen=True, slots=True, eq=False)
+class _Frame:
+    """The frame a ``Located`` was placed from, as :meth:`Located.scene` reads the parts beside a target in it: the
+    measured depth (CAMERA millimetres), the lens and where the camera stood at the shutter."""
+
+    depth_mm: np.ndarray
+    intrinsics: np.ndarray
+    camera_to_base: np.ndarray
+
+
+@dataclass(frozen=True, slots=True, eq=False)
 class Located:
     """What one frame of one camera located, stamped at its shutter; or, from :meth:`Locator.look_around` on a camera on
     the wrist, what all its looks located, fused.
@@ -373,6 +389,9 @@ class Located:
     #: The closing axis :meth:`Locator.look_around` judged object 0's grasp along (``closing_axis``), ``None`` for the best
     #: grasp of any axis, and for one locate. :meth:`scene` hands it on, so the grasp gripped is the grasp judged.
     closing_axis: "ClosingAxis | None" = None
+    #: The frame this was placed from (a look around's: the last look that saw the part), which :meth:`scene` reads the
+    #: parts the prompt did not name in; ``None`` where none was kept (a double, or no look reached).
+    _frame: "_Frame | None" = field(default=None, repr=False)
 
     def keep_out(self, target: int) -> SegmentationOffer:
         """What a planner world has to leave out to reach object ``target``: its box, and this frame's masks.
@@ -433,11 +452,51 @@ class Located:
             robot_config, self.objects[index].points_base_mm,
             obstacle_points_base_mm=np.concatenate(others, axis=0) if others else None,
         )
+        scene = self._seen_beside(scene, index, robot_config, others)
         if index == 0 and len(self.looks_fused) >= 2:
             scene = replace(scene, _bottom_from_looks=True)
         if index == 0 and (self.looks or self.jaw_faces_seen is not None or self.closing_axis is not None):
             scene = replace(scene, _judged_along=self.closing_axis)
         return scene
+
+    def _seen_beside(self, scene: Scene, index: int, robot_config: Any, others: "list[np.ndarray]") -> Scene:
+        """``scene`` with what this frame shows beside object ``index`` that nobody segmented, by the planner world's
+        rules (``robot.grasping.scene_obstacles``, the cell fixes' Track A), the support it stands on as the camera
+        world finds it, and the frame's own corridor test for side approaches. ``scene`` as it is where the tree turns
+        the rules off, no frame was kept, or the object has no pixels in it (an object only an earlier look saw)."""
+        from src.robot.grasping.generation.scene_obstacles import (  # noqa: PLC0415
+            SceneObstacleRules,
+            corridor_seen_in,
+            scene_obstacle_points,
+        )
+
+        frame = self._frame
+        mask = np.asarray(self.objects[index].mask).astype(bool)
+        if frame is None or mask.shape != np.shape(frame.depth_mm) or not mask.any():
+            return scene
+        if scene._side_approaches:  # noqa: SLF001 (the scene's own switch, set by from_robot_config)
+            scene = replace(scene, _corridor_seen=corridor_seen_in(frame.depth_mm, frame.intrinsics,
+                                                                   frame.camera_to_base))
+        if not bool(getattr(robot_config.grasping, "scene_obstacles", False)):
+            return scene
+        rules = SceneObstacleRules.from_robot_config(robot_config)
+        points = self.objects[index].points_base_mm
+        model = _support_model(frame, robot_config, points)
+        support = float(scene.support_height_mm)
+        if model is not None and points.shape[0]:
+            under = model.height_under(np.asarray(points, dtype=np.float64)[:, :2])
+            if under is not None and float(under) > support:
+                support = float(under)
+        seen = scene_obstacle_points(frame.depth_mm, mask, frame.intrinsics, frame.camera_to_base, rules=rules,
+                                     support_height_mm=support, support_model=model)
+        logger.info("scene of object %d (%s): %s", index, self.objects[index].label, seen.render())
+        obstacles = [*others, seen.points_base_mm] if seen.points_base_mm.shape[0] else others
+        return replace(
+            scene, support_height_mm=support,
+            obstacle_points_base_mm=np.concatenate(obstacles, axis=0) if obstacles else None,
+            _rules=rules, _held=tuple(model.solids) if model is not None else (),
+            _seen_points=int(seen.points_base_mm.shape[0]), _seen_clusters=int(seen.clusters),
+        )
 
     def set_down(self, target: int, *, grasp: Pose, part_bottom_mm: float,
                  air_mm: float = SET_DOWN_AIR_MM) -> SetDown:
@@ -528,6 +587,44 @@ class Located:
             **({"closing_axis": {"name": self.closing_axis.name, "heading_deg": self.closing_axis.heading_deg}}
                if self.closing_axis is not None else {}),
         }
+
+
+def _support_model(frame: _Frame, robot_config: Any, target_points: np.ndarray) -> Any:
+    """The surfaces ``frame`` shows the parts standing on, as the cell's camera world finds them on a build of the same
+    frame (``support_surfaces.find_supports``), the target's own box held out; ``None`` where the tree turns support
+    surfaces off or declares no bench."""
+    from src.robot.safety.planning.perceived import DepthView, WorldBuildTuning  # noqa: PLC0415
+    from src.robot.safety.planning.reservation import planner_world_limits  # noqa: PLC0415
+    from src.robot.safety.planning.self_envelope import ROBOT_BASES  # noqa: PLC0415
+    from src.robot.safety.planning.support_surfaces import find_supports  # noqa: PLC0415
+
+    world = getattr(robot_config.safety, "planning_world", None)
+    perceived = getattr(world, "perceived", None)
+    if world is None or not bool(getattr(world, "enabled", False)) or perceived is None:
+        return None
+    if not bool(getattr(perceived, "support_surfaces", False)):
+        return None
+    limits = planner_world_limits(robot_config)
+    if limits is None:
+        return None
+    tuning = WorldBuildTuning(
+        pixel_stride=int(perceived.pixel_stride), voxel_size_mm=float(perceived.voxel_size_mm),
+        cluster_voxel_mm=float(perceived.cluster_voxel_mm), min_points=int(perceived.min_points),
+        margin_mm=float(perceived.margin_mm), max_boxes=int(perceived.max_boxes),
+        floor_to_plane=bool(perceived.floor_to_plane), support_surfaces=True,
+        support_allowance_mm=float(perceived.support_allowance_mm))
+    model_name = str(getattr(getattr(robot_config, "ur", None), "model", "") or "").lower()
+    keep_out: tuple[KeepOutBox, ...] = ()
+    points = np.asarray(target_points, dtype=np.float64).reshape(-1, 3)
+    points = points[np.isfinite(points).all(axis=1)]
+    if points.shape[0]:
+        low, high = points.min(axis=0), points.max(axis=0)
+        place = np.eye(4)
+        place[:3, 3] = (low + high) / 2.0
+        keep_out = (KeepOutBox.from_matrix("target", place, (high - low) / 2.0 + _TARGET_BOX_MARGIN_MM),)
+    return find_supports([DepthView(surface_depth_mm=frame.depth_mm, intrinsics=frame.intrinsics,
+                                    camera_to_base=frame.camera_to_base, name="locator")],
+                         limits=limits, tuning=tuning, base=ROBOT_BASES.get(model_name), keep_out=keep_out)
 
 
 def _on_view(view: Any, method: str, *args: Any, **keywords: Any) -> None:
@@ -993,6 +1090,9 @@ class Locator:
             mounting="eye_in_hand" if wrist else "eye_to_hand",
             tool_to_base_mm=None if tool_to_base is None else tuple(tuple(float(v) for v in row) for row in tool_to_base),
             objects=tuple(objects),
+            _frame=_Frame(depth_mm=np.asarray(depth, dtype=np.float64),
+                          intrinsics=np.asarray(frame.intrinsics, dtype=np.float64),
+                          camera_to_base=np.asarray(camera_to_base, dtype=np.float64)),
         )
         # The source publishes the frame's colour as RGB; the backend was handed it, and a view shows it, as BGR.
         return _Placed(
@@ -1210,18 +1310,30 @@ def _sent_nothing(moved: Any) -> bool:
 def _controller_cannot_move(arm: Any) -> str:
     """Why ``arm``'s controller cannot move, or ``""``, in the words of a look it did not reach.
 
-    The robot verbs' criterion (``handling._controller_refusal``): only an arm that says (``SupportsRobotStatus``) is
+    The robot verbs' criterion (``handling._controller_refusal``): the halt latch first, of any arm that carries one
+    (the dummy included), then a status that says so in words, said in the halt's own words (a person confirms the cell
+    is clear, then Restart; a halt has no stop to clear); otherwise only an arm that says (``SupportsRobotStatus``) is
     asked, ``not is_operational`` cannot move, and a controller whose state cannot be read cannot be said to move. Not
     that verb's sentence, which says nothing was commanded: here the motion to the look may have been.
     """
-    from src.robot.core.arm_capabilities import SupportsRobotStatus  # noqa: PLC0415
+    from src.robot.core.arm_capabilities import (  # noqa: PLC0415
+        SupportsRobotStatus,
+        halt_state_of,
+        halted_refusal,
+    )
 
+    halted = halt_state_of(arm)
+    if halted is not None:
+        return halted_refusal(halted.reason, "it stands where the halt left it")
     if not isinstance(arm, SupportsRobotStatus):
         return ""
     try:
         status = arm.get_robot_status()
     except Exception as exc:  # noqa: BLE001 (a controller that cannot be asked cannot be said to move)
         return f"the controller's state could not be read ({type(exc).__name__}: {exc})"
+    said = getattr(status, "halted", "")
+    if isinstance(said, str) and said:
+        return halted_refusal(said, "it stands where the halt left it")
     if status.is_operational:
         return ""
     detail = f": {status.message}" if status.message else ""

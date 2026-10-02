@@ -1970,6 +1970,62 @@
       "title": "MotionLimitsConfig",
       "type": "object"
     },
+    "NamedPoseConfig": {
+      "additionalProperties": false,
+      "description": "A pose taught by hand in the console: where a task puts its part, or where it returns to (owner decision 15).\n\nThe console frees the arm, a person guides it there, and the pose is screened by the exact guard and the planner\nwhile the arm holds; only a pose both clear, or one in the planner's cushion band, is written, into the last layer\nof the profile chain (the owner, Q10). A place pose says where the part's BOTTOM is let go: a task raises the tool\nover it by the part's hang. The name it is kept under (``robot.named_poses.<name>``) follows\n:func:`pose_name_refusal`.",
+      "properties": {
+        "joints_deg": {
+          "items": {
+            "type": "number"
+          },
+          "title": "Joints Deg",
+          "type": "array"
+        },
+        "label": {
+          "default": "",
+          "title": "Label",
+          "type": "string"
+        },
+        "note": {
+          "default": "",
+          "title": "Note",
+          "type": "string"
+        },
+        "screen": {
+          "anyOf": [
+            {
+              "enum": [
+                "clear",
+                "band"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Screen"
+        },
+        "taught_at": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Taught At"
+        }
+      },
+      "required": [
+        "joints_deg"
+      ],
+      "title": "NamedPoseConfig",
+      "type": "object"
+    },
     "OnRobotGripperConfig": {
       "additionalProperties": false,
       "description": "An OnRobot RG2 / RG6 reached over Modbus TCP through the OnRobot Compute Box.\n\nThe Compute Box is a separate device with its own address, so :attr:`host` is config of its own\nrather than the ``robot.ur.ip`` the Robotiq branch reuses for the URCap daemon on the arm's\ncontroller. Pointing it at the arm addresses a machine that has never heard of the gripper.\n\nThere is no speed field: RG2/RG6 carry no speed register anywhere in the writable map (force,\nwidth, control), and OnRobot's own library exposes only a read-only ``rg_get_speed``.\n\nRG2 and RG6 only. The 2FG7 shares the family name and not the register map, VG10/VGC10 are\nvacuum and 3FG15 is three-fingered; configuring one of those here drives unverified addresses.",
@@ -2150,6 +2206,18 @@
           "minimum": 0.0,
           "title": "Plane Clearance Mm",
           "type": "number"
+        },
+        "support_allowance_mm": {
+          "default": 2.0,
+          "maximum": 10.0,
+          "minimum": 0.0,
+          "title": "Support Allowance Mm",
+          "type": "number"
+        },
+        "support_surfaces": {
+          "default": true,
+          "title": "Support Surfaces",
+          "type": "boolean"
         },
         "voxel_field_mm": {
           "default": 0.0,
@@ -2508,6 +2576,16 @@
         },
         "recovery": {
           "$ref": "#/$defs/GraspingRecoveryConfig"
+        },
+        "scene_obstacles": {
+          "default": true,
+          "title": "Scene Obstacles",
+          "type": "boolean"
+        },
+        "side_approaches": {
+          "default": true,
+          "title": "Side Approaches",
+          "type": "boolean"
         },
         "success_model": {
           "$ref": "#/$defs/GraspingSuccessModelConfig"
@@ -3681,6 +3759,11 @@
       "additionalProperties": false,
       "description": "UR-specific connection settings.\n\nRead only when ``robot.vendor == \"ur\"``. Vendor blocks are siblings\nunder ``robot:`` so each driver owns its own typed surface.",
       "properties": {
+        "brake_on_halt": {
+          "default": false,
+          "title": "Brake On Halt",
+          "type": "boolean"
+        },
         "ip": {
           "default": "192.168.1.100",
           "minLength": 1,
@@ -3879,6 +3962,18 @@
     "calibration": {
       "$ref": "#/$defs/RobotCalibrationConfig"
     },
+    "default_place_pose": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Default Place Pose"
+    },
     "dummy": {
       "$ref": "#/$defs/DummyConfig"
     },
@@ -3941,6 +4036,13 @@
     },
     "motion_limits": {
       "$ref": "#/$defs/MotionLimitsConfig"
+    },
+    "named_poses": {
+      "additionalProperties": {
+        "$ref": "#/$defs/NamedPoseConfig"
+      },
+      "title": "Named Poses",
+      "type": "object"
     },
     "natural_closing_axis": {
       "anyOf": [

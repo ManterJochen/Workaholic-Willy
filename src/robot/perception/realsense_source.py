@@ -216,6 +216,18 @@ class RealSenseVisionPerceptionSource:
         """
         return self._streamer
 
+    @property
+    def backend(self) -> Any:
+        """The perception backend this source grounds its frames with: the one it was handed, or the detector and
+        segmenter it composed. Read-only.
+
+        Handed out, as :attr:`streamer` is, for a consumer that locates on this source's camera with this source's
+        models: a task finds the bin it places into through ``Locator.from_parts(backend=source.backend)``
+        (``robot.execution.place_target.locators_for_service``), so no second copy of the detector loads. The same
+        object, never a copy, and nothing in it changes for being read: the backend is handed the phrase on every call.
+        """
+        return self._backend
+
     def close(self) -> None:
         """Release the camera. Idempotent, and it never raises.
 

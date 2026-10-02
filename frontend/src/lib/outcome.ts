@@ -22,6 +22,8 @@
  *   warn    the cell tried and did not manage it. That one is about the scene or the grasp.
  */
 
+import { STOP_CLASS_OF, type StopCode } from '../api/codes'
+
 /** Outcomes where the stack declined to act rather than failing to. `pill` renders these red. */
 const REFUSALS = new Set([
   'missing_camera_frame',
@@ -29,6 +31,11 @@ const REFUSALS = new Set([
   'unsafe_recovery_refused',
   'decision_fail_closed',
   'decision_recover_pending',
+  // The fail-closed decisions of the fused-uncertainty, drift and out-of-distribution watchdogs
+  // (`report.py`). They used to fall through to amber, which drew a rule that fired as a bad grasp.
+  'uncertainty_fail_closed',
+  'drift_blocked_auto',
+  'ood_blocked_auto',
   // Retired with the two-scan refinement on 2026-09-29; a record logged before then still reads as a refusal.
   'refinement_diverged',
   'mode_not_available',
@@ -54,6 +61,26 @@ export function isSuccess(outcome: string | null | undefined): boolean {
 /** `no_valid_grasp` → `no valid grasp`. The enum is for programs; the pill is for people. */
 export function outcomeLabel(outcome: string | null | undefined): string {
   return String(outcome ?? '—').replace(/_/g, ' ')
+}
+
+/**
+ * A stop code -> a pill tone, by its class (`api/codes.ts` `STOP_CLASS_OF`): a problem stop red (the stop card), a
+ * question or an unsaved teach amber, a finished task green, an operator's own end neutral. `''` (still running) idle.
+ */
+export function stopTone(code: StopCode | '' | null | undefined): string {
+  if (!code) return 'idle'
+  switch (STOP_CLASS_OF[code]) {
+    case 'problem':
+      return 'block'
+    case 'ask':
+    case 'teach':
+    case 'planner':
+      return 'warn'
+    case 'done':
+      return 'ok'
+    default:
+      return 'info'
+  }
 }
 
 /** A run's lifecycle state (`running` | `finished` | `cancelled` | `failed`) → a pill tone. */

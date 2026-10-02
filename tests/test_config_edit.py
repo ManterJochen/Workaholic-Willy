@@ -171,6 +171,31 @@ class ConfigEditTests(unittest.TestCase):
         self.assertIsNotNone(writable("camera.cameras.rigs[7].serial_number"))
         self.assertIsNone(writable("camera.cameras.rigs[0].fps"))
 
+    # -- a taught pose is not a measurement ---------------------------------------------------------
+
+    def test_a_pose_key_is_refused_as_a_pose_not_as_an_unknown_key(self) -> None:
+        """A taught pose is joints a person guided the arm to, screened by the exact guard and the planner; typed in
+        here it would skip both. The refusal says so, rather than calling a real key unknown."""
+        target = self.tmp / "robot" / "robot.yaml"
+        before = target.read_bytes()
+        for key in ("robot.named_poses.drop_left.joints_deg", "robot.default_place_pose"):
+            with self.subTest(key=key):
+                result = set_key(key, [0.0] * 6, root=self.tmp)
+                self.assertFalse(result.applied)
+                self.assertIs(result.refused, WriteRefused.NOT_WRITABLE)
+                self.assertIn("taught by hand", result.message)
+        self.assertEqual(target.read_bytes(), before)
+
+    def test_the_generic_writer_keeps_its_allowlist_unless_a_door_names_another(self) -> None:
+        """The pose door hands ``set_keys`` its own allowlist; every other caller, the console's PATCH included, gets
+        :data:`WRITABLE` without naming it."""
+        import inspect
+
+        parameter = inspect.signature(set_keys).parameters["allowed"]
+        self.assertIs(parameter.kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertIs(parameter.default, writable)
+        self.assertFalse([entry.path for entry in WRITABLE if "named_poses" in entry.path or "place" in entry.path])
+
     # -- the transaction ---------------------------------------------------------------------------
 
     def test_a_value_the_validators_reject_leaves_the_tree_byte_identical(self) -> None:

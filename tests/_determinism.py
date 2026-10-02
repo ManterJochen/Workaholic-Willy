@@ -278,13 +278,23 @@ def ensure_rl_dataset(dataset_id: str) -> None:
     import subprocess
     import sys
 
+    import json
+
     root = repo_root()
     if (root / "logs" / "rl" / "datasets" / dataset_id / "splits" / "train.jsonl").is_file():
         return
-    subprocess.run(
-        [sys.executable, "-m", "src.robot.grasping.rl", "build-dataset", f"--dataset-id={dataset_id}"],
-        cwd=str(root), capture_output=True, text=True, check=False,
-    )
+    command = [sys.executable, "-m", "src.robot.grasping.rl", "build-dataset", f"--dataset-id={dataset_id}"]
+    # The build rewrites the committed manifest, so it is asked with the honesty stamps that manifest carries and
+    # writes its bytes back. MEASURED 2026-10-02: without them every fresh tree's suite left
+    # docs/baselines/rl_datasets/v1_bootstrap.json rewritten with ``fitness_note: null``.
+    committed = root / "docs" / "baselines" / "rl_datasets" / f"{dataset_id}.json"
+    if committed.is_file():
+        stamps = json.loads(committed.read_text(encoding="utf-8"))
+        if stamps.get("dataset_origin"):
+            command.append(f"--dataset-origin={stamps['dataset_origin']}")
+        if stamps.get("fitness_note"):
+            command.append(f"--fitness-note={stamps['fitness_note']}")
+    subprocess.run(command, cwd=str(root), capture_output=True, text=True, check=False)
 
 
 @lru_cache(maxsize=1)

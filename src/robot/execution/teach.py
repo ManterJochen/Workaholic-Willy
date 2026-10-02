@@ -95,23 +95,37 @@ file.
 
 Threads: everything that touches the arm runs on the caller's thread, as in :mod:`.hand_guiding`. Nothing here has
 run beside a physical arm; the UR teach mode behind ``SupportsFreedrive`` is the freedrive workstream's.
+
+One pose from the console (:func:`teach_one`, the owner, decision 15 and Q10, Q14, 2026-09-30): a pose a task places
+at or returns to is taught one per session, over the same ``HandGuide.wait`` and ``TaughtPose``, with the browser as the
+console. Everything that would make the pose unwritable is refused before the arm is freed (a name that is no pose name,
+an arm that screens nothing or was not handed its wrist camera's housing, a planner that is not ready, a store that
+names no file of the cell's own), by one rule the console can ask without freeing anything (:func:`teach_refusal`).
+The pose is screened the moment it is held, and only a pose both authorities clear, or one in the planner's band,
+reaches the store (:class:`ProfilePoseStore`: the cell's own layer, through the pose door alone). Save, Hold, Cancel,
+a halt and a disconnect hold the arm at once, also while a Save still waits for the arm to stand still, and a pose
+cancelled then is never written. The console's own holds, a lapsed heartbeat and the time limit, hold the arm only once
+it stands still (:class:`StillnessGate`, hand_guiding's rule), never while it moves in a person's hands.
 """
 
 from __future__ import annotations
 
 import json
 import keyword
+import logging
 import math
 import sys
+from collections import deque
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import count
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
 
+from src.config.schema.robot.robot_schema import pose_label_refusal, pose_name_refusal, pose_words
 from src.geometry import Frame, Pose
 from src.geometry.quaternion import from_axis_angle
 from src.robot.core import JointPositions, RobotCapabilities
@@ -121,6 +135,10 @@ from src.robot.execution.hand_guiding import (
     CAPTURE,
     EOF,
     FINISH,
+    SKIP,
+    STILL_FOR_S,
+    STILL_RAD_S,
+    GuideView,
     HandGuide,
     HandGuidingLimits,
     HandGuidingRefused,
@@ -131,17 +149,31 @@ from src.robot.execution.pose_provider import write_stations
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.camera.live_view import LiveView
+    from src.config.tree import ConfigTree
     from src.robot.core import RobotArm
+    from src.robot.core.freedrive import FreedriveSession
     from src.robot.execution.robot import Robot
+    from src.robot.safety.planning.band import PoseScreen
 
 __all__ = [
     "DEFAULT_PREFIX",
     "DEFAULT_STORE",
+    "HELD_WHEN_STILL",
+    "PoseStore",
+    "ProfilePoseStore",
+    "StillnessGate",
+    "TaughtOne",
     "TaughtPose",
+    "TeachRefused",
     "add_taught_pose",
+    "name_refusal",
     "read_taught_poses",
+    "teach_one",
     "teach_poses",
+    "teach_refusal",
 ]
+
+logger = logging.getLogger(__name__)
 
 #: Where the poses go unless the caller names another file, relative to the directory the program runs in.
 DEFAULT_STORE = "logs/taught_poses.json"
@@ -160,6 +192,16 @@ _GOES_ON = "teaching goes on at the console"
 _ON_CLOSE = "teaching finishes, and the arm is held"
 #: The mountings a rig's calibration declares, as a record keeps them and a line says them.
 _MOUNTINGS = {"eye_in_hand": "eye in hand", "eye_to_hand": "eye to hand"}
+#: What :func:`teach_one` ended on where a hold the caller asked for (a lapsed heartbeat, the time limit) held the arm
+#: once it stood still: no person saved or cancelled, and nothing was taught.
+HELD_WHEN_STILL = "held_when_still"
+#: The screens a taught pose is written with (``src.config.edit.WRITTEN_SCREENS``): both authorities clear it, or it
+#: lies in the planner's band. An unscreened or refused pose never is.
+_WRITTEN = ("clear", "band")
+#: What a person sends that holds the arm at once in :func:`teach_one`, as ``HandGuide`` reads it: from the console a
+#: finish (``q``, input that ended) or a skip (``s``), from the view its finish, a closed window, or its skip.
+_CONSOLE_HOLDS = {"q": FINISH, "quit": FINISH, "finish": FINISH, EOF: FINISH, "s": SKIP, "skip": SKIP}
+_VIEW_HOLDS = {"finish": FINISH, "closed": FINISH, "skip": SKIP}
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,6 +554,653 @@ def _say_screen(arm: Any, pose: TaughtPose, guide: HandGuide, ask_planner: bool)
     return ask_planner and not bool(getattr(screen, "planner_unavailable", False))
 
 
+# --- one pose, from the console ----------------------------------------------------------------------------------
+
+
+class TeachRefused(HandGuidingRefused):
+    """A teach refused before anything was freed, with the code the console answers it with.
+
+    ``code`` is one of ``invalid_name``, ``invalid_label``, ``no_hand_guiding``, ``not_connected``,
+    ``screen_unavailable``, ``planner_not_ready`` and ``no_layer``, the refusals of ``POST /v1/teach``. A
+    :class:`~src.robot.execution.hand_guiding.HandGuidingRefused`, so a caller that catches those catches this too.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class StillnessGate:
+    """Hand guiding's stillness gate, fed one sample at a time: still once the fastest joint has stayed below
+    ``still_rad_s`` for ``still_for_s`` (``STILL_RAD_S`` and ``STILL_FOR_S`` of :mod:`.hand_guiding`, about 1.1 deg/s
+    for half a second), the rule ``HandGuide.wait`` captures by.
+
+    The console holds a hand-guided arm on its own initiative, a lapsed heartbeat or the time limit, only once this
+    says still, never while a person moves the arm (the owner, Q14): an arm that locks in a person's hands is the
+    injury the freedrive design avoids. A sample at or above the threshold starts the half second again, and
+    :meth:`reset` forgets every sample.
+    """
+
+    def __init__(self, still_rad_s: float = STILL_RAD_S, still_for_s: float = STILL_FOR_S) -> None:
+        self.still_rad_s = float(still_rad_s)
+        self.still_for_s = float(still_for_s)
+        self._since: float | None = None
+        self._still = False
+
+    @property
+    def still(self) -> bool:
+        """What the last sample said: the arm has stood still long enough."""
+        return self._still
+
+    def feed(self, sample: FreedriveSample, now: float) -> bool:
+        """Take one sample, read at ``now`` on a clock that only runs forward; whether the arm stands still."""
+        if sample.peak_joint_speed_rad_s < self.still_rad_s:
+            self._since = now if self._since is None else self._since
+            self._still = now - self._since >= self.still_for_s
+        else:
+            self._since, self._still = None, False
+        return self._still
+
+    def reset(self) -> None:
+        """Forget every sample: the next ones start the half second again."""
+        self._since, self._still = None, False
+
+
+@dataclass(frozen=True, slots=True)
+class TaughtOne:
+    """What one session of :func:`teach_one` ended with.
+
+    ``choice`` is how the session ended: ``capture`` (Save, once the arm stood still), ``skip`` or ``finish`` (Hold,
+    Cancel, a halt, a disconnect: held at once, nothing taught), or :data:`HELD_WHEN_STILL` (a hold the caller asked
+    for, held once the arm stood still; ``because`` says what asked for it). ``pose`` is the pose read off the held arm,
+    for a capture alone; ``screen`` what the exact guard and the planner said about it, ``None`` where the screen
+    raised (``screen_error`` says how). ``written`` is the file the pose was written to, ``""`` where it was not, and
+    ``not_written`` says why a captured pose was not. :attr:`outcome` sums it up for the console.
+    """
+
+    name: str
+    choice: str
+    pose: TaughtPose | None = None
+    screen: "PoseScreen | None" = None
+    screen_error: str = ""
+    because: str = ""
+    written: str = ""
+    not_written: str = ""
+
+    @property
+    def outcome(self) -> str:
+        """``saved``; ``refused``, an ERROR verdict; ``not_saved``, unscreened, a screen that raised or a write that did
+        not land; ``held_when_still``; or ``cancelled``."""
+        if self.choice == HELD_WHEN_STILL:
+            return "held_when_still"
+        if self.choice != CAPTURE:
+            return "cancelled"
+        if self.written:
+            return "saved"
+        if self.screen is not None and self.screen.is_error:
+            return "refused"
+        return "not_saved"
+
+    def render(self) -> str:
+        """One line: the pose, how the session ended, and what was written or why nothing was."""
+        if self.choice == HELD_WHEN_STILL:
+            return f"{self.name}: held once the arm stood still ({self.because}); nothing taught."
+        if self.choice != CAPTURE:
+            return f"{self.name}: held at once ({self.choice}); nothing taught."
+        if self.written:
+            verdict = _verdict(self.screen)
+            return f"{self.name}: taught, screened {verdict}, written to {self.written}."
+        return f"{self.name}: taught, not written: {self.not_written}"
+
+    def __str__(self) -> str:
+        return self.render()
+
+    def to_dict(self) -> dict[str, Any]:
+        """Plain data for the console's events and its log, ``json.dumps`` safe."""
+        pose = self.pose
+        screen = self.screen
+        nearby = getattr(screen, "nearby", None)
+        return {
+            "name": self.name,
+            "choice": self.choice,
+            "outcome": self.outcome,
+            "because": self.because,
+            "joints_deg": None if pose is None else [_rounded(value, 4) for value in pose.joints_deg],
+            "tcp_mm": None if pose is None else [_rounded(float(value), 2) for value in pose.tcp.position_mm],
+            "verdict": None if screen is None else _verdict(screen),
+            "detail": "" if screen is None else str(screen.detail),
+            "nearby_deg": None if nearby is None else [_rounded(math.degrees(float(v)), 4) for v in nearby],
+            "screen_error": self.screen_error,
+            "written": self.written,
+            "not_written": self.not_written,
+        }
+
+
+class PoseStore(Protocol):
+    """Where :func:`teach_one` keeps a pose: named before the arm is freed, written only once it is screened clear or
+    in the planner's band."""
+
+    @property
+    def target(self) -> str:
+        """The file a pose is written to, said before the arm is freed; :class:`TeachRefused` where there is none."""
+        ...
+
+    def write(self, pose: TaughtPose, screen: "PoseScreen") -> str:
+        """Write ``pose``, which ``screen`` cleared or found in the band: ``""`` once written, else why not, with
+        nothing written."""
+        ...
+
+
+@dataclass(frozen=True)
+class ProfilePoseStore:
+    """The cell profile's own layer, the last of its chain (the owner, Q10), written through the pose door alone.
+
+    ``tree`` is the chain the console runs (``ConfigTree``), ``name`` the pose it keeps, ``label`` what the chat and the
+    cards call it, ``make_default_place`` makes it the default place in the same transaction, and ``replace`` lets it
+    take the place of a pose of that name. The pose goes in with its joints in degrees, its label, when it was taught,
+    its screen, and the screen's own words for a band pose (``src.config.edit.set_named_pose``).
+
+    Refused as it is made, before anything is freed, so nobody guides the arm for a pose that cannot be written: a name
+    or a label that is none (``invalid_name``, ``invalid_label``), a chain with no layer of the cell's own
+    (``no_layer``: none at all, whose pose would land in the shared ``robot.yaml``, or a last layer git does not keep
+    out, whose pose would land in the repository: ``ConfigTree.pose_layer_refusal``), a name the tree already holds
+    unless ``replace`` (``name_taken``), and a word another pose already answers to (``robot_schema.pose_words``: a
+    pose answers to its name and to its label, an unlabelled one to its name; ``invalid_name`` or ``invalid_label``
+    for the one that clashes), since the command reader hands a pose on by the word a person said. The tree is read
+    from its own folder under its own chain, as the pose door validates it.
+    """
+
+    tree: "ConfigTree"
+    name: str
+    label: str
+    make_default_place: bool = False
+    replace: bool = False
+
+    def __post_init__(self) -> None:
+        refused = name_refusal(self.name)
+        if refused:
+            raise TeachRefused("invalid_name", f"{refused}. Nothing was freed")
+        refused = pose_label_refusal(self.label)
+        if refused:
+            raise TeachRefused("invalid_label", f"{refused}. Nothing was freed")
+        target = self.target  # the file is named before anything is freed, or the store is refused
+        poses = _taught_poses_of(self.tree)
+        if self.name in poses and not self.replace:
+            raise TeachRefused("name_taken", (
+                f"a pose is taught under {self.name!r} already, in the tree written to {target}: teach it again only to "
+                "replace it, or choose another name. Nothing was freed"))
+        mine, by_name = pose_words(self.name, self.label), pose_words(self.name)
+        for other, pose in poses.items():
+            shared = sorted(mine & pose_words(other, pose.label)) if other != self.name else []
+            if shared:
+                word = shared[0]
+                code, what = ("invalid_name", "name") if word in by_name else ("invalid_label", "label")
+                how = "its name" if word in pose_words(other) else "its label"
+                raise TeachRefused(code, (
+                    f"{other!r} answers to {word!r} already, by {how}, and the command reader hands a pose on by the "
+                    "word a person said, so two poses answering to one word could send a part to either: choose "
+                    f"another {what}. Nothing was freed"))
+
+    @property
+    def target(self) -> str:
+        refused = self.tree.pose_layer_refusal()
+        if refused:
+            raise TeachRefused("no_layer", f"{refused} Nothing was freed.")
+        file = self.tree.pose_file()
+        if file is None:
+            raise TeachRefused("no_layer", (
+                f"no file backs robot.named_poses under the config root {self.tree.root}, so the pose could be written "
+                "nowhere. Nothing was freed."))
+        return str(file)
+
+    def write(self, pose: TaughtPose, screen: "PoseScreen") -> str:
+        if pose.name != self.name:
+            return f"this store keeps {self.name!r}, and the pose handed to it is {pose.name!r}: nothing was written"
+        verdict = _verdict(screen)
+        try:
+            result = self.tree.write_named_pose(
+                pose.name,
+                joints_deg=[_rounded(value, 4) for value in pose.joints_deg],
+                label=self.label,
+                screen=verdict,
+                taught_at=pose.taught_at or _now(),
+                note=screen.render() if verdict == "band" else "",
+                make_default_place=self.make_default_place,
+            )
+        except Exception as exc:  # noqa: BLE001 (a tree that did not load before the write refuses it here too)
+            return f"the pose door could not write it ({type(exc).__name__}: {exc})"
+        if result.applied:
+            return ""
+        return result.message or f"the pose door refused it ({result.refused})"
+
+
+def _taught_poses_of(tree: "ConfigTree") -> dict[str, Any]:
+    """The named poses ``tree`` holds now, read from its own folder under its own chain; ``{}`` where it does not load
+    (the pose door then refuses the write with the loader's own words)."""
+    from src.config.loader import ConfigError, load_config, reload_config  # noqa: PLC0415 (only before a teach)
+
+    reload_config()  # the files as they are now, as the pose door reads them when it writes
+    try:
+        robot = load_config(tree.root, profile=tree.profile).robot
+    except ConfigError:
+        return {}
+    return dict(getattr(robot, "named_poses", None) or {})
+
+
+def name_refusal(name: str) -> str:
+    """Why ``name`` cannot name a pose taught in the console, or ``""`` where it can: the schema's own rule
+    (``robot_schema.pose_name_refusal``), an ASCII identifier of at most 32 characters, no keyword, never ``home``, no
+    word YAML reads as true, false or null, and none of the loader's own words (``__null__``)."""
+    return pose_name_refusal(name)
+
+
+def teach_refusal(
+    robot: "Robot | RobotArm",
+    *,
+    tree: Any = None,
+    name: str | None = None,
+    store: PoseStore | None = None,
+) -> TeachRefused | None:
+    """Why no pose could be taught on ``robot`` now, as :func:`teach_one` would refuse it before anything is freed, or
+    ``None`` where one could.
+
+    The console asks it before anyone asks to teach (``GET /v1/poses``: ``teachable`` and ``why_not``), so the reason a
+    teach is not offered is the reason the teach itself would refuse with, by one rule: ``name`` where one is chosen
+    (``invalid_name``); an arm that offers no hand guiding (``no_hand_guiding``) or is not connected
+    (``not_connected``); an arm on which no pose could be screened honestly (``screen_unavailable``: it screens
+    nothing, plans with no planner, was not handed the housing of a wrist camera ``tree`` hangs on it, or comes with no
+    tree to say which hang there); a planner it reports not ready (``planner_not_ready``); and the store's own
+    refusal of its file where a store is handed (``no_layer``). Nothing is freed, asked, moved or written: the arm's
+    connection and planner state, the tree's cameras and the store's file are read.
+    """
+    try:
+        _ready_to_teach(robot, tree, name, store)
+    except TeachRefused as refused:
+        return refused
+    return None
+
+
+def _ready_to_teach(robot: Any, tree: Any, name: str | None, store: PoseStore | None) -> tuple[SupportsFreedrive, str]:
+    """The checks made before anything is freed, in the order :func:`teach_one` makes them: the arm a person can guide,
+    and the file the store names (``""`` without a store); :class:`TeachRefused` with its code otherwise."""
+    if name is not None:
+        refused = name_refusal(name)
+        if refused:
+            raise TeachRefused("invalid_name", f"{refused}. Nothing was asked and nothing was freed")
+    arm = _guidable_for_one(robot)
+    _screened_here_or_refused(robot, arm, tree)
+    _planner_ready_or_refused(arm)
+    return arm, (store.target if store is not None else "")
+
+
+def teach_one(
+    robot: "Robot | RobotArm",
+    guide: HandGuide,
+    limits: HandGuidingLimits,
+    name: str,
+    *,
+    store: PoseStore,
+    tree: Any = None,
+    rig: str | None = None,
+    mounting: str | None = None,
+    ask_planner: bool = True,
+    hold_when_still: Callable[[], str] | None = None,
+    watch: Callable[[FreedriveSample], None] | None = None,
+    on_step: Callable[[str], None] | None = None,
+) -> TaughtOne:
+    """Teach ONE pose by hand on a connected arm: freed, captured once still, held, screened at once, written only if
+    clear or in the planner's band.
+
+    The console's teach (the owner, decision 15, Q10, Q14): ``robot`` is a connected robot or its arm, ``guide`` the
+    console side (the browser's console and view; ``payload_confirmed`` set where the console confirmed the payload,
+    otherwise it is asked first), ``limits`` the cable window and the box, ``name`` the pose's name, and ``store`` where
+    it is written (:class:`ProfilePoseStore`). ``tree`` says which wrist cameras hang on the arm (a loaded tree or its
+    ``AppConfig``; the robot's own where it kept one). ``rig`` and ``mounting`` go onto the pose read off the arm.
+    ``ask_planner`` is the build plan's spelling and only ``True`` is taken: the planner is always asked, since only a
+    pose both authorities clear, or one in the planner's band, is written, and a screen without it could write nothing
+    (``ValueError``, a caller's mistake, before anything is asked).
+
+    Refused before anything is freed, with :class:`TeachRefused` and its code (:func:`teach_refusal` says the same
+    without freeing anything): a name that is no pose name (``invalid_name``); an arm that offers no hand guiding or is
+    not connected; an arm that screens nothing, plans with no planner, was not handed the housing of a wrist camera the
+    tree hangs on it, or comes with no tree to say which hang there (``screen_unavailable``: a screen without a housing
+    that is there would read clear what the housing meets); a planner the arm reports not ready
+    (``planner_not_ready``: a screen would start it, about a minute, while a person stands at the arm); a store that
+    names no file of the cell's own. The file is said before the arm is freed.
+
+    Then one hand-guiding session: the arm is freed, and ``HandGuide.wait`` samples it at 50 Hz. Save captures once the
+    arm has stood still for half a second, never outside the cable window or the box; Hold and Cancel, and a halt or a
+    disconnect the console sends as a key, hold at once wherever the arm is. Every sample reads what the person sent,
+    so a key that holds wins at once also while a Save still waits for the arm to stand still (``HandGuide`` reads no
+    key during that wait, up to 5 s): the arm is held within one sample and the pose is never written. Every other key
+    read early is handed on to the wait in order. ``HandGuide.wait`` forgets a console line sent before it waits, as at
+    the terminal, and keeps a finish from the view, so the console sends those holds as the view's ``finish``: none of
+    them is lost however early it comes. ``hold_when_still`` is the console's own hold: what it names (a lapsed
+    heartbeat, the time limit) holds the arm only once it stands still (:class:`StillnessGate`), never while it moves in
+    a person's hands, and one named before the arm is freed frees nothing; a request that cannot be read counts as one.
+    A Save the person sent first is left to finish. ``watch`` gets every sample the session takes, for the console's
+    live readout, and ``on_step`` each step as it happens: ``free`` once the arm is freed, ``holding`` once it holds,
+    ``screening`` before the screen; either one that raises is logged and never ends the session.
+
+    The arm is held on every answer before anything else, and on every way out of the session. A capture is read off
+    the held arm and screened at once, while it holds (``screen_configuration``, the planner asked): CLEAR and BAND
+    are handed to ``store``; an ERROR (the exact guard or the planner refuses it), an UNSCREENED verdict and a screen
+    that raised are never written, and the result says why. Nothing here moves the arm by itself.
+    """
+    if ask_planner is not True:
+        raise ValueError(
+            f"teach_one(ask_planner={ask_planner!r}): every pose is screened with the planner asked, since only a pose "
+            "the exact guard and the planner both clear, or one in the planner's band, is written; a screen without "
+            "the planner could write nothing. Leave ask_planner out")
+    arm, target = _ready_to_teach(robot, tree, name, store)
+    guide.confirm_payload(arm)
+    guide.console.say(f"Teaching {name}: it is written to {target} once the exact guard and the planner clear it or "
+                      "find it in the planner's band; a pose either refuses, or one that could not be screened, is "
+                      "never written.")
+    guide.console.say(f"Watched while you guide the arm: {limits.window}. Outside either you are told, and Save does "
+                      "not capture there; the arm is never held or stopped for it.")
+    guide.console.say("Nothing moves by itself: the arm moves only while you move it. Save holds it once it stands "
+                      "still, and Cancel holds it at once.")
+    asked = _asked_to_hold(hold_when_still)
+    if asked:
+        guide.console.say(f"Not freed: the console asked for a hold before the arm was freed ({asked}). Nothing "
+                          "was taught.")
+        return TaughtOne(name=name, choice=HELD_WHEN_STILL, because=asked)
+    gate = StillnessGate(guide.still_rad_s, guide.still_for_s)
+    console = _HoldOnceStill(guide.console, gate, hold_when_still)
+    own_console, own_view = guide.console, guide.view
+    view = None if own_view is None else _ViewKeys(own_view)
+    pose: TaughtPose | None = None
+    screen: PoseScreen | None = None
+    screen_error, choice = "", ""
+    guide.console, guide.view = console, view
+    try:
+        with arm.freedrive() as session:
+            watched = _Watched(session, gate, guide.clock, watch, look=lambda: console.look() or _looked(view))
+            watched.free()
+            _step(on_step, "free")
+            try:
+                choice = guide.wait(watched, limits, status=lambda _sample: ([f"teaching {name}"], None),
+                                    banner=f"MOVE THE ARM BY HAND to where {name} should be, then save it")
+            except _HoldNow as now:
+                # A key that holds, read off a sample: it wins over a Save still waiting for the arm to stand still.
+                choice = now.choice
+                _show(guide, [])
+            # Held on every answer, before anything else: nothing samples a free arm while the rest runs.
+            session.hold()
+            _step(on_step, "holding")
+            if console.because:
+                choice = HELD_WHEN_STILL
+            elif choice == CAPTURE:
+                _show(guide, ["HOLDING THE ARM", f"{name} is read, then screened"])
+                pose = TaughtPose.from_sample(name, session.sample(), rig=rig, mounting=mounting)
+                _step(on_step, "screening")
+                screen, screen_error = _screen_held(arm, pose, guide)
+    finally:
+        guide.console, guide.view = own_console, own_view
+    if choice == HELD_WHEN_STILL:
+        guide.console.say(f"Held once it stood still ({console.because}): {name} was not taught, and the arm holds "
+                          "where it stands.")
+        return TaughtOne(name=name, choice=HELD_WHEN_STILL, because=console.because)
+    if choice != CAPTURE or pose is None:
+        guide.console.say(f"{name} was not taught, and the arm holds where it stands.")
+        return TaughtOne(name=name, choice=choice)
+    written, not_written = "", _not_written(name, screen, screen_error)
+    if not not_written:
+        assert screen is not None  # a pose with no screen has a reason it was not written
+        try:
+            said = store.write(pose, screen)
+        except Exception as exc:  # noqa: BLE001 (the arm holds, and the person is told: nothing is lost but the pose)
+            logger.exception("the pose store raised writing %s", name)
+            said = f"the pose store raised {type(exc).__name__}: {exc}"
+        if said:
+            not_written = f"{name} was not written: {said}"
+        else:
+            written = target
+    guide.console.say(f"{name} written to {written}; the arm holds where it stands." if written else
+                      f"{not_written} The arm holds where it stands.")
+    return TaughtOne(name=name, choice=CAPTURE, pose=pose, screen=screen, screen_error=screen_error, written=written,
+                     not_written=not_written)
+
+
+def _guidable_for_one(robot: Any) -> SupportsFreedrive:
+    """The arm of ``robot`` as one a person can guide and that is connected, or :class:`TeachRefused` with its code."""
+    try:
+        return _guidable(robot)
+    except HandGuidingRefused as refused:
+        arm = getattr(robot, "arm", robot)
+        code = "not_connected" if isinstance(arm, SupportsFreedrive) else "no_hand_guiding"
+        raise TeachRefused(code, str(refused)) from None
+
+
+def _screened_here_or_refused(robot: Any, arm: Any, tree: Any) -> None:
+    """Refuse an arm on which no pose could be screened honestly: no pose taught there could ever be written."""
+    if not _screens(arm):
+        raise TeachRefused("screen_unavailable", (
+            f"{_named(arm)} screens no pose (it offers no screen_configuration), so no pose taught on it could be "
+            "written: an unscreened pose never is. Nothing was freed"))
+    unscreened = _unscreened_because(robot, arm, tree)
+    if unscreened is not None:
+        raise TeachRefused("screen_unavailable", f"{unscreened} An unscreened pose is never written, so nothing was "
+                                                 "freed.")
+
+
+def _planner_ready_or_refused(arm: Any) -> None:
+    """Refuse a planner the arm reports not ready (``planner_state``, a property or a method): every pose is screened the
+    moment it is held, and a screen would start it, about a minute, while a person stands at the arm. An arm that
+    reports no planner state leaves it to the screen: a planner that cannot be asked gives an UNSCREENED verdict, which
+    is never written."""
+    try:
+        state = getattr(arm, "planner_state", None)
+        if callable(state):
+            state = state()
+    except Exception as exc:  # noqa: BLE001 (a state nobody can read is no ready planner)
+        raise TeachRefused("planner_not_ready", (
+            f"the planner's state could not be read ({type(exc).__name__}: {exc}), so it cannot be said to be ready: "
+            "start the planner first, then teach. Nothing was freed")) from None
+    if state is None or state == "ready":
+        return
+    if state == "not_used":
+        raise TeachRefused("screen_unavailable", (
+            "this arm plans with no planner (robot.ur.motion_planner is not curobo), so no pose taught on it could be "
+            "screened, and an unscreened pose is never written. Nothing was freed"))
+    raise TeachRefused("planner_not_ready", (
+        f"the planner is {state!r}, not ready: every pose is screened the moment it is held, and a screen would start "
+        "the planner (about a minute) while a person stands at the arm. Start the planner first, then teach. Nothing "
+        "was freed"))
+
+
+def _step(on_step: Callable[[str], None] | None, step: str) -> None:
+    """Tell the caller the session reached ``step``. Display only: a caller that raises never ends a session."""
+    if on_step is None:
+        return
+    try:
+        on_step(step)
+    except Exception:  # noqa: BLE001 (display only: the arm is never left free for it)
+        logger.exception("the teach session's step listener raised at %r; the session goes on", step)
+
+
+def _asked_to_hold(hold_when_still: Callable[[], str] | None) -> str:
+    """What the console's hold request names now, ``""`` for none; one that cannot be read counts as one."""
+    if hold_when_still is None:
+        return ""
+    try:
+        return " ".join(str(hold_when_still() or "").split())
+    except Exception as exc:  # noqa: BLE001 (a request nobody can read holds, never frees)
+        return f"the hold request could not be read ({type(exc).__name__}: {exc})"
+
+
+def _screen_held(arm: Any, pose: TaughtPose, guide: HandGuide) -> "tuple[PoseScreen | None, str]":
+    """Screen a pose just read off the held arm, the planner asked, and say the verdict; ``(None, why)`` where it raised.
+
+    Nothing moves for it, and a screen that fails never stops the session: the pose is then simply not written.
+    """
+    guide.console.say(f"{pose.name} read: {pose.tcp_line()}. It is screened now by the exact guard and the planner; "
+                      "the arm holds where it stands.")
+    try:
+        screen = arm.screen_configuration(pose.joints, ask_planner=True)
+    except Exception as exc:  # noqa: BLE001 (said, and the pose is not written: an unscreened pose never is)
+        why = f"{type(exc).__name__}: {exc}"
+        guide.console.say(f"{pose.name} was not screened: {why}")
+        return None, why
+    guide.console.say(screen.line(pose.name))
+    return screen, ""
+
+
+def _not_written(name: str, screen: "PoseScreen | None", screen_error: str) -> str:
+    """Why a captured pose is not written, or ``""`` where its screen lets it be: CLEAR or BAND."""
+    if screen is None:
+        return f"{name} was not written: it could not be screened ({screen_error}), and an unscreened pose never is."
+    if screen.is_error:
+        return f"{name} was not written: {screen.render()}"
+    if _verdict(screen) not in _WRITTEN:
+        return f"{name} was not written: it was not screened ({screen.detail}), and an unscreened pose never is."
+    return ""
+
+
+def _verdict(screen: Any) -> str:
+    """A screen's verdict as its plain value (``clear``, ``band``, ...), ``""`` for none."""
+    verdict = getattr(screen, "verdict", "")
+    return str(getattr(verdict, "value", verdict) or "")
+
+
+class _HoldNow(Exception):
+    """A key that holds the arm at once, read off a sample of :func:`teach_one`'s session: raised out of
+    ``HandGuide.wait``, also out of its stillness wait, which reads no key itself, and caught in the session, which
+    holds at once. ``choice`` is what the key asked for: :data:`FINISH` or :data:`SKIP`."""
+
+    def __init__(self, choice: str) -> None:
+        super().__init__(choice)
+        self.choice = choice
+
+
+class _HoldOnceStill:
+    """The console ``HandGuide.wait`` polls during :func:`teach_one`, with the console's own hold in it: once the hold
+    request names a reason and the stillness gate says still, it answers a finish, exactly once, so the wait ends and
+    the arm is held. A line the person sent always comes first, a line :meth:`look` read early included."""
+
+    def __init__(self, console: OperatorConsole, gate: StillnessGate,
+                 hold_when_still: Callable[[], str] | None) -> None:
+        self._console = console
+        self._gate = gate
+        self._hold_when_still = hold_when_still
+        #: Lines :meth:`look` read before the wait asked for them, handed on in order.
+        self._kept: deque[str] = deque()
+        #: What asked for the hold, once the finish went out; ``""`` before.
+        self.because = ""
+
+    def say(self, line: str) -> None:
+        self._console.say(line)
+
+    def bell(self) -> None:
+        self._console.bell()
+
+    def poll(self) -> str | None:
+        line = self._kept.popleft() if self._kept else self._console.poll()
+        if line is not None or self.because or self._hold_when_still is None or not self._gate.still:
+            return line
+        because = _asked_to_hold(self._hold_when_still)
+        if not because:
+            return None
+        self.because = because
+        return "q"
+
+    def look(self) -> str | None:
+        """Read what the person typed since the last look: the choice of a line that holds (:data:`FINISH`,
+        :data:`SKIP`), or ``None``, every other line kept for :meth:`poll` in order."""
+        while (line := self._console.poll()) is not None:
+            held = _CONSOLE_HOLDS.get(line.strip().lower())
+            if held is not None:
+                return held
+            self._kept.append(line)
+        return None
+
+
+class _ViewKeys:
+    """The view ``HandGuide.wait`` reads during :func:`teach_one`: the guide's own view, with the keys :meth:`look` read
+    early handed on in order. Everything else is the view's own."""
+
+    def __init__(self, view: GuideView) -> None:
+        self._view = view
+        self._kept: deque[str] = deque()
+
+    def guide(self, lines: Sequence[str], tone: str, bar: float | None = None) -> None:
+        self._view.guide(lines, tone, bar)
+
+    def poll_key(self) -> str | None:
+        return self._kept.popleft() if self._kept else self._view.poll_key()
+
+    def look(self) -> str | None:
+        """Read the keys sent since the last look: the choice of one that holds (a finish, a closed window, a skip), or
+        ``None``, every other key kept for :meth:`poll_key` in order."""
+        while (key := self._view.poll_key()) is not None:
+            held = _VIEW_HOLDS.get(key)
+            if held is not None:
+                return held
+            self._kept.append(key)
+        return None
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):  # its own slots, before __init__ set them: never the view's
+            raise AttributeError(name)
+        return getattr(self._view, name)
+
+
+def _looked(view: _ViewKeys | None) -> str | None:
+    """What a look at ``view`` read that holds, ``None`` without a view."""
+    return None if view is None else view.look()
+
+
+class _Watched:
+    """The freedrive session ``HandGuide.wait`` samples during :func:`teach_one`: every sample also feeds the stillness
+    gate and the caller's watcher, and then reads what the person sent (``look``): a key that holds raises
+    :class:`_HoldNow` out of the wait at once, also out of its stillness wait, which reads no key itself. The watcher
+    is display only: one that raises is logged once and never ends the session."""
+
+    def __init__(self, session: "FreedriveSession", gate: StillnessGate, clock: Callable[[], float],
+                 watch: Callable[[FreedriveSample], None] | None,
+                 look: Callable[[], str | None] | None = None) -> None:
+        self._session = session
+        self._gate = gate
+        self._clock = clock
+        self._watch = watch
+        self._look = look
+        self._said = False
+
+    @property
+    def is_free(self) -> bool:
+        return bool(self._session.is_free)
+
+    def free(self) -> None:
+        self._gate.reset()
+        self._session.free()
+
+    def hold(self) -> None:
+        self._session.hold()
+
+    def sample(self) -> FreedriveSample:
+        sample = self._session.sample()
+        self._gate.feed(sample, self._clock())
+        if self._watch is not None:
+            try:
+                self._watch(sample)
+            except Exception:  # noqa: BLE001 (display only: a person guiding the arm is never stopped for it)
+                if not self._said:
+                    logger.exception("the teach session's watcher raised; the session goes on")
+                    self._said = True
+        held = self._look() if self._look is not None else None
+        if held:
+            raise _HoldNow(held)
+        return sample
+
+    def __enter__(self) -> "_Watched":
+        self._session.__enter__()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._session.__exit__(*exc)
+
+
 def _taught_for(robot: Any, tree: Any, for_rig: str | None, camera: Any) -> tuple[str, str | None]:
     """The rig the poses are taught for and its mounting, or the refusal of a run that names none or two.
 
@@ -557,11 +1246,13 @@ def _taught_for(robot: Any, tree: Any, for_rig: str | None, camera: Any) -> tupl
 
 
 def _camera_section(tree: Any) -> Any:
-    """The camera section (``camera.cameras``) of a loaded tree, or ``None`` where there is no tree. A tree that did
-    not load refuses with its own refusal, as every door that reads one does."""
+    """The camera section (``camera.cameras``) of a loaded tree, or of the ``AppConfig`` handed in itself (the console
+    holds one), or ``None`` where there is no tree. A tree that did not load refuses with its own refusal, as every door
+    that reads one does."""
     if tree is None:
         return None
-    return getattr(getattr(getattr(tree, "app_config", None), "camera", None), "cameras", None)
+    config = getattr(tree, "app_config", None)
+    return getattr(getattr(tree if config is None else config, "camera", None), "cameras", None)
 
 
 def _mounting_of(rig: Any) -> str | None:

@@ -26,6 +26,8 @@ Public exports:
 * :class:`SupportsFreedrive` is hand guiding as a vendor capability: a :class:`FreedriveSession`
   frees the arm for a person and reads it as :class:`FreedriveSample`, and
   :class:`ControllerPayload` is the payload the controller compensates for while it is free.
+* :class:`SupportsHalt` is the halt latch ("halt now"): :class:`HaltState` is the latch while it is set, and
+  :class:`ArmHalted` the refusal of an output a halted arm will not switch.
 
 The numerics contract mirrors :mod:`src.geometry`: translations in millimetres,
 orientations as unit XYZW quaternions with a canonical sign, joint angles in radians,
@@ -35,12 +37,15 @@ all of them ``float64``. Every public ndarray this layer returns is read-only.
 from __future__ import annotations
 
 from .arm_capabilities import (
+    ArmHalted,
     DigitalIOPort,
+    HaltState,
     RobotMode,
     RobotStatus,
     SafetyMode,
     SupportsDigitalIO,
     SupportsForceTorque,
+    SupportsHalt,
     SupportsRobotStatus,
     Wrench,
 )
@@ -95,6 +100,7 @@ from .robot_arm import RobotArm
 from .vendor import RobotVendor
 
 __all__ = [
+    "ArmHalted",
     "CameraWorldDecline",
     "CameraWorldStamp",
     "CameraWorldUse",
@@ -108,6 +114,7 @@ __all__ = [
     "FreedriveSession",
     "Gripper",
     "GripperVendor",
+    "HaltState",
     "IsaacNotAvailableError",
     "JointPositions",
     "MotionCommand",
@@ -133,6 +140,7 @@ __all__ = [
     "SupportsDigitalIO",
     "SupportsForceTorque",
     "SupportsFreedrive",
+    "SupportsHalt",
     "SupportsRobotStatus",
     "Wrench",
     "active_decline",

@@ -44,6 +44,13 @@ it, inside `with cell.connected():`, and reads `report.outcome` and `report.laye
 each attempt.
 
 `pick(look=...)` takes a `JointPositions`, `"home"`, or a list of them ([looks.py](../looks.py)).
+`pick(multi_view=False)` looks from the first look only and generates no view, for one pick. A task
+([`task.py`](../task.py)) sets its closing axis on the service for its length with `set_closing_axis(axis)`,
+which answers the axis it replaced; `closing_axis_refusal(axis)` says why one would be refused (a name that is no
+axis, or a cell whose motion aligns every grasp to base X), with nothing changed. `found_nothing(report)`,
+`only_excluded(report)` and `only_kept_out(report)` say how a pick that took nothing ended, and
+`detector_failures()` counts the detector failures of the cell's grounding cameras, so a task tells "nothing
+there" from "the model could not look".
 **A wrist camera** hands its looks to the pick loop (`orch.looks`, `orch.both_faces`, taken back in a
 `finally`, so the next pick inherits neither): it looks from each, fuses each with the ones before,
 stops at the first valid grasp with no rescan reason and may generate one more view as the last resort

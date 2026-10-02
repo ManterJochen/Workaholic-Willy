@@ -59,6 +59,14 @@ class _BlockImport:
         builtins.__import__ = self._real
 
 
+def _restore_namespace(module: object, saved: dict) -> None:
+    """``module`` holds exactly the names and objects of ``saved`` again: a reload's new ones dropped, its own back."""
+    namespace = vars(module)
+    for name in [name for name in namespace if name not in saved]:
+        del namespace[name]
+    namespace.update(saved)
+
+
 class TheDriverDegradesInsteadOfDyingTests(unittest.TestCase):
     """⚠ These RELOAD the driver module, so each restores it. A module left half-imported would
     poison every later test in the run, which is the same class of fault as the one under test."""
@@ -67,7 +75,9 @@ class TheDriverDegradesInsteadOfDyingTests(unittest.TestCase):
         from src.robot.drivers.ur import connection
 
         self.connection = connection
-        self.addCleanup(importlib.reload, connection)
+        # Put back as it was, not reloaded once more: a reload makes new classes, and the arm, the cuRobo glue and
+        # the motion module hold the old ones by name (TheReloadsLeaveTheDriverAsItWasTests below).
+        self.addCleanup(_restore_namespace, connection, dict(vars(connection)))
 
     def _reload_with(self, *blocked: str, error: Exception | None = None):  # noqa: ANN202
         with _BlockImport(*blocked, error=error):
@@ -201,6 +211,31 @@ class TheGuardsInTheseTwoFilesAreCompleteTests(unittest.TestCase):
             probe = Path(fh.name)
         self.addCleanup(probe.unlink, True)
         self.assertEqual(self._narrow_guards(probe), [1])
+
+
+class TheReloadsLeaveTheDriverAsItWasTests(unittest.TestCase):
+    """The reloads above put the driver module back with its own classes, not with new ones.
+
+    MEASURED 2026-10-02: the cleanup reloaded the module once more, which made a new ``MoveEnd`` and a new
+    ``HALT_ENDS``. The arm and the cuRobo glue had imported the old ones by name, so a path the halt braked was
+    written ``BRAKED`` of the new enum and read against the old set: the next halt test in the run saw a controller
+    refusal (tests/test_a_braked_path_sends_no_later_waypoint.py, three of them, in the full suite only).
+    """
+
+    def test_every_name_the_driver_package_imported_still_is_the_module_own(self) -> None:
+        from src.robot.drivers.ur import arm, connection, curobo_motion, motion
+
+        before = {name: getattr(connection, name) for name in ("MoveEnd", "HALT_ENDS", "URConnection")}
+        result = unittest.TestResult()
+        unittest.defaultTestLoader.loadTestsFromTestCase(TheDriverDegradesInsteadOfDyingTests).run(result)
+        self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
+        for name, value in before.items():
+            with self.subTest(name=name):
+                self.assertIs(getattr(connection, name), value)
+        self.assertIs(arm.HALT_ENDS, connection.HALT_ENDS)
+        self.assertIs(arm.MoveEnd, connection.MoveEnd)
+        self.assertIs(curobo_motion.MoveEnd, connection.MoveEnd)
+        self.assertIs(motion.HALT_ENDS, connection.HALT_ENDS)
 
 
 if __name__ == "__main__":  # pragma: no cover

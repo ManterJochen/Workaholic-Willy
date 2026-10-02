@@ -202,21 +202,29 @@ def _median(values: list[float]) -> float | None:
 
 
 def runs_csv(runs: list[Any]) -> str:
-    """One row per run: the report-level view. Times are seconds since the epoch, as stored."""
+    """One row per run: the report-level view. Times are seconds since the epoch, as stored.
+
+    ``kind`` (pick, task, home, teach, planner), ``stop_code`` (why it ended, typed; empty while it runs) and
+    ``parts_placed`` (a task's parts released at the place) come after the columns a pick run always had, so a reader
+    of the old export reads the same columns where they were.
+    """
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n")
     writer.writerow(
         ["run_id", "prompt", "state", "requested_picks", "attempted", "succeeded",
-         "started_at", "finished_at", "duration_s", "outcomes", "error"]
+         "started_at", "finished_at", "duration_s", "outcomes", "error", "kind", "stop_code", "parts_placed"]
     )
     for run in runs:
         duration = (
             round(run.finished_at - run.started_at, 3) if run.finished_at is not None else ""
         )
+        stop_code = getattr(run, "stop_code", None)
         writer.writerow([
             run.id, run.prompt, str(run.state), run.requested_picks, run.attempted, run.succeeded,
             run.started_at, run.finished_at if run.finished_at is not None else "",
             duration, "|".join(run.outcomes), run.error,
+            str(getattr(run, "kind", "pick")), "" if stop_code is None else str(stop_code),
+            int(getattr(run, "parts_placed", 0) or 0),
         ])
     body = buffer.getvalue()
     logger.debug("Exported %d run(s) as CSV (%d bytes).", len(runs), len(body))

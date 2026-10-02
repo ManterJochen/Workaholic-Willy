@@ -1,0 +1,108 @@
+{
+  "about": "Captured by scripts/console/capture_event_log.py on the scripted cell of tests/_console_task_fakes.py through the real console: a toggle's connect asks in the browser where the jaws stand, 'closed', then 'open now', one change of tool DO0 while a person holds the part.",
+  "scenario": "jaws_question_round_trip",
+  "events": [
+    {
+      "type": "cell.jaws_question",
+      "run_id": "cell",
+      "seq": 1,
+      "ts": 1790856000.0,
+      "severity": "warn",
+      "human": "Where do the jaws on tool output 0 stand? Answer in the browser within 120 s; no answer is never 'open'.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "question_id": "q-5d1e0c",
+        "stage": "where",
+        "at": "connect",
+        "where": "tool output 0",
+        "reason": "every change of its output moves them and nothing reads them back, so only a person can say where the program's count of its changes starts",
+        "choices": [
+          "open",
+          "closed"
+        ],
+        "attempt": 1,
+        "of": 3,
+        "why_again": "",
+        "expires_at": 1790856120.0,
+        "text": "The jaws of the single_toggle hand on tool output 0: every change of its output moves them and nothing reads them back, so only a person can say where the program's count of its changes starts.\nLook at them. Do they stand OPEN? [type 'open' or 'closed'; Enter alone is no answer here]:"
+      }
+    },
+    {
+      "type": "cell.jaws_answered",
+      "run_id": "cell",
+      "seq": 2,
+      "ts": 1790856000.05,
+      "severity": "info",
+      "human": "Answered in the browser: closed.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "question_id": "q-5d1e0c",
+        "choice": "closed"
+      }
+    },
+    {
+      "type": "cell.jaws_question",
+      "run_id": "cell",
+      "seq": 3,
+      "ts": 1790856000.1,
+      "severity": "warn",
+      "human": "The jaws on tool output 0 stand closed: open them now with ONE change of the output, which releases what they hold, or abort. Answer in the browser within 120 s.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "question_id": "q-8a2071",
+        "stage": "open_now",
+        "at": "connect",
+        "where": "tool output 0",
+        "reason": "every change of its output moves them and nothing reads them back, so only a person can say where the program's count of its changes starts",
+        "choices": [
+          "open_now",
+          "abort"
+        ],
+        "attempt": 1,
+        "of": 3,
+        "why_again": "",
+        "expires_at": 1790856120.1,
+        "text": "They stand CLOSED. [p] open them now with one change of tool output 0, which releases anything between them; [a] abort:"
+      }
+    },
+    {
+      "type": "cell.jaws_answered",
+      "run_id": "cell",
+      "seq": 4,
+      "ts": 1790856000.15,
+      "severity": "info",
+      "human": "Answered in the browser: open_now.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "question_id": "q-8a2071",
+        "choice": "open_now"
+      }
+    },
+    {
+      "type": "cell.jaws_ended",
+      "run_id": "cell",
+      "seq": 5,
+      "ts": 1790856000.2,
+      "severity": "success",
+      "human": "The jaws stand open; the planner was told the hand is empty.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "question_id": "q-8a2071",
+        "outcome": "open",
+        "refusal": "",
+        "detached": true
+      }
+    }
+  ],
+  "runs": {}
+}

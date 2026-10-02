@@ -101,6 +101,20 @@ ranking and gives it back. So an IK service or a feasibility re-rank wired into 
 candidate before the loop turns it half a turn; no builder wires one today, and the arm's own guards judge
 the grasp executed. Where the loop changed a result it redraws the overlay (`redraw_debug_image`).
 
+## What it sees beside the part
+
+With `grasping.scene_obstacles` on (a cell's default) the calculator holds every object the camera saw beside
+the part as an obstacle, named by a prompt or not (`scene_obstacles.py`): the points within 250 mm of the part's
+mask, grown about 5 mm and trimmed at depth steps, less what the part stands on (`SupportModel.is_support_point`,
+else the bench and its band) and the declared bodies' bands, in 25 mm voxels of at least 12 points. They join
+the support-footprint stage's obstacle points, and a post-filter judges the open hand against the support solids
+at the guard's distance. The failure reasons then follow the stage's refusal counts by obstacle set: a neighbour
+the camera saw is `ALL_COLLIDED`, the support or a declared body `ALL_TABLE_CONFLICT` ("too short for this hand"
+under about 28 mm on a Hand-E), the part's own fragments `NO_VALID_GRASP`, with `why_no_grasp`'s sentence in the
+telemetry (`no_grasp_said`) and the log. With `side_approaches` on, the stage offers every tilt the hand fits at,
+scored by the room each keeps (`SIDE_APPROACH_SCORE_WEIGHTS`), vertical on a tie, and a tilt of 15 deg or more
+only through space a depth ray saw (`corridor_seen`). Both off is the calculator of before, byte for byte.
+
 ## What it does not do
 
 The deformable seam is inert. No caller passes `deformable_strategy=`, so the gate is skipped, and
@@ -121,7 +135,8 @@ path never pretends otherwise.
 | --- | --- |
 | [calculator.py](calculator.py) | `GraspCalculator`, and the `compute()` and `compute_result()` contract every pipeline relies on; `redraw_debug_image(candidates)`, the last overlay drawn again over the grasps a caller kept, as the pick loop does where a closing axis or the natural orientation changed a result |
 | [_candidate_generator.py](_candidate_generator.py) | the silhouette, geometry-first and dense candidate generators |
-| [support_footprint.py](support_footprint.py) | the support-footprint stage; a candidate's `pose()` is the base pose `Robot.pick` takes |
+| [support_footprint.py](support_footprint.py) | the support-footprint stage; a candidate's `pose()` is the base pose `Robot.pick` takes; its refusal counts by cause (`REFUSAL_CAUSES`) and the side approaches |
+| [scene_obstacles.py](scene_obstacles.py) | what the camera saw beside the part as obstacles, the support taken out, and `why_no_grasp` |
 | [_support_footprint_stage.py](_support_footprint_stage.py) | the adapter that brings that stage's base-frame candidates into the camera frame |
 | [_camera_geometry.py](_camera_geometry.py) | image to camera-frame lifting, and `level_axis_to_support_plane` |
 | [_isotropic_closing.py](_isotropic_closing.py) | the closing direction when the silhouette implies none |

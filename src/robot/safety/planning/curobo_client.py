@@ -212,7 +212,10 @@ class StateRefusal:
         elif chosen(self.clearance_mm):
             found = f"it comes closer than {self.clearance_mm:.1f} mm to the world the planner holds"
         else:
-            found = f"it reaches {depth} into the world the planner holds"
+            # A sum over every collision sphere that touches the world, not a depth: R13's "37.0 mm" was three spheres
+            # a few millimetres in each (fix plan RC6).
+            found = (f"its collision spheres reach {depth} into the world the planner holds, summed over every sphere "
+                     "that touches it")
         joints = ", ".join(f"{value:.4f}" for value in self.joints)
         return f"cuRobo refuses {where}: {found}. Joints (rad): [{joints}]"
 
@@ -227,6 +230,76 @@ class StateRefusal:
             "depth_mm": self.depth_mm if chosen(self.depth_mm) else None,
             "clearance_mm": self.clearance_mm if chosen(self.clearance_mm) else None,
         }
+
+
+#: How far from a refused pose a box of the planner's world is said to lie within its reach, millimetres: the hand, its
+#: plate and a wrist camera reach about 250 mm past the flange.
+NEAR_REFUSAL_MM = 300.0
+#: How many of those boxes a warning names, nearest first; the rest are counted.
+_NEAR_NAMED = 12
+
+
+def _box_kind(name: str) -> str:
+    """What a box of the planner's world is, by its name: a support's solid or the bench's, a camera box, or declared."""
+    if name.startswith(PERCEIVED_PREFIX):
+        if re.search(r"_support\d+$", name):
+            return "support"
+        if name.endswith("_bench"):
+            return "bench"
+        return "seen"
+    return "declared"
+
+
+def _wxyz_matrix(quaternion: "Sequence[float]") -> Any:
+    import numpy as np  # noqa: PLC0415
+
+    w, x, y, z = (float(v) for v in quaternion)
+    norm = math.sqrt(w * w + x * x + y * y + z * z) or 1.0
+    w, x, y, z = (v / norm for v in (w, x, y, z))
+    return np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                     [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                     [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+
+
+def world_near(cuboids: "Sequence[Mapping[str, Any]]", points_mm: Any,
+               reach_mm: float = NEAR_REFUSAL_MM) -> "list[tuple[float, dict[str, Any]]]":
+    """The boxes of a planner world (wire format: metres, WXYZ) within ``reach_mm`` of any of ``points_mm``, nearest
+    first, each with its least distance to them in millimetres and what a person reads of it: name, kind, centre and
+    size in millimetres, tilt in degrees and the WXYZ quaternion."""
+    import numpy as np  # noqa: PLC0415
+
+    points = np.asarray(points_mm, dtype=np.float64).reshape(-1, 3)
+    out: list[tuple[float, dict[str, Any]]] = []
+    if points.shape[0] == 0:
+        return out
+    for cuboid in cuboids:
+        try:
+            pose = [float(v) for v in cuboid["pose"]]
+            half = np.asarray([500.0 * float(v) for v in cuboid["dims_m"]])
+        except (KeyError, TypeError, ValueError):
+            continue
+        centre = np.asarray(pose[:3]) * 1000.0
+        turn = _wxyz_matrix(pose[3:7])
+        local = (points - centre) @ turn
+        distance = float(np.linalg.norm(np.maximum(np.abs(local) - half, 0.0), axis=1).min())
+        if distance <= float(reach_mm):
+            name = str(cuboid.get("name", "") or "unnamed box")
+            tilt = math.degrees(math.acos(max(-1.0, min(1.0, float(turn[2, 2])))))
+            out.append((distance, {"name": name, "kind": _box_kind(name), "centre_mm": [round(v, 1) for v in centre],
+                                   "size_mm": [round(2.0 * v, 1) for v in half], "tilt_deg": round(tilt, 2),
+                                   "quaternion_wxyz": [round(v, 6) for v in pose[3:7]]}))
+    out.sort(key=lambda item: item[0])
+    return out
+
+
+def _ur_model_of(descriptor: str) -> str | None:
+    """The UR model a sidecar descriptor's file name names (``ur10.yml``, ``willy_ur5e.yml``), where the bundled DH table
+    knows it; ``None`` otherwise."""
+    from src.robot.safety._ur_kinematics import UR_DH_TABLES_M  # noqa: PLC0415
+
+    stem = Path(str(descriptor)).stem.lower()
+    found = [model for model in UR_DH_TABLES_M if re.search(rf"(^|[^a-z0-9]){re.escape(model)}($|[^a-z0-9])", stem)]
+    return max(found, key=len) if found else None
 
 
 class CuroboNotReady(CuroboUnavailableError):
@@ -904,6 +977,12 @@ class CuroboPlanClient:
         #: start(), plan and plan_joint, and cleared by the next plan that succeeds, so it
         #: describes the last answer and not the history.
         self.last_refusal: StateRefusal | None = None
+        #: The world the sidecar last confirmed (``set_world``), in the wire format: what a refusal by the world is said
+        #: against (:meth:`_say_the_world_near`). Empty until a world was registered.
+        self.world_held: tuple[dict[str, Any], ...] = ()
+        #: The UR model the descriptor names, for placing a refused configuration; ``None`` where it names none the
+        #: bundled DH table knows, and a refusal at a configuration is then said without its boxes.
+        self._model = _ur_model_of(self._robot)
 
     @property
     def measure_only(self) -> bool:
@@ -1161,6 +1240,7 @@ class CuroboPlanClient:
             (time.monotonic() - started) * 1000.0,
             self.last_refusal.render() if self.last_refusal is not None else msg.get("reason", "no reason given"),
         )
+        self._say_the_world_near(self.last_refusal, goal_mm=[1000.0 * float(v) for v in goal_pos_m])
         return None
 
     def plan_joint(
@@ -1203,6 +1283,7 @@ class CuroboPlanClient:
             (time.monotonic() - started) * 1000.0,
             self.last_refusal.render() if self.last_refusal is not None else msg.get("reason", "no reason given"),
         )
+        self._say_the_world_near(self.last_refusal)
         return None
 
     def check_joints(
@@ -1300,6 +1381,7 @@ class CuroboPlanClient:
                     "the cuRobo check refused a joint path after %.0f ms: %s%s", took_ms, refused.reason,
                     f". {refused.refusal.render()}" if refused.refusal is not None else "",
                 )
+                self._say_the_world_near(refused.refusal)
                 return refused
         took_ms = (time.perf_counter() - started) * 1000.0
         logger.debug("checked %d joint configuration(s) in %.0f ms: all pass", checked, took_ms)
@@ -1307,6 +1389,48 @@ class CuroboPlanClient:
             valid=True, first_invalid=None, checked=checked,
             reason=f"all {checked} samples pass the cuRobo check",
         )
+
+    def _say_the_world_near(self, refusal: "StateRefusal | None", *, goal_mm: "Sequence[float] | None" = None) -> None:
+        """Where the world refused a pose, say which boxes of the world it holds lie within reach of it, at WARNING.
+
+        The boxes within :data:`NEAR_REFUSAL_MM` of the refused goal where one was asked for, else of the arm's frames at
+        the refused configuration by the bundled UR chain (BASE, the guard's frame with no base yaw), each with its
+        name, its kind, its centre, size and tilt, and how many there are. The line R2 and R13 needed: a summed depth
+        names no box. Diagnostics only; a refusal stands as the sidecar gave it.
+        """
+        if refusal is None or refusal.kind is not StateRefusalKind.WORLD:
+            return
+        reference = "the goal"
+        points: Any = []
+        if goal_mm is not None and refusal.where is StateWhere.GOAL:
+            points = [list(goal_mm)]
+        elif self._model is not None:
+            import numpy as np  # noqa: PLC0415
+
+            from src.robot.safety._ur_kinematics import ur_link_transforms_mm  # noqa: PLC0415
+
+            frames = ur_link_transforms_mm(self._model, np.asarray(refusal.joints, dtype=np.float64))
+            if frames is not None:
+                points = [frame[:3, 3] for frame in frames[1:]]
+                reference = f"the arm's frames at the refused joints ({self._model})"
+        if not self.world_held:
+            logger.warning("the world refused %s, and this client holds no world it registered to name a box of",
+                           reference)
+            return
+        if not len(points):
+            logger.warning("the world refused a configuration, and descriptor %s names no arm this client can place: "
+                           "%d box(es) held, none placed near it", self._robot, len(self.world_held))
+            return
+        near = world_near(self.world_held, points)
+        named = "; ".join(
+            f"{box['name']} [{box['kind']}] {distance:.1f} mm off, centre ({', '.join(f'{v:.1f}' for v in box['centre_mm'])})"
+            f" mm, size ({' x '.join(f'{v:.1f}' for v in box['size_mm'])}) mm, tilted {box['tilt_deg']:.2f} deg "
+            f"(wxyz {', '.join(f'{v:.4f}' for v in box['quaternion_wxyz'])})"
+            for distance, box in near[:_NEAR_NAMED])
+        more = f"; and {len(near) - _NEAR_NAMED} more" if len(near) > _NEAR_NAMED else ""
+        logger.warning("the world refused near %s: %d of the %d box(es) it holds lie within %.0f mm of it%s%s",
+                       reference, len(near), len(self.world_held), NEAR_REFUSAL_MM, f": {named}" if named else "",
+                       more)
 
     def judge_joints(
         self, configs: "Sequence[Sequence[float]]", *, clearance_mm: float = 0.0, name_pairs: bool = True,
@@ -1457,6 +1581,7 @@ class CuroboPlanClient:
             # through, so the count registered rather than the count sent is what
             # matters.
             logger.info("collision world set: %d of %d obstacle(s) registered", count, sent)
+            self.world_held = tuple(dict(cuboid) for cuboid in cuboids)
             return count
         logger.error(
             "the cuRobo sidecar did not confirm the collision world (%d cuboid(s) sent); planning "

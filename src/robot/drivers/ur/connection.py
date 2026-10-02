@@ -10,19 +10,25 @@ It provides:
     - forward kinematics, through ``fk``;
     - inverse kinematics, through ``ik``;
     - the low-level move wrappers ``moveJ`` and ``moveL``;
+    - the halt latch ("halt now"), and with ``robot.ur.brake_on_halt`` the watched move a halt brakes;
     - the hand-guiding primitives, teach mode, the RTDE watchdog and a fresh control
       program, which :mod:`.freedrive` puts together into a session.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import math
 import re
+import socket
+import threading
+import time
+from enum import StrEnum
 from typing import TYPE_CHECKING
-
-
 
 from ...constants import UR_CONNECTION_LOG_FILE, create_robot_logger
 from ...core import RobotConnectionError
+from ...core.arm_capabilities import ArmHalted, HaltState, halted_refusal
 
 def _absent(exc: Exception) -> str:
     """The SDK is not on this machine. Installing it is the fix."""
@@ -126,6 +132,30 @@ _NOT_RUNNING_MODES: dict[str, str] = {
 }
 
 
+def _rotation_matrix(rotvec: "Sequence[float]") -> list[list[float]]:
+    """The rotation of an axis-angle vector (Rodrigues), in plain Python: this module imports no numpy."""
+    x, y, z = (float(v) for v in rotvec)
+    angle = math.sqrt(x * x + y * y + z * z)
+    if angle < 1e-12:
+        return [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+    kx, ky, kz = x / angle, y / angle, z / angle
+    c, s = math.cos(angle), math.sin(angle)
+    t = 1.0 - c
+    return [
+        [c + kx * kx * t, kx * ky * t - kz * s, kx * kz * t + ky * s],
+        [ky * kx * t + kz * s, c + ky * ky * t, ky * kz * t - kx * s],
+        [kz * kx * t - ky * s, kz * ky * t + kx * s, c + kz * kz * t],
+    ]
+
+
+def _turn_between(a: "Sequence[float]", b: "Sequence[float]") -> float:
+    """The angle, in rad, of the rotation between two axis-angle orientations."""
+    ra, rb = _rotation_matrix(a), _rotation_matrix(b)
+    # trace(ra^T rb) = 1 + 2 cos(angle)
+    trace = sum(ra[i][j] * rb[i][j] for i in range(3) for j in range(3))
+    return math.acos(max(-1.0, min(1.0, (trace - 1.0) / 2.0)))
+
+
 def _polyscope_version(dash: object) -> tuple[int, int] | None:
     """The (major, minor) PolyScope version a dashboard reports, or ``None`` where it will not say.
 
@@ -167,11 +197,90 @@ def _robot_mode_diagnosis(dash: object) -> tuple[str, str] | None:
     return (text.strip(), meaning) if meaning is not None else None
 
 
+#: The dashboard server's port, on a CB3 and an e-Series alike.
+_DASHBOARD_PORT = 29999
+
+
+def _ask_dashboard(host: str, command: str, *, port: int = _DASHBOARD_PORT, timeout_s: float = 2.0) -> str:
+    """One dashboard command over a connection of its own, answered by one line.
+
+    Its own connection, never the driver's shared one, so the question cannot interleave with a read another thread
+    is making. Raises ``OSError`` (a timeout included) where the dashboard does not answer.
+    """
+    with socket.create_connection((host, port), timeout=timeout_s) as sock:
+        sock.settimeout(timeout_s)
+        _read_line(sock)  # the banner: "Connected: Universal Robots Dashboard Server"
+        sock.sendall(command.encode("ascii") + b"\n")
+        return _read_line(sock)
+
+
+def _read_line(sock: socket.socket) -> str:
+    """One line from the dashboard; a connection that closes or says nothing in time raises ``OSError``."""
+    data = b""
+    while not data.endswith(b"\n") and len(data) < 4096:
+        chunk = sock.recv(256)
+        if not chunk:
+            raise OSError("the dashboard closed the connection")
+        data += chunk
+    return data.decode("utf-8", errors="replace").strip()
+
+
 if TYPE_CHECKING:  # pragma: no cover (import only for static analysis)
+    from collections.abc import Callable, Sequence
+
     from dashboard_client import DashboardClient
     from rtde_control import RTDEControlInterface
     from rtde_io import RTDEIOInterface
     from rtde_receive import RTDEReceiveInterface
+
+
+class MoveEnd(StrEnum):
+    """How the last move a connection was asked for ended, for the sentence a refused verb says.
+
+    Read by the thread that asked for the move, right after it returned, never across threads.
+    """
+
+    #: No move was asked for yet.
+    NONE = "none"
+    #: The move was sent as it always was, and the answer is ur_rtde's own (brakes off, or a caller's asynchronous move).
+    SENT = "sent"
+    #: A watched move stood at its target: joints within 2e-3 rad, a line's TCP within 1 mm and 2e-3 rad.
+    ARRIVED = "arrived"
+    #: The halt latch was set: nothing was sent.
+    REFUSED_HALTED = "refused_halted"
+    #: The halt braked the move in flight (stopJ or stopL) and the arm stood still.
+    BRAKED = "braked"
+    #: The halt's brake was sent and the arm was not seen to stand still, or the brake itself failed.
+    BRAKE_UNCONFIRMED = "brake_unconfirmed"
+    #: A watched move ended away from its target with nobody braking it.
+    ENDED_SHORT = "ended_short"
+    #: A protective or emergency stop, or the end of the control program, ended a watched move.
+    STOPPED = "stopped"
+    #: The controller refused to start the move, or never showed it running; a move it never showed was stopped.
+    NOT_STARTED = "not_started"
+
+
+#: The ends of a move the halt explains: a verb that meets one answers CANCELLED, not a controller refusal.
+HALT_ENDS: frozenset[MoveEnd] = frozenset({MoveEnd.REFUSED_HALTED, MoveEnd.BRAKED, MoveEnd.BRAKE_UNCONFIRMED})
+
+_JOINT, _LINE = "moveJ", "moveL"
+#: How often a watched move is read: one RTDE cycle of a CB3, which publishes at 125 Hz.
+_POLL_S = 0.008
+#: How long a sent move may go unseen in the controller's async operation register before it is stopped and refused.
+_SEEN_WITHIN_S = 1.0
+#: How long a finished operation may take to stand within the arrival tolerance: a servo trails its set point.
+_SETTLE_S = 0.5
+#: A joint move has arrived with every joint within this of its target, in rad.
+_ARRIVED_RAD = 2e-3
+#: A line has arrived with its TCP within this of the target, in mm, and turned within :data:`_ARRIVED_TURN_RAD`.
+_ARRIVED_MM = 1.0
+_ARRIVED_TURN_RAD = 2e-3
+#: The weakest deceleration a brake uses, in rad/s^2 for stopJ and m/s^2 for stopL; a move that accelerated harder is
+#: braked as hard as it accelerated. 2.0 is ur_rtde's own stopJ default.
+_BRAKE_MIN_DECEL = 2.0
+#: A joint slower than this, in rad/s, stands still; a braked arm is waited for at most :data:`_STILL_WAIT_S`.
+_STILL_RAD_S = 0.01
+_STILL_WAIT_S = 2.0
 
 
 class URConnection:
@@ -182,6 +291,13 @@ class URConnection:
         vel:          The default joint velocity in rad/s.
         acc:          The default joint acceleration in rad/s^2.
         frequency:    The RTDE exchange frequency in Hz. 0 means the default, 125 Hz.
+        brake_on_halt: ``robot.ur.brake_on_halt``. Off: every move is the synchronous ur_rtde call it always was, and a
+                      halt latches. On: a move is sent asynchronously and watched, and a halt brakes it (:meth:`moveJ`).
+        clock, sleep: The monotonic clock and the sleep a watched move polls with; a test hands in its own. The clock is
+                      ``perf_counter``: ``time.monotonic`` ticks in 15.6 ms steps on Windows, two RTDE cycles.
+
+    The halt latch (:meth:`request_halt`) lives on this object, so a disconnect and a connect keep it: only
+    :meth:`clear_halt` ends it. While it is set no move is sent and no output is switched.
     """
 
     def __init__(
@@ -190,6 +306,10 @@ class URConnection:
         vel: float = 1.0,
         acc: float = 0.5,
         frequency: float = 0.0,
+        *,
+        brake_on_halt: bool = False,
+        clock: "Callable[[], float]" = time.perf_counter,
+        sleep: "Callable[[float], None]" = time.sleep,
     ):
         # An ur_rtde import failure is deferred to connect(), so this module imports on
         # a machine without the native library.
@@ -197,6 +317,7 @@ class URConnection:
         self.vel = vel
         self.acc = acc
         self.frequency = frequency
+        self.brake_on_halt = bool(brake_on_halt)
         self.logger = create_robot_logger("URConnection", UR_CONNECTION_LOG_FILE)
 
         self._ctrl: RTDEControlInterface | None = None
@@ -205,6 +326,165 @@ class URConnection:
         self._dashboard: DashboardClient | None = None
         #: Cached controller TCP offset for :meth:`_fk_tcp_offset`; cleared on every (dis)connect.
         self._tcp_offset_cache: list[float] | None = None
+        #: The serial :meth:`controller_serial` read, whether that read is settled (a serial, or an answer that is
+        #: none), and how often its own dashboard connection failed; all cleared on every (dis)connect.
+        self._serial: str | None = None
+        self._serial_settled = False
+        self._serial_failures = 0
+        self._clock = clock
+        self._sleep = sleep
+        #: The halt latch: the flag a watched move polls, and the record :meth:`halt_state` reads. Written under the
+        #: lock, by :meth:`request_halt`, :meth:`clear_halt` and the thread whose move a halt found in flight, once that
+        #: move ended; read without it.
+        self._halt = threading.Event()
+        self._halt_state: HaltState | None = None
+        self._halt_lock = threading.Lock()
+        #: How many times the latch was set: a path reads it to learn of a halt that came and was cleared mid-leg.
+        self._halt_requests = 0
+        self._halt_requested_mono = 0.0
+        #: Whether a move is in flight now: set by the thread that sent it, under the halt lock with the latch's check,
+        #: and read by the one that halts.
+        self._in_motion = False
+        #: When the brake of the move in flight saw the arm stand still, on :attr:`_clock`; ``None`` until it did.
+        self._still_at: float | None = None
+        self._last_end = MoveEnd.NONE
+        #: What ended the last watched move the controller stopped: ``protective``, ``emergency`` or ``program``.
+        self._last_stop_cause = ""
+
+    # ------------------------------------------------------------------
+    # The halt latch
+    # ------------------------------------------------------------------
+
+    def request_halt(self, reason: str) -> HaltState:
+        """Latch: no move is sent and no output switched from now on, until :meth:`clear_halt`. Never raises.
+
+        Nothing is sent from the calling thread, which is usually not the one moving the arm: ur_rtde runs a
+        synchronous move in the control script's main loop, and a ``stopJ`` from another thread waits behind it. The
+        move in flight is the moving thread's to end: braked under control with ``brake_on_halt``, run to its end
+        without. A second request keeps the first record.
+        """
+        with self._halt_lock:
+            if self._halt_state is not None:
+                return self._halt_state
+            state = HaltState(reason=str(reason).strip() or "halt requested", requested_at=time.time(),
+                              in_motion=self._in_motion)
+            self._halt_requests += 1
+            self._halt_requested_mono = self._clock()
+            self._halt_state = state
+            self._halt.set()
+        self.logger.warning("Halt requested (%s); %s.", state.reason,
+                            "the move in flight is braked by the thread that sent it" if state.in_motion
+                            and self.brake_on_halt else "the move in flight runs to its end and nothing after it is "
+                            "sent" if state.in_motion else "no move is in flight")
+        return state
+
+    def clear_halt(self) -> None:
+        """End the latch: moves and outputs are sent again. The console calls it once a person confirmed the cell."""
+        with self._halt_lock:
+            was = self._halt_state
+            self._halt.clear()
+            self._halt_state = None
+        if was is not None:
+            self.logger.info("Halt cleared (%s).", was.reason)
+
+    def halt_state(self) -> HaltState | None:
+        """The latch while it is set, else ``None``: one attribute read, never a lock, never a raise."""
+        return self._halt_state
+
+    @property
+    def halted(self) -> bool:
+        """Whether the latch is set."""
+        return self._halt.is_set()
+
+    @property
+    def halt_requests(self) -> int:
+        """How many times the latch was set since this connection was built; a clear does not count, nor a second press.
+
+        A caller that runs several moves in a row (a judged path's waypoints) takes it before the first and ends where it
+        changed: a halt that came and was cleared while one move ran still ends the moves after it.
+        """
+        return self._halt_requests
+
+    @property
+    def in_motion(self) -> bool:
+        """Whether a move is in flight now, as the thread that sent it says."""
+        return self._in_motion
+
+    @property
+    def last_move_end(self) -> MoveEnd:
+        """How the last move this connection was asked for ended; for the thread that asked."""
+        return self._last_end
+
+    @property
+    def last_stop_cause(self) -> str:
+        """What ended the last watched move the controller stopped (:attr:`MoveEnd.STOPPED`): ``protective``,
+        ``emergency`` or ``program`` (the control program no longer ran); ``""`` before any such stop."""
+        return self._last_stop_cause
+
+    def refuse_if_halted(self, what: str) -> bool:
+        """``True`` where the latch is set: ``what`` is not sent, and counts as a move the halt refused.
+
+        For a caller that would read the controller before sending ``what`` (``MotionController``): it refuses first,
+        so nothing at all reaches the controller, and :attr:`last_move_end` says why rather than how an earlier move
+        ended.
+        """
+        if not self._halt.is_set():
+            return False
+        self._refused_while_halted(what)
+        return True
+
+    def _refused_while_halted(self, what: str) -> bool:
+        self._last_end = MoveEnd.REFUSED_HALTED
+        state = self._halt_state
+        self.logger.warning("%s not sent: %s.", what, state.render() if state is not None else "the arm is halted")
+        return False
+
+    def _begin_move(self, what: str, *, in_flight: bool) -> bool:
+        """``True`` where ``what`` may be sent now; ``False`` where the latch refused it, with nothing sent.
+
+        The latch's check and the mark of a move in flight are one step under the halt lock, right before the send: a
+        halt either came first and nothing is sent, or finds the move in flight and records it so. Without the step a
+        halt landing between the check and the send let a move go out that its record called not in flight.
+        ``in_flight`` is for a move that blocks until it ends (a synchronous or a watched one); a caller's own
+        asynchronous move is not marked.
+        """
+        with self._halt_lock:
+            refused = self._halt.is_set()
+            if not refused and in_flight:
+                self._in_motion = True
+                self._still_at = None
+        if refused:
+            self._refused_while_halted(what)
+        return not refused
+
+    def _end_move(self, *, unconfirmed: bool = False) -> None:
+        """The move :meth:`_begin_move` marked is over: nothing is in flight, and a halt that found it in flight records
+        what became of it, once, from how it ended (:attr:`last_move_end`).
+
+        ``unconfirmed`` is a move that was stopped where nobody could wait for it to stand (a fault ended its watch, or a
+        synchronous move raised). Under the halt lock with the mark's clearing, so a halt either found the move in
+        flight and is told how it ended, or came after it and found nothing in flight. A cleared latch stays cleared.
+        """
+        with self._halt_lock:
+            self._in_motion = False
+            state = self._halt_state
+            if state is None or state.brake != "pending":
+                return
+            end = self._last_end
+            if unconfirmed or end is MoveEnd.BRAKE_UNCONFIRMED:
+                self._halt_state = dataclasses.replace(state, in_motion=True, brake="unconfirmed")
+            elif end is MoveEnd.BRAKED:
+                still = self._still_at
+                brake_s = max(0.0, still - self._halt_requested_mono) if still is not None else None
+                self._halt_state = dataclasses.replace(state, in_motion=True, braked=True, brake_s=brake_s,
+                                                       brake="braked")
+            else:
+                self._halt_state = dataclasses.replace(state, in_motion=True, brake="ran_out")
+
+    def _refuse_output_while_halted(self, what: str) -> None:
+        state = self._halt_state
+        if state is not None:
+            raise ArmHalted(halted_refusal(state.reason, f"{what} was not switched, and nothing was sent"))
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -306,6 +586,7 @@ class URConnection:
     def _safe_teardown(self) -> None:
         """Best-effort release of both RTDE interfaces; never raises."""
         self._tcp_offset_cache = None
+        self._serial, self._serial_settled, self._serial_failures = None, False, 0
         if self._ctrl is not None:
             try:
                 self._ctrl.stopScript()
@@ -497,13 +778,22 @@ class URConnection:
         """A joint-space move.
 
         It returns ``True`` when a synchronous move completes, or an asynchronous one
-        starts.
+        starts. While the halt latch is set it returns ``False`` and sends nothing.
+
+        With ``brake_on_halt`` off, as shipped, the call is the one it always was: ur_rtde's synchronous ``moveJ``,
+        whose answer is returned. On, a synchronous move is sent asynchronously and watched by this thread
+        (:meth:`_move_and_wait`): a halt brakes it, and ``True`` comes only with the arm at the target.
+        :attr:`last_move_end` says how it ended.
         """
         self._require_connected()
         assert self._ctrl is not None  # guaranteed by _require_connected()
         v = vel if vel is not None else self.vel
         a = acc if acc is not None else self.acc
-        return self._ctrl.moveJ(joint_positions, v, a, asynchronous)
+        if self.refuse_if_halted(_JOINT):
+            return False
+        if self.brake_on_halt and not asynchronous:
+            return self._move_and_wait(_JOINT, [float(q) for q in joint_positions], v, a)
+        return self._send_as_always(_JOINT, self._ctrl.moveJ, joint_positions, v, a, asynchronous)
 
     def moveL(
         self,
@@ -514,21 +804,225 @@ class URConnection:
     ) -> bool:
         """A linear, meaning Cartesian, move.
 
-        ``tcp_pose`` is ``[x, y, z, rx, ry, rz]`` in metres with an axis-angle rotation.
+        ``tcp_pose`` is ``[x, y, z, rx, ry, rz]`` in metres with an axis-angle rotation. The halt latch and
+        ``brake_on_halt`` work as for :meth:`moveJ`; a line is braked with ``stopL``, along the line.
         """
         self._require_connected()
         assert self._ctrl is not None  # guaranteed by _require_connected()
         v = vel if vel is not None else self.vel
         a = acc if acc is not None else self.acc
-        return self._ctrl.moveL(tcp_pose, v, a, asynchronous)
+        if self.refuse_if_halted(_LINE):
+            return False
+        if self.brake_on_halt and not asynchronous:
+            return self._move_and_wait(_LINE, [float(p) for p in tcp_pose], v, a)
+        return self._send_as_always(_LINE, self._ctrl.moveL, tcp_pose, v, a, asynchronous)
+
+    def _send_as_always(self, kind: str, send: "Callable[..., bool]", target: "Sequence[float]", v: float, a: float,
+                        asynchronous: bool) -> bool:
+        """The move as ur_rtde always took it: one call, its answer returned (``brake_on_halt`` off, or the caller's own
+        asynchronous move). The latch is asked again in one step with the mark of the move in flight, right before it."""
+        if not self._begin_move(kind, in_flight=not asynchronous):
+            return False
+        self._last_end = MoveEnd.SENT
+        if asynchronous:
+            return send(target, v, a, asynchronous)
+        ended = False
+        try:
+            answer = send(target, v, a, asynchronous)
+            ended = True
+            return answer
+        finally:
+            self._end_move(unconfirmed=not ended)
+
+    # ------------------------------------------------------------------
+    # The watched move (robot.ur.brake_on_halt)
+    # ------------------------------------------------------------------
+    #
+    # ur_rtde's control script runs a synchronous move in its main loop, so nothing reaches it until the move ends: a
+    # stopJ sent from another thread waits behind it (measured on the CB3 URSim, scripts/ursim/probe_halt.py M0). An
+    # asynchronous move runs in a thread of the script instead, a stopJ or stopL kills that thread and decelerates
+    # along the line it ran, and the script writes the move's progress into an output register: an operation id that
+    # changes at every start, and a running bit. So a watched move is sent asynchronously and read every 8 ms by the
+    # thread that sent it, and that thread brakes it, so no two threads ever drive one control interface.
+
+    def _move_and_wait(self, kind: str, target: "list[float]", v: float, a: float) -> bool:
+        """Send ``kind`` to ``target`` asynchronously and watch it: ``True`` only at the target, ``False`` otherwise.
+
+        A halt brakes it (:meth:`_brake`); a protective or emergency stop or the end of the control program ends it
+        (``False``, the arm wherever the controller stopped it); a move the register never shows within
+        :data:`_SEEN_WITHIN_S` is stopped and refused. Whatever else ends the watch, a read that raises, a garbled
+        register, a ``KeyboardInterrupt`` in the thread that moves the arm: the move may still run in the controller with
+        nobody watching it, so it is stopped where it can be, before anything says it is no longer in flight, and the
+        fault goes on, as a synchronous move's raise did.
+        """
+        ctrl = self._ctrl
+        assert ctrl is not None  # the caller checked the connection
+        before = ctrl.getAsyncOperationProgressEx().operationId()
+        # The latch again, in one step with the mark: a halt during the read above refuses the send.
+        if not self._begin_move(kind, in_flight=True):
+            return False
+        self._last_end = MoveEnd.NOT_STARTED
+        watched = False
+        try:
+            send = ctrl.moveJ if kind == _JOINT else ctrl.moveL
+            if not send(target, v, a, True):
+                self.logger.error("%s was not started: the controller refused the asynchronous send.", kind)
+                watched = True
+                return False
+            self._last_end = MoveEnd.SENT
+            answer = self._watch(kind, target, a, before)
+            watched = True
+            return answer
+        except BaseException:
+            self._stop_quietly(kind, a)
+            raise
+        finally:
+            self._end_move(unconfirmed=not watched)
+
+    def _watch(self, kind: str, target: "list[float]", a: float, before: int) -> bool:
+        ctrl = self._ctrl
+        assert ctrl is not None
+        sent_at = self._clock()
+        seen = False
+        while True:
+            if self._halt.is_set():
+                return self._brake(kind, a)
+            if self._stopped_by_the_controller(kind):
+                return False
+            status = ctrl.getAsyncOperationProgressEx()
+            # Only once the operation this move started shows: until then the register can still read the move
+            # before, which had finished, and that is no arrival.
+            seen = seen or status.operationId() != before
+            if seen and not status.isAsyncOperationRunning():
+                return self._settle(kind, target)
+            if not seen and self._clock() - sent_at > _SEEN_WITHIN_S:
+                self._stop_quietly(kind, a)
+                self._last_end = MoveEnd.NOT_STARTED
+                self.logger.error("%s never showed in the controller's async operation register within %.1f s: "
+                                  "it was stopped, and is refused.", kind, _SEEN_WITHIN_S)
+                return False
+            self._sleep(_POLL_S)
+
+    def _stopped_by_the_controller(self, kind: str) -> bool:
+        """Whether a protective or emergency stop, or the end of the control program, ended the watched move.
+
+        The stops are asked before the program, because a protective stop ends the control program as well and is the
+        cause: :attr:`last_stop_cause` says which, so a probe can tell a protective stop from a program that died.
+        """
+        ctrl, recv = self._ctrl, self._recv
+        assert ctrl is not None and recv is not None
+        if recv.isProtectiveStopped():
+            cause, why = "protective", "the controller is in a protective stop"
+        elif recv.isEmergencyStopped():
+            cause, why = "emergency", "the controller is in an emergency stop"
+        elif not ctrl.isProgramRunning():
+            cause, why = "program", "the control program is no longer running"
+        else:
+            return False
+        self._last_end = MoveEnd.STOPPED
+        self._last_stop_cause = cause
+        self.logger.error("%s ended where the controller stopped it: %s.", kind, why)
+        return True
+
+    def _settle(self, kind: str, target: "list[float]") -> bool:
+        """The move's operation finished: ``True`` once the arm stands within the arrival tolerance, else ``False``."""
+        deadline = self._clock() + _SETTLE_S
+        while True:
+            off = self._off_target(kind, target)
+            if off is None:
+                self._last_end = MoveEnd.ARRIVED
+                return True
+            if self._stopped_by_the_controller(kind):
+                return False
+            if self._clock() >= deadline:
+                self._last_end = MoveEnd.ENDED_SHORT
+                self.logger.error("%s finished %s from its target: it did not arrive.", kind, off)
+                return False
+            self._sleep(_POLL_S)
+
+    def _off_target(self, kind: str, target: "list[float]") -> str | None:
+        """How far the arm stands from ``target``, or ``None`` within the arrival tolerance."""
+        recv = self._recv
+        assert recv is not None
+        if kind == _JOINT:
+            here = [float(v) for v in recv.getActualQ()]
+            if len(here) != len(target):
+                return f"{len(here)} joints read for {len(target)} targets"
+            worst = max((abs(h - t) for h, t in zip(here, target)), default=0.0)
+            return None if worst <= _ARRIVED_RAD else f"{worst:.4f} rad"
+        tcp = [float(v) for v in recv.getActualTCPPose()]
+        if len(tcp) != 6 or len(target) != 6:
+            return "a pose that is not six numbers"
+        mm = 1000.0 * math.dist(tcp[:3], target[:3])
+        turn = _turn_between(tcp[3:], target[3:])
+        return None if mm <= _ARRIVED_MM and turn <= _ARRIVED_TURN_RAD else f"{mm:.2f} mm and {turn:.4f} rad"
+
+    def _brake(self, kind: str, a: float) -> bool:
+        """Brake the move in flight under control, from this thread, and wait until the arm stands still.
+
+        ``stopJ`` for a joint move and ``stopL`` for a line, each decelerating along the line it ran, at max(2.0, the
+        move's own acceleration). The latch records the brake once the move is over (:meth:`_end_move`): braked, with
+        the time from the request until the arm stood, or unconfirmed. A clear meanwhile leaves the latch cleared.
+        """
+        ctrl = self._ctrl
+        assert ctrl is not None
+        decel = max(_BRAKE_MIN_DECEL, float(a))
+        stop = ctrl.stopJ if kind == _JOINT else ctrl.stopL
+        try:
+            stop(decel)
+        except (RuntimeError, OSError) as exc:
+            self._last_end = MoveEnd.BRAKE_UNCONFIRMED
+            self.logger.error("The halt's %s raised (%s): whether the arm stopped is not known.",
+                              "stopJ" if kind == _JOINT else "stopL", exc)
+            return False
+        still = self._wait_still()
+        self._last_end = MoveEnd.BRAKED if still else MoveEnd.BRAKE_UNCONFIRMED
+        if still:
+            self._still_at = self._clock()
+            self.logger.warning("%s braked by the halt at %.1f, standing still %.3f s after the request.", kind,
+                                decel, self._still_at - self._halt_requested_mono)
+        else:
+            self.logger.error("%s braked by the halt at %.1f, and the arm was not seen to stand still within %.1f s.",
+                              kind, decel, _STILL_WAIT_S)
+        return False
+
+    def _wait_still(self) -> bool:
+        """Whether every joint stands still within :data:`_STILL_WAIT_S`; a read that fails says it did not."""
+        recv = self._recv
+        assert recv is not None
+        deadline = self._clock() + _STILL_WAIT_S
+        while True:
+            try:
+                fastest = max((abs(float(v)) for v in recv.getActualQd()), default=0.0)
+            except (RuntimeError, OSError):
+                return False
+            if fastest <= _STILL_RAD_S:
+                return True
+            if self._clock() >= deadline:
+                return False
+            self._sleep(_POLL_S)
+
+    def _stop_quietly(self, kind: str, a: float) -> None:
+        """Stop a move that cannot be watched, best effort: a failure is logged, never raised over the first fault.
+
+        At max(2.0, the move's own acceleration), the halt's deceleration. A connection dropped meanwhile has nothing
+        to stop through, and the first fault goes on.
+        """
+        ctrl = self._ctrl
+        if ctrl is None:
+            return
+        try:
+            (ctrl.stopJ if kind == _JOINT else ctrl.stopL)(max(_BRAKE_MIN_DECEL, float(a)))
+        except Exception as exc:  # noqa: BLE001 (best effort on a path that already failed)
+            self.logger.error("Stopping a move that could not be watched failed too: %s", exc)
 
     def stop(self, deceleration: float = 2.0) -> None:
-        """Stop all movement immediately.
+        """Send ``stopJ`` and then ``stopL`` from the calling thread. Best effort; nothing it meets is re-raised.
 
-        It calls both ``stopJ`` and ``stopL``, so the robot halts whether the active
-        command is a joint-space or a linear move. An error from the controller is
-        logged and never re-raised, because stopping is best-effort and a cleanup path
-        must never fail.
+        It stops an asynchronous move of the caller's own. It does not stop a synchronous move another thread is in:
+        the control script runs that move in its main loop and reads the stop only after it ended, which is why the
+        arm's ``stop()`` latches the halt instead (:meth:`request_halt`), and why a move ``brake_on_halt`` is to brake
+        is sent asynchronously. ``scripts/ursim/probe_halt.py`` M0 measures it.
 
         Parameters:
             deceleration: The rate, in rad/s^2 for stopJ and m/s^2 for stopL.
@@ -650,7 +1144,30 @@ class URConnection:
     _PORT_BASE = {"standard": 0, "configurable": 8, "tool": 16}
 
     def set_digital_out(self, pin: int, value: bool, port: str = "standard") -> None:
-        """Drive a digital output pin (bank ``port``) to ``value``."""
+        """Drive a digital output pin (bank ``port``) to ``value``. Refused with ``ArmHalted`` while halted.
+
+        A toggle hand on the owner's tool DO0 moves its jaws at every change of the output, so a halted arm switches
+        none: nothing is sent, and the refusal says why.
+        """
+        self._refuse_output_while_halted(f"{port} digital output {pin}")
+        self._write_digital_out(pin, value, port)
+
+    def end_output_pulse(self, pin: int, port: str = "standard") -> None:
+        """Drive ``pin`` low to end a pulse that began before a halt: the one output write a halted arm makes.
+
+        A bistable valve's coil, or a vacuum blow-off, is pulsed high and must go back low: a coil left energised until
+        the cell is cleared is what cooks it. A halt that lands inside the pulse refuses every other write, so the pulse's
+        own end comes through here, and only ever as low. Never for a toggle hand, whose every change of the output moves
+        the jaws: its writes go through :meth:`set_digital_out` and are refused while halted. Unhalted it is the plain
+        write of low.
+        """
+        state = self._halt_state
+        if state is not None:
+            self.logger.warning("%s digital output %d driven low to end a pulse that began before the halt (%s).", port,
+                                pin, state.reason)
+        self._write_digital_out(pin, False, port)
+
+    def _write_digital_out(self, pin: int, value: bool, port: str) -> None:
         self._require_io()
         assert self._io is not None  # guaranteed by _require_io()
         if port == "standard":
@@ -663,7 +1180,8 @@ class URConnection:
             raise ValueError(f"set_digital_out: unknown port {port!r}")
 
     def set_analog_out(self, pin: int, value: float, current: bool = False) -> None:
-        """Set an analog output: voltage (V) unless ``current=True`` (A)."""
+        """Set an analog output: voltage (V) unless ``current=True`` (A). Refused with ``ArmHalted`` while halted."""
+        self._refuse_output_while_halted(f"analog output {pin}")
         self._require_io()
         assert self._io is not None  # guaranteed by _require_io()
         if current:
@@ -769,15 +1287,37 @@ class URConnection:
         return model or None
 
     def controller_serial(self) -> str | None:
-        """The controller serial number, or ``None``. Best-effort, on the contract above."""
+        """The controller serial number, or ``None``. Best-effort, on the contract above.
+
+        ur_rtde's ``getSerialNumber()`` refuses PolyScope below 5.6, a CB3 among them; there the dashboard's own
+        "get serial number" is asked over a connection of its own (MEASURED 2026-10-02: URSim CB3 3.15.8 answers
+        ``2018309999``). Only digits are a serial. A settled answer is kept for the connection, because the console
+        asks on every status read and a serial does not change while connected; a connection that failed is tried
+        again on the next read.
+        """
         if self._dashboard is None:
             return None
+        if self._serial_settled:
+            return self._serial
         try:
-            serial = str(self._dashboard.getSerialNumber()).strip()
-        except Exception as exc:  # noqa: BLE001
-            self.logger.warning("dashboard.getSerialNumber() failed: %s", exc)
-            return None
-        return serial or None
+            answer = str(self._dashboard.getSerialNumber()).strip()
+        except Exception as exc:  # noqa: BLE001 (below PolyScope 5.6 ur_rtde refuses; the dashboard is asked itself)
+            self.logger.debug("dashboard.getSerialNumber() refused (%s); asking 'get serial number' itself.", exc)
+            answer = ""
+        if not answer.isdigit():
+            try:
+                answer = _ask_dashboard(self.ip, "get serial number")
+            except OSError as exc:
+                self._serial_failures += 1
+                # Once per connection at warning level: the console asks on every status read.
+                log = self.logger.warning if self._serial_failures == 1 else self.logger.debug
+                log("The dashboard's 'get serial number' failed: %s", exc)
+                return None
+        self._serial = answer if answer.isdigit() else None
+        self._serial_settled = True
+        if self._serial is None:
+            self.logger.warning("The controller answers no serial number (%r); no claim is made about it.", answer)
+        return self._serial
 
     def _diagnose_connect_failure(self) -> str | None:
         """Name why the control interface refused, where a dashboard can prove it.

@@ -103,7 +103,8 @@ switched on as much as switched off (the owner at the pendant, 2026-09-28), so a
 left where it went, and nothing is pulsed: the low, high, low pulse it sent before moved the jaws two
 or three times. The program counts its own changes from where a person says they stand: its
 `connect()`, once per program start and before anything moves, reads the output without writing it and
-asks at the terminal whether the jaws stand open (Enter or `open` = open), and a person who says closed
+asks at the terminal whether the jaws stand open (Enter or `open` = open), or through the seam a console
+installed ([below](#the-jaws-question-through-a-seam)), and a person who says closed
 chooses one change to open them or an abort. With no terminal and no `ask=` handed in, the connect is
 refused. The hand counts as connected only once the answer is in, so
 nothing can command it while the question waits. Nothing is kept between programs. It is a
@@ -143,6 +144,52 @@ intent (`OpensAndCloses.set_closed`), so `closed_below_mm` cannot turn a verb ro
 only reads the widths a caller sends through `set_width_mm` itself. Both touch the controller's I/O at connect, so the arm connects first; `Robot` does that for
 you.
 
+## The jaws question, through a seam
+
+The operator console asks a toggle's question in the browser, never at the terminal of the server it runs in.
+It hands the hand a **structured seam**, and every question goes there from then on:
+
+```python
+from src.robot.grippers.jaw_io import JawAsking
+
+
+def ask(question: JawAsking) -> str:
+    # question.stage: "where" (choices open, closed) or "open_now" (choices open_now, abort): after "closed", or
+    # first and only at a check where the program's own count says the jaws stand closed
+    return "open"           # one of question.choices; raise EOFError for no answer
+
+
+gripper.answer_questions_with(ask, before_change=lambda: "")   # "" lets the one change out
+```
+
+- **`JawAsking`** carries the `stage`, the `choices` in the console's words, whether a connect asks, the reason,
+  where the output is (`tool output 0`, also `where_pin`, a lock-free read), the hand's own text, the attempt
+  of three and why it is asked again. There is **no default**: an empty answer is no answer, at a connect too.
+  The seam takes only the offered words (and `p` and `a` for the open-now stage); anything else is asked again,
+  saying why, and `EOFError` is no answer. A question nobody answered is refused, never taken for "open".
+- **A person's "closed" is the count from then on**, before the open-now question: an abort after it leaves
+  the count CLOSED, never unknown.
+- **`before_change`** is asked under the hand's lock immediately before the one change "open now" sends. Only
+  the empty string lets it out; any other answer, no sentence at all, or a raise refuses it with nothing sent,
+  and the refusal names it. The connection is read again right after the gate, so a disconnect that landed
+  while the gate read the controller refuses too, and an output switched at the pendant meanwhile raises with
+  nothing sent. The gate comes and goes with the seam: `before_change` is read-only on the hand.
+- **`confirm_where_the_jaws_stand(reason, before_change=...)`** is the check before the arm moves again after
+  a stop: it **always asks**, also where the count says open, and answers `""` once the jaws stand open, else
+  the refusal. A hand that is not a toggle answers `""` at once.
+- **A count that says closed is never answered "open".** Where the program itself knows the jaws stand closed
+  (its count says CLOSED, no change failed or went unread since, and the output still reads the level that
+  count left), the check does not ask where they stand: an "open" against that evidence would turn the count
+  round with nothing sent, and the next close would open them. It asks only `open_now` or `abort`, and an
+  abort keeps the count CLOSED. Where the count cannot vouch for itself (the output switched at the pendant, a
+  change that failed) or says open, it asks `where`, taking only `open` and `closed`.
+- `question_seam_installed()` says whether a seam asks; the console refuses to connect a toggle without one.
+
+**A pulse a halt cuts short still ends low.** A halted arm refuses every output write with `ArmHalted`, the
+toggle's included, and sends nothing. A double solenoid's coil and a vacuum blow-off are different: they are
+pulsed high and must go back low however the pulse ends, so they end it through `end_pulse`, which falls back to
+the arm's `end_output_pulse`, the one write a halted arm makes, only ever low. A toggle hand never uses it.
+
 ## The simulated grippers
 
 `IsaacGripper` drives any jaw from a `GripperProfile` (`ROBOTIQ_2F85_PROFILE`, `ROBOTIQ_HANDE_PROFILE`,
@@ -167,6 +214,7 @@ not seal quality, which is scored in [grasping/suction](../grasping/suction/READ
 | `IsaacGripper` and `IsaacSuctionGripper` | measured in simulation |
 | The `jaw_io` and `vacuum` pins switching on a controller | measured against real controller software: URSim |
 | `jaw_io` on a real hand: a Hand-E switched as `single_toggle` on tool DO0 of a UR10 (CB3) | run on a physical cell |
+| The jaws question answered in the browser, "open now" as one DO0 edge, no DO0 edge after a halt | measured against real controller software: URSim CB3, `scripts/ursim/probe_console_task.py` and `probe_halt.py` |
 | The Robotiq driver on a real Hand-E over its URCap socket | run on a physical cell: measured with a UR; on the UR10 (CB3) above the socket on port 63352 was refused, so its Hand-E runs as `jaw_io` |
 | OnRobot and `vacuum` on a real hand | never touched hardware |
 

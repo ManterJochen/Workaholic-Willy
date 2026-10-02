@@ -36,9 +36,17 @@ import numpy as np
 
 from src.contracts import UNSET, Maybe, chosen
 
-from src.robot.grasping.collision import resolve_support_plane
+from src.robot.grasping.collision import ParallelJawGripperModel, resolve_support_plane
+from src.robot.grasping.generation.scene_obstacles import (
+    SceneObstacleRules,
+    envelope_verdicts,
+    least_part_height_mm,
+    why_no_grasp,
+)
 from src.robot.grasping.generation.support_footprint import (
+    DEFAULT_FLOOR_MARGIN_MM,
     DEFAULT_MAX_CANDIDATES,
+    CorridorSeen,
     SupportFootprintCandidate,
     SupportFootprintJaw,
     generate_support_footprint_grasps,
@@ -127,10 +135,39 @@ class SceneGrasps:
     #: What the closing axis the caller asked for (``Scene.grasps(closing_axis=...)``) left out of what the generator
     #: found, and why, in one sentence; ``""`` when no axis was asked for or it left nothing out.
     withheld: str = ""
+    #: How many of the generator's tries met a neighbour the camera saw beside the part (SFE's ``seen_*`` refusals), and
+    #: how many of its grasps brought the open hand nearer a support's solid or a declared box than the guard keeps
+    #: (``Located.scene``, the cell fixes' Track A). 0 where nothing was refused for it.
+    refused_by_obstacles: int = 0
+    refused_by_support: int = 0
+    #: Why there is no grasp, in one sentence (``scene_obstacles.why_no_grasp``): a neighbour, a declared body, the
+    #: support, a part too short for this hand. ``""`` where there are grasps, or nobody can say.
+    said: str = ""
 
     @property
     def best(self) -> SupportFootprintCandidate | None:
         return self.candidates[0] if self.candidates else None
+
+    def other_than(
+        self, refused: "Sequence[SupportFootprintCandidate]", *, within_mm: float = 10.0, within_deg: float = 15.0,
+    ) -> "SceneGrasps":
+        """These grasps less each one within ``within_mm`` and ``within_deg`` of a grasp in ``refused``: a grasp a guard
+        or the planner refused, seen again on a fresh look, is not tried again, and the next try is another grasp
+        (example 13's next grasps). The order and everything else stay as they are."""
+        cosine = float(np.cos(np.radians(float(within_deg))))
+
+        def seen_again(grasp: SupportFootprintCandidate) -> bool:
+            for other in refused:
+                apart = float(np.linalg.norm(np.asarray(grasp.position_mm, dtype=np.float64)
+                                             - np.asarray(other.position_mm, dtype=np.float64)))
+                a = np.asarray(grasp.approach, dtype=np.float64)
+                b = np.asarray(other.approach, dtype=np.float64)
+                turned = float(a @ b) / max(float(np.linalg.norm(a) * np.linalg.norm(b)), 1e-12)
+                if apart <= float(within_mm) and turned >= cosine:
+                    return True
+            return False
+
+        return replace(self, candidates=tuple(grasp for grasp in self.candidates if not seen_again(grasp)))
 
     def __str__(self) -> str:
         """What ``print()`` shows: the text :meth:`render` returns."""
@@ -143,6 +180,9 @@ class SceneGrasps:
         if not self.candidates and self.withheld:
             # The generator found grasps and none closes along the axis asked for: that is the answer, not the cloud.
             return "\n".join((head, f"  none. {self.withheld}"))
+        if not self.candidates and self.said:
+            # Why, where the scene can say it: a neighbour, the support, a part too short for this hand.
+            return "\n".join((head, f"  none: {self.said}."))
         if not self.candidates:
             # An empty result is an answer. The primitive returns nothing when the cloud is too
             # sparse to reconstruct or admits no legal grasp, and refusing beats proposing a grasp
@@ -187,6 +227,9 @@ class SceneGrasps:
                 for c in self.candidates
             ],
             **({"withheld": self.withheld} if self.withheld else {}),
+            **({"refused_by_obstacles": self.refused_by_obstacles} if self.refused_by_obstacles else {}),
+            **({"refused_by_support": self.refused_by_support} if self.refused_by_support else {}),
+            **({"said": self.said} if self.said else {}),
         }
 
 
@@ -236,6 +279,22 @@ class Scene:
     #: How the cell's hand and camera naturally stand (``robot.natural_closing_axis``), set by :meth:`from_robot_config`:
     #: where no closing axis is asked for, :meth:`grasps` turns every grasp the way round nearer it. ``None``: none is.
     _natural: "ClosingAxis | None" = field(default=None, repr=False)
+    #: Side approaches (``robot.grasping.side_approaches``), set by :meth:`from_robot_config`, and who says a tilted
+    #: approach goes through seen space: the frame the part was located in (``Located.scene``). Without a frame no tilt
+    #: past the first that fits is offered (``generate_support_footprint_grasps``).
+    _side_approaches: bool = field(default=False, repr=False)
+    _corridor_seen: "CorridorSeen | None" = field(default=None, repr=False)
+    #: The rules the scene's obstacles were read by (``Located.scene`` with ``robot.grasping.scene_obstacles``), and what
+    #: the guard holds that the open hand keeps its distance from: the support model's solids. ``None`` and ``()`` for a
+    #: scene built from a cloud alone, which plans as before.
+    _rules: "SceneObstacleRules | None" = field(default=None, repr=False)
+    _held: "tuple[Any, ...]" = field(default=(), repr=False)
+    #: The hand's collision envelope as the cell's tree describes it (``grasping.gripper_geometry``), set by
+    #: :meth:`from_robot_config`: what keeps the guard's distance from :attr:`_held`.
+    _hand: Any = field(default=None, repr=False)
+    #: How many obstacle points of its own frame the scene read beside the part, and in how many clusters.
+    _seen_points: int = field(default=0, repr=False)
+    _seen_clusters: int = field(default=0, repr=False)
 
     @property
     def declared_support_height_mm(self) -> float:
@@ -389,7 +448,9 @@ class Scene:
             inflate_mm=float(robot_config.grasping.geometry.inflate_mm),
         )
         return replace(scene, _declared_support_mm=float(resolution.declared_mm),
-                       _natural=natural_closing_axis_of(robot_config))
+                       _natural=natural_closing_axis_of(robot_config),
+                       _side_approaches=bool(getattr(robot_config.grasping, "side_approaches", False)),
+                       _hand=_hand_of(robot_config))
 
     def grasps(
         self,
@@ -440,14 +501,23 @@ class Scene:
         cap = int(chosen_options.get("max_candidates", DEFAULT_MAX_CANDIDATES))
         if wanted is not None:
             chosen_options["max_candidates"] = max(CANDIDATES_THE_AXIS_CHOOSES_AMONG, cap)
+        if self._side_approaches:
+            chosen_options["side_approaches"] = True
+            chosen_options["corridor_seen"] = self._corridor_seen
+        refused: dict[str, int] = {}
         candidates = generate_support_footprint_grasps(
             self.target_points_base_mm,
             support_height_mm=self.support_height_mm,
             jaw=self.jaw,
             obstacle_points_base_mm=self.obstacle_points_base_mm,
             rigid_obstacle_points_base_mm=self.rigid_obstacle_points_base_mm,
+            refusals=refused,
             **chosen_options,
         )
+        offered = len(candidates)
+        by_support, said = 0, ""
+        if self._rules is not None:
+            candidates, by_support, said = self._keep_off_what_the_guard_holds(candidates, refused, offered)
         withheld = ""
         if wanted is not None:
             candidates, withheld = _closing_along(candidates, wanted, cap)
@@ -459,7 +529,56 @@ class Scene:
             points=int(self.target_points_base_mm.shape[0])
             if self.target_points_base_mm.ndim == 2 else 0,
             withheld=withheld,
+            refused_by_obstacles=int(refused.get("seen_fingers", 0) + refused.get("seen_corridor", 0)),
+            refused_by_support=by_support,
+            said=said if not candidates else "",
         )
+
+    def _keep_off_what_the_guard_holds(
+        self, candidates: "list[SupportFootprintCandidate]", refused: dict[str, int], offered: int,
+    ) -> "tuple[list[SupportFootprintCandidate], int, str]":
+        """The candidates whose open hand keeps the guard's distance from the solids it holds and the declared boxes,
+        how many did not, and why none is left where none is (``scene_obstacles.why_no_grasp``): the calculator's rule,
+        on the scene's own candidates."""
+        rules = self._rules
+        assert rules is not None  # noqa: S101 (the caller checks)
+        jaw = self.jaw or SupportFootprintJaw.from_model()
+        hand = self._hand if self._hand is not None else ParallelJawGripperModel(
+            finger_length_mm=jaw.finger_behind_mm, finger_thickness_mm=jaw.finger_thickness_mm,
+            finger_width_mm=jaw.finger_width_mm, fingertip_depth_mm=jaw.finger_ahead_mm,
+            pad_length_mm=jaw.pad_ahead_mm + jaw.pad_behind_mm, pad_ahead_mm=jaw.pad_ahead_mm,
+            palm_depth_mm=jaw.palm_depth_mm, palm_width_mm=jaw.palm_width_mm)
+        verdicts = envelope_verdicts(
+            [(c.position_mm, np.column_stack([c.closing_axis, np.cross(c.approach, c.closing_axis), c.approach]))
+             for c in candidates],
+            gripper_model=hand, open_width_mm=jaw.aperture_mm, solids=self._held,
+            support_distance_mm=rules.support_distance_mm, declared_boxes=rules.declared_boxes,
+            declared_distance_mm=rules.declared_distance_mm)
+        kept = [c for c, v in zip(candidates, verdicts) if not v.refused]
+        by_support = sum(1 for v in verdicts if v.refused == "support")
+        said = ""
+        if not kept:
+            telemetry: dict[str, Any] = {
+                "geometry_stage": "support_footprint", "support_footprint_kept": offered,
+                "support_footprint_refused": refused,
+                "support_footprint_points": int(np.asarray(self.target_points_base_mm).reshape(-1, 3).shape[0]),
+                "rejected_support": by_support,
+                "rejected_declared": sum(1 for v in verdicts if v.refused == "declared"),
+                "scene_support_distance_mm": rules.support_distance_mm,
+                "scene_declared_distance_mm": rules.declared_distance_mm,
+                "scene_declared_nearest": next((v.nearest for v in verdicts if v.refused == "declared"), ""),
+                "scene_obstacle_points": self._seen_points, "scene_obstacle_clusters": self._seen_clusters,
+                "scene_least_part_height_mm": least_part_height_mm(jaw),
+                "scene_table_clearance_mm": float(jaw.table_clearance_mm),
+            }
+            floor = self.support_height_mm + float(self.floor_margin_mm if chosen(self.floor_margin_mm)
+                                                    else DEFAULT_FLOOR_MARGIN_MM)
+            points = np.asarray(self.target_points_base_mm, dtype=float).reshape(-1, 3)
+            over = points[np.isfinite(points).all(axis=1) & (points[:, 2] > floor), 2]
+            if over.size:
+                telemetry["scene_part_height_mm"] = float(np.percentile(over, 98.0)) - self.support_height_mm
+            said = why_no_grasp(telemetry)[1]
+        return kept, by_support, said
 
     def _closing_axis_asked(self, closing_axis: "Maybe[ClosingAxisLike]") -> "ClosingAxis | None":
         """The closing axis :meth:`grasps` chooses along: the one asked for, else the one a look around judged this
@@ -479,6 +598,20 @@ class Scene:
                     "did not judge (its early stop, its jaw faces): name that axis to look_around(..., closing_axis="
                     "...), or ask the scene for none and take the grasp the looks judged")
         return asked
+
+
+def _hand_of(robot_config: Any) -> "ParallelJawGripperModel | None":
+    """The cell's jaw as a collision envelope, field for field as ``SupportFootprintJaw.from_robot_config`` builds it
+    (``grasping.gripper_geometry.parallel_jaw`` and its ``outer_margin_mm``); ``None`` for a hand that is no jaw."""
+    geometry = robot_config.grasping.gripper_geometry
+    if str(geometry.kind) != "parallel_jaw":
+        return None
+    j = geometry.parallel_jaw
+    return ParallelJawGripperModel(
+        finger_length_mm=j.finger_length_mm, finger_thickness_mm=j.finger_thickness_mm,
+        finger_width_mm=j.finger_width_mm, finger_pad_overlap_mm=j.finger_pad_overlap_mm,
+        fingertip_depth_mm=j.fingertip_depth_mm, pad_length_mm=j.pad_length_mm, pad_ahead_mm=j.pad_ahead_mm,
+        palm_depth_mm=j.palm_depth_mm, palm_width_mm=j.palm_width_mm, outer_margin_mm=geometry.outer_margin_mm)
 
 
 def _closing_toward(

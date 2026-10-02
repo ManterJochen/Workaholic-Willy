@@ -683,12 +683,23 @@ def _fixture_detail(pair: str, fixtures: "Sequence[AxisAlignedBox]", *, seen: bo
         f"({cx + u * c - v * s:.1f}, {cy + u * s + v * c:.1f})"
         for u, v in ((-half[0], -half[1]), (half[0], -half[1]), (half[0], half[1]), (-half[0], half[1]))
     )
+    # A support surface's solid tilts with the surface as the camera read it: its z is the box that encloses it, and
+    # the refusal says by how much it tilts.
+    rotation = None if turned is None else getattr(turned, "rotation", None)
+    tilt: dict[str, str] = {}
+    low, high = cz - half[2], cz + half[2]
+    if rotation is not None:
+        matrix = np.asarray(rotation, dtype=np.float64).reshape(3, 3)
+        reach_z = float(np.abs(matrix[2]) @ half)
+        low, high = cz - reach_z, cz + reach_z
+        tilt = {"box_tilt_deg": f"{math.degrees(math.acos(max(-1.0, min(1.0, float(matrix[2, 2]))))):.2f}"}
     note = str(getattr(box, "note", "") or "")
     return {
         **kind,
         "box_centre_mm": f"({cx:.1f}, {cy:.1f}, {cz:.1f})",
         "box_size_mm": f"{2.0 * half[0]:.1f} x {2.0 * half[1]:.1f} x {2.0 * half[2]:.1f}",
         "box_yaw_deg": f"{math.degrees(yaw):.1f}",
-        "box_corners_mm": f"{corners}, z {cz - half[2]:.1f} to {cz + half[2]:.1f}",
+        **tilt,
+        "box_corners_mm": f"{corners}, z {low:.1f} to {high:.1f}",
         **({"box_note": note} if note else {}),
     }

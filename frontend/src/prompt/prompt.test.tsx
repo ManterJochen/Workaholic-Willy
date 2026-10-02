@@ -8,6 +8,9 @@
  * an arm. The backend holds the same line -- `/v1/voice/transcribe` returns TEXT -- and this pins the
  * other half of it, because the shortcut is exactly the kind of "improvement" a later reader adds.
  *
+ * The microphone button is a toggle (owner decision 10): a click starts, a second click stops. A foot switch that
+ * sends the talk key keeps push to talk: the key records while it is held (build plan item 21).
+ *
  * ⚠ The WAV encoder is tested against its own bytes rather than a fixture. What makes it correct is
  * that a decoder can read it, and the header is where that goes wrong -- a wrong byte rate or a
  * wrong data length produces a file every player opens and every decoder mis-reads.
@@ -16,14 +19,14 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { I18nProvider } from '../i18n'
 import { PromptInput } from './PromptInput'
-import { encodeWav } from './recordWav'
-import { resetPromptHistory, settled, submitted, usePromptHistory } from './pipeline'
+import { encodeWav, rms } from './recordWav'
 
 afterEach(() => {
   cleanup()
-  resetPromptHistory()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 describe('the WAV encoder', () => {
@@ -52,41 +55,12 @@ describe('the WAV encoder', () => {
   })
 })
 
-describe('the prompt history', () => {
-  function History() {
-    const entries = usePromptHistory()
-    return (
-      <ul>
-        {entries.map((e) => (
-          <li key={e.id}>
-            {e.source}: {e.text} {e.run ? `-> ${e.run.id}` : e.error ? `!! ${e.error.code}` : '...'}
-          </li>
-        ))}
-      </ul>
-    )
-  }
-
-  it('records HOW the text arrived, not only what it said', () => {
-    render(<History />)
-    act(() => {
-      submitted('the green cube', 'spoken')
-    })
-    // ⭑ THE WHOLE REASON THE HISTORY EXISTS. When a run goes wrong, "the operator asked for the
-    // wrong thing" and "the machine heard the wrong thing" look identical afterwards -- unless
-    // something recorded which of the two routes the text came in by.
-    expect(screen.getByText(/spoken: the green cube/)).toBeTruthy()
-  })
-
-  it('attaches the outcome to the prompt that caused it', () => {
-    render(<History />)
-    let id = 0
-    act(() => {
-      id = submitted('the red cup', 'typed')
-    })
-    act(() => {
-      settled(id, { run: { id: 'run-7' } as never })
-    })
-    expect(screen.getByText(/-> run-7/)).toBeTruthy()
+describe('the level meter\'s number', () => {
+  it('is the root mean square of a frame: silence is 0, a full-scale square is 1', () => {
+    expect(rms(new Float32Array(64))).toBe(0)
+    expect(rms(new Float32Array(64).fill(1))).toBe(1)
+    expect(rms(new Float32Array([0.5, -0.5, 0.5, -0.5]))).toBeCloseTo(0.5, 6)
+    expect(rms(new Float32Array(0))).toBe(0)
   })
 })
 
@@ -153,14 +127,25 @@ describe('PromptInput', () => {
     )
     expect(screen.queryByText(/transcribed from speech/)).toBeNull()
   })
+
+  it('speaks German under the console\'s provider', () => {
+    render(
+      <I18nProvider lang="de">
+        <PromptInput value="" onChange={() => undefined} canSubmit onSubmit={() => undefined} />
+      </I18nProvider>,
+    )
+    expect(screen.getByText(/Kein Mikrofon hier/)).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Sprechen/ })).toBeTruthy()
+  })
 })
 
 describe('when the microphone IS available', () => {
-  /** A recorder that yields one short buffer, so the whole path runs without hardware. */
+  /** A recorder the test feeds by hand, so the whole path runs without hardware. */
   function installFakeMicrophone(seconds: number): {
-    transcribe: ReturnType<typeof vi.fn>
     track: { stop: ReturnType<typeof vi.fn> }
     getUserMedia: ReturnType<typeof vi.fn>
+    /** Hand the open recorder `secondsOf` seconds of a steady tone at `level`. */
+    feed: (secondsOf: number, level?: number) => void
   } {
     const rate = 16000
     const track = { stop: vi.fn() }
@@ -193,14 +178,13 @@ describe('when the microphone IS available', () => {
       },
     )
     vi.stubGlobal('isSecureContext', true)
-    // Feed the node once the component has attached its handler.
-    queueMicrotask(() => {
-      const frames = Math.round(seconds * rate)
-      onaudioprocess?.({
-        inputBuffer: { getChannelData: () => new Float32Array(frames).fill(0.1) },
-      })
-    })
-    return { transcribe: vi.fn(), track, getUserMedia }
+    const feed = (secondsOf: number, level = 0.1) => {
+      const frames = Math.round(secondsOf * rate)
+      onaudioprocess?.({ inputBuffer: { getChannelData: () => new Float32Array(frames).fill(level) } })
+    }
+    // Fed once right away: before the recorder listens, so a tap records nothing.
+    queueMicrotask(() => feed(seconds))
+    return { track, getUserMedia, feed }
   }
 
   function box(talkKey?: string) {
@@ -214,54 +198,97 @@ describe('when the microphone IS available', () => {
     installFakeMicrophone(0.05)
     const onChange = vi.fn()
     render(<PromptInput value="" onChange={onChange} canSubmit onSubmit={() => undefined} />)
-    fireEvent.pointerDown(screen.getByRole('button', { name: /speak/i }))
-    await waitFor(() => expect(screen.getByRole('button', { name: /release to stop/i })).toBeTruthy())
-    fireEvent.pointerUp(screen.getByRole('button', { name: /release to stop/i }))
+    fireEvent.click(screen.getByRole('button', { name: /speak/i }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /stop recording/i })).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: /stop recording/i }))
     // ⚠ Whisper on 50 ms of a loud cell returns an empty string or a word it made up, and an
     // invented word is worse than nothing once it becomes a grasp target.
     await waitFor(() => expect(screen.getByText(/too short to transcribe/)).toBeTruthy())
     expect(onChange).not.toHaveBeenCalled()
   })
 
-  it('records only while held: a click alone opens no microphone', async () => {
-    // The button used to toggle on click, which is not push to talk: a second click was the only
-    // way to stop, and a hand that let go left the microphone open.
-    const { getUserMedia } = installFakeMicrophone(0.05)
+  it('a click starts, a second click stops (owner decision 10)', async () => {
+    const { getUserMedia, track } = installFakeMicrophone(0.05)
     box()
     fireEvent.click(screen.getByRole('button', { name: /speak/i }))
-    await act(async () => undefined)
-    expect(getUserMedia).not.toHaveBeenCalled()
-    expect(screen.getByRole('button', { name: /hold to speak/i })).toBeTruthy()
-  })
-
-  it('stops when the pointer leaves the button', async () => {
-    const { track } = installFakeMicrophone(0.05)
-    box()
-    fireEvent.pointerDown(screen.getByRole('button', { name: /speak/i }))
-    await waitFor(() => expect(screen.getByRole('button', { name: /release to stop/i })).toBeTruthy())
-    fireEvent.pointerLeave(screen.getByRole('button', { name: /release to stop/i }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /stop recording/i })).toBeTruthy())
+    expect(getUserMedia).toHaveBeenCalledTimes(1)
+    expect(track.stop).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /stop recording/i }))
     await waitFor(() => expect(screen.getByText(/too short to transcribe/)).toBeTruthy())
     expect(track.stop).toHaveBeenCalled()
-    expect(screen.getByRole('button', { name: /hold to speak/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /speak/i })).toBeTruthy()
   })
 
-  it('a release while the microphone is still opening ends the recording', async () => {
-    // The press opens the microphone asynchronously. A hand that lets go first must not leave it open.
+  it('keeps recording when the pointer leaves the button: a toggle stops on a click only', async () => {
+    const { track } = installFakeMicrophone(0.05)
+    box()
+    fireEvent.click(screen.getByRole('button', { name: /speak/i }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /stop recording/i })).toBeTruthy())
+    fireEvent.pointerLeave(screen.getByRole('button', { name: /stop recording/i }))
+    fireEvent.pointerUp(screen.getByRole('button', { name: /stop recording/i }))
+    await act(async () => undefined)
+    expect(track.stop).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: /stop recording/i })).toBeTruthy()
+  })
+
+  it('a second click while the microphone is still opening ends the recording', async () => {
+    // The click opens the microphone asynchronously. A second click before it is open must not leave it open.
     const { track } = installFakeMicrophone(0.05)
     box()
     const button = screen.getByRole('button', { name: /speak/i })
-    fireEvent.pointerDown(button)
-    fireEvent.pointerUp(button)
+    fireEvent.click(button)
+    fireEvent.click(button)
     await waitFor(() => expect(screen.getByText(/too short to transcribe/)).toBeTruthy())
     expect(track.stop).toHaveBeenCalled()
-    expect(screen.getByRole('button', { name: /hold to speak/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /speak/i })).toBeTruthy()
+  })
+
+  it('shows a level meter while it records, and none before', async () => {
+    const { feed } = installFakeMicrophone(0.05)
+    box()
+    expect(screen.queryByRole('meter')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /speak/i }))
+    await waitFor(() => expect(screen.getByRole('meter', { name: /level/i })).toBeTruthy())
+    act(() => feed(0.2, 0.5))
+    await waitFor(() => expect(Number(screen.getByRole('meter', { name: /level/i }).getAttribute('aria-valuenow'))).toBeGreaterThan(0))
+  })
+
+  it('puts the transcript in the box as spoken, and never submits it', async () => {
+    const { feed } = installFakeMicrophone(0.05)
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ text: 'nimm den grünen Würfel', reason: null, speech: {}, transcript: null }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )))
+    const onChange = vi.fn()
+    const onSubmit = vi.fn()
+    render(<PromptInput value="" onChange={onChange} canSubmit onSubmit={onSubmit} />)
+    fireEvent.click(screen.getByRole('button', { name: /speak/i }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /stop recording/i })).toBeTruthy())
+    act(() => feed(1.2))
+    fireEvent.click(screen.getByRole('button', { name: /stop recording/i }))
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith('nimm den grünen Würfel', 'spoken'))
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('closes the microphone and drops the recording when the box is disabled (a run starts)', async () => {
+    const { track } = installFakeMicrophone(0.05)
+    const fetcher = vi.fn()
+    vi.stubGlobal('fetch', fetcher)
+    const { rerender } = render(<PromptInput value="" onChange={() => undefined} canSubmit onSubmit={() => undefined} />)
+    fireEvent.click(screen.getByRole('button', { name: /speak/i }))
+    await waitFor(() => expect(screen.getByRole('button', { name: /stop recording/i })).toBeTruthy())
+    rerender(<PromptInput value="" onChange={() => undefined} canSubmit onSubmit={() => undefined} disabled />)
+    await waitFor(() => expect(track.stop).toHaveBeenCalled())
+    expect(fetcher).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: /speak/i }).hasAttribute('disabled')).toBe(true)
   })
 
   it('records while the talk key is held, for a foot switch that sends a key', async () => {
     const { getUserMedia } = installFakeMicrophone(0.05)
     box()
     fireEvent.keyDown(window, { key: 'F8' })
-    await waitFor(() => expect(screen.getByRole('button', { name: /release to stop/i })).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('button', { name: /stop recording/i })).toBeTruthy())
     // A held key repeats. The repeat is the same hold, not a second recording.
     fireEvent.keyDown(window, { key: 'F8', repeat: true })
     fireEvent.keyUp(window, { key: 'F8' })
@@ -276,7 +303,7 @@ describe('when the microphone IS available', () => {
     await act(async () => undefined)
     expect(getUserMedia).not.toHaveBeenCalled()
     fireEvent.keyDown(window, { key: 'PageDown' })
-    await waitFor(() => expect(screen.getByRole('button', { name: /release to stop/i })).toBeTruthy())
+    await waitFor(() => expect(screen.getByRole('button', { name: /stop recording/i })).toBeTruthy())
     fireEvent.keyUp(window, { key: 'PageDown' })
     await waitFor(() => expect(screen.getByText(/too short to transcribe/)).toBeTruthy())
   })
@@ -295,12 +322,31 @@ describe('when the microphone IS available', () => {
     }
   })
 
-  it('says in its tooltip that it is held, and which key does the same', () => {
+  it('takes no stored talk key that typing uses: Enter stays Enter, and the default F8 talks', async () => {
+    // A key stored by hand, or by the old console, which took any key: Settings refuses it (`screens/talkKey.ts`),
+    // and the cockpit must not take it from typing either.
+    const { getUserMedia } = installFakeMicrophone(0.05)
+    localStorage.setItem('willy.talkKey', 'Enter')
+    try {
+      box()
+      fireEvent.keyDown(window, { key: 'Enter' })
+      await act(async () => undefined)
+      expect(getUserMedia).not.toHaveBeenCalled()
+      fireEvent.keyDown(window, { key: 'F8' })
+      await waitFor(() => expect(getUserMedia).toHaveBeenCalledTimes(1))
+      fireEvent.keyUp(window, { key: 'F8' })
+      await waitFor(() => expect(screen.getByText(/too short to transcribe/)).toBeTruthy())
+    } finally {
+      localStorage.removeItem('willy.talkKey')
+    }
+  })
+
+  it('says in its tooltip that a click starts and a click stops, and which key records while held', () => {
     installFakeMicrophone(0.05)
     box('F9')
     const title = screen.getByRole('button', { name: /speak/i }).getAttribute('title') ?? ''
-    expect(title).toMatch(/Hold to speak, and let go to stop/)
-    expect(title).toMatch(/Holding F9 does the same/)
-    expect(title).toMatch(/you press the button/)
+    expect(title).toMatch(/Click to speak, click again to stop/)
+    expect(title).toMatch(/Holding F9 records while held/)
+    expect(title).toMatch(/nothing moves until you press Start/)
   })
 })

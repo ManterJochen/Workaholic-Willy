@@ -12,6 +12,7 @@ import unittest
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest import mock
 
 import numpy as np
@@ -242,14 +243,20 @@ class ALocatedTargetLeavesTheWorldTests(unittest.TestCase):
             LinkCapsule(frame=0, start_mm=(-500.0, -500.0, 600.0), end_mm=(-500.0, -500.0, 700.0), radius_mm=10.0),))
 
         seen = world.world_for(self_envelope=self_envelope, now=50.1)
-        self.assertEqual(1, seen.perceived_count, seen.render())
+        # The boxes of what the camera saw; the solids of what the scene stands on are no target.
+        self.assertEqual(1, _camera_boxes(seen), seen.render())
 
         located = Locator.from_parts(camera=owners["overhead"], backend=_backend("red cube")).locate("a red cube")
         arm = SimpleNamespace(live_planner_world=world)
         with keeping_out(arm, located.keep_out(0)):
             world.drop_cached_frames()
             held = world.world_for(self_envelope=self_envelope, now=50.1)
-        self.assertEqual(0, held.perceived_count, held.render())
+        self.assertEqual(0, _camera_boxes(held), held.render())
+
+
+def _camera_boxes(snapshot: Any) -> int:
+    """How many boxes of what the camera saw a world holds, without the solids of what the scene stands on."""
+    return sum(1 for box in snapshot.perceived.boxes if box.kind == "seen")
 
 
 class TheLocatorImportsLittleTests(unittest.TestCase):

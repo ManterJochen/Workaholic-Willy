@@ -38,10 +38,12 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Iterator, Mapping, Optional
 
 
 from src.contracts import UNSET, Maybe, chosen
+from src.robot.constants import create_robot_logger
 from src.robot.core import (
     NO_PLAN_FAIL_SAFE_MESSAGE,
     Gripper,
@@ -152,6 +154,7 @@ from src.robot.grasping.rl.router import (
 if TYPE_CHECKING:
     from src.config.schema import CameraConfig
     from src.config.schema.robot import RobotConfig
+    from src.geometry.closing_axis import ClosingAxis
     from src.robot.execution.handling import HandlingReport
     from src.robot.grasping.loop.pick_loop import LookedAround
     from src.robot.grasping.recovery.push_gate import PickPush, PushCampaign, PushCell, PushGate
@@ -174,6 +177,9 @@ __all__ = [
     "GraspBehaviorProfile",
     "GraspMode",
     "GraspModeInput",
+    "found_nothing",
+    "only_excluded",
+    "only_kept_out",
     "resolve_grasp_mode",
 ]
 
@@ -247,8 +253,9 @@ class _RecoveryReportAdapter:
 
 
 
-#: Boot-time diagnostics only. Nothing on the pick path logs through this.
-_LOG = logging.getLogger(__name__)
+#: The service's own lines, the pick path's among them, to the robot log and ``grasp_service.log`` (RC6 of the
+#: cell-fix plan: they reached no file).
+_LOG: logging.Logger = create_robot_logger(__name__, "grasp_service.log")
 
 
 def _warn_if_records_will_not_be_trainable(robot_cfg: Any, record_log_path: Any) -> None:
@@ -864,6 +871,7 @@ class AutonomousGraspService:
         mode: GraspMode | str | None = None,
         look: "Maybe[Look]" = UNSET,
         both_faces: bool = False,
+        multi_view: bool = True,
     ) -> AutonomousGraspReport:
         """Run one autonomous pick attempt and return a typed report.
 
@@ -934,6 +942,14 @@ class AutonomousGraspService:
             one, a look is good enough when its grasp is valid and certain. A
             suction cup has no jaw faces to see. Handed to this pick alone: the
             next pick starts with it off.
+        multi_view
+            The looks as handed, the default. ``False`` is "Multi-View aus" (the
+            owner's Q11, 2026-09-30): the pick looks from the first of its looks
+            only, and a wrist pick generates no view after it
+            (``BinPickingOrchestrator.generated_view``), so it grips a grasp that
+            look found safe or none; a fixed camera handed looks tries the first
+            one only. Handed to this pick alone, and taken back when it ends,
+            whatever ended it.
         mode
             Optional per-call override for the :class:`GraspMode`. When
             omitted the service uses :attr:`default_mode`. The override
@@ -1004,6 +1020,9 @@ class AutonomousGraspService:
 
         # A wrong look list is the program's error, raised before anything moves.
         looks = looks_of(look) if chosen(look) else ()
+        if not multi_view:
+            # Multi-View aus (Q11): the first look alone; the pick loop is told to generate no view after it.
+            looks = looks[:1]
         # So is both_faces with a motion that turns every grasp off the faces that were judged, raised before the
         # controller or the hand is asked anything (the pick loop refuses the same, `judged_faces_turned_away`).
         turned = judged_faces_turned_away(getattr(self.runtime, "orchestrator", None)) if both_faces else ""
@@ -1068,7 +1087,7 @@ class AutonomousGraspService:
         # raised there, and only those are this pick's.
         pushes_before = _pushes_of(_orch)
         try:
-            report = self._look_and_pick(looks, mode=mode, both_faces=both_faces)
+            report = self._look_and_pick(looks, mode=mode, both_faces=both_faces, multi_view=multi_view)
         except _CELL_FAULTS as exc:
             if isinstance(exc, _NOT_CELL_FAULTS):
                 raise
@@ -1120,6 +1139,7 @@ class AutonomousGraspService:
 
     def _look_and_pick(
         self, looks: "tuple[LookPose, ...]", *, mode: GraspMode | str | None, both_faces: bool = False,
+        multi_view: bool = True,
     ) -> AutonomousGraspReport:
         """One attempt from its looks: a wrist camera's handed to the pick loop, a fixed camera's tried in turn here.
 
@@ -1138,7 +1158,7 @@ class AutonomousGraspService:
         of; it cannot look around for the other, so the pick ends ``NO_VALID_GRASP`` naming it.
         """
         if self.perceives_from_the_wrist:
-            return self._look_around_and_pick(looks, mode=mode, both_faces=both_faces)
+            return self._look_around_and_pick(looks, mode=mode, both_faces=both_faces, multi_view=multi_view)
         if not both_faces:
             return self._look_from_a_fixed_camera(looks, mode=mode)
         orchestrator = self.runtime.orchestrator
@@ -1177,6 +1197,7 @@ class AutonomousGraspService:
 
     def _look_around_and_pick(
         self, looks: "tuple[LookPose, ...]", *, mode: GraspMode | str | None, both_faces: bool,
+        multi_view: bool = True,
     ) -> AutonomousGraspReport:
         """One attempt of a wrist camera: its looks handed to the pick loop, which looks from each, fused, and picks.
 
@@ -1204,12 +1225,15 @@ class AutonomousGraspService:
         # decision that ends before any look leaves none.
         orchestrator.looks = tuple(looks)
         orchestrator.both_faces = bool(both_faces)
+        # Multi-View aus (Q11): no view is generated after the one look this pick was handed.
+        orchestrator.generated_view = bool(multi_view)
         try:
             report = self._run_with_recovery(mode=mode, rescans=not looks)
         finally:
             orchestrator.close_looks()
             orchestrator.looks = ()
             orchestrator.both_faces = False
+            orchestrator.generated_view = True
         return _report_of_looking(report, orchestrator.looked_around, handed=bool(looks), both_faces=both_faces)
 
     def _looks_stopped_report(
@@ -1367,6 +1391,12 @@ class AutonomousGraspService:
             effective_config=self.effective_config,
             telemetry={"cancelled_before_start": True},
         )
+
+    def controller_refusal(self) -> str:
+        """Why the controller cannot start a pick, or ``""``: the question every pick asks first, for a caller that
+        drives the arm between picks (a task: before its place, after a motion that failed). In ``Robot.pick``'s words;
+        a service with no gripper is not asked. Reads the controller and commands nothing."""
+        return self._controller_refusal()
 
     def _controller_refusal(self) -> str:
         """Why the controller cannot start a pick, or ``""``: asked before the hand, of a service with a gripper.
@@ -1565,6 +1595,73 @@ class AutonomousGraspService:
             source.set_prompt(wanted.phrase, object_labels=wanted.object_labels)
         orchestrator.target_label = wanted.target_label
         return previous
+
+    def grounds_a_phrase(self) -> bool:
+        """Whether a camera of this cell grounds a phrase (a detector reads one), so a prompt says what its picks look
+        for; ``False`` for a cell whose perception grounds none, such as the rehearsal scene, which picks what it
+        shows. A task refuses an empty object on a cell that grounds a phrase unless the operator said "anything"."""
+        return bool(_grounding_sources(getattr(self.runtime, "orchestrator", None)))
+
+    def set_closing_axis(self, axis: Any) -> "ClosingAxis | None":
+        """Have the next picks grip only grasps that close along ``axis``, and return the axis they closed along until
+        now; ``None`` lets them close along any, as the cell's motion named.
+
+        The opt-in filter a task's Advanced drawer sets for that task alone (``GraspMotion(closing_axis=...)`` is the
+        program's way): ``axis`` is a name ``Pose.tool_down`` takes (``"-y"``), an orientation, or a ``ClosingAxis``,
+        read by ``closing_axis_of`` and set on the execution policy, which the pick loop reads before anything reads a
+        candidate (it chooses, it never twists). Refused before anything changes: a value that names no axis
+        (``ValueError``, ``TypeError``), and any axis beside a motion that turns every grasp about base Z before it
+        closes (``align_closing_to_base_x``), which would close the jaws off the axis named. Pass the returned value
+        back to put it back.
+        """
+        policy = getattr(self.runtime.orchestrator, "policy", None)
+        wanted = self._closing_axis_wanted(axis)
+        previous = getattr(policy, "closing_axis", None)
+        policy.closing_axis = wanted  # type: ignore[union-attr]
+        return previous
+
+    def closing_axis_refusal(self, axis: Any) -> str:
+        """Why :meth:`set_closing_axis` would refuse ``axis``, in its words, read with nothing changed; ``""`` where it
+        takes it. What a task asks before it says or sets anything, so its refusal comes before its first event."""
+        try:
+            self._closing_axis_wanted(axis)
+        except (TypeError, ValueError) as exc:
+            return str(exc) or f"{axis!r} names no closing axis"
+        return ""
+
+    def _closing_axis_wanted(self, axis: Any) -> "ClosingAxis | None":
+        """``axis`` read as :meth:`set_closing_axis` takes it, or its refusal raised (``ValueError``, ``TypeError``)."""
+        from src.robot.grasping.geometry.closing_axis import closing_axis_of  # noqa: PLC0415
+        from src.robot.grasping.motion.execution_policy import closing_axis_twisted  # noqa: PLC0415
+
+        policy = getattr(self.runtime.orchestrator, "policy", None)
+        wanted = None if axis is None else closing_axis_of(axis)
+        twisted = closing_axis_twisted(SimpleNamespace(
+            align_closing_to_base_x=bool(getattr(policy, "align_closing_to_base_x", False)), closing_axis=wanted))
+        if twisted:
+            raise ValueError(twisted)
+        return wanted
+
+    def detector_failures(self) -> int:
+        """How many times the detectors of this cell's grounding cameras failed and answered nothing, so far: each
+        backend counted once, whichever cameras share it.
+
+        A backend swallows a detector's exception and perceives nothing (``TwoStageBackend``), so a pick that met one
+        reads as "nothing there"; a caller that reads this before and after a pick tells the two apart (a task's
+        ``detector_failed``). Read off each backend's ``failures`` count, where it keeps one; a backend that keeps none
+        counts nothing.
+        """
+        total = 0
+        counted: list[Any] = []
+        for source in _grounding_sources(getattr(self.runtime, "orchestrator", None)):
+            backend = getattr(source, "backend", None)
+            if backend is None or any(backend is seen for seen in counted):
+                continue
+            counted.append(backend)
+            failures = getattr(backend, "failures", 0)
+            if isinstance(failures, int) and not isinstance(failures, bool) and failures > 0:
+                total += failures
+        return total
 
     def push_distance(self, push_mm: "Maybe[float]" = UNSET) -> float:
         """How far a push of a campaign asking ``push_mm`` moves its part, in mm: ``ValueError`` with the sentence
@@ -2746,6 +2843,45 @@ def _both_faces_unseen(orchestrator: Any, looked: "LookedAround") -> bool:
     if isinstance(getattr(orchestrator, "gripper_model", None), SuctionCupGripperModel):
         return False
     return looked.jaw_faces_seen != (True, True)
+
+
+def found_nothing(report: AutonomousGraspReport) -> bool:
+    """Whether a pick found nothing to pick from where it looked: no object at all, or none with the prompted label.
+
+    The service's own rule (:func:`_found_nothing`), public for a caller that counts empty looks (a task ends
+    ``nothing_left`` after two in a row). A part seen with no grasp found is something, not nothing.
+    """
+    return _found_nothing(report)
+
+
+def only_excluded(report: AutonomousGraspReport) -> bool:
+    """Whether a pick saw only parts its campaign keeps out: the parts ``next_target`` skips, or a region its task keeps
+    out (the bin it places into, the circle about its drop).
+
+    The pick loop ends such an attempt with the zones' sentence (``PickAttempt.excluded``) and the service reports it
+    ``no_valid_grasp``, which :func:`found_nothing` does not count. Read off the pick report's last attempt, so a report
+    that ran no pick says no. A task counts as an empty look only :func:`only_kept_out`, the narrower of the two.
+    """
+    excluded = getattr(_last_attempt(report), "excluded", None)
+    return isinstance(excluded, str) and bool(excluded)
+
+
+def only_kept_out(report: AutonomousGraspReport) -> bool:
+    """Whether a pick saw only parts its task keeps out, every one of them standing in a region of the task (the bin it
+    places into, the circle about its drop): a look with nothing left for the task to pick, which a task counts as an
+    empty look, not a failed pick.
+
+    A pick that saw a part a zone ``next_target`` made after a failed pick skips, alone or beside the task's own, is
+    :func:`only_excluded` and not this: that part still stands there to be picked, and the look is a failed pick. Read
+    off the pick loop's last attempt (``PickAttempt.excluded_by_regions``).
+    """
+    return only_excluded(report) and getattr(_last_attempt(report), "excluded_by_regions", False) is True
+
+
+def _last_attempt(report: AutonomousGraspReport) -> Any:
+    """The pick loop's last attempt of ``report``, or ``None`` where it ran none."""
+    attempts = getattr(getattr(report, "pick_report", None), "attempts", ()) or ()
+    return attempts[-1] if attempts else None
 
 
 def _found_nothing(report: AutonomousGraspReport) -> bool:

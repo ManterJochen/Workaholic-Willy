@@ -96,7 +96,7 @@
     0.2
   ],
   "record_count": 1068,
-  "reward_interpretation": "this manifest indexes RAW GraspAttemptRecord entries -- it carries NO reward. Downstream policy artifacts define their own reward models + carry their own reward_model stamps. See dataset_origin + the embedded leakage.interpretation for provenance + what the split separation proves.",
+  "reward_interpretation": "this manifest indexes RAW GraspAttemptRecord entries; it carries NO reward. Downstream policy artifacts define their own reward models + carry their own reward_model stamps. See dataset_origin + the embedded leakage.interpretation for provenance + what the split separation proves.",
   "reward_model": "not_applicable_raw_records_only",
   "rl_tooling_version": "1.0",
   "schema_version": 2,

@@ -53,11 +53,15 @@ caller checks with `isinstance` and falls back: `SupportsDigitalIO`, `SupportsFo
 `NOT_KEPT`), `CarriesPayload`, `SupportsFreedrive` (a `FreedriveSession` a person moves the arm
 in, read as `FreedriveSample`, with every motion verb refused while it is open),
 `ChoosesConfigurations` (`nearest_configuration(pose)`: the joints a pose goes to as the arm's own gates
-judge it, nothing moved, `RobotKinematicsError` where none is admissible) and `DrivesJointLines`
+judge it, nothing moved, `RobotKinematicsError` where none is admissible), `DrivesJointLines`
 (`move_to_joints_on_the_line(joints)`: the straight joint line from where the arm stands, judged as
 `move_to_joints` judges a clear line, refused with nothing sent where it is not clear, never planned
-around) and `JudgesCarriedLines` (`carried_line_refusal(pose, grip_width_mm=)`: the line `move(pose,
-linear=True)` would run, judged as if the jaws held a part, before they close on one, nothing moved) on the arm;
+around), `JudgesCarriedLines` (`carried_line_refusal(pose, grip_width_mm=)`: the line `move(pose,
+linear=True)` would run, judged as if the jaws held a part, before they close on one, nothing moved) and
+`SupportsHalt` (the latch "halt now" sets: `halt(reason)`, `clear_halt()`, `halt_state()`, a
+`HaltState` whose `brake` says what became of the move in flight, `none`, `pending`, `braked`, `unconfirmed`
+or `ran_out`; every motion refused with nothing sent and every output switch raising `ArmHalted` until it is
+cleared; `halt_state_of(arm)` and `brakes_in_motion_of(arm)` read it on any arm) on the arm;
 `ObjectDetectingGripper`, `StoppableGripper`, `ReportsHoldEvidence` (`HELD`, `EMPTY` or `UNMEASURED`)
 and `MeasuresWidth` on the hand; `why_not_known_open(gripper)` says why nobody can vouch that a hand stands
 empty and open, read off it with nothing sent. A gate written against a capability no attached driver implements
@@ -103,6 +107,7 @@ arm and does not follow into a thread started inside it.
 | `UNSUPPORTED`, `DECLINE_ON_A_LIVE_WORLD_MESSAGE` | a declined planned motion on an arm whose live world is wired | drop the decline; the world is there |
 | `ValueError` from `from_string()` | an unknown vendor name | use a name the message lists as buildable |
 | `RobotConnectionError`, `RobotEmergencyStop` | the link or the controller stopped the arm | recover the controller, then connect again |
+| `CANCELLED`, `ArmHalted` | the arm's halt latch is set: a motion or an output switch, with nothing sent. `RobotStatus.is_operational` reads false while `controller_operational` keeps the controller's own answer, so a halt never reads as a stopped controller | a person confirms the cell is clear (`clear_halt()`) |
 | `CameraWorldUnavailable`, `PerceptionFrameMoved` | a camera could not vouch for the cell, or the tool moved during a wrist frame | faults of the cell: a campaign stops on them |
 
 Every error here subclasses `RobotError`, and so do `RobotKinematicsError` and `RobotMotionRejected`

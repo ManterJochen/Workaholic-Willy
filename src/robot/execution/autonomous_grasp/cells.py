@@ -77,6 +77,23 @@ def _refuse_a_tree_hand(robot_cfg: "RobotConfig", data_dir: "str | Path | None")
         raise CellBuildRefused(refusal)
 
 
+def _scene_kwargs(robot_cfg: "RobotConfig") -> dict[str, Any]:
+    """What the cell's calculator reads beside the part it grasps, from the tree: ``robot.grasping.scene_obstacles``
+    (the parts the prompt did not name, by the planner world's rules) and ``robot.grasping.side_approaches``.
+
+    Both default on in a cell's tree and off in the library, so a calculator a script builds by hand is the one of
+    before; a cell built here gets what its tree says (the fix plan's contracts 5 and 8).
+    """
+    from src.robot.grasping.generation.scene_obstacles import SceneObstacleRules
+
+    grasping = robot_cfg.grasping
+    return {
+        "scene_obstacles": (SceneObstacleRules.from_robot_config(robot_cfg)
+                            if bool(getattr(grasping, "scene_obstacles", False)) else None),
+        "side_approaches": bool(getattr(grasping, "side_approaches", False)),
+    }
+
+
 def build_rehearsal_components(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" = None,
                                ) -> tuple[Any, Any, Any, Any, Any]:
     """``(calculator, perception, frame_resolver, multi_camera, camera_calculators)`` for a desk.
@@ -113,6 +130,7 @@ def build_rehearsal_components(robot_cfg: "RobotConfig", *, data_dir: "str | Pat
         support_footprint_geometry=(
             robot_cfg.grasping.geometry.stage == "support_footprint"),
         support_footprint_inflate_mm=robot_cfg.grasping.geometry.inflate_mm,
+        **_scene_kwargs(robot_cfg),
     )
     # A nadir camera 800 mm above the workspace centre, looking straight down. Stands in for the
     # artifact a real eye-to-hand calibration writes.
@@ -257,6 +275,7 @@ def _build_on_open_cameras(robot_cfg: "RobotConfig", app_cfg: Any, *, prompt: st
         support_footprint_geometry=(
             robot_cfg.grasping.geometry.stage == "support_footprint"),
         support_footprint_inflate_mm=robot_cfg.grasping.geometry.inflate_mm,
+        **_scene_kwargs(robot_cfg),
     )
     # Load the weights here, while the caller can still refuse; `preload` exists for exactly that.
     # `_compute_result` catches everything, because the calculator protocol forbids raising, so a
@@ -332,6 +351,7 @@ def _build_camera_calculators(
             support_footprint_geometry=(
                 robot_cfg.grasping.geometry.stage == "support_footprint"),
             support_footprint_inflate_mm=robot_cfg.grasping.geometry.inflate_mm,
+            **_scene_kwargs(robot_cfg),
         )
     return calculators
 

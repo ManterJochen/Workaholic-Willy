@@ -1,0 +1,148 @@
+/*
+ * The screens' own layout: the cell's panels, the history and the preferences. Colours are the shell's tokens only
+ * (styles.css); every number is in rem, so a large screen scales it with the rest of the console.
+ */
+
+@layer components {
+  /* ── the cell's panels ──────────────────────────────────────────────────────────────────────────────────── */
+  .panel-lede { margin: 0 0 0.85rem; color: var(--fg-muted); font-size: 0.875rem; max-width: 72ch; }
+
+  /* A sentence a person must have read before the click below it (the jaws question at Connect). */
+  .setup-note {
+    margin: 0 0 0.85rem; padding: 0.55rem 0.8rem;
+    border-left: 2px solid var(--warn); border-radius: 0 var(--radius-field) var(--radius-field) 0;
+    background: color-mix(in srgb, var(--warn) var(--tint), var(--panel));
+    color: var(--fg); font-size: 0.8125rem;
+  }
+
+  /* The latch: what happened, what a person checks, and the one word that clears it. */
+  .latch .body { display: grid; gap: 0.35rem; }
+  .latch-body { margin: 0; font-size: 0.875rem; max-width: 80ch; }
+  .latch p { margin: 0; }
+  .latch-actions { margin-top: 0.35rem; }
+  .latch-check { font-size: 0.8125rem; color: var(--fg); min-height: 2.75rem; }
+  .latch-check input { width: 18px; height: 18px; }
+
+  /* A check's row: its name in the reader's words, the server's own name under it (tech), and the server's sentences
+     folded behind "Details (Server)" in the demo view, one click away. */
+  .row .name { font-size: 0.875rem; }
+  .pf-server-name { font-family: var(--font-mono); font-size: 0.6875rem; color: var(--fg-muted); margin-bottom: 0.15rem; }
+  .pf-said { margin-top: 0.2rem; }
+  .pf-said summary { font-size: 0.75rem; padding: 0.15rem 0; }
+  .pf-said[open] summary { margin-bottom: 0.25rem; }
+}
+
+/* ── the history ──────────────────────────────────────────────────────────────────────────────────────────────── */
+@layer components {
+  .hs-page { max-width: 100rem; }
+
+  /* The session in four numbers: monospace like the banner's readout, the success rate leading in the lime. */
+  .hs-tiles { display: grid; grid-template-columns: 1.3fr repeat(3, 1fr); gap: 0.75rem; margin-bottom: 1.1rem; }
+  .hs-tile {
+    display: grid; gap: 0.15rem; align-content: start;
+    padding: 0.75rem 1rem 0.8rem;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-panel);
+    box-shadow: var(--shadow-xs); min-width: 0;
+  }
+  .hs-tile.lead { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+  .hs-tile-k { font-size: 0.6875rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-muted); }
+  .hs-tile-v { font-family: var(--font-mono); font-size: 1.75rem; font-weight: 700; line-height: 1.15; color: var(--fg);
+               overflow-wrap: anywhere; }
+  .hs-tile.lead .hs-tile-v { color: var(--accent); font-size: 2rem; }
+  .hs-tile-note { font-size: 0.75rem; color: var(--fg-muted); }
+
+  /* ── the two charts ─────────────────────────────────────────────────────────────────────────────────────── */
+  .hs-charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.1rem; margin-bottom: 1.1rem; }
+  /* One series, one hue: the console's accent, the brand lime of the tiles beside it (the neon in dark, the darker lime
+     in light). Each chart is one named series (its title names it), so the categorical lightness band does not apply;
+     the mark passes 3:1 on the panel in both themes (dataviz validator, 2026-10-01: #bef702 on #0c100e). */
+  .hs-chart {
+    --hs-mark: var(--accent);
+    margin: 0; padding: 0.85rem 1rem 0.6rem;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-panel); box-shadow: var(--shadow-sm);
+    min-width: 0;
+  }
+  .hs-chart figcaption { display: grid; gap: 0.1rem; margin-bottom: 0.4rem; }
+  .hs-chart-title { font-size: 0.875rem; font-weight: 650; }
+  .hs-chart-note { font-size: 0.75rem; color: var(--fg-muted); }
+  .hs-chart-plot { position: relative; }
+  .hs-chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .hs-grid { stroke: var(--line); stroke-width: 1; shape-rendering: crispEdges; }
+  .hs-tick, .hs-xtick, .hs-value, .hs-none { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+  .hs-tick { font-size: 10px; fill: var(--fg-muted); }
+  .hs-xtick { font-size: 10px; fill: var(--fg-muted); }
+  .hs-value { font-size: 11px; font-weight: 700; fill: var(--fg); }
+  .hs-none { font-size: 12px; fill: var(--fg-muted); }
+  .hs-mark { fill: var(--hs-mark); transition: fill 140ms var(--ease-calm); }
+  .hs-hit { fill: transparent; }
+  .hs-bar { cursor: default; outline: none; }
+  .hs-bar.hover .hs-mark { fill: color-mix(in oklab, var(--hs-mark) 78%, var(--fg)); }
+  .hs-bar:focus-visible .hs-hit { stroke: var(--accent); stroke-width: 2; }
+  /* The tooltip: the value leads, what it is out of follows. */
+  .hs-tip {
+    position: absolute; top: 0; transform: translate(-50%, -0.25rem); z-index: 2; pointer-events: none;
+    display: grid; gap: 0.05rem; padding: 0.35rem 0.6rem; white-space: nowrap;
+    background: var(--panel-alt); border: 1px solid var(--line-strong); border-radius: var(--radius-field);
+    box-shadow: var(--shadow-lg); font-size: 0.75rem; color: var(--fg-muted);
+  }
+  .hs-tip strong { font-family: var(--font-mono); font-size: 0.9375rem; color: var(--fg); }
+
+  /* ── the tables ─────────────────────────────────────────────────────────────────────────────────────────── */
+  .hs-table { overflow-x: auto; margin: 0 -1.15rem -1rem; }
+  .hs-table table { margin: 0; width: 100%; }
+  .panel .hs-table + .caveat, .panel .hs-table + .actions { margin-top: 1rem; }
+  .hs-command { min-width: 14rem; }
+  .hs-command > span:first-child { margin-right: 0.45rem; }
+  .hs-badge {
+    display: inline-block; padding: 0 0.4rem; border-radius: 0.3rem;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--line)); color: var(--fg);
+    font-family: var(--font-mono); font-size: 0.65625rem; letter-spacing: 0.04em; vertical-align: 0.1em;
+  }
+  .hs-sub { display: block; font-size: 0.6875rem; color: var(--fg-muted); }
+  .hs-id { color: var(--fg-muted); font-size: 0.6875rem; }
+  .hs-num { text-align: right; width: 7rem; }
+  .hs-barcell { width: 38%; }
+  .hs-more { margin-top: 1.2rem; }
+  .hs-source { overflow-wrap: anywhere; }
+
+  /* What the records cannot say: each name on its own line, its reason under it, never a chip beside the words. */
+  .hs-unmeasurable { display: grid; gap: 0; margin: 0 0 0.25rem; }
+  .hs-unmeasurable-item { padding: 0.6rem 0; border-top: 1px solid var(--line); }
+  .hs-unmeasurable-item:first-child { border-top: 0; }
+  .hs-unmeasurable dt {
+    margin-bottom: 0.2rem; padding-left: 0.6rem;
+    border-left: 2px solid color-mix(in srgb, var(--bench) var(--edge), var(--line));
+    font-size: 0.875rem; font-weight: 600; color: var(--fg); overflow-wrap: anywhere;
+  }
+  .hs-unmeasurable dd { margin: 0; padding-left: 0.8rem; color: var(--fg-muted); font-size: 0.8125rem; line-height: 1.5;
+                        max-width: 110ch; }
+  .hs-why summary { font-size: 0.75rem; }
+  .hs-why[open] summary { margin-bottom: 0.2rem; }
+
+  @media (max-width: 1199px) {
+    .hs-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .hs-charts { grid-template-columns: minmax(0, 1fr); }
+  }
+}
+
+/* ── the preferences and the config ───────────────────────────────────────────────────────────────────────────── */
+@layer components {
+  .st-rows { display: grid; gap: 0; }
+  .st-row {
+    display: grid; grid-template-columns: minmax(9rem, 12rem) auto minmax(0, 1fr); align-items: center;
+    gap: 0.4rem 1rem; padding: 0.7rem 0; border-top: 1px solid var(--line);
+  }
+  .st-row:first-child { border-top: 0; }
+  .st-name { font-weight: 600; font-size: 0.875rem; }
+  .st-hint { font-size: 0.8125rem; color: var(--fg-muted); }
+  .st-test, .st-talk-actions, .st-refused { grid-column: 2 / -1; justify-self: start; }
+  .st-key { font-size: 0.875rem; padding: 0.3rem 0.6rem; border: 1px solid var(--line-strong); border-radius: 0.3rem;
+            background: var(--inset); }
+  .st-refused { font-size: 0.8125rem; }
+  .cf-title { margin-top: 1.6rem; }
+
+  @media (max-width: 760px) {
+    .st-row { grid-template-columns: minmax(0, 1fr); }
+    .st-test, .st-talk-actions, .st-refused { grid-column: auto; }
+  }
+}

@@ -48,6 +48,7 @@ from typing import Any, Final
 import numpy as np
 
 from src.contracts import UNSET
+from src.robot.constants import create_robot_logger
 from src.robot.core import NO_PLAN_FAIL_SAFE_MESSAGE, JointPositions, MotionStatus
 from src.robot.core.arm_capabilities import ChoosesConfigurations, DrivesJointLines
 from src.robot.core.camera_world import CameraWorldUse, ReadsCameraWorld, active_decline
@@ -79,7 +80,8 @@ __all__ = [
     "refused_before_sending",
 ]
 
-_LOG = logging.getLogger(__name__)
+#: The generated view's own lines, to the robot log and ``generated_view.log`` (RC6 of the cell-fix plan).
+_LOG: logging.Logger = create_robot_logger(__name__, "generated_view.log")
 
 #: The most any joint may travel on the way to a generated view, from where it stands, in degrees. The owner's figure: the
 #: face behind a 45 degree look is 135 degrees round, which turns the base about as far, and 150 leaves the other joints

@@ -56,6 +56,7 @@ from src.robot.core import (
     RobotMotionRejected,
     RobotStatus,
 )
+from src.robot.core.arm_capabilities import halted_refusal
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from collections.abc import Callable, Sequence
@@ -100,14 +101,24 @@ def raise_unless_operational(status: RobotStatus, what: str) -> None:
 
     Hand guiding needs the arm powered, its brakes released, no stop and the safety mode normal: a
     reduced or recovery mode is a state a person should not be handed the arm in. A stop raises
-    :class:`RobotEmergencyStop`, any other state :class:`RobotMotionRejected`.
+    :class:`RobotEmergencyStop`, any other state :class:`RobotMotionRejected`. A halted arm
+    (``RobotStatus.halted``) is said in the halt's own words, never as a stop to clear: a person confirms
+    the cell is clear, then Restart; where its controller is stopped as well, the sentence says both.
     """
     if status.is_operational:
         return
     said = f" ({status.message})" if status.message else ""
-    sentence = (f"{what} is refused: the controller reports robot mode {status.robot_mode.value} and safety mode "
-                f"{status.safety_mode.value}{said}, and hand guiding needs the arm running with its brakes released "
-                f"and the safety mode normal")
+    controller = (f"the controller reports robot mode {status.robot_mode.value} and safety mode "
+                  f"{status.safety_mode.value}{said}")
+    halted = getattr(status, "halted", "")
+    if isinstance(halted, str) and halted:
+        sentence = halted_refusal(halted, f"{what} is refused, and the arm stays where it is")
+        if status.controller_operational:
+            raise RobotMotionRejected(sentence)
+        sentence = f"{sentence}. The controller cannot move either: {controller}"
+    else:
+        sentence = (f"{what} is refused: {controller}, and hand guiding needs the arm running with its brakes "
+                    f"released and the safety mode normal")
     if status.is_stopped:
         raise RobotEmergencyStop(f"{sentence}. Clear the stop at the pendant, where the arm is visible.")
     raise RobotMotionRejected(sentence)

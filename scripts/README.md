@@ -17,7 +17,8 @@ it needs another interpreter.
 | [`curobo/`](curobo/) | builds the planner's arm descriptors, fits its collision spheres, chooses retract poses, and measures an arm with a hand | `build_ur_config.py <model>` |
 | [`grippers/`](grippers/) | writes a hand's collision bundle from its numbers, its vendor meshes or a USD, and measures its jaw | [`your_own_gripper.md`](../docs/runbooks/your_own_gripper.md) |
 | [`isaac/`](isaac/) | bakes an arm's collision meshes into `src/robot/safety/data/`, from UR's own description or from Isaac's USD | `bake_ur_meshes_from_urdf.py` |
-| [`ursim/`](ursim/) | real UR controller software in Docker: the SDK, the driver, both I/O grippers and a protective stop driven against it | [`ursim/README.md`](ursim/README.md) |
+| [`ursim/`](ursim/) | real UR controller software in Docker: the SDK, the driver, both I/O grippers, a protective stop, "halt now" and the operator console's task driven against it | [`ursim/README.md`](ursim/README.md) |
+| [`console/`](console/) | captures the operator console's event logs, the ones the frontend's run model replays, byte for byte the same on every run | `python scripts/console/capture_event_log.py` |
 | [`trial/`](trial/) | runs [`your_own_gripper.md`](../docs/runbooks/your_own_gripper.md) in a copy of the tree with two hands whose answers are known | [`trial/README.md`](trial/README.md) |
 
 ```bash

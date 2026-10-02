@@ -496,7 +496,8 @@ class _WorldAskingArm(DummyRobotArm):
     def move(self, pose: Pose, **kwargs: Any) -> Any:
         self.live_planner_world.drop_cached_frames()
         seen = self.live_planner_world.world_for(self_envelope=self.self_envelope, now=50.1)
-        self.perceived.append(int(seen.perceived_count))
+        # The boxes of what the camera saw; the solids of what the scene stands on are no target.
+        self.perceived.append(sum(1 for box in seen.perceived.boxes if box.kind == "seen"))
         return super().move(pose, **kwargs)
 
 

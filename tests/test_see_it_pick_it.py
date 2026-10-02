@@ -232,7 +232,9 @@ class ALocatedObjectReachesThePickTests(unittest.TestCase):
     def test_the_scene_is_the_objects_surface_with_the_other_objects_as_obstacles(self) -> None:
         located = _two_objects()
         self.assertEqual(["cube", "box"], [obj.label for obj in located.objects])
+        # The other objects alone, as before the cell fixes: ``robot.grasping.scene_obstacles`` off.
         config = RobotConfig()
+        config = config.model_copy(update={"grasping": config.grasping.model_copy(update={"scene_obstacles": False})})
 
         scene = located.scene(0, config)
 
@@ -242,6 +244,18 @@ class ALocatedObjectReachesThePickTests(unittest.TestCase):
         self.assertEqual(float(config.grasping.support.height_mm), scene.support_height_mm)
         np.testing.assert_array_equal(located.scene(1, config).obstacle_points_base_mm,
                                       located.objects[0].points_base_mm)
+
+    def test_with_the_scene_on_the_frame_beside_the_object_joins_the_other_objects(self) -> None:
+        """The cell fixes' Track A, on by default: the other objects first, then what the frame shows beside the object
+        that nobody segmented, by the planner world's rules."""
+        located = _two_objects()
+        others = located.objects[1].points_base_mm
+
+        scene = located.scene(0, RobotConfig())
+
+        assert scene.obstacle_points_base_mm is not None
+        self.assertGreater(scene.obstacle_points_base_mm.shape[0], others.shape[0])
+        np.testing.assert_array_equal(scene.obstacle_points_base_mm[:others.shape[0]], others)
 
     def test_a_lone_object_has_no_obstacles_and_an_index_outside_the_frame_is_refused(self) -> None:
         located = Locator.from_parts(camera=_Owner(), backend=_backend("red cube")).locate("a red cube")

@@ -48,7 +48,8 @@ The retreat is judged before the jaws close
 On an arm that judges a line as if its jaws held a part
 (:class:`JudgesCarriedLines`, the UR driver), the policy asks it at the
 part, with the jaws still open, whether the retreat would run carrying the
-part. A part can refuse a retreat its empty hand would run, and the arm
+part. A halted arm is not asked: the halt latch is read first, and a halt
+that fell during the line in ends the pick there, with no way back up. A part can refuse a retreat its empty hand would run, and the arm
 would then stand at the part with the part in its jaws. Where the arm would
 refuse it, the jaws are not closed: the arm goes back up the line it came
 down, to the standoff, and the pick ends as
@@ -93,7 +94,13 @@ from src.robot.core import (
     RobotArm,
     SupportsRobotStatus,
 )
-from src.robot.core.arm_capabilities import JudgesCarriedLines, LineMotion, line_motion_of
+from src.robot.core.arm_capabilities import (
+    JudgesCarriedLines,
+    LineMotion,
+    halt_state_of,
+    halted_refusal,
+    line_motion_of,
+)
 from src.robot.core.camera_world import weakest_camera_world
 from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.core.gripper import (
@@ -449,23 +456,22 @@ class GraspExecutionPolicy:
         # Close the gripper at the grasp point.
         object_detected: bool | None = None
         if self.gripper is not None:
+            # The halt latch, read at the part before anything is judged: a halt that fell during the line in ends the
+            # pick where the arm stands, with no judgement and no way back up the line (2026-10-02). Only the latch,
+            # which asks the controller nothing: the controller is asked last, below.
+            refused = _halt_refusal(self.arm)
+            if refused:
+                return _stopped_at_the_part(refused, commanded, stamps, line_motion)
             # The retreat as if the jaws held the part, asked before they close (the owner, 2026-10-01): a part can
             # refuse a retreat the empty hand would run, and the arm would stand here with the part in its jaws.
             held = self._carried_retreat_refusal(grasp, waypoints[-1], reading)
             if held is not None:
                 return self._back_out(held, approach[0], commanded, stamps, line_motion)
-            # Asked again at the part, and last before the jaws: a stop that fell between the line's end and the close,
-            # the judgement above included, leaves an arm that cannot lift what the jaws would take.
+            # Asked again, last before the jaws: a stop that fell during the judgement above leaves an arm that cannot
+            # lift what the jaws would take.
             refused = _controller_refusal(self.arm)
             if refused:
-                return PolicyReport(
-                    outcome=PolicyOutcome.MOTION_FAILED,
-                    waypoints=tuple(commanded),
-                    motion_status=MotionStatus.CONTROLLER_REJECTED,
-                    motion_message=refused,
-                    camera_worlds=tuple(stamps),
-                    line_motion=line_motion,
-                )
+                return _stopped_at_the_part(refused, commanded, stamps, line_motion)
             target_width = self._resolve_close_width(grasp)
             try:
                 if isinstance(self.gripper, OpensAndCloses):
@@ -787,15 +793,24 @@ def closing_axis_twisted(motion: object) -> str:
 def _controller_refusal(arm: object) -> str:
     """Why ``arm``'s controller cannot act now, or ``""`` where it can, or where the arm does not say.
 
-    Only an arm that implements ``SupportsRobotStatus`` (the UR driver) is asked; every other arm passes, as it
-    passes the pick loop's diagnosis. The criterion is ``not is_operational``, the one the pick loop names a failed
+    The halt latch is read first, of any arm that carries one (``SupportsHalt``, the dummy included), then a status
+    that says so in words (``RobotStatus.halted``): a halted arm is refused in the halt's own words, as
+    ``handling._controller_refusal`` refuses it, because a halt is no controller stop and has no stop to clear.
+    Otherwise only an arm that implements ``SupportsRobotStatus`` (the UR driver) is asked; every other arm passes, as
+    it passes the pick loop's diagnosis. The criterion is ``not is_operational``, the one the pick loop names a failed
     motion ``CONTROLLER_NOT_OPERATIONAL`` with, so a refusal here and that diagnosis describe one state: a controller
     in REDUCED safety mode is refused too. A read that raises is not caught: a controller that cannot be asked is a
     fault of the cell, and the pick leaves on it with nothing commanded.
     """
+    halted = _halt_refusal(arm)
+    if halted:
+        return halted
     if not isinstance(arm, SupportsRobotStatus):
         return ""
     status = arm.get_robot_status()
+    said = getattr(status, "halted", "")
+    if isinstance(said, str) and said:
+        return halted_refusal(said, "nothing was commanded, the jaws included")
     if status.is_operational:
         return ""
     detail = f": {status.message}" if status.message else ""
@@ -803,6 +818,29 @@ def _controller_refusal(arm: object) -> str:
         f"the controller cannot move (robot_mode={status.robot_mode.value}, safety_mode={status.safety_mode.value}, "
         f"protective_stop={status.protective_stopped}, emergency_stop={status.emergency_stopped}{detail}), so "
         "nothing was commanded, the jaws included; clear the stop where the arm is visible, then run again"
+    )
+
+
+def _halt_refusal(arm: object) -> str:
+    """The halt latch's refusal of ``arm`` in the halt's own words, or ``""``; it asks the controller nothing."""
+    halted = halt_state_of(arm)
+    return halted_refusal(halted.reason, "nothing was commanded, the jaws included") if halted is not None else ""
+
+
+def _stopped_at_the_part(
+    refused: str,
+    commanded: list[Pose],
+    stamps: list[CameraWorldStamp],
+    line_motion: LineMotion | None,
+) -> PolicyReport:
+    """The report of a pick a halt or a stop ended at the part: the arm stands there, the jaws as they were."""
+    return PolicyReport(
+        outcome=PolicyOutcome.MOTION_FAILED,
+        waypoints=tuple(commanded),
+        motion_status=MotionStatus.CONTROLLER_REJECTED,
+        motion_message=refused,
+        camera_worlds=tuple(stamps),
+        line_motion=line_motion,
     )
 
 

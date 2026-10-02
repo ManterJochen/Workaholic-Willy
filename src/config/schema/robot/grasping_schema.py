@@ -1791,6 +1791,20 @@ class RobotGraspingConfig(StrictModel):
     #: tangential top-down close at any azimuth (0/4 against 4/4 radial). A UR5e absorbs both, so the
     #: default stays False and only a cell that needs it declares it (robot.ur3e.yaml does).
     isotropic_radial_closing: bool = Field(default=False)
+    #: The calculator sees the parts beside the one it grasps.
+    #:
+    #: A prompt names one part, and the calculator used to see that part alone: it offered grasps whose open fingers
+    #: stood inside the parts beside it, and the guard refused every one (fix plan RC2). On, the depth the camera saw
+    #: around the part, past the support it stands on, reaches the calculator as obstacles, so a part boxed in by its
+    #: neighbours gets no grasp and says so. A pre-filter only: the guard judges every motion either way. Off is the
+    #: calculator of before, the part alone.
+    scene_obstacles: bool = Field(default=True)
+    #: Grasps tilted to the side join the vertical ones, ranked by the room they keep.
+    #:
+    #: Beside a wall or a tall neighbour a tilted approach can keep more room than a vertical one, and the candidates
+    #: are ranked by geometry alone (the owner, 2026-10-01: "gleichwertig nach Geometrie"). Only space the camera saw
+    #: counts as clear for a tilted approach. Off, a tilted grasp is offered only where no vertical one fits.
+    side_approaches: bool = Field(default=True)
     record_log_path: ConfigPath | None = Field(
         default=None,
         description=(

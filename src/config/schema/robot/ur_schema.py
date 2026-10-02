@@ -42,6 +42,15 @@ class URConfig(StrictModel):
     # a cell without a cuRobo environment does not move at all. Check that environment with
     # `python -m src.robot.safety.planning --doctor` before commissioning.
     motion_planner: Literal["ik", "curobo"] = "curobo"
+    #: What "halt now" in the console (``POST /v1/cell/brake``) does to a move already in flight. Off, as shipped (the
+    #: owner's answer of 2026-09-30): every move is sent exactly as before, one synchronous ``moveJ`` or ``moveL`` that
+    #: returns at its end, and a halt latches the arm, so the move in flight ends as it would have and nothing after it
+    #: is sent, no output switched either. On: every move is sent asynchronously and watched by the thread that sent
+    #: it, which brakes it under control with ``stopJ`` or ``stopL`` on a halt, at max(2.0, the move's own
+    #: acceleration), and answers ``True`` only once the arm stands at the target. Either way "halt now" is not an
+    #: emergency stop; the red button is. Switch it on in the cell's own profile only after
+    #: ``scripts/ursim/probe_halt.py`` has passed against URSim.
+    brake_on_halt: bool = False
 
     @field_validator("model")
     @classmethod

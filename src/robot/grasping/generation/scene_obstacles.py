@@ -1,0 +1,633 @@
+"""What the calculator sees beside the part it grasps: the scene's obstacles, under the support the parts stand on.
+
+A prompt names one part, and the calculator used to see that part alone. On the owner's cell (2026-10-01) every prompt
+grounded exactly one box, so SFE's obstacle grid was empty: it offered grasps whose open fingers stood inside the parts
+beside the Zollstock, and the exact guard refused every one (fix plan RC2). Handed the neighbours, SFE refuses every
+candidate on all five recorded looks.
+
+So the calculator reads the depth the camera saw around the part, by the planner world's own rules
+(:class:`SceneObstacleRules`, from the cell's tree):
+
+* every pixel outside the part's mask grown by about 5 mm, the pixels behind a depth step left out;
+* within 250 mm of the part, in BASE;
+* not the support: where a support surface of the camera world's model covers a point (``support_surfaces``), it is an
+  obstacle only above that surface's local reading plus its band; elsewhere only above the higher of the declared
+  bench and the support the part stands on, plus the band;
+* not within a declared body's band (``perceived.DECLARED_SURFACE_MM``);
+* in a 25 mm voxel that holds at least ``min_points`` (12) points. A pre-filter may drop a speck; the guard holds it.
+
+The same frame gives the push its evidence (the fix plan's contract 2): every point the camera world's rule keeps there,
+with no voxel threshold, so a neighbour the voxel rule dropped still refuses a push's path.
+
+And it says why a part got no grasp (:func:`why_no_grasp`): a neighbour the camera saw, a declared body, the support it
+stands on, or a part too short for this hand. Only a neighbour reaches the push (``ALL_COLLIDED``).
+
+Everything here is a pre-filter. The exact-mesh guard judges every sample of every path before anything is sent: a
+wrong refusal here costs a pick, never a collision.
+
+Pure: numpy, and SciPy's image tools for the mask growth and the cluster count. BASE millimetres throughout.
+"""
+
+from __future__ import annotations
+
+import math
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Final
+
+import numpy as np
+
+from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps
+
+if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.robot.grasping.types.feedback import GraspFailureReason
+
+__all__ = [
+    "MASK_GROWTH_MM",
+    "NO_GRASP_SAID",
+    "REACH_MM",
+    "SEEN_TOLERANCE_MM",
+    "DeclaredBox",
+    "EnvelopeVerdict",
+    "SceneObstacleRules",
+    "SceneObstacles",
+    "corridor_seen_in",
+    "envelope_verdicts",
+    "least_part_height_mm",
+    "no_grasp_said",
+    "scene_obstacle_points",
+    "why_no_grasp",
+]
+
+#: How far from the part, in BASE x and y, the camera's depth is read for obstacles, millimetres: past the hand's reach
+#: at any approach the calculator offers (the open Hand-E spans 50 + 2 x 30 mm, its corridor runs 150 mm up).
+REACH_MM: Final[float] = 250.0
+#: How far the part's mask is grown before its neighbours are read, millimetres: the rim of a mask is the part's own
+#: edge, read through depth-to-colour misregistration. Turned into pixels at the part's depth.
+MASK_GROWTH_MM: Final[float] = 5.0
+#: How much nearer than a point its pixel's measured depth may lie for the point to count as seen, millimetres (the fix
+#: plan's contract 5): a depth ray that stops 5 mm short of a point has still looked at the space it stands in.
+SEEN_TOLERANCE_MM: Final[float] = 5.0
+#: The key of ``GraspResult.telemetry`` under which a result with no candidate says why, in one sentence
+#: (:func:`no_grasp_said`).
+NO_GRASP_SAID: Final[str] = "no_grasp_said"
+#: SFE's tilt ladder and its height solve (``support_footprint.generate_support_footprint_grasps``), restated for the
+#: least part height a hand grips (:func:`least_part_height_mm`); ``tests/test_the_support_is_no_neighbour.py`` holds
+#: the two equal on the generator itself.
+_SFE_TILTS_DEG: Final[tuple[float, ...]] = (0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0)
+#: The solve adds a height only where it lies this far under the part's top, millimetres (``need <= prism.z1 - 2``).
+_SFE_TOP_SLACK_MM: Final[float] = 2.0
+
+
+@dataclass(frozen=True, slots=True)
+class DeclaredBox:
+    """A box the guard holds as declared (``safety.self_collision.fixtures``), axis-aligned in BASE millimetres."""
+
+    name: str
+    centre_mm: tuple[float, float, float]
+    half_extents_mm: tuple[float, float, float]
+
+
+@dataclass(frozen=True, slots=True)
+class SceneObstacleRules:
+    """The planner world's rules for what the camera saw beside a part, read once from the cell's tree.
+
+    Build it with :meth:`from_robot_config`. Every number is the camera world's own, so the calculator and the planner
+    world say the same thing about the same pixel.
+    """
+
+    #: The declared bench's top, BASE z millimetres; ``None`` where the cell declares none.
+    bench_top_mm: float | None = None
+    #: How far over the bench, or over a support's local reading, a point is still that surface, millimetres
+    #: (``planning_world.perceived.plane_clearance_mm``).
+    band_mm: float = 5.0
+    #: The declared bodies the camera sees again (the bench slab, the fixtures the planning world includes, its meshes):
+    #: a point within :attr:`declared_band_mm` of one is that body, not a neighbour. ``perceived.DeclaredBody``.
+    declared: tuple[Any, ...] = ()
+    #: ``perceived.DECLARED_SURFACE_MM``.
+    declared_band_mm: float = 5.0
+    #: A voxel needs this many points to be an obstacle (``perceived.min_points``).
+    min_points: int = 12
+    #: The voxel the points are counted in, millimetres (``perceived.cluster_voxel_mm``).
+    cluster_voxel_mm: float = 25.0
+    #: Every how many pixels the frame is read along each axis (``perceived.pixel_stride``), as the world reads it.
+    pixel_stride: int = 2
+    reach_mm: float = REACH_MM
+    mask_growth_mm: float = MASK_GROWTH_MM
+    #: What the guard keeps from a support's solid, a camera box (``self_collision.perceived_min_distance_mm``).
+    support_distance_mm: float = 5.0
+    #: The boxes the guard holds as declared, and what it keeps from them (``self_collision.min_distance_mm``).
+    declared_boxes: tuple[DeclaredBox, ...] = ()
+    declared_distance_mm: float = 10.0
+    #: Declared meshes that could not be read, each said: what the camera sees of them stays an obstacle.
+    unread: tuple[str, ...] = field(default=())
+
+    @classmethod
+    def from_robot_config(cls, robot_config: Any) -> "SceneObstacleRules":
+        """The rules a cell's tree states: the bench and its band, the declared bodies, the voxel rule, the distances.
+
+        Read the way the camera world reads them (``camera_world_wiring._live_planner_world``): the bench is
+        ``safety.planning_world.support_plane``'s top where the planning world is on, the declared bodies its cuboids
+        and meshes, the voxel rule and the band ``planning_world.perceived``. A tree with no planning world has no
+        bench: the support the part stands on bounds the rule alone.
+        """
+        from src.robot.safety.planning.live_world import _declared_bodies  # noqa: PLC0415 (the world's own reader)
+        from src.robot.safety.planning.perceived import DECLARED_SURFACE_MM  # noqa: PLC0415
+        from src.robot.safety.planning.world import build_planner_cuboids, build_planner_meshes  # noqa: PLC0415
+
+        safety = robot_config.safety
+        world = getattr(safety, "planning_world", None)
+        perceived = getattr(world, "perceived", None)
+        guard = safety.self_collision
+        on = world is not None and bool(getattr(world, "enabled", False))
+        plane = getattr(world, "support_plane", None) if on else None
+        bodies: tuple[Any, ...] = ()
+        unread: tuple[str, ...] = ()
+        if on:
+            # Every declared box, whatever the planner's slot count: a box left out of the planner is still declared.
+            bodies, unread = _declared_bodies(build_planner_cuboids(world, guard.fixtures, max_cuboids=1_000_000),
+                                              build_planner_meshes(world))
+        boxes = tuple(
+            DeclaredBox(str(fixture.name), tuple(float(v) for v in fixture.center_mm),  # type: ignore[arg-type]
+                        tuple(float(v) for v in fixture.half_extents_mm))  # type: ignore[arg-type]
+            for fixture in guard.fixtures if min(float(v) for v in fixture.half_extents_mm) > 0.0
+        )
+        return cls(
+            bench_top_mm=None if plane is None else float(plane.height_mm),
+            band_mm=float(getattr(perceived, "plane_clearance_mm", 5.0)),
+            declared=tuple(bodies),
+            declared_band_mm=float(DECLARED_SURFACE_MM),
+            min_points=int(getattr(perceived, "min_points", 12)),
+            cluster_voxel_mm=float(getattr(perceived, "cluster_voxel_mm", 25.0)),
+            pixel_stride=int(getattr(perceived, "pixel_stride", 2)),
+            support_distance_mm=float(guard.perceived_min_distance_mm),
+            declared_boxes=boxes,
+            declared_distance_mm=float(guard.min_distance_mm),
+            unread=tuple(unread),
+        )
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class SceneObstacles:
+    """What one frame shows beside a part, by :class:`SceneObstacleRules`."""
+
+    #: The obstacles the calculator plans against, ``(N, 3)`` BASE millimetres: the voxel rule applied.
+    points_base_mm: np.ndarray
+    #: Every point the camera world's rule keeps within the reach, ``(M, 3)`` BASE millimetres: no voxel rule, no
+    #: depth-step trim (the fix plan's contract 2, for the push).
+    world_rule_base_mm: np.ndarray
+    #: How many separate groups the obstacles form, voxels touching at a face, an edge or a corner joined.
+    clusters: int
+    #: What became of the pixels read: ``read`` within the reach, then ``support`` (a support surface's own),
+    #: ``below`` (under the bench or the part's support plus the band), ``declared`` (a declared body's band),
+    #: ``speck`` (a voxel under ``min_points``), ``kept``.
+    counts: Mapping[str, int]
+    #: The pixels the part's mask was grown by.
+    grown_px: int = 0
+
+    @classmethod
+    def none(cls) -> "SceneObstacles":
+        empty = np.zeros((0, 3), dtype=np.float64)
+        return cls(points_base_mm=empty, world_rule_base_mm=empty.copy(), clusters=0, counts={})
+
+    def render(self) -> str:
+        """One clause, for a log line: how many points, in how many groups, and what was not an obstacle."""
+        c = dict(self.counts)
+        return (f"{int(self.points_base_mm.shape[0])} obstacle point(s) in {self.clusters} cluster(s) beside the part "
+                f"(read {c.get('read', 0)} within reach; support {c.get('support', 0)}, below the support "
+                f"{c.get('below', 0)}, declared {c.get('declared', 0)}, specks {c.get('speck', 0)}; "
+                f"{int(self.world_rule_base_mm.shape[0])} kept by the world's rule)")
+
+
+def _matrix_of(intrinsics: Any) -> tuple[float, float, float, float]:
+    """``(fx, fy, cx, cy)`` of a 3x3 or of anything with those four attributes."""
+    if all(hasattr(intrinsics, name) for name in ("fx", "fy", "cx", "cy")):
+        return float(intrinsics.fx), float(intrinsics.fy), float(intrinsics.cx), float(intrinsics.cy)
+    k = np.asarray(intrinsics, dtype=np.float64).reshape(3, 3)
+    return float(k[0, 0]), float(k[1, 1]), float(k[0, 2]), float(k[1, 2])
+
+
+def _grown(mask: np.ndarray, pixels: int) -> np.ndarray:
+    """``mask`` grown by a disc of ``pixels``, worked on the mask's own window."""
+    from scipy import ndimage  # noqa: PLC0415 (only the calculator's scene path pays for it)
+
+    rows, cols = np.nonzero(mask)
+    out = np.zeros(mask.shape, dtype=bool)
+    if rows.size == 0:
+        return out
+    r0, r1 = max(int(rows.min()) - pixels, 0), min(int(rows.max()) + pixels + 1, mask.shape[0])
+    c0, c1 = max(int(cols.min()) - pixels, 0), min(int(cols.max()) + pixels + 1, mask.shape[1])
+    yy, xx = np.mgrid[-pixels:pixels + 1, -pixels:pixels + 1]
+    disc = (xx * xx + yy * yy) <= pixels * pixels
+    out[r0:r1, c0:c1] = ndimage.binary_dilation(mask[r0:r1, c0:c1], structure=disc)
+    return out
+
+
+def _voxel_groups(points: np.ndarray, voxel_mm: float, min_points: int) -> tuple[np.ndarray, int]:
+    """Which points stand in a voxel of at least ``min_points``, and how many groups those voxels form."""
+    if points.shape[0] == 0:
+        return np.zeros(0, dtype=bool), 0
+    keys = np.floor(points / float(voxel_mm)).astype(np.int64)
+    cells, inverse, counts = np.unique(keys, axis=0, return_inverse=True, return_counts=True)
+    inverse = np.asarray(inverse).reshape(-1)
+    full = counts >= int(min_points)
+    keep = full[inverse]
+    if not full.any():
+        return keep, 0
+    from scipy import ndimage  # noqa: PLC0415
+
+    kept = cells[full]
+    low = kept.min(axis=0)
+    grid = np.zeros(tuple(int(v) for v in kept.max(axis=0) - low + 1), dtype=bool)
+    grid[tuple((kept - low).T)] = True
+    _, groups = ndimage.label(grid, structure=np.ones((3, 3, 3), dtype=bool))
+    return keep, int(groups)
+
+
+def scene_obstacle_points(
+    depth_mm: np.ndarray,
+    target_mask: np.ndarray,
+    intrinsics: Any,
+    camera_to_base: np.ndarray,
+    *,
+    rules: SceneObstacleRules,
+    support_height_mm: float | None,
+    support_model: Any = None,
+) -> SceneObstacles:
+    """The obstacles one frame shows beside the part ``target_mask`` covers, by ``rules``.
+
+    ``depth_mm`` is the frame's depth, CAMERA millimetres; ``camera_to_base`` the 4x4 that places it.
+    ``support_height_mm`` is the support the part stands on as the pick resolved it (BASE z); ``support_model`` the
+    camera world's support model of the same frames (``support_surfaces.SupportModel``) or ``None``: where one of its
+    surfaces covers a point, that surface's local reading decides (``is_support_point``, never "inside a solid").
+
+    An empty answer where the mask holds no measured pixel: there is nothing to grow it from, and a frame read without
+    the part left out would take the part for its own neighbour.
+    """
+    depth = np.asarray(depth_mm, dtype=np.float64)
+    mask = np.asarray(target_mask).astype(bool)
+    if depth.ndim != 2 or mask.shape != depth.shape:
+        raise ValueError(f"the depth and the part's mask must be one 2-D shape, got {depth.shape} and {mask.shape}")
+    with np.errstate(invalid="ignore"):
+        valid = np.isfinite(depth) & (depth > 0.0)
+    under = mask & valid
+    if not under.any():
+        return SceneObstacles.none()
+    fx, fy, cx, cy = _matrix_of(intrinsics)
+    transform = np.asarray(camera_to_base, dtype=np.float64).reshape(4, 4)
+    turn, shift = transform[:3, :3], transform[:3, 3]
+    part_depth = float(np.median(depth[under]))
+    grow = max(1, int(math.ceil(float(rules.mask_growth_mm) * fx / max(part_depth, 1.0))))
+    around = valid & ~_grown(mask, grow)
+    behind = pixels_behind_depth_steps(around, depth)
+
+    # Where the part is: the median of its own pixels in BASE.
+    rows_t, cols_t = np.nonzero(under)
+    z_t = depth[rows_t, cols_t]
+    part = np.column_stack(((cols_t - cx) * z_t / fx, (rows_t - cy) * z_t / fy, z_t)) @ turn.T + shift
+    centre = np.median(part[:, :2], axis=0)
+
+    stride = max(1, int(rules.pixel_stride))
+    rows, cols = np.mgrid[0:depth.shape[0]:stride, 0:depth.shape[1]:stride]
+    take = around[rows, cols]
+    rows, cols = rows[take], cols[take]
+    z = depth[rows, cols]
+    points = np.column_stack(((cols - cx) * z / fx, (rows - cy) * z / fy, z)) @ turn.T + shift
+    near = np.hypot(points[:, 0] - centre[0], points[:, 1] - centre[1]) < float(rules.reach_mm)
+    points, trimmed = points[near], behind[rows[near], cols[near]]
+    counts: dict[str, int] = {"read": int(points.shape[0])}
+
+    # The support rule (contract 7): a surface the model holds decides over its own pixels, the bench and the part's
+    # support decide elsewhere.
+    band = float(rules.band_mm)
+    covered = np.zeros(points.shape[0], dtype=bool)
+    surface = np.zeros(points.shape[0], dtype=bool)
+    if support_model is not None and points.shape[0]:
+        planes = support_model.local_plane_under(points[:, :2])
+        if planes is not None:
+            planes = np.asarray(planes, dtype=np.float64)
+            covered = np.isfinite(planes[:, 0])
+            reading = np.full(points.shape[0], np.inf)
+            nx, ny, nz, d = (planes[covered, i] for i in range(4))
+            reading[covered] = (d - nx * points[covered, 0] - ny * points[covered, 1]) / nz
+            own = np.asarray(support_model.is_support_point(points), dtype=bool)
+            surface = covered & (own | (points[:, 2] <= reading))
+    floors = [float(v) for v in (rules.bench_top_mm, support_height_mm) if v is not None]
+    floor = (max(floors) if floors else -math.inf) + band
+    below = ~covered & (points[:, 2] <= floor)
+    bench_floor = (float(rules.bench_top_mm) if rules.bench_top_mm is not None
+                   else (float(support_height_mm) if support_height_mm is not None else -math.inf)) + band
+    below_bench = ~covered & (points[:, 2] <= bench_floor)
+    declared = np.zeros(points.shape[0], dtype=bool)
+    for body in rules.declared:
+        declared |= np.asarray(body.distance_mm(points), dtype=np.float64) <= float(rules.declared_band_mm)
+    counts["support"] = int(surface.sum())
+    counts["below"] = int((below & ~surface).sum())
+    counts["declared"] = int((declared & ~surface & ~below).sum())
+
+    world_rule = points[~surface & ~below_bench & ~declared]
+    candidates = points[~surface & ~below & ~declared & ~trimmed]
+    keep, groups = _voxel_groups(candidates, float(rules.cluster_voxel_mm), int(rules.min_points))
+    kept = candidates[keep]
+    counts["speck"] = int(candidates.shape[0] - kept.shape[0])
+    counts["kept"] = int(kept.shape[0])
+    return SceneObstacles(points_base_mm=kept, world_rule_base_mm=world_rule, clusters=groups, counts=counts,
+                          grown_px=grow)
+
+
+def corridor_seen_in(
+    depth_mm: np.ndarray, intrinsics: Any, camera_to_base: np.ndarray, *, tolerance_mm: float = SEEN_TOLERANCE_MM,
+) -> Callable[[np.ndarray], np.ndarray]:
+    """Who says whether a depth ray of this frame reached a point (SFE's ``CorridorSeen``, the fix plan's contract 5).
+
+    A BASE point is seen where its pixel's measured depth reaches at least to it, less ``tolerance_mm``: the ray went
+    through the space the point stands in, or stopped on it. Behind the camera, outside the image, or on a pixel with no
+    measured depth it is not seen.
+    """
+    depth = np.asarray(depth_mm, dtype=np.float64)
+    if depth.ndim != 2:
+        raise ValueError(f"the depth must be 2-D, got {depth.shape}")
+    fx, fy, cx, cy = _matrix_of(intrinsics)
+    to_camera = np.linalg.inv(np.asarray(camera_to_base, dtype=np.float64).reshape(4, 4))
+    turn, shift = to_camera[:3, :3], to_camera[:3, 3]
+    height, width = depth.shape
+    slack = float(tolerance_mm)
+
+    def seen(points_base_mm: np.ndarray) -> np.ndarray:
+        points = np.asarray(points_base_mm, dtype=np.float64).reshape(-1, 3)
+        out = np.zeros(points.shape[0], dtype=bool)
+        if points.shape[0] == 0:
+            return out
+        camera = points @ turn.T + shift
+        z = camera[:, 2]
+        front = np.isfinite(z) & (z > 1e-6)
+        safe_z = np.where(front, z, 1.0)
+        u = np.rint(fx * camera[:, 0] / safe_z + cx)
+        v = np.rint(fy * camera[:, 1] / safe_z + cy)
+        inside = front & (u >= 0) & (u < width) & (v >= 0) & (v < height)
+        index = np.nonzero(inside)[0]
+        measured = depth[v[index].astype(np.int64), u[index].astype(np.int64)]
+        with np.errstate(invalid="ignore"):
+            out[index] = np.isfinite(measured) & (measured > 0.0) & (measured >= z[index] - slack)
+        return out
+
+    return seen
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# The hand's envelope against the solids the guard holds
+# --------------------------------------------------------------------------------------------------------------------
+
+#: The eight corners of a unit box, and its twelve edges as corner pairs.
+_SIGNS: Final[np.ndarray] = np.array([[sx, sy, sz] for sx in (-1.0, 1.0) for sy in (-1.0, 1.0) for sz in (-1.0, 1.0)])
+_EDGES: Final[np.ndarray] = np.array([(i, j) for i in range(8) for j in range(i + 1, 8)
+                                      if int(np.abs(_SIGNS[i] - _SIGNS[j]).sum()) == 2])
+
+
+def _overlap(ca: np.ndarray, ra: np.ndarray, ha: np.ndarray, cb: np.ndarray, rb: np.ndarray,
+             hb: np.ndarray) -> np.ndarray:
+    """Whether each pair of oriented boxes overlaps, by the separating axis test over its fifteen axes."""
+    t = cb - ca
+    axes = [ra[:, :, i] for i in range(3)] + [rb[:, :, i] for i in range(3)]
+    axes += [np.cross(ra[:, :, i], rb[:, :, j]) for i in range(3) for j in range(3)]
+    separated = np.zeros(ca.shape[0], dtype=bool)
+    for axis in axes:
+        length = np.linalg.norm(axis, axis=1)
+        usable = length > 1e-9
+        unit = axis / np.where(usable, length, 1.0)[:, None]
+        reach_a = sum(ha[:, i] * np.abs(np.einsum("nk,nk->n", ra[:, :, i], unit)) for i in range(3))
+        reach_b = sum(hb[:, i] * np.abs(np.einsum("nk,nk->n", rb[:, :, i], unit)) for i in range(3))
+        separated |= usable & (np.abs(np.einsum("nk,nk->n", t, unit)) > reach_a + reach_b + 1e-9)
+    return ~separated
+
+
+def _point_box_distance(points: np.ndarray, centre: np.ndarray, turn: np.ndarray, half: np.ndarray) -> np.ndarray:
+    """``(N, K)`` distances of ``(N, K, 3)`` points to ``N`` oriented boxes; 0 inside."""
+    local = np.einsum("nkj,nji->nki", points - centre[:, None, :], turn)
+    outside = np.maximum(np.abs(local) - half[:, None, :], 0.0)
+    return np.linalg.norm(outside, axis=2)
+
+
+def _segment_distance(p1: np.ndarray, q1: np.ndarray, p2: np.ndarray, q2: np.ndarray) -> np.ndarray:
+    """The least distance between segments ``p1 q1`` and ``p2 q2``, elementwise over leading axes (Ericson 5.1.9)."""
+    d1, d2, r = q1 - p1, q2 - p2, p1 - p2
+    a = np.einsum("...k,...k->...", d1, d1)
+    e = np.einsum("...k,...k->...", d2, d2)
+    f = np.einsum("...k,...k->...", d2, r)
+    c = np.einsum("...k,...k->...", d1, r)
+    b = np.einsum("...k,...k->...", d1, d2)
+    denom = a * e - b * b
+    s = np.where(denom > 1e-12, np.clip((b * f - c * e) / np.where(denom > 1e-12, denom, 1.0), 0.0, 1.0), 0.0)
+    t = (b * s + f) / e
+    s = np.where(t < 0.0, np.clip(-c / a, 0.0, 1.0), np.where(t > 1.0, np.clip((b - c) / a, 0.0, 1.0), s))
+    t = np.clip(t, 0.0, 1.0)
+    gap = (p1 + d1 * s[..., None]) - (p2 + d2 * t[..., None])
+    return np.linalg.norm(gap, axis=-1)
+
+
+def box_distances_mm(ca: np.ndarray, ra: np.ndarray, ha: np.ndarray, cb: np.ndarray, rb: np.ndarray,
+                     hb: np.ndarray) -> np.ndarray:
+    """The least distance between each pair of oriented boxes, millimetres; 0 where they overlap.
+
+    Each box is a centre ``(N, 3)``, a rotation ``(N, 3, 3)`` whose columns are its axes in BASE, and half extents
+    ``(N, 3)``. Exact: two boxes apart are nearest at a corner of one against the other, or between two of their edges.
+    """
+    ca, cb = np.asarray(ca, dtype=np.float64).reshape(-1, 3), np.asarray(cb, dtype=np.float64).reshape(-1, 3)
+    ra, rb = np.asarray(ra, dtype=np.float64).reshape(-1, 3, 3), np.asarray(rb, dtype=np.float64).reshape(-1, 3, 3)
+    ha, hb = np.asarray(ha, dtype=np.float64).reshape(-1, 3), np.asarray(hb, dtype=np.float64).reshape(-1, 3)
+    corners_a = ca[:, None, :] + np.einsum("nij,nkj->nki", ra, _SIGNS[None, :, :] * ha[:, None, :])
+    corners_b = cb[:, None, :] + np.einsum("nij,nkj->nki", rb, _SIGNS[None, :, :] * hb[:, None, :])
+    least = np.minimum(_point_box_distance(corners_a, cb, rb, hb).min(axis=1),
+                       _point_box_distance(corners_b, ca, ra, ha).min(axis=1))
+    ea0, ea1 = corners_a[:, _EDGES[:, 0], :], corners_a[:, _EDGES[:, 1], :]
+    eb0, eb1 = corners_b[:, _EDGES[:, 0], :], corners_b[:, _EDGES[:, 1], :]
+    edges = _segment_distance(ea0[:, :, None, :], ea1[:, :, None, :], eb0[:, None, :, :], eb1[:, None, :, :])
+    least = np.minimum(least, edges.reshape(edges.shape[0], -1).min(axis=1))
+    return np.where(_overlap(ca, ra, ha, cb, rb, hb), 0.0, least)
+
+
+@dataclass(frozen=True, slots=True)
+class EnvelopeVerdict:
+    """Why one candidate's open hand stands too near what the guard holds, or that it does not."""
+
+    #: ``""`` where it keeps its distance, else ``support`` or ``declared``.
+    refused: str
+    #: The nearest held solid and the hand's least distance to it, millimetres; ``""`` and ``inf`` where none is held.
+    nearest: str
+    distance_mm: float
+
+
+def envelope_verdicts(
+    poses: Sequence[tuple[np.ndarray, np.ndarray]],
+    *,
+    gripper_model: Any,
+    open_width_mm: float,
+    solids: Sequence[Any] = (),
+    support_distance_mm: float = 5.0,
+    declared_boxes: Sequence[DeclaredBox] = (),
+    declared_distance_mm: float = 10.0,
+) -> list[EnvelopeVerdict]:
+    """For each BASE grasp ``(position, rotation)``, whether the open hand there keeps the guard's distances.
+
+    The hand is ``gripper_model.collision_boxes(open_width_mm)`` at the pose (the rotation's columns are the closing
+    axis, the binormal and the approach, as a ``GraspPose`` holds them): it arrives open. A support's solid
+    (``SupportSolid``: ``centre_mm``, ``rotation``, ``half_extents_mm``, the allowance included) is a camera box the
+    guard keeps ``support_distance_mm`` from; a declared box keeps ``declared_distance_mm``. Mirrors the guard over the
+    hand's box envelope, which holds the hand's meshes: it refuses at least what the guard would refuse at the hand.
+    """
+    boxes = gripper_model.collision_boxes(float(open_width_mm))
+    local_centres = np.array([(np.asarray(b.min_corner_mm) + np.asarray(b.max_corner_mm)) / 2.0 for b in boxes])
+    local_halves = np.array([(np.asarray(b.max_corner_mm) - np.asarray(b.min_corner_mm)) / 2.0 for b in boxes])
+    held: list[tuple[str, str, np.ndarray, np.ndarray, np.ndarray, float]] = []
+    for solid in solids:
+        held.append(("support", str(solid.name), np.asarray(solid.centre_mm, dtype=np.float64),
+                     np.asarray(solid.rotation, dtype=np.float64).reshape(3, 3),
+                     np.asarray(solid.half_extents_mm, dtype=np.float64), float(support_distance_mm)))
+    for box in declared_boxes:
+        held.append(("declared", box.name, np.asarray(box.centre_mm, dtype=np.float64), np.eye(3),
+                     np.asarray(box.half_extents_mm, dtype=np.float64), float(declared_distance_mm)))
+    out: list[EnvelopeVerdict] = []
+    if not held:
+        return [EnvelopeVerdict("", "", math.inf) for _ in poses]
+    n_hand, n_held = len(boxes), len(held)
+    for position, rotation in poses:
+        turn = np.asarray(rotation, dtype=np.float64).reshape(3, 3)
+        centres = np.asarray(position, dtype=np.float64).reshape(3) + local_centres @ turn.T
+        ca = np.repeat(centres, n_held, axis=0)
+        ra = np.repeat(turn[None, :, :], n_hand * n_held, axis=0)
+        ha = np.repeat(local_halves, n_held, axis=0)
+        cb = np.tile(np.array([h[2] for h in held]), (n_hand, 1))
+        rb = np.tile(np.array([h[3] for h in held]), (n_hand, 1, 1))
+        hb = np.tile(np.array([h[4] for h in held]), (n_hand, 1))
+        distances = box_distances_mm(ca, ra, ha, cb, rb, hb).reshape(n_hand, n_held).min(axis=0)
+        limits = np.array([h[5] for h in held])
+        short = distances < limits
+        nearest = int(np.argmin(distances - limits))
+        refused = ""
+        if short.any():
+            # A declared box outranks a camera's solid: it was measured, and its refusal says what to move.
+            kinds = [held[i][0] for i in np.nonzero(short)[0]]
+            refused = "declared" if "declared" in kinds else "support"
+            nearest = int(np.nonzero(short)[0][np.argmin((distances - limits)[short])])
+        out.append(EnvelopeVerdict(refused, held[nearest][1], float(distances[nearest])))
+    return out
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# Why a part got no grasp
+# --------------------------------------------------------------------------------------------------------------------
+
+
+def least_part_height_mm(jaw: Any) -> float:
+    """How far over its support a part has to stand for SFE to plan this hand on it at all, millimetres.
+
+    SFE solves, per tilt of its ladder, the anchor height at which the fingers clear the support by the table
+    clearance, and tries that height only where it lies 2 mm under the part's top (``generate_support_footprint_grasps``).
+    A part lower than the least of those over the ladder gets no height to try: it is too short for this hand.
+    """
+    tilts = np.radians(np.asarray(_SFE_TILTS_DEG))
+    need = 2.0 * float(jaw.finger_ahead_mm) * np.cos(tilts) + float(jaw.finger_width_mm) * np.sin(tilts)
+    return float(jaw.table_clearance_mm + need.min() + _SFE_TOP_SLACK_MM)
+
+
+def why_no_grasp(telemetry: Mapping[str, Any]) -> "tuple[tuple[GraspFailureReason, ...], str]":
+    """The reasons and the sentence for a calculator result with no candidate, read off its telemetry.
+
+    In this order, the fix plan's (Track A):
+
+    * the post-hoc filters emptied what SFE offered: a support's solid or a declared box too near the open hand
+      (``ALL_TABLE_CONFLICT``), the scene's points inside the hand (``ALL_COLLIDED``), the workspace, the reach;
+    * SFE offered nothing, and a build met a neighbour the camera saw (``seen_*``): ``ALL_COLLIDED``, the only reason a
+      push answers;
+    * it met a declared body (``declared_*``): ``ALL_TABLE_CONFLICT``;
+    * the support refused it (``table``): ``ALL_TABLE_CONFLICT``, and where the part stands lower than the hand grips at
+      any tilt, that it is too short for this hand;
+    * the part's own low fragments alone: ``NO_VALID_GRASP``.
+
+    ``RESCAN_RECOMMENDED`` comes last on every one, as before.
+    """
+    from src.robot.grasping.types.feedback import GraspFailureReason as R  # noqa: PLC0415, N817
+
+    refused = telemetry.get("support_footprint_refused")
+    counts: Mapping[str, Any] = refused if isinstance(refused, Mapping) else {}
+
+    def count(*names: str) -> int:
+        return int(sum(int(counts.get(name, 0) or 0) for name in names))
+
+    def stamp(key: str) -> int:
+        return int(telemetry.get(key, 0) or 0)
+
+    obstacles = int(telemetry.get("scene_obstacle_points", 0) or 0)
+    groups = int(telemetry.get("scene_obstacle_clusters", 0) or 0)
+    beside = (f" ({obstacles} point(s) in {groups} cluster(s) within {REACH_MM:.0f} mm)" if obstacles else "")
+    offered = int(telemetry.get("support_footprint_kept", 0) or 0)
+    stage = str(telemetry.get("geometry_stage", ""))
+    reasons: list[R] = []
+    said = ""
+    if stage != "support_footprint" or offered > 0:
+        # Something was offered and a filter after it emptied the list.
+        if stamp("rejected_workspace"):
+            reasons.append(R.ALL_OUT_OF_WORKSPACE)
+            said = said or "every grasp lies outside the workspace box"
+        if stamp("rejected_declared"):
+            reasons.append(R.ALL_TABLE_CONFLICT)
+            said = said or (f"every grasp brings the hand within {_number(telemetry, 'scene_declared_distance_mm'):g} "
+                            f"mm of the declared {telemetry.get('scene_declared_nearest') or 'body'}")
+        if stamp("rejected_support") or stamp("rejected_table"):
+            if R.ALL_TABLE_CONFLICT not in reasons:
+                reasons.append(R.ALL_TABLE_CONFLICT)
+            if stamp("rejected_support"):
+                said = said or (f"every grasp brings the hand within {_number(telemetry, 'scene_support_distance_mm'):g}"
+                                " mm of the support surface the part stands on")
+            else:
+                clearance = (_number(telemetry, "scene_table_clearance_mm")
+                             or _number(telemetry, "table_clearance_required_mm"))
+                said = said or f"every grasp brings the hand within {clearance:g} mm of the support the part stands on"
+        if stamp("rejected_collision"):
+            reasons.append(R.ALL_COLLIDED)
+            said = said or f"every grasp puts the hand into a neighbour the camera saw beside the part{beside}"
+        if stamp("rejected_ik"):
+            reasons.append(R.IK_FAILED)
+            said = said or "no grasp is within the arm's reach"
+        if not reasons:
+            reasons.append(R.NO_VALID_GRASP)
+    elif count("seen_fingers", "seen_corridor"):
+        reasons.append(R.ALL_COLLIDED)
+        said = f"every grasp the hand fits meets a neighbour the camera saw beside the part{beside}"
+    elif count("declared_fingers", "declared_corridor"):
+        reasons.append(R.ALL_TABLE_CONFLICT)
+        said = "every grasp the hand fits meets the declared walls beside the part"
+    elif count("table"):
+        reasons.append(R.ALL_TABLE_CONFLICT)
+        height = telemetry.get("scene_part_height_mm")
+        least = telemetry.get("scene_least_part_height_mm")
+        if isinstance(height, (int, float)) and isinstance(least, (int, float)) and float(height) < float(least):
+            said = (f"the part stands less than about {float(least):.0f} mm above its support ({float(height):.0f} mm), "
+                    "too short for this hand")
+        else:
+            said = (f"every grasp brings the fingertips within {_number(telemetry, 'scene_table_clearance_mm'):g} mm of "
+                    "the support the part stands on")
+    elif count("own_fragments"):
+        reasons.append(R.NO_VALID_GRASP)
+        said = "every grasp the hand fits meets the part's own low fragments"
+    else:
+        reasons.append(R.NO_VALID_GRASP)
+        if count("aperture"):
+            said = "the part is wider than the hand opens, or thinner than it closes"
+        elif int(telemetry.get("support_footprint_points", 0) or 0) and not any(int(v or 0) for v in counts.values()):
+            said = "too few of the part's points stand over its support to plan a grasp on"
+    reasons.append(R.RESCAN_RECOMMENDED)
+    return tuple(dict.fromkeys(reasons)), said
+
+
+def _number(telemetry: Mapping[str, Any], key: str) -> float:
+    """A telemetry number, 0 where it is missing or not a number."""
+    value = telemetry.get(key)
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+
+def no_grasp_said(result: object) -> str:
+    """Why ``result`` has no candidate, in one sentence, or ``""``: what :func:`why_no_grasp` left in its telemetry."""
+    telemetry = getattr(result, "telemetry", None)
+    said = telemetry.get(NO_GRASP_SAID) if isinstance(telemetry, Mapping) else None
+    return said if isinstance(said, str) else ""

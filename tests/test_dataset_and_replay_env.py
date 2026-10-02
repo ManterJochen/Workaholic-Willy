@@ -22,6 +22,7 @@ Contracts under test:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -706,6 +707,24 @@ class WriteManifestTests(unittest.TestCase):
             self.assertEqual(payload["dataset_id"], "rt")
             self.assertEqual(payload["schema_version"], 2)
             self.assertEqual(len(digest), 64)
+
+    def test_the_manifest_is_LF_on_every_platform(self) -> None:
+        # docs/baselines/** is -text: git keeps its bytes as written. MEASURED 2026-10-02 on Windows: the manifest
+        # came out CRLF, every line of the committed v1_bootstrap.json read as changed, and the returned digest (of
+        # the LF payload) was not the file's.
+        with tempfile.TemporaryDirectory() as td:
+            manifest = build_dataset(
+                repo_root=REPO_ROOT,
+                dataset_id="rt",
+                seed=1,
+                splits_root=Path(td) / "s",
+                emit_parquet=False,
+            )
+            out = Path(td) / "manifest.json"
+            digest = write_manifest(manifest, out)
+            data = out.read_bytes()
+            self.assertNotIn(b"\r", data)
+            self.assertEqual(hashlib.sha256(data.rstrip(b"\n")).hexdigest(), digest)
 
 
 class GroupAwareSplitTests(unittest.TestCase):

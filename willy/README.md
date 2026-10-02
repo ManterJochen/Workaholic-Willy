@@ -82,6 +82,20 @@ Every noun that describes a cell is built from a loaded config tree, `X.from_tre
 | `GraspMotion` | What a caller may choose about how a pick moves; a field left unset keeps the service's own; `closing_axis="-y"` takes only the grasps heading within 30 degrees of that axis, each turned that way round | `real_robot/12_pick_with_the_camera.py` |
 | `PlannerStart` | One cell's planner, started and stopped at a desk with no controller | `cell.start_planner()` in `real_robot/02_check_the_cell_at_a_desk.py` |
 
+### A task: pick, place, return
+
+| Name | What it is | Shown in |
+|---|---|---|
+| `run_task` | Picks a part, sets it down, returns and looks again, once or until nothing is left, on a connected cell's service: `run_task(cell.service, plan, hooks=, poses=)`. The operator console's Start runs exactly this | [`src/robot/execution/`](../src/robot/execution/README.md) |
+| `TaskPlan` | One task: `object` (the English phrase; `""` anything), `place`, `return_to` (`"home"` or a taught pose), `scope` (`"once"`, `"until_empty"`), `options`; `first_motion="return"` is a Restart | `run_task` |
+| `PlaceAt` | Where each part goes: `PlaceAt(pose=name)`, where the part's bottom is let go, or `PlaceAt(camera="blue bin", air_mm=)`, a bin the camera finds | `TaskPlan.place` |
+| `TaskOptions` | One task's switches, never the cell's: `multi_view`, `both_faces`, `closing_axis`, `push_mm`, `record_views`, `overlay`, `pick_anything` | `TaskPlan.options` |
+| `TaskHooks` | What a task calls between its motions: `event`, `pick_done`, and the reads `stop_after_part`, `halted`, `abandoned` | `run_task(hooks=)` |
+| `TaskEvent` | What a task says between its motions, each an event type of the console (`task.placed`, `task.returned`, ...) | `TaskHooks.event` |
+| `TaskReport` | Why it ended, the parts placed, the picks, whether the arm is back; prints as itself | `run_task` |
+| `TaskStop` | Why a task ended: 19 codes in four classes; done, the operator's and the asks return first, a problem stays where it stands | `TaskReport.stop` |
+| `TaskRefused` | A task this cell cannot do, raised with the console's code before anything moved | `run_task` |
+
 ### What a build or a connect refuses with
 
 | Name | Raised when | Shown in |

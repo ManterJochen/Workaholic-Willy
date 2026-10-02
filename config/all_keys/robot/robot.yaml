@@ -29,6 +29,14 @@ robot:
     # [default: curobo] [one of: ik | curobo]
     motion_planner: curobo
 
+    # What "halt now" in the console (POST /v1/cell/brake) does to a move already in flight. Off, as shipped: every
+    # move is sent exactly as it always was, and a halt latches the arm, so the move in flight ends first and nothing
+    # after it is sent, no output switched either. On: the move in flight is also braked under control (stopJ /
+    # stopL) from the thread that sent it. Either way "halt now" is not an emergency stop; the red button is. Switch it
+    # on in the cell's own profile only once the URSim measurements (scripts/ursim/probe_halt.py) have passed.
+    # [default: false]
+    brake_on_halt: false
+
   # Isaac-Sim (or pure-Python mock) driver settings.
   sim:
 
@@ -608,6 +616,30 @@ robot:
   # [default: null]
   natural_closing_axis: null
 
+  # Poses taught by hand in the console (Setup, "Pose einlernen"): a place a task puts its part at, or a pose it
+  # returns to. The key is the pose's NAME, an ASCII identifier of at most 32 characters, not a keyword and not
+  # `home`; `label` is what the chat, the cards and the command reader say ("Ablage links"), free text of at most 40
+  # characters with no newline and no " #". Joints in DEGREES, one per joint, with the looks' rules. A place pose
+  # says where the part's BOTTOM is let go: the tool goes there raised by the part's hang, so every error goes
+  # toward more air. Each pose is screened by the exact guard and the planner as it is taught, and only a clear one
+  # or one in the planner's band (`screen`) is written, into the last layer of the profile chain; an unscreened or
+  # refused pose never is. The console teaches poses; it never renames or deletes one: edit them here. Home stays
+  # home_joint_positions.
+  #   named_poses:
+  #     drop_left:
+  #       joints_deg: [-60.0, -95.0, -120.0, -55.0, 90.0, 0.0]
+  #       label: "Ablage links"
+  #       taught_at: "2026-10-01T09:12:00+02:00"
+  #       screen: clear                    # clear | band
+  #       note: ""
+  # [default: {}]
+  named_poses: {}
+
+  # The pose a task places at when its command names no target: a name in named_poses, or null for none, and a task
+  # that names no place is then refused. Chosen in the console (Poses, "default place").
+  # [default: null]
+  default_place_pose: null
+
   # Cartesian POSITION the robot can retreat to at operator request.
   safe_pose:
 
@@ -742,7 +774,10 @@ robot:
 
       # The clearance in mm that must remain between every monitored shape pair (arm link vs arm link, base,
       # tool, and every declared fixture box; a box a camera saw keeps perceived_min_distance_mm). It is also
-      # the step every path is sampled at.
+      # the step every path is sampled at. At least 10 while a fixture is declared and
+      # planning_world.include_fixtures is true, refused below at load: what a camera sees within 5 mm of a
+      # declared fixture leaves the world as the fixture's, and nothing holds that band as solid. A cell that
+      # declares no fixture runs at 5: the surfaces the camera world finds are held as solid.
       # [default: 10.0]
       min_distance_mm: 10.0
 
@@ -1073,6 +1108,23 @@ robot:
         # [default: 5.0]
         plane_clearance_mm: 5.0
 
+        # Find what the parts stand on, on every world build, and hold it as solid. The camera's own pixels say
+        # where the large, nearly level surfaces are: a mat on the bench, the bare bench, a bin's floor, at most 5
+        # degrees off level. Each becomes a solid from the declared plane up to its own reading plus the band, and the
+        # guard and the planner hold it; a point leaves the obstacles only where such a solid holds every pixel it
+        # stands for. Nothing is declared for it: a mat that is gone tomorrow is gone from the world tomorrow. The
+        # declared plane is held as a solid too, up to its band. Off, the world is built as before.
+        # [default: true]
+        support_surfaces: true
+
+        # How far the solids the guard and the planner hold stand over what their band took out, in mm (0 to 10).
+        # The solid follows the camera's reading, so where the camera reads a surface low, a thin part the band took
+        # out stands that much higher than its solid. 2 keeps the guard's 5 mm from such a part while the camera reads
+        # up to 4 mm low. It costs grasps of short parts: the fingertip of a 30 mm part comes within reach of a higher
+        # solid.
+        # [default: 2.0]
+        support_allowance_mm: 2.0
+
   # Vendor-neutral grasping-behaviour surface.
   grasping:
 
@@ -1097,6 +1149,19 @@ robot:
     # the RADIAL direction (base -> grasp) instead of following the noise.
     # [default: false]
     isotropic_radial_closing: false
+
+    # The calculator sees the parts beside the one it grasps. A prompt names one part; on, the depth the camera saw
+    # around it, past the support it stands on, reaches the calculator as obstacles, so a part boxed in by its
+    # neighbours gets no grasp and says so. A pre-filter only: the guard judges every motion either way. Off is the
+    # calculator of before, the part alone.
+    # [default: true]
+    scene_obstacles: true
+
+    # Grasps tilted to the side join the vertical ones, ranked by the room they keep: beside a wall or a tall
+    # neighbour a tilted approach can keep more room than a vertical one. Only space the camera saw counts as clear
+    # for a tilted approach. Off, a tilted grasp is offered only where no vertical one fits.
+    # [default: true]
+    side_approaches: true
 
     # Opt-in JSONL path for production GraspAttemptRecord logging. When set,
     # AutonomousGraspService.from_robot_config / from_components call enable_record_logging(path), so every

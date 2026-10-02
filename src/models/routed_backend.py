@@ -24,7 +24,7 @@ from collections.abc import Callable
 from typing import Any
 
 from src.models.constants import MODELS_LOG_DIR, PERCEPTION_ROUTING_LOG_FILE
-from src.models.perception_backend import PerceivedObject
+from src.models.perception_backend import PerceivedObject, failures_of, last_failure_of
 from src.models.routing import (
     PromptRouter,
     Route,
@@ -68,11 +68,25 @@ class RoutedPerceptionBackend:
         self._on_decision = on_decision
         self._log = logger or _LOG
         self._last_decision: RouteDecision | None = None
+        self._last_failure = ""
 
     @property
     def last_decision(self) -> RouteDecision | None:
         """The most recent routing verdict, for telemetry. ``None`` before the first ``perceive``."""
         return self._last_decision
+
+    @property
+    def failures(self) -> int:
+        """The built routes' counted failures, summed: a perceive that returned nothing because a model raised.
+
+        A route not built yet has failed nothing. The sum only grows, as each route's count does.
+        """
+        return sum(failures_of(backend) for backend in tuple(self._built.values()))
+
+    @property
+    def last_failure(self) -> str:
+        """The latest counted failure, from whichever route raised it, or ``""``."""
+        return self._last_failure
 
     def built_routes(self) -> tuple[Route, ...]:
         """The routes constructed so far, which are the ones holding VRAM right now."""
@@ -104,4 +118,10 @@ class RoutedPerceptionBackend:
         # ``GuardedVlmBackend`` decides refuse against degrade with context this class lacks, and
         # quietly substituting the other backend here would produce the confident wrong grasp that
         # routing exists to prevent.
-        return tuple(self._backend_for(decision.route).perceive(image_bgr, text))
+        backend = self._backend_for(decision.route)
+        before = failures_of(backend)
+        try:
+            return tuple(backend.perceive(image_bgr, text))
+        finally:
+            if failures_of(backend) > before:
+                self._last_failure = last_failure_of(backend)

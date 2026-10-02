@@ -59,6 +59,7 @@ from typing import Any, Protocol, Sequence, TypedDict
 import numpy as np
 
 from src.contracts import UNSET, Maybe, chosen
+from src.robot.constants import create_robot_logger
 from src.robot.core.camera_world import CameraWorldStamp, UnseenSpace
 from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.core.keep_out import GoalKeepOut, KeepOutBox, KeepOutSummary
@@ -89,6 +90,12 @@ __all__ = [
     "WorldVerdict",
     "refresh_planner_world",
 ]
+
+logger = create_robot_logger(__name__, "live_world.log")
+
+#: How often a world says that the bare bench reads lower than declared, at most, seconds: once a minute is enough for a
+#: person to see it and few enough not to bury the rest of the log under it.
+BENCH_WARNING_INTERVAL_S = 60.0
 
 
 class WorldVerdict(StrEnum):
@@ -391,6 +398,8 @@ class LivePlannerWorld:
     #: The frames of new poses the pick in progress did not hold because it held
     #: :data:`_MAX_HELD_FRAMES` already, by camera and shutter time, so a frame served twice counts once.
     _pick_frames_not_kept: set[tuple[str, float | None]] = field(default_factory=set, init=False, repr=False)
+    #: When this world last said that the bare bench reads lower than declared, on its own clock, or `None`.
+    _bench_warned_at: float | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.tuning.voxel_field_mm > 0.0:
@@ -751,6 +760,8 @@ class LivePlannerWorld:
                 declared=self._declared_bodies,
                 # Around the targets held out, and not around the goal's jaw region, which is not padded.
                 cut_around=tuple(self._targets[key] for key in held_keys),
+                # No support is found over the robot's own base.
+                base=self_envelope.base,
             )
         except PerceptionGeometryError as exc:
             return PlannerWorldSnapshot(
@@ -759,9 +770,10 @@ class LivePlannerWorld:
             )
         # Held only now that a world was built from them (:meth:`_hold_frames_of`).
         self._hold_frames_of(frames, self_envelope)
+        self._say_how_the_bench_reads(perceived, clock)
 
         perceived_boxes = [
-            planner_cuboid(box.name, box.center_mm, box.dims_mm, yaw_rad=box.yaw_rad)
+            planner_cuboid(box.name, box.center_mm, box.dims_mm, yaw_rad=box.yaw_rad, rotation=box.rotation)
             for box in perceived.boxes
         ]
         summary = None
@@ -795,6 +807,18 @@ class LivePlannerWorld:
     # -----------------------------------------------------------------------------------------
     # Internals
     # -----------------------------------------------------------------------------------------
+
+    def _say_how_the_bench_reads(self, perceived: PerceivedWorld, clock: float) -> None:
+        """A WARNING, at most once a minute, where the bare bench reads lower than declared by more than the support
+        solids stand over what they take. It changes nothing: a sagging bench and a camera that reads low look the same
+        here, and the support solids follow the camera (the owner, 2026-10-02: reported, never raised)."""
+        reading = None if perceived.supports is None else perceived.supports.bench_reading
+        if reading is None or not reading.reads_low:
+            return
+        if self._bench_warned_at is not None and clock - self._bench_warned_at < BENCH_WARNING_INTERVAL_S:
+            return
+        self._bench_warned_at = clock
+        logger.warning("%s", reading.warning())
 
     def _frames_for(
         self, clock: float, body: "np.ndarray | None" = None, *, goal_named: bool = False,
@@ -1358,6 +1382,9 @@ class WorldRefresh:
     #: How many boxes the slot budget merged into the boxes holding them (``PerceivedWorld.merged_to_fit``):
     #: the world the planner and the guard hold is that much coarser than the cameras saw.
     merged_to_fit: int = 0
+    #: The surfaces the world found the parts standing on and how the bare bench reads
+    #: (``support_surfaces.SupportModel.render``); empty where it did not look for them.
+    supports: str = ""
 
     @property
     def ok(self) -> bool:
@@ -1416,6 +1443,8 @@ class WorldRefresh:
         unseen = self.unseen()
         if unseen is not None:
             line += f"; not seen, planned as free: {unseen.render()}"
+        if self.supports:
+            line += f"; {self.supports}"
         return line
 
     def to_dict(self) -> dict[str, Any]:
@@ -1441,6 +1470,7 @@ class WorldRefresh:
             "held_oldest_age_ms": self.held_oldest_age_ms,
             "held_not_kept": int(self.held_not_kept),
             "merged_to_fit": int(self.merged_to_fit),
+            **({"supports": self.supports} if self.supports else {}),
         }
 
 
@@ -1576,6 +1606,10 @@ def refresh_planner_world(
         held_oldest_age_ms=snapshot.held_oldest_age_ms,
         held_not_kept=snapshot.held_not_kept,
         merged_to_fit=0 if snapshot.perceived is None else int(snapshot.perceived.merged_to_fit),
+        supports=(
+            "" if snapshot.perceived is None or snapshot.perceived.supports is None
+            else snapshot.perceived.supports.render()
+        ),
     )
 
 
@@ -1597,7 +1631,9 @@ def _guard_boxes(perceived: PerceivedWorld | None) -> tuple[AxisAlignedBox, ...]
             half_extents_mm=np.asarray(box.enclosing_half_extents_mm, dtype=np.float64),
             name=box.name,
             turned=TurnedBox(half_extents_mm=np.asarray(box.dims_mm, dtype=np.float64) / 2.0,
-                             yaw_rad=float(box.yaw_rad)),
+                             yaw_rad=float(box.yaw_rad),
+                             # A support surface's solid tilts with the surface; the guard holds it tilted.
+                             rotation=None if box.rotation is None else box.rotation_matrix),
             # What a refusal naming it adds: the robot hid part of it, or it may be the robot itself.
             note=box.note(),
         )

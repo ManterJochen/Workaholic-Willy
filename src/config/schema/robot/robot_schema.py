@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import keyword
 import math
+import re
 from typing import Final, Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -96,6 +98,9 @@ __all__ = [
     "LimitsSafetyConfig",
     "MotionContinuitySafetyConfig",
     "MotionLimitsConfig",
+    "NamedPoseConfig",
+    "POSE_LABEL_MAX_CHARS",
+    "POSE_NAME_MAX_CHARS",
     "PayloadSafetyConfig",
     "RLExperimentalConfig",
     "RL_ACTIVE_MODES",
@@ -132,6 +137,9 @@ __all__ = [
     "VacuumGripperConfig",
     "UncertaintyChannelWeightsConfig",
     "WorkspaceLimitsConfig",
+    "pose_label_refusal",
+    "pose_name_refusal",
+    "pose_words",
 ]
 
 
@@ -622,6 +630,132 @@ class GripperConfig(StrictModel):
 #: look past it is a typo or another unit, refused at load rather than driven to.
 LOOK_MAX_ABS_DEG: Final[float] = 360.0
 
+#: The longest name of a taught pose, in characters. The name is the YAML key and the word the command reader hands on.
+POSE_NAME_MAX_CHARS: Final[int] = 32
+#: The longest label of a taught pose, in characters: what the chat and the cards say ("Ablage links").
+POSE_LABEL_MAX_CHARS: Final[int] = 40
+#: A comment mark where the guided writer looks for one: after whitespace. A label holding one would be cut there by a
+#: later rewrite of its line (``src/config/edit.py``, ``_rewrite``).
+_COMMENT_MARK = re.compile(r"\s#")
+#: The words the loader's YAML (PyYAML's ``SafeLoader``) reads as a boolean or as nothing, refused in any case. The pose
+#: door writes a pose's name bare, as its key (``yes:``), so a pose under one of them would read back as ``True``,
+#: ``False`` or ``None`` and could never be written: the arm would have been freed for nothing.
+_YAML_WORDS: Final[frozenset[str]] = frozenset({"yes", "no", "true", "false", "on", "off", "null"})
+
+
+def pose_name_refusal(name: object) -> str:
+    """Why ``name`` cannot name a pose taught in the console, or ``""`` where it can.
+
+    A name is the YAML key under ``robot.named_poses`` and the word the command reader hands back for the label a
+    person said, so it is an ASCII identifier (letters, digits and underscores, not starting with a digit) of at most
+    :data:`POSE_NAME_MAX_CHARS` characters, no Python keyword, and never ``home`` in any case: Home is the arm's own
+    ``robot.home_joint_positions``, configured there and taught nowhere else. It is no word YAML reads as true, false
+    or null (``yes``, ``off``, ``null``, in any case: the key would read back as no name), and it does not have the
+    shape of the loader's own words (``__null__``, the overlay reset, which would turn a default place naming it into
+    none). The one rule the schema, the pose writer and teaching read (``teach.name_refusal``).
+    """
+    if not isinstance(name, str) or not name:
+        return "a pose needs a name: an ASCII identifier such as drop_left"
+    if not (name.isascii() and name.isidentifier()):
+        return (f"{name!r} is no pose name: a name is an ASCII identifier, letters, digits and underscores, not "
+                "starting with a digit (drop_left, park_2)")
+    if len(name) > POSE_NAME_MAX_CHARS:
+        return f"{name!r} is longer than the {POSE_NAME_MAX_CHARS} characters a pose name may have"
+    if keyword.iskeyword(name):
+        return f"{name!r} is a Python keyword, and a pose name is none"
+    if name.lower() == "home":
+        return (f"{name!r} is Home, the arm's own home pose (robot.home_joint_positions): it is configured there and "
+                "taught nowhere else")
+    if name.casefold() in _YAML_WORDS:
+        return (f"{name!r} is a word YAML reads as true, false or null, in any case, not as a name: the pose door "
+                "writes the name as the pose's key, and the pose would read back under none. Choose another name")
+    if name.startswith("__") and name.endswith("__"):
+        return (f"{name!r} has the shape of the config loader's own words (__null__ resets a value in an overlay), "
+                "and a pose name is none of them")
+    return ""
+
+
+def pose_words(name: str, label: str = "") -> frozenset[str]:
+    """The words a pose answers to when a person names it: its name and its label, each without case and with every run
+    of whitespace one space.
+
+    The command reader is handed the poses by their labels, an unlabelled pose by its name, and a person may say
+    either, so no two poses of a tree share a word: :class:`RobotConfig` refuses two that do at load, and the console's
+    store refuses a pose that would before the arm is freed.
+    """
+    return frozenset(word for word in (_folded(name), _folded(label)) if word)
+
+
+def _folded(text: str) -> str:
+    """``text`` as a person's word is compared: without case, every run of whitespace one space."""
+    return " ".join(str(text).split()).casefold()
+
+
+def pose_label_refusal(label: object) -> str:
+    """Why ``label`` cannot be what the chat, the cards and the command reader call a taught pose, or ``""``.
+
+    Free text, Unicode and spaces allowed, of at most :data:`POSE_LABEL_MAX_CHARS` characters, holding no newline or
+    other character a line cannot show and no ``" #"``: the guided writer rewrites a pose's lines in place, and it takes
+    a ``#`` after whitespace for the start of a comment. An empty label is refused here, where the console writes one; a
+    pose written by hand may leave its label out, and its name is said instead.
+    """
+    if not isinstance(label, str) or not label.strip():
+        return "a pose needs a label: what the chat and the cards call it, such as Ablage links"
+    if len(label) > POSE_LABEL_MAX_CHARS:
+        return f"the label {label!r} is longer than the {POSE_LABEL_MAX_CHARS} characters a label may have"
+    if _COMMENT_MARK.search(label):
+        return (f"the label {label!r} holds a '#' after a space, which a later rewrite of its line would take for the "
+                "start of a comment")
+    if not label.isprintable():
+        return f"the label {label!r} holds a newline or another character a line cannot show"
+    return ""
+
+
+class NamedPoseConfig(StrictModel):
+    """A pose taught by hand in the console: where a task puts its part, or where it returns to (owner decision 15).
+
+    The console frees the arm, a person guides it there, and the pose is screened by the exact guard and the planner
+    while the arm holds; only a pose both clear, or one in the planner's cushion band, is written, into the last layer
+    of the profile chain (the owner, Q10). A place pose says where the part's BOTTOM is let go: a task raises the tool
+    over it by the part's hang. The name it is kept under (``robot.named_poses.<name>``) follows
+    :func:`pose_name_refusal`.
+    """
+
+    #: The joints in DEGREES, one value per joint, as the pendant shows them: the looks' rules hold (each a finite
+    #: number of at most a full turn either way, as many as the home names, and as many as every other pose names).
+    joints_deg: tuple[float, ...]
+    #: What the chat, the cards and the command reader call the pose ("Ablage links"): free text of at most 40
+    #: characters, no newline and no " #" (:func:`pose_label_refusal`), and no word another pose answers to
+    #: (:func:`pose_words`: its name, or its label). Empty: the name is said.
+    label: str = ""
+    #: When it was taught, the local time with its offset (ISO 8601), as the console wrote it; ``None`` for a pose
+    #: written by hand.
+    taught_at: str | None = None
+    #: What the exact guard and the planner said when it was taught: ``clear`` (both clear it) or ``band`` (in the
+    #: planner's cushion band: straight lines run into it and out of it, and a planned move takes a short leg first).
+    #: An unscreened or refused pose is never written. ``None``: written by hand and not screened in the console; a
+    #: task screens it before anything moves. Layers merge a pose KEY BY KEY, as every mapping of the tree: a pose a
+    #: later layer names with its joints alone keeps the screen a lower layer gave other joints, so a screen read off a
+    #: tree proves nothing about the joints beside it, and a task screens every pose before it moves. The pose door
+    #: writes all five keys at once, so a pose it wrote never mixes layers.
+    screen: Literal["clear", "band"] | None = None
+    #: The screen's own words, for a band pose; free text, for a person reading the YAML.
+    note: str = ""
+
+    @field_validator("label")
+    @classmethod
+    def _label_is_a_line(cls, value: str) -> str:
+        """A label written must be one a line can hold and a rewrite keeps; an empty one is no label."""
+        refused = pose_label_refusal(value) if value else ""
+        if refused:
+            raise ValueError(refused)
+        return value
+
+
+def _called(pose: NamedPoseConfig) -> str:
+    """What a refusal says a pose is called: its label as written, or that it has none (its name is said)."""
+    return f"label {pose.label!r}" if pose.label else "no label"
+
 
 class RobotConfig(StrictModel):
     """Top-level robot configuration tree.
@@ -680,6 +814,16 @@ class RobotConfig(StrictModel):
     #: an unknown name, a quaternion that is none, and one whose tool +X stands within 10 degrees of the vertical, which
     #: names no direction.
     natural_closing_axis: str | tuple[float, float, float, float] | None = None
+    #: Poses taught by hand in the console (:class:`NamedPoseConfig`), under their NAMES: a place a task puts its part
+    #: at, or a pose it returns to. Written by the console's pose writer alone, into the last layer of the profile
+    #: chain, and only once the exact guard and the planner cleared the pose or found it in the planner's band; the
+    #: console never renames or deletes one (edit them here). Refused at load: a name that is no pose name
+    #: (``pose_name_refusal``: ``home`` among them), joints that break the looks' rules, and two poses under one label.
+    #: Home stays ``home_joint_positions``.
+    named_poses: dict[str, NamedPoseConfig] = Field(default_factory=dict)
+    #: The pose a task places at when its command names no target: a name in ``named_poses``, or ``None`` for none, and
+    #: a task that names no place is then refused. Chosen in the console.
+    default_place_pose: str | None = None
 
     safe_pose: SafePoseConfig = Field(default_factory=SafePoseConfig)
     calibration: RobotCalibrationConfig = Field(default_factory=RobotCalibrationConfig)
@@ -740,6 +884,59 @@ class RobotConfig(StrictModel):
             raise ValueError(
                 f"{key}: each look names {lengths[0]} joints and the home (robot.home_joint_positions) {len(home)}; a "
                 "look names one value per joint of the arm, as the home does")
+        return self
+
+    @model_validator(mode="after")
+    def _named_poses_are_poses_a_task_can_go_to(self) -> "RobotConfig":
+        """``named_poses`` holds poses under pose names, each a finite joint vector in degrees; the default names one.
+
+        Refused at load: a name :func:`pose_name_refusal` refuses; a pose that names no joint, holds a value that is not
+        a finite number or turns a joint past a full turn (:data:`LOOK_MAX_ABS_DEG`); poses of different lengths, and a
+        length unlike the home's where the home is set (read in radians by the rule above); two poses that answer to
+        one word (:func:`pose_words`: a pose answers to its name and to its label, compared without case and with
+        spaces folded), since the command reader hands a pose on by the word a person said and an unlabelled pose is
+        said by its name; and a ``default_place_pose`` that names no pose of the tree.
+        """
+        key = "robot.named_poses"
+        lengths: dict[int, str] = {}
+        answers: dict[str, str] = {}
+        for name, pose in self.named_poses.items():
+            refused = pose_name_refusal(name)
+            if refused:
+                raise ValueError(f"{key}: {refused}")
+            joints = pose.joints_deg
+            if not joints:
+                raise ValueError(f"{key}.{name} names no joint; give one value in degrees per joint")
+            if not all(math.isfinite(value) for value in joints):
+                raise ValueError(f"{key}.{name} holds a joint value that is not a finite number: {list(joints)}")
+            if any(abs(value) > LOOK_MAX_ABS_DEG for value in joints):
+                raise ValueError(
+                    f"{key}.{name} turns a joint past a full turn ({list(joints)} deg, at most {LOOK_MAX_ABS_DEG:g} "
+                    "either way); write each joint in degrees as the pendant shows it")
+            lengths.setdefault(len(joints), name)
+            for word in sorted(pose_words(name, pose.label)):
+                first = answers.setdefault(word, name)
+                if first != name:
+                    raise ValueError(
+                        f"{key}: {first} ({_called(self.named_poses[first])}) and {name} ({_called(pose)}) both answer "
+                        f"to {word!r}; a pose answers to its name and to its label (without case, spaces folded), and "
+                        "the command reader hands a pose on by the word a person said, so two poses answering to one "
+                        "word could send a part to either. Give one another label")
+        if len(lengths) > 1:
+            named = ", ".join(f"{name} {length}" for length, name in sorted(lengths.items()))
+            raise ValueError(f"{key}: the poses name different numbers of joints ({named}); every pose names one value "
+                             "in degrees per joint of the arm")
+        home = self.home_joint_positions
+        if home is not None and lengths and next(iter(lengths)) != len(home):
+            length, name = next(iter(lengths.items()))
+            raise ValueError(
+                f"{key}.{name} names {length} joints and the home (robot.home_joint_positions) {len(home)}; a pose "
+                "names one value per joint of the arm, as the home does")
+        place = self.default_place_pose
+        if place is not None and place not in self.named_poses:
+            known = ", ".join(sorted(self.named_poses)) or "none"
+            raise ValueError(f"robot.default_place_pose is {place!r}, which names no pose of robot.named_poses "
+                             f"(poses: {known}); teach it first, or name one of them")
         return self
 
     @field_validator("natural_closing_axis")

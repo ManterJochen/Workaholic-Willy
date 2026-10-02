@@ -25,6 +25,7 @@ import numpy as np
 
 from src.contracts import Rendered, Structured
 from src.robot.grasping import Scene, SceneGrasps
+from src.robot.grasping.generation.support_footprint import SupportFootprintCandidate
 
 
 def _block(points: int = 900, seed: int = 0) -> np.ndarray:
@@ -181,6 +182,43 @@ class ItIsExportedTests(unittest.TestCase):
             capture_output=True, text=True, check=True,
         )
         self.assertEqual(result.stdout.strip(), "[]", "grasping now imports the deep tree")
+
+
+class AGraspRefusedOnceIsNotTriedAgainTests(unittest.TestCase):
+    """``SceneGrasps.other_than``: a grasp a guard or the planner refused, seen again on a fresh look, is left out, so a
+    program's next try is another grasp (example 13's next grasps, the owner's "try the next grasps", 2026-10-01)."""
+
+    @staticmethod
+    def _grasp(x: float, approach: tuple[float, float, float] = (0.0, 0.0, -1.0)) -> SupportFootprintCandidate:
+        return SupportFootprintCandidate(score=0.9, position_mm=np.array([x, -700.0, 20.0]),
+                                         approach=np.asarray(approach, dtype=np.float64),
+                                         closing_axis=np.array([1.0, 0.0, 0.0]), grip_width_mm=30.0,
+                                         contact_angle_rad=0.0, clearance_mm=10.0)
+
+    def test_the_same_grasp_seen_again_is_left_out_and_another_is_kept(self) -> None:
+        refused = self._grasp(0.0)
+        again = self._grasp(6.0, (0.0, 0.2, -1.0))  # 6 mm off, about 11 degrees: the refused one seen again
+        other = self._grasp(30.0)
+        grasps = SceneGrasps(generator="support_footprint", candidates=(again, other), points=900)
+
+        left = grasps.other_than([refused])
+
+        self.assertEqual([other], list(left.candidates))
+        self.assertIs(other, left.best)
+        self.assertEqual("support_footprint", left.generator)
+
+    def test_a_grasp_turned_further_or_farther_off_is_kept(self) -> None:
+        refused = self._grasp(0.0)
+        turned = self._grasp(0.0, (0.0, 0.5, -1.0))  # about 27 degrees
+        apart = self._grasp(12.0)
+        grasps = SceneGrasps(generator="support_footprint", candidates=(turned, apart), points=900)
+
+        self.assertEqual([turned, apart], list(grasps.other_than([refused]).candidates))
+
+    def test_nothing_refused_leaves_every_grasp(self) -> None:
+        grasps = SceneGrasps(generator="support_footprint", candidates=(self._grasp(0.0),), points=900)
+
+        self.assertEqual(grasps.candidates, grasps.other_than([]).candidates)
 
 
 if __name__ == "__main__":  # pragma: no cover

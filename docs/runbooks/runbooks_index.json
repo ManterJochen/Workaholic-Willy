@@ -16,6 +16,12 @@
       "owner_role": "commissioning"
     },
     {
+      "id": "console_at_the_cell",
+      "path": "docs/runbooks/console_at_the_cell.md",
+      "summary": "The operator console from URSim to the cell: halt now and the console's task measured against a CB3 controller, then the supervised first run at a UR10 with a toggle Hand-E on tool DO0 and a wrist D415.",
+      "owner_role": "commissioning"
+    },
+    {
       "id": "corpus_v5_build",
       "path": "docs/runbooks/corpus_v5_build.md",
       "summary": "Rebuild the v5 point-cloud corpus from the screened mesh bank, with the measured cost and the resume behaviour of every step.",

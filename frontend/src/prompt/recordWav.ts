@@ -14,18 +14,43 @@
  * the reason the component can render a disabled button with a reason instead of a broken one.
  */
 
+/** Why the microphone cannot be used here: a code the prompt box says in the reader's language. */
+export type MicUnavailable = 'insecure' | 'unexposed' | 'no_web_audio'
+
 /** Why the microphone cannot be used here, or `null` if it can. */
-export function micAvailability(): string | null {
+export function micUnavailable(): MicUnavailable | null {
   if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
     // ⚠ The two causes are worth separating because only one is fixable by the operator. Over plain
     // HTTP to a remote host the API is simply absent -- no permission prompt, no error, just
     // `undefined` -- and an operator staring at a dead button would reasonably blame the microphone.
-    return typeof window !== 'undefined' && !window.isSecureContext
-      ? 'The microphone needs HTTPS or localhost. This page was loaded over plain HTTP from another machine, so the browser does not offer it at all.'
-      : 'This browser does not expose a microphone to the page.'
+    return typeof window !== 'undefined' && !window.isSecureContext ? 'insecure' : 'unexposed'
   }
-  if (typeof AudioContext === 'undefined') return 'This browser has no Web Audio support.'
+  if (typeof AudioContext === 'undefined') return 'no_web_audio'
   return null
+}
+
+const UNAVAILABLE_SAYS: Record<MicUnavailable, string> = {
+  insecure:
+    'The microphone needs HTTPS or localhost. This page was loaded over plain HTTP from another machine, so the browser does not offer it at all.',
+  unexposed: 'This browser does not expose a microphone to the page.',
+  no_web_audio: 'This browser has no Web Audio support.',
+}
+
+/** Why the microphone cannot be used here, in English (an error's message), or `null` if it can. */
+export function micAvailability(): string | null {
+  const why = micUnavailable()
+  return why === null ? null : UNAVAILABLE_SAYS[why]
+}
+
+/**
+ * How loud one frame is: the root mean square of its samples, 0 for silence and 1 for a full-scale square. The level
+ * meter beside the microphone reads it, so a person sees that the microphone hears them before the text comes back.
+ */
+export function rms(frame: Float32Array): number {
+  if (frame.length === 0) return 0
+  let sum = 0
+  for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i]
+  return Math.sqrt(sum / frame.length)
 }
 
 export interface Recording {
@@ -44,7 +69,12 @@ export interface ActiveRecording {
 /** How long a single press may record. A stuck button must not fill memory with a live tap. */
 const MAX_SECONDS = 60
 
-export async function startRecording(): Promise<ActiveRecording> {
+export interface RecordingOptions {
+  /** Each frame's level (`rms`), as it is recorded: the level meter. */
+  onLevel?: (level: number) => void
+}
+
+export async function startRecording(options: RecordingOptions = {}): Promise<ActiveRecording> {
   const unavailable = micAvailability()
   if (unavailable) throw new Error(unavailable)
 
@@ -72,6 +102,7 @@ export async function startRecording(): Promise<ActiveRecording> {
     const frame = new Float32Array(event.inputBuffer.getChannelData(0))
     chunks.push(frame)
     total += frame.length
+    options.onLevel?.(rms(frame))
     if (total >= MAX_SECONDS * context.sampleRate) stopped = true
   }
 

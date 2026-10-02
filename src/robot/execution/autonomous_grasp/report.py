@@ -421,6 +421,12 @@ class AutonomousGraspReport:
         attempts = getattr(self.pick_report, "attempts", ()) or ()
         if attempts and (reasons := getattr(attempts[-1], "reasons", ())):
             parts.append("reasons=" + ",".join(str(r) for r in reasons))
+        # The last motion's status and message, on this one line (RC6: a failed moveJ said nothing a person read).
+        if motion := self._last_motion():
+            parts.append(_ascii(f"motion={motion}"))
+        # The push the pick considered last, by its code: a refusal of the push is the answer to "why did it not push".
+        if push_code := self._last_push_code():
+            parts.append(_ascii(f"push={push_code}"))
         # A push that stopped where the arm stands, in its own words; a pick refused because an earlier pick's recovery
         # stopped where the arm stands, in that pick's words; a pick that saw only parts next_target skips.
         stopped_push = self.telemetry.get("push_stopped")
@@ -455,6 +461,26 @@ class AutonomousGraspReport:
         if self.outcome is AutonomousGraspOutcome.NO_VALID_GRASP and not unseen and isinstance(withheld, str) and withheld:
             parts.append(_ascii(withheld))
         return "  ".join(parts)
+
+    def _last_motion(self) -> str:
+        """``status: message`` of the last motion the pick commanded or was refused, ``""`` where none was: the last
+        attempt that carries one, else the session's own chain and message."""
+        attempts = getattr(self.pick_report, "attempts", ()) or ()
+        for attempt in reversed(attempts if isinstance(attempts, tuple) else ()):
+            status, message = getattr(attempt, "motion_status", None), getattr(attempt, "motion_message", None)
+            if isinstance(status, str) and status:
+                return f"{status}: {message}" if isinstance(message, str) and message else status
+        chain = getattr(self.pick_report, "motion_status_chain", ()) or ()
+        message = getattr(self.pick_report, "motion_message", "")
+        if isinstance(chain, tuple) and chain:
+            status = str(getattr(chain[-1], "value", chain[-1]))
+            return f"{status}: {message}" if isinstance(message, str) and message else status
+        return ""
+
+    def _last_push_code(self) -> str:
+        """The code of the last push this pick considered (``telemetry['pushes']``), ``""`` where it considered none."""
+        pushes = [push for push in (self.telemetry.get("pushes") or ()) if isinstance(push, Mapping)]
+        return str(pushes[-1].get("code", "")) if pushes else ""
 
     def _faces_not_seen(self) -> tuple[int, ...]:
         """The jaws (1, 2) whose contact face of the chosen grasp no look saw; empty where both were or none was judged."""

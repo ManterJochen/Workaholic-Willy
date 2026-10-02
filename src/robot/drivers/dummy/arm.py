@@ -8,10 +8,14 @@ The driver keeps an in-memory ``(joints, tcp_pose)`` state and has no kinematic 
 ``fk`` returns the last recorded pose and ``ik`` returns the last recorded joints. That
 is deliberate, and a pipeline that needs real kinematics runs against the UR driver or
 the Isaac-backed ``sim`` driver instead.
+
+It carries the halt latch (``SupportsHalt``) as the UR arm does, so a console rehearsing on it halts as a cell does:
+while halted every verb refuses and nothing is recorded. There is no move in flight to brake.
 """
 
 from __future__ import annotations
 
+import time
 from contextlib import AbstractContextManager
 
 import numpy as np
@@ -35,7 +39,7 @@ from ...core import (
     resolve_camera_world,
     stamp_result,
 )
-from ...core.arm_capabilities import LineMotion, LineReading
+from ...core.arm_capabilities import HaltState, LineMotion, LineReading, halted_refusal
 from ...core.camera_world import without_camera_world as _without_camera_world
 
 __all__ = ["DUMMY_CAPABILITIES", "DummyRobotArm"]
@@ -104,6 +108,45 @@ class DummyRobotArm(RobotArm):
             )
         self._tcp = initial_pose
         self._home_pose = initial_pose
+        #: The halt latch: kept across a disconnect and a connect, ended only by :meth:`clear_halt`.
+        self._halt: HaltState | None = None
+
+    # ---- the halt latch (SupportsHalt) ----
+
+    def halt(self, reason: str) -> HaltState:
+        """Latch the arm: every verb refuses until :meth:`clear_halt`. Nothing is in flight, so nothing is braked."""
+        if self._halt is None:
+            self._halt = HaltState(reason=str(reason).strip() or "halt requested", requested_at=time.time())
+        return self._halt
+
+    def clear_halt(self) -> None:
+        self._halt = None
+
+    def halt_state(self) -> HaltState | None:
+        return self._halt
+
+    def brakes_in_motion(self) -> bool:
+        """``False``: the dummy has no move in flight to brake; a halt refuses the next one."""
+        return False
+
+    def _halted_result(
+        self, command: MotionCommand, *, target_pose: Pose | None = None, target_joints: JointPositions | None = None,
+    ) -> MotionResult | None:
+        """CANCELLED, nothing recorded, while halted; else ``None``."""
+        if self._halt is None:
+            return None
+        return MotionResult.failed(
+            MotionStatus.CANCELLED, command, target_pose=target_pose, target_joints=target_joints,
+            message=halted_refusal(self._halt.reason, "nothing was moved"),
+        )
+
+    def _raise_if_halted(
+        self, command: MotionCommand, *, target_pose: Pose | None = None, target_joints: JointPositions | None = None,
+    ) -> None:
+        """For the verbs that raise: ``RobotMotionRejected`` carrying the CANCELLED result while halted."""
+        refused = self._halted_result(command, target_pose=target_pose, target_joints=target_joints)
+        if refused is not None:
+            raise RobotMotionRejected(refused.message, result=refused)
 
     # ---- introspection ----
 
@@ -180,9 +223,12 @@ class DummyRobotArm(RobotArm):
     ) -> MotionResult:
         """The typed joint move. The dummy carries no preflight, so it simply drives.
 
-        The result says UNPLANNED: the dummy has no planner.
+        The result says UNPLANNED: the dummy has no planner. A halted dummy answers CANCELLED and records nothing.
         """
         stamp = self._camera_world(camera_world)
+        refused = self._halted_result(MotionCommand.MOVE_JOINTS, target_joints=joints)
+        if refused is not None:
+            return stamp_result(refused, stamp)
         unstamped = self._move_to_joints_unstamped(
             joints, velocity=velocity, acceleration=acceleration,
         )
@@ -210,6 +256,7 @@ class DummyRobotArm(RobotArm):
     ) -> None:
         if not self._connected:
             raise RobotConnectionError("DummyRobotArm is not connected.")
+        self._raise_if_halted(MotionCommand.MOVE_JOINTS, target_joints=joints)
         if joints.dof != self._capabilities.dof:
             raise RobotMotionRejected(
                 f"DummyRobotArm expected {self._capabilities.dof} DoF, got {joints.dof}."
@@ -225,6 +272,7 @@ class DummyRobotArm(RobotArm):
     ) -> None:
         if not self._connected:
             raise RobotConnectionError("DummyRobotArm is not connected.")
+        self._raise_if_halted(MotionCommand.MOVE_TO, target_pose=pose)
         if pose.frame is not Frame.BASE:
             raise FrameMismatchError(
                 f"DummyRobotArm.move_linear requires Frame.BASE; got {pose.frame!r}."
@@ -232,7 +280,8 @@ class DummyRobotArm(RobotArm):
         self._tcp = pose
 
     def stop(self) -> None:
-        # There is no asynchronous motion in flight, so there is nothing to interrupt.
+        # There is no asynchronous motion in flight, so there is nothing to interrupt. It does not latch the halt:
+        # the console halts with halt(), and the dummy stays the inert stand-in it was for every other caller.
         pass
 
     # ---- kinematics (stubbed) ----
@@ -276,13 +325,15 @@ class DummyRobotArm(RobotArm):
         acc: float | None = None,
         register: bool = True,
     ) -> bool:
-        """Record ``pose`` as the new TCP pose. It always succeeds.
+        """Record ``pose`` as the new TCP pose. It succeeds unless the arm is halted, which answers ``False``.
 
         ``register`` is accepted for Protocol compatibility and ignored, because this
         driver keeps no diversity history.
         """
         if not self._connected:
             raise RobotConnectionError("DummyRobotArm is not connected.")
+        if self._halt is not None:
+            return False
         if pose.frame is not Frame.BASE:
             raise FrameMismatchError(
                 f"DummyRobotArm.move_to requires Frame.BASE; got {pose.frame!r}."
@@ -291,9 +342,11 @@ class DummyRobotArm(RobotArm):
         return True
 
     def move_home(self) -> bool:
-        """Reset to the configured home TCP pose. It always succeeds."""
+        """Reset to the configured home TCP pose. It succeeds unless the arm is halted, which answers ``False``."""
         if not self._connected:
             raise RobotConnectionError("DummyRobotArm is not connected.")
+        if self._halt is not None:
+            return False
         self._tcp = self._home_pose
         self._joints = JointPositions(np.zeros(self._capabilities.dof, dtype=np.float64))
         return True
@@ -348,6 +401,9 @@ class DummyRobotArm(RobotArm):
                 target_pose=pose,
                 message="DummyRobotArm is not connected",
             )
+        refused = self._halted_result(MotionCommand.MOVE_TO, target_pose=pose)
+        if refused is not None:
+            return refused
         self._tcp = pose
         return MotionResult.executed(
             MotionCommand.MOVE_TO, target_pose=pose,

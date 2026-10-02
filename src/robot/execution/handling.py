@@ -27,20 +27,28 @@ and last, as the one question put to the controller, a controller that cannot mo
 no sensor then asks it whether its jaws stand open (``jaws_open_for_a_pick``) instead of opening them: never a change
 before the arm moves, and the pick is refused where the hand believes them closed and nobody at a terminal says
 otherwise. Then the motions: a planned move to
-the standoff, a line down to the pose, the hand verb, which asks the controller again at the part, and a line back up to
-the standoff, each move carrying the caller's decline, each preceded by the arm's own steady gate where its tree asks for
-one (``safety.dwell``). Before the hand verb of a pick, an arm that judges a line as if its jaws held a part
-(``JudgesCarriedLines``, the UR driver) is asked about the line back up with the part in them, the caller's decline with
+the standoff, a line down to the pose, the hand verb, which asks the controller again at the part, and a line out of it,
+each move carrying the caller's decline, each preceded by the arm's own steady gate where its tree asks for one
+(``safety.dwell``). The line out of a pick goes back up to the standoff, or, for a grasp more than
+:data:`LIFT_STRAIGHT_UP_BEYOND_DEG` off vertical, straight up (BASE +Z) by the standoff and at least
+:data:`MIN_STRAIGHT_LIFT_MM`: a side grasp does not drag its part sideways along the support (side grasps are on, the
+owner, 2026-10-01). Before the hand verb of a pick, an arm that judges a line as if its jaws held a part
+(``JudgesCarriedLines``, the UR driver) is asked about that line out with the part in them, the caller's decline with
 it: where it would refuse it, the jaws stay open, the arm goes back up the line it came down, and the pick ends
-``CARRIED_RETREAT_REFUSED`` (the owner, 2026-10-01). A refused motion ends the verb with nothing commanded after it, and
-so does a camera that could not vouch for the cell, as its own outcome rather than a raise. A pick holds its keep-out
-offer in the arm's live world from before the detach to after its last motion, and forgets it on any exit. A place holds
-its own, what the part is set down on, from before its first motion to after its last, the release between them, and
-forgets it on any exit: the part comes down to within the line clearance of what a camera located under it (owner's
-example 13, 2026-09-24).
+``CARRIED_RETREAT_REFUSED`` (the owner, 2026-10-01). An empty hand always backs out the way it came. A refused motion
+ends the verb with nothing commanded after it, and so does a camera that could not vouch for the cell, as its own
+outcome rather than a raise. A pick holds its keep-out offer in the arm's live world from before the detach to after its
+last motion, and forgets it on any exit. A place holds its own, what the part is set down on, from before its first
+motion to after its last, the release between them, and forgets it on any exit: the part comes down to within the line
+clearance of what a camera located under it (owner's example 13, 2026-09-24).
+
+A pick's report says whether another candidate may follow (``another_candidate_may_follow``): only after a guard or the
+planner refused its first motion, nothing sent and nothing commanded to the jaws, or after ``CARRIED_RETREAT_REFUSED``
+with the empty hand backed out open. Every verb that fails leaves a WARNING with its message in the robot log.
 
 The module imports nothing above ``robot.core`` but its sibling :mod:`~src.robot.execution.motion`, which imports
-nothing above it either, and connects nothing: the verbs run inside ``Robot.connected()``.
+nothing above it either, and the robot package's logger factory, and connects nothing: the verbs run inside
+``Robot.connected()``.
 """
 
 from __future__ import annotations
@@ -48,7 +56,7 @@ from __future__ import annotations
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Any
+from typing import Any, Final
 
 import numpy as np
 
@@ -56,7 +64,16 @@ from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Frame, Pose
 from src.robot.core import MotionResult, MotionStatus, StoppableGripper, SupportsRobotStatus, TwoStateGripper
 from src.robot.core.gripper import OpensAndCloses
-from src.robot.core.arm_capabilities import CarriesPayload, JudgesCarriedLines, LineMotion, LineReading, PayloadModel
+from src.robot.core.arm_capabilities import (
+    CarriesPayload,
+    JudgesCarriedLines,
+    LineMotion,
+    LineReading,
+    PayloadModel,
+    RobotStatus,
+    halt_state_of,
+    halted_refusal,
+)
 from src.robot.core.camera_world import (
     CameraWorldDecline,
     CameraWorldStamp,
@@ -68,8 +85,12 @@ from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.core.gripper import HoldEvidence, hold_evidence_of, toggle_without_sensor_of, width_is_measured_of
 from src.robot.core.keep_out import SegmentationOffer, keeping_out
 from src.robot.execution.motion import route_of, steady_timeout_of
+from src.robot.constants import create_robot_logger
+from src.robot.core.motion_result import NO_PLAN_FAIL_SAFE_MESSAGE
 
 __all__ = [
+    "LIFT_STRAIGHT_UP_BEYOND_DEG",
+    "MIN_STRAIGHT_LIFT_MM",
     "HandOutcome",
     "HandReport",
     "HandVerb",
@@ -83,6 +104,29 @@ __all__ = [
     "place",
     "release",
 ]
+
+#: Every verb that fails says so here, and in the robot log beside every other robot event.
+_LOG = create_robot_logger(__name__, "handling.log")
+
+#: How far off vertical a grasp may stand, degrees, and still back out of the part along its approach. Past it the part
+#: lifts straight up: backing out of a side grasp along its approach drags the part sideways along the support.
+LIFT_STRAIGHT_UP_BEYOND_DEG: Final[float] = 10.0
+#: The least a part lifts straight up off a tilted grasp, millimetres, whatever the standoff: the owner's standoff is
+#: 10 mm, and a part 10 mm off the support is still among what stands on it.
+MIN_STRAIGHT_LIFT_MM: Final[float] = 60.0
+
+#: The failures a guard or the planner answers before anything is sent: ``generated_view.REFUSED_BEFORE_SENDING``, the
+#: set the wrist pick and the pick loop read, restated because this module imports nothing above ``robot.core`` (a test
+#: pins the two equal). A TIMEOUT is the planner's refusal only in its own words, ``NO_PLAN_FAIL_SAFE_MESSAGE``.
+_REFUSED_BEFORE_SENDING: Final[frozenset[MotionStatus]] = frozenset({
+    MotionStatus.WORKSPACE_REJECTED,
+    MotionStatus.IK_FAILED,
+    MotionStatus.IK_QUALITY_REJECTED,
+    MotionStatus.JOINT_LIMIT_REJECTED,
+    MotionStatus.SELF_COLLISION_REJECTED,
+    MotionStatus.PAYLOAD_REJECTED,
+    MotionStatus.CONTINUITY_REJECTED,
+})
 
 
 class HandVerb(StrEnum):
@@ -205,6 +249,23 @@ class HandReport:
 
 def grasp(robot: Any, width_mm: float) -> HandReport:
     """Close ``robot``'s gripper to ``width_mm`` and hand what it holds to the arm's carried part model."""
+    return _said(_grasp(robot, width_mm))
+
+
+def release(robot: Any) -> HandReport:
+    """Open ``robot``'s gripper to the hand's width and forget the carried part unless one is still measured."""
+    return _said(_release(robot))
+
+
+def _said(report: HandReport) -> HandReport:
+    """``report``, a WARNING with what it says in the robot log first where the verb failed, on one line."""
+    if not report.ok:
+        _LOG.warning("%s", report.render().replace("\n", " |"))
+    return report
+
+
+def _grasp(robot: Any, width_mm: float) -> HandReport:
+    """:func:`grasp`, saying nothing: a pick's own close is said with the pick."""
     refused = _refusal(robot, HandVerb.GRASP)
     if refused is not None:
         return refused
@@ -235,8 +296,8 @@ def grasp(robot: Any, width_mm: float) -> HandReport:
                       payload_reason=reason)
 
 
-def release(robot: Any) -> HandReport:
-    """Open ``robot``'s gripper to the hand's width and forget the carried part unless one is still measured."""
+def _release(robot: Any) -> HandReport:
+    """:func:`release`, saying nothing: a place's own release is said with the place."""
     refused = _refusal(robot, HandVerb.RELEASE)
     if refused is not None:
         return refused
@@ -301,20 +362,47 @@ def _controller_refusal(arm: Any) -> str:
     ``SupportsRobotStatus`` (the UR driver) is asked; every other arm passes. The criterion is ``not is_operational``,
     the one the pick loop and ``GraspExecutionPolicy`` use, so REDUCED safety mode is refused too. A read that raises
     refuses as well: a verb promises a report, and a controller that cannot be asked cannot be said to move.
+
+    The halt latch is asked first, of any arm that carries one (``SupportsHalt``, the dummy included), and of the status
+    (``RobotStatus.halted``): a halted arm is refused with the halt's own sentence. A halt is not a controller stop, so
+    it never reads "clear the stop": a person confirms the cell is clear, then Restart. Where the controller is stopped
+    as well, the sentence says so beside the halt.
     """
+    halted = halt_state_of(arm)
     if not isinstance(arm, SupportsRobotStatus):
-        return ""
+        return _halted_sentence(halted.reason, None) if halted is not None else ""
     try:
         status = arm.get_robot_status()
+        # Read as strictly as the latch: words, or not halted. A double that answers every attribute, and a status
+        # from before the halt with no such field, are not halted.
+        said = getattr(status, "halted", "")
     except Exception as exc:  # noqa: BLE001 (the verb reports, and nothing is commanded)
+        if halted is not None:
+            return _halted_sentence(halted.reason, None)
         return (f"the controller's state could not be read ({type(exc).__name__}: {exc}), so nothing was commanded, "
                 "the jaws included")
+    reason = halted.reason if halted is not None else said if isinstance(said, str) else ""
+    if reason:
+        stopped = isinstance(status, RobotStatus) and not status.controller_operational
+        return _halted_sentence(reason, status if stopped else None)
     if status.is_operational:
         return ""
     detail = f": {status.message}" if status.message else ""
     return (f"the controller cannot move (robot_mode={status.robot_mode.value}, safety_mode={status.safety_mode.value}, "
             f"protective_stop={status.protective_stopped}, emergency_stop={status.emergency_stopped}{detail}), so "
             "nothing was commanded, the jaws included; clear the stop where the arm is visible, then run again")
+
+
+def _halted_sentence(reason: str, stopped: "RobotStatus | None") -> str:
+    """The refusal of a halted arm; ``stopped`` is the controller's status where it cannot move either."""
+    sentence = halted_refusal(reason, "nothing was commanded, the jaws included")
+    if stopped is None:
+        return sentence
+    detail = f": {stopped.message}" if stopped.message else ""
+    return (f"{sentence}. The controller cannot move either (robot_mode={stopped.robot_mode.value}, "
+            f"safety_mode={stopped.safety_mode.value}, protective_stop={stopped.protective_stopped}, "
+            f"emergency_stop={stopped.emergency_stopped}{detail}): a protective stop is released at the teach pendant, "
+            "where the arm is visible, before that")
 
 
 def _command(gripper: Any, width_mm: float, *, close: bool) -> None:
@@ -449,6 +537,11 @@ class HandlingReport:
     keep_out_held: bool = False
     hand: HandReport | None = None
     message: str = ""
+    #: Whether a program may try another candidate after this pick (the cell-fix plan's contract 4): true only after a
+    #: guard or the planner refused the pick's first motion, nothing sent and nothing commanded to the jaws (a hand told
+    #: to pre-open was commanded), or after ``CARRIED_RETREAT_REFUSED`` with the empty hand backed out open. A program
+    #: that does looks around again first. Always false for a place.
+    another_candidate_may_follow: bool = False
 
     @property
     def ok(self) -> bool:
@@ -478,6 +571,9 @@ class HandlingReport:
             lines.append("  the target was held out of the planner world through every motion")
         if self.outcome is HandlingOutcome.CAMERA_WORLD_UNAVAILABLE:
             lines.append("  a camera could not vouch for the cell: look at the camera rather than trying again")
+        if self.another_candidate_may_follow:
+            lines.append("  another candidate may follow: the jaws stand open and the part was not taken; look around "
+                         "again first")
         if self.hand is not None:
             lines.extend(f"  {line}" for line in self.hand.render().split("\n"))
         return "\n".join(lines)
@@ -497,6 +593,7 @@ class HandlingReport:
             "keep_out_held": self.keep_out_held,
             "hand": None if self.hand is None else self.hand.to_dict(),
             "message": self.message,
+            "another_candidate_may_follow": self.another_candidate_may_follow,
         }
 
 
@@ -511,9 +608,10 @@ def pick(
     camera_world: Maybe[CameraWorldDecline] = UNSET,
     keep_out: Maybe[SegmentationOffer] = UNSET,
 ) -> HandlingReport:
-    """Pick the part at ``pose``, ``width_mm`` across: standoff, a line in, grasp, a line out."""
-    return _Handling(robot, HandlingVerb.PICK, pose, standoff_mm, camera_world).pick(
-        width_mm=float(width_mm), squeeze_mm=float(squeeze_mm), pre_open_mm=pre_open_mm, keep_out=keep_out)
+    """Pick the part at ``pose``, ``width_mm`` across: standoff, a line in, grasp, a line out (straight up for a grasp
+    more than :data:`LIFT_STRAIGHT_UP_BEYOND_DEG` off vertical)."""
+    return _said_handling(_Handling(robot, HandlingVerb.PICK, pose, standoff_mm, camera_world).pick(
+        width_mm=float(width_mm), squeeze_mm=float(squeeze_mm), pre_open_mm=pre_open_mm, keep_out=keep_out))
 
 
 def place(
@@ -525,7 +623,16 @@ def place(
     keep_out: Maybe[SegmentationOffer] = UNSET,
 ) -> HandlingReport:
     """Place the held part at ``pose``: standoff, a line in, release, a line out unless the release is not confirmed."""
-    return _Handling(robot, HandlingVerb.PLACE, pose, standoff_mm, camera_world).place(keep_out=keep_out)
+    return _said_handling(_Handling(robot, HandlingVerb.PLACE, pose, standoff_mm, camera_world).place(keep_out=keep_out))
+
+
+def _said_handling(report: HandlingReport) -> HandlingReport:
+    """``report``, a WARNING with its message in the robot log first where the pick or place failed."""
+    if not report.ok:
+        _LOG.warning("%s %s after %d motion(s): %s%s", report.verb.value, report.outcome.value, len(report.poses),
+                     report.message or "no reason was given",
+                     "; another candidate may follow" if report.another_candidate_may_follow else "")
+    return report
 
 
 class _Refused(Exception):
@@ -553,6 +660,8 @@ class _Handling:
         self.stamps: list[CameraWorldStamp] = []
         self.line: LineReading | None = None
         self.keep_out_held = False
+        #: Whether anything was commanded to the jaws: the pre-open, the close, the open after an empty close.
+        self.jaws_commanded = False
 
     # ---- the verbs --------------------------------------------------------------------------
 
@@ -593,7 +702,8 @@ class _Handling:
         standoff = self._standoff()
         self._move(standoff, linear=False)
         self._move(self.pose, linear=True)
-        hand = release(self.robot)
+        self.jaws_commanded = True
+        hand = _release(self.robot)
         if hand.outcome is HandOutcome.GRIPPER_FAULT:
             return self._report(HandlingOutcome.GRIPPER_FAULT, hand=hand, message=hand.error)
         if hand.outcome is HandOutcome.RELEASE_NOT_CONFIRMED:
@@ -634,9 +744,10 @@ class _Handling:
         if opening is not None:
             self._command_gripper(float(opening), close=False)
         standoff = self._standoff()
+        lift = self._lift(standoff)
         self._move(standoff, linear=False)
         self._move(self.pose, linear=True)
-        why = self._line_out_refusal(standoff, self._line_out_width(close_to, width_mm))
+        why = self._line_out_refusal(lift, self._line_out_width(close_to, width_mm))
         if why:
             # The jaws stay open, and the arm goes back up the line it came down (the owner, 2026-10-01).
             said = f"{why.rstrip('.')}. The jaws stayed open"
@@ -647,17 +758,19 @@ class _Handling:
                     f"{said}; the line back up to the standoff failed too: {backing.report.message}"))) from None
             return self._report(HandlingOutcome.CARRIED_RETREAT_REFUSED, message=(
                 f"{said}, and the arm went back up the line it came down, to the standoff, empty-handed"))
-        hand = grasp(self.robot, close_to)
+        self.jaws_commanded = True
+        hand = _grasp(self.robot, close_to)
         if hand.outcome is HandOutcome.GRIPPER_FAULT:
             return self._report(HandlingOutcome.GRIPPER_FAULT, hand=hand, message=hand.error)
         if hand.outcome is HandOutcome.NOTHING_HELD:
+            # An empty hand backs out the way it came: there is nothing to lift.
             self._command_gripper(float(self.gripper.max_width_mm), close=False)
             self._move(standoff, linear=True)
             return self._report(HandlingOutcome.NOTHING_HELD, hand=hand, message=(
                 "the gripper measured nothing held, so it opened and backed out to the standoff"))
         if hand.outcome is not HandOutcome.GRASPED:
             return self._report(HandlingOutcome.REFUSED, hand=hand, message=hand.error)
-        self._move(standoff, linear=True)
+        self._move(lift, linear=True)
         return self._report(HandlingOutcome.EXECUTED, hand=hand)
 
     # ---- before any command -----------------------------------------------------------------
@@ -703,6 +816,19 @@ class _Handling:
         back = matrix[:3, 3] - matrix[:3, 2] * self.standoff_mm
         return Pose(position_mm=back, quaternion_xyzw=np.asarray(self.pose.quaternion_xyzw, dtype=np.float64),
                     frame=Frame.BASE, label="standoff")
+
+    def _lift(self, standoff: Pose) -> Pose:
+        """Where a pick's part goes after the close: ``standoff``, back along the approach, for a grasp within
+        :data:`LIFT_STRAIGHT_UP_BEYOND_DEG` of vertical; else straight up, BASE +Z, by the standoff and at least
+        :data:`MIN_STRAIGHT_LIFT_MM`, turned as the pose is."""
+        matrix = np.asarray(self.pose.to_matrix(), dtype=np.float64)
+        approach = matrix[:3, 2] / max(float(np.linalg.norm(matrix[:3, 2])), 1e-12)
+        off_vertical = float(np.degrees(np.arccos(np.clip(-float(approach[2]), -1.0, 1.0))))
+        if off_vertical <= LIFT_STRAIGHT_UP_BEYOND_DEG:
+            return standoff
+        up = matrix[:3, 3] + np.array([0.0, 0.0, max(self.standoff_mm, MIN_STRAIGHT_LIFT_MM)])
+        return Pose(position_mm=up, quaternion_xyzw=np.asarray(self.pose.quaternion_xyzw, dtype=np.float64),
+                    frame=Frame.BASE, label="lift")
 
     def _move(self, target: Pose, *, linear: bool) -> None:
         timeout = self._steady_timeout()
@@ -760,6 +886,7 @@ class _Handling:
                 f"refused: {refused.message}")
 
     def _command_gripper(self, width_mm: float, *, close: bool) -> None:
+        self.jaws_commanded = True
         try:
             _command(self.gripper, width_mm, close=close)
         except Exception as exc:  # noqa: BLE001 (a gripper fault ends the verb, after the jaws are stopped)
@@ -774,5 +901,22 @@ class _Handling:
         return HandlingReport(
             verb=self.verb, outcome=outcome, poses=tuple(self.poses), statuses=tuple(self.statuses),
             camera_worlds=tuple(self.stamps), line=self.line, keep_out_held=self.keep_out_held, hand=hand,
-            message=message,
+            message=message, another_candidate_may_follow=self._another_may_follow(outcome, message),
         )
+
+    def _another_may_follow(self, outcome: HandlingOutcome, message: str) -> bool:
+        """Contract 4 of the cell-fix plan, read off what this pick commanded: the carried lift refused and the empty
+        hand backed out open, or the pick's first motion refused by a guard or the planner before anything was sent,
+        with nothing commanded to the jaws. Everything else, a place included, is false."""
+        if self.verb is not HandlingVerb.PICK:
+            return False
+        if outcome is HandlingOutcome.CARRIED_RETREAT_REFUSED:
+            return True
+        if outcome is not HandlingOutcome.MOTION_REFUSED or self.jaws_commanded:
+            return False
+        if len(self.poses) != 1 or len(self.statuses) != 1:
+            return False   # a motion ran before the refused one, or the refused one raised and says nothing
+        status = self.statuses[0]
+        if status is MotionStatus.TIMEOUT:
+            return message == NO_PLAN_FAIL_SAFE_MESSAGE
+        return status in _REFUSED_BEFORE_SENDING

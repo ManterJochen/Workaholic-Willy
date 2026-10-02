@@ -18,7 +18,8 @@ rather than a missing attribute.
 Run (URSim up, in REMOTE control):  python scripts/ursim/probe_protective_stop.py
 
 Exit codes: 0 a stop was provoked and measured, 1 no stop was provoked so there was nothing to
-measure, 2 no controller reachable, or a profile that is not a UR cell.
+measure, 2 no controller reachable, a profile that is not a UR cell, or a model with no measured
+height to drive through (every CB3 model: see `SINGULAR_Z_MM`).
 """
 
 from __future__ import annotations
@@ -57,6 +58,13 @@ _DEFAULT_PROFILE = "ursim"
 #: UR3e reaches about 500 mm where a UR5e reaches about 850, both vendor specifications. Asking a
 #: UR3e for 900 mm is unreachable rather than singular and would test the reach check instead of
 #: the stop. `probe_pickloop_stop.py` reads this table rather than declaring a second height.
+#:
+#: There is no ur10 height, and that is a measurement (CB3 UR10 URSim, PolyScope 3.15.8, 2026-10-01): at 900, 1000
+#: and 1100 mm the controller's IK found no tool-down solution on the base axis at all (the wrist centre has to stand
+#: d4, 164 mm, off the axis), the move answered IK_FAILED, and the failed IK ended ur_rtde's control script, so the
+#: three retries failed as a dead program and not as a stop. So a model the table does not name is refused before
+#: anything moves rather than driven to another model's height; `probe_halt.py` M7 asks the controller for its own
+#: protective stop (`triggerProtectiveStop`) instead.
 SINGULAR_Z_MM = {"ur3e": 430.0, "ur5e": 900.0, "ur10e": 1100.0}
 
 _OK, _NO_STOP, _BAD_REQUEST = 0, 1, 2
@@ -104,7 +112,7 @@ def _provoke(arm: URRobotArm, model: str) -> None:
     It is chosen because it trips the controller's own safety system rather than any check of
     this file's: the point is a stop nothing here asked for.
     """
-    z = SINGULAR_Z_MM.get(model, SINGULAR_Z_MM["ur5e"])
+    z = SINGULAR_Z_MM[model]
     print(f"   (model={model}: driving straight up the base axis to z={z:.0f} mm)")
     singular = Pose(
         position_mm=np.array([0.0, 0.0, z]),
@@ -166,6 +174,12 @@ def main(argv: list[str] | None = None) -> int:
 
     chain = args.profile if args.profile is not None else (active_profile() or _DEFAULT_PROFILE)
     cfg = load_robot_config(profile=chain)
+    if cfg.vendor == "ur" and cfg.ur.model not in SINGULAR_Z_MM:
+        print(f"\nprofile {chain!r} is a {cfg.ur.model}: no height up the base axis is measured to provoke a stop on "
+              f"it (the table names {', '.join(sorted(SINGULAR_Z_MM))}); measured on a CB3 UR10, the controller's IK "
+              "finds no pose there and ends the control script instead. Nothing was moved. For a protective stop on "
+              "a CB3, run scripts/ursim/probe_halt.py --only M7.")
+        return _BAD_REQUEST
     built = create_arm(RobotVendor.from_string(cfg.vendor), config=cfg)
     if not isinstance(built, URRobotArm):
         print(f"\nprofile {chain!r} builds {type(built).__name__}; this probe reads UR-only seams")

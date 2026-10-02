@@ -44,6 +44,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.robot.grasping.recovery.push_motion import PushOutcome
 
 __all__ = [
+    "BESIDE_THE_PART_CLEARANCE_MM",
     "REFUSED_PUSH_CELL_UNKNOWN",
     "REFUSED_STOP_REQUESTED",
     "TRIGGER_ALL_COLLIDED",
@@ -66,6 +67,12 @@ REFUSED_PUSH_CELL_UNKNOWN = "push_cell_unknown"
 #: nothing is commanded, and the next attempt's start ends the pick, as a stop between two attempts does.
 REFUSED_STOP_REQUESTED = "refused_stop_requested"
 
+#: How far the open hand keeps from a neighbour point beside the part it pushes, millimetres: the owner's decision of
+#: 2026-10-02, the planner's own floor (``push_planner.HAND_NEIGHBOUR_CLEARANCE_MM``). Beside the part means inside the
+#: box the push keeps out round the part and its path, grown by :attr:`PushCell.beside_part_mm`, where the guard does
+#: not see a neighbour while the push runs; a point outside keeps :attr:`PushCell.hand_clearance_mm`.
+BESIDE_THE_PART_CLEARANCE_MM = 10.0
+
 #: About this many rows of table points are read from each view: a view's depth image is strided to give them, and one
 #: with fewer rows is read whole. The planner keeps the table in 5 mm cells, and a D415 at the owner's working range
 #: puts neighbouring pixels about 0.5 mm apart, so the stride of 4 a 720-row image gets still lands a point in every
@@ -85,18 +92,38 @@ class PushCell:
     from every neighbour point: the camera world's ``margin_mm`` plus the arm's ``line_clearance_mm`` (25 mm shipped),
     so the planner plans no push the arm's line judge would predictably refuse. ``container_interior`` is a declared
     container's interior box (``grasping.support.container``), the push box in place of the table the looks saw.
+
+    Beside the pushed part the owner's 10 mm stands instead (2026-10-02, :data:`BESIDE_THE_PART_CLEARANCE_MM`):
+    ``beside_part_clearance_mm`` from a neighbour point inside the box the push keeps out round the part and its path,
+    grown by ``beside_part_mm``, the camera world's ``margin_mm``. ``None`` keeps
+    ``hand_clearance_mm`` for every point. ``guard_distance_mm`` is what the exact guard keeps from a camera box,
+    ``self_collision.perceived_min_distance_mm``: the push's finger rides at least that far, and 1 mm, over the solids the
+    camera world holds for what the part stands on.
     """
 
     hand: PushHand
     workspace: AxisBox
     hand_clearance_mm: float
     container_interior: Optional[AxisBox] = None
+    beside_part_clearance_mm: Optional[float] = BESIDE_THE_PART_CLEARANCE_MM
+    beside_part_mm: float = 15.0
+    guard_distance_mm: float = 5.0
 
     def __post_init__(self) -> None:
         clearance = float(self.hand_clearance_mm)
         if not math.isfinite(clearance) or clearance < 0.0:
             raise ValueError(f"PushCell.hand_clearance_mm must be a non-negative number of mm, got {clearance!r}")
         object.__setattr__(self, "hand_clearance_mm", clearance)
+        if self.beside_part_clearance_mm is not None:
+            beside = float(self.beside_part_clearance_mm)
+            if not math.isfinite(beside) or beside < 0.0:
+                raise ValueError(f"PushCell.beside_part_clearance_mm must be a non-negative number of mm, got {beside!r}")
+            object.__setattr__(self, "beside_part_clearance_mm", beside)
+        for name in ("beside_part_mm", "guard_distance_mm"):
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"PushCell.{name} must be a non-negative number of mm, got {value!r}")
+            object.__setattr__(self, name, value)
 
     @classmethod
     def from_robot_config(cls, robot: Any) -> "Union[PushCell, PushRefusal]":
@@ -104,7 +131,9 @@ class PushCell:
 
         The hand is :func:`~src.robot.grasping.recovery.push_hand.push_hand_from_robot_config` (a cell whose hand the
         registry does not hold, or that carries a suction cup, is refused there). The clearance is
-        ``robot.safety.planning_world.perceived.margin_mm`` plus ``robot.safety.planned_motion.line_clearance_mm``.
+        ``robot.safety.planning_world.perceived.margin_mm`` plus ``robot.safety.planned_motion.line_clearance_mm``;
+        beside the part it is :data:`BESIDE_THE_PART_CLEARANCE_MM` within that ``margin_mm``, and the guard's distance
+        is ``robot.safety.self_collision.perceived_min_distance_mm``.
         """
         from src.robot.grasping.recovery.push_hand import push_hand_from_robot_config  # noqa: PLC0415
 
@@ -116,14 +145,16 @@ class PushCell:
             workspace = AxisBox((float(limits.x_min), float(limits.y_min), float(limits.z_min)),
                                 (float(limits.x_max), float(limits.y_max), float(limits.z_max)))
             safety = robot.safety
-            clearance = (float(safety.planning_world.perceived.margin_mm)
-                         + float(safety.planned_motion.line_clearance_mm))
+            margin = float(safety.planning_world.perceived.margin_mm)
+            clearance = margin + float(safety.planned_motion.line_clearance_mm)
             container = getattr(getattr(getattr(robot, "grasping", None), "support", None), "container", None)
             interior = None
             if container is not None and bool(getattr(container, "interior_declared", False)):
                 interior = AxisBox(tuple(float(v) for v in container.interior_min_mm),  # type: ignore[arg-type]
                                    tuple(float(v) for v in container.interior_max_mm))  # type: ignore[arg-type]
-            return cls(hand=hand, workspace=workspace, hand_clearance_mm=clearance, container_interior=interior)
+            return cls(hand=hand, workspace=workspace, hand_clearance_mm=clearance, container_interior=interior,
+                       beside_part_clearance_mm=BESIDE_THE_PART_CLEARANCE_MM, beside_part_mm=margin,
+                       guard_distance_mm=float(safety.self_collision.perceived_min_distance_mm))
         except (AttributeError, TypeError, ValueError) as exc:
             return PushRefusal(
                 code=REFUSED_PUSH_CELL_UNKNOWN,
@@ -205,6 +236,12 @@ class PickPush:
     leg: Optional[str] = None
     legs_done: tuple[str, ...] = ()
     looked_again: str = ""
+    #: The plan's fingertip height over the support and the box its landing had to stay inside (BASE x and y, low and
+    #: high corners), millimetres; and what the arm answered for every motion of the push, ``"<leg>: <status>"`` in
+    #: order (Track P's item 8). Empty where no push was driven.
+    finger_height_mm: Optional[float] = None
+    landing_box_xy_mm: Optional[tuple[tuple[float, float], tuple[float, float]]] = None
+    leg_verdicts: tuple[str, ...] = ()
     outcome: Optional["PushOutcome"] = field(default=None, repr=False, compare=False)
 
     @property
@@ -233,6 +270,10 @@ class PickPush:
             "leg": self.leg,
             "legs_done": list(self.legs_done),
             "looked_again": self.looked_again,
+            "finger_height_mm": None if self.finger_height_mm is None else round(float(self.finger_height_mm), 2),
+            "landing_box_xy_mm": (None if self.landing_box_xy_mm is None
+                                  else [[round(float(v), 1) for v in corner] for corner in self.landing_box_xy_mm]),
+            "leg_verdicts": list(self.leg_verdicts),
         }
 
 

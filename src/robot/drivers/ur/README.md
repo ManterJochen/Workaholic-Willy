@@ -78,6 +78,7 @@ check needs the dashboard: a dashboard that does not answer is logged, not refus
 | `UNSUPPORTED`, camera world MISSING | on `curobo`, a motion with neither a live camera world nor a stated decline | Hand the robot its cameras, or `without_camera_world(reason)` |
 | `CONTROLLER_REJECTED`, hand-guided | any motion verb while a `freedrive()` session is open, free or held | Leave the session; its end holds the arm and gives motion back |
 | `CONTROLLER_REJECTED`, plan off its goal | a plan ending more than 5 mm or 6 degrees from its goal on the DH chain | Read the message; nothing has moved |
+| `CANCELLED`, halted | the halt latch is set: nothing is sent; or a halt braked the move in flight, and a judged path sends no later waypoint | A person says the cell is clear (`clear_halt()`), then the way back |
 | a refused straight line | `linear=True` and a joint turns over 0.35 rad between samples, or the flange leaves the line by 1 mm | Plan the move in legs, or drop `linear` |
 
 `move_joint` and `move_linear` raise `RobotMotionRejected` carrying the result, and `move_home`
@@ -176,6 +177,43 @@ line, a cuRobo plan to which goal, a branch change, a turned joint), how many wa
 and how many ran, and each joint's total and largest turn in degrees on what ran, and warns when a
 joint turns more than half a turn past what its end needs.
 
+## Halt now
+
+`URRobotArm` carries the halt latch (`SupportsHalt`): `halt(reason)` latches the arm and sends nothing from the
+calling thread, `halt_state()` reads it, and `clear_halt()` ends it, which the operator console calls only once
+a person said the cell is clear. While it is set, every motion verb answers `CANCELLED` with nothing sent,
+`set_digital_output` raises `ArmHalted` (the toggle's DO0 included), `freedrive()` refuses, and
+`RobotStatus.is_operational` is false while `controller_operational` keeps the controller's own answer: a halt
+is never a stopped controller. The latch lives on the `URConnection`, so it outlives a disconnect and a connect,
+and `stop()` is a halt too: the stop it used to send from the calling thread was never read by a synchronous move
+in flight.
+
+**`robot.ur.brake_on_halt`** decides what happens to a move in flight.
+
+- **Off, as shipped**: every `moveJ` and `moveL` is the synchronous `ur_rtde` call it always was, byte for byte.
+  A halt lets the move in flight run to its end, and nothing after it is sent.
+- **On**: every move is sent asynchronously and watched by the thread that sent it, every 8 ms (one CB3 cycle),
+  and answers true only once the arm stands at its target: joints within 2e-3 rad, a line's TCP within 1 mm and
+  2e-3 rad. A halt makes that thread brake it, `stopJ` or `stopL` at max(2.0, the move's own acceleration), and
+  the move answers false. A move the controller never shows running within 1 s is stopped and refused.
+  `last_move_end` (`MoveEnd`) says how the last move ended: `arrived`, `braked`, `brake_unconfirmed`,
+  `refused_halted`, `ended_short`, `stopped` (a protective or emergency stop, or the program ended) or
+  `not_started`.
+
+`HaltState.brake` says what became of the move in flight: `none`, `pending`, `braked` (with `brake_s`),
+`ran_out`, or `unconfirmed`, where the arm was never seen to stand still. A judged cuRobo path counts the halt
+requests (`halt_requests`), so a halt that came and was cleared mid-leg still ends the waypoints after it. The one
+output a halted arm still writes is `end_output_pulse(pin)`, which only ever drives low: a double solenoid's coil
+and a vacuum blow-off end their pulse through it, never a toggle hand.
+
+Two reads serve the console's ready bar without the dashboard: `quick_robot_status()`, the four receive-stream
+fields and the latch, and `planner_state` (`not_used`, `off`, `starting`, `ready`), attribute reads that never
+wait for the planner's lock. A disconnect retires the planner: it waits for a start in progress (at most 120 s) or
+a planner call a move is inside (at most 30 s), then closes the sidecar, so no sidecar is orphaned. Measured
+against URSim CB3 with `scripts/ursim/probe_halt.py`
+([console_at_the_cell.md](../../../../docs/runbooks/console_at_the_cell.md)); switch the brake on in the cell's
+own profile only after those measurements and a supervised halt at the cell.
+
 ## Traps
 
 - **Forward kinematics after a motion.** `getForwardKinematics(q)` shares controller registers with
@@ -222,7 +260,8 @@ or `gripper.vacuum.io_port`; the `io_bench.py` functions under it confirm nothin
 | Digital outputs that read back changed; the tool-frame check, including a disagreement that refuses | measured against real controller software (URSim) |
 | `setPayload` with its rollback; a protective stop, with the commanded motions refused | measured against real controller software (URSim) |
 | Connect, moves on the straight joint line and cuRobo plans, home, and a tool output switching a Hand-E, on a UR10 (CB3) | run on a physical cell |
-| Torque, payload dynamics, a physical emergency stop | never touched hardware |
+| The halt latch and the brake: latency, stop point, 200 watched moves and 50 watched lines with no early return, a braked path, no DO0 change after a halt, the latch across a reconnect | measured against real controller software (URSim CB3, `probe_halt.py`) |
+| Torque, payload dynamics, a physical emergency stop, a halt on a physical arm | never touched hardware |
 
 The container and the probes behind those measurements are in
 [scripts/ursim/](../../../../scripts/ursim/README.md). Their profile is
@@ -249,8 +288,8 @@ first pick is [real_cell_first_pick.md](../../../../docs/runbooks/real_cell_firs
 
 | File | Holds |
 |---|---|
-| `arm.py` | `URRobotArm`, `UR_CAPABILITIES`, `ur_capabilities(model)`: `move()`, the connect refusals, the planner switch |
-| `connection.py` | `URConnection`, the RTDE boundary |
+| `arm.py` | `URRobotArm`, `UR_CAPABILITIES`, `ur_capabilities(model)`: `move()`, the connect refusals, the planner switch, the halt, `quick_robot_status()` |
+| `connection.py` | `URConnection`, the RTDE boundary: the halt latch, and with `brake_on_halt` the watched move a halt brakes (`MoveEnd`) |
 | `freedrive.py` | `URFreedriveSession`: hand guiding on teach mode behind an RTDE watchdog, held again on every way out |
 | `motion.py` | `MotionController`: clamped, workspace-checked point-to-point moves for `move_to` |
 | `curobo_motion.py` | `CuroboUrPlanner`: a collision-free plan to a pose or a joint goal, from where the arm stands or an explicit `start_ur`, run as one `moveJ` per waypoint of the list the arm judged; `judge_joint_path`, every refused sample of a path with its terms and pairs |

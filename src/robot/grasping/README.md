@@ -32,6 +32,12 @@ closing axis heads within 30 degrees of the axis, each turned the named way roun
 sparse". The scene of a looked-around part (`located.scene(0, ...)`) takes the axis its looks judged and
 refuses any other ([perception/](../perception/README.md)).
 
+**Why there is none, and the next one.** An empty `SceneGrasps` says why in `said` where the scene can tell: a
+neighbour the camera saw, the support, a declared body, a part too short for the hand; `refused_by_obstacles` and
+`refused_by_support` count what was refused for it. `grasps().other_than(refused)` leaves out every grasp within
+10 mm and 15 degrees of one already refused, so a program that looks again after a refused pick tries another
+grasp, not the same one seen again (example 13).
+
 ## Usage
 
 | You have | Call | Shown in |
@@ -145,7 +151,7 @@ to move a rate.
 | --- | --- |
 | Analytic generation, scoring and the pick service on a UR5e with a 2F-85 | measured in simulation ([willy_sim](../../willy_sim/README.md)) |
 | The recovery loop and fixed-camera fusion | measured in simulation, switched on per flag by the runners |
-| A wrist camera's looks and the push | pinned by tests on fake arms and cameras, and the Isaac arm generates no view; never touched hardware |
+| A wrist camera's looks and the push | pinned by tests on fake arms and cameras, and the Isaac arm generates no view; the push ran on URSim CB3 with a recorded look as the camera (2026-10-02); never touched hardware |
 | The hold check after the close | pinned by tests on the Robotiq driver's gOBJ seam; never touched hardware |
 | A grasp from this package on a physical arm | run on a physical cell: camera picks on a UR10 (CB3) with a wrist D415 and a `jaw_io` Hand-E; no pick rate is kept here |
 

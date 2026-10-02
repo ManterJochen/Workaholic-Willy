@@ -60,6 +60,15 @@ VLM_AVAILABILITY_LOG_FILE: Final[str] = "vlm_availability.log"
 #: answer is usually a word in the prompt that sent it to the VLM.
 PERCEPTION_ROUTING_LOG_FILE: Final[str] = "perception_routing.log"
 
+#: The process's one VLM copy (``vlm/holder.py``): which weights are held, when a person or a command loaded them
+#: and what a failed load said. Its own file because the copy outlives any one cell build, and "why does the card
+#: say the VLM is not loaded" is answered by the holder's history, not by a model's.
+VLM_HOLDER_LOG_FILE: Final[str] = "vlm_holder.log"
+
+#: The command reader (``vlm/command.py``): each sentence, what the model answered, the one corrective retry and
+#: why it was asked. Separate from the grounder's file: a wrong card is a reading problem, a wrong box a seeing one.
+VLM_COMMAND_LOG_FILE: Final[str] = "vlm_command.log"
+
 #: What :func:`~src.models.factory.build_perception` assembled. The models mirror of the robot
 #: package's ``grasp_builders.log``: config alone does not say what a cell is running, because presets
 #: and legacy keys both feed into the result.

@@ -188,6 +188,14 @@ def _build_routed_backend(models: PerceptionFields, *, debug_images: bool) -> An
         models.pipeline.zero_shot.vlm.model_id if models.pipeline.zero_shot.vlm else "unconfigured",
         models.pipeline.zero_shot.segmenter,
     )
+    if models.pipeline.zero_shot.vlm is not None:
+        # The process's one VLM copy, if it holds other weights than this cell names, is nobody's any
+        # more: the console releases the old cell before it builds, and this cell's VLM route takes its
+        # grounder only at the first prompt that needs it. It goes now, before SAM2 is loaded, and not
+        # at that prompt; the same weights stay, loaded or not, and nothing is built or loaded here.
+        from src.models.vlm.holder import shared_vlm
+
+        shared_vlm().release_other_than(models.pipeline.zero_shot.vlm)
     # Built once and shared: whichever route runs first needs it, and both need it. One segmenter
     # choice covers both routes, so masks do not change shape depending on which grounding model
     # answered.
@@ -218,9 +226,15 @@ def _build_vlm_backend(models: PerceptionFields, *, debug_images: bool, segmente
     and the degrade fallback is a factory rather than an instance, so a cell that never degrades
     never loads GroundingDINO. The refusal is not lazy; an unbuildable configuration is rejected
     here, before any weight loads.
+
+    The grounder is the process's one copy (:func:`src.models.vlm.holder.shared_vlm`), not this
+    build's own: the console's command reader asks the same object, and a rebuild finds it, loaded
+    or not, instead of putting a second copy of the weights on the card. A build that names other
+    weights is how a cell switches checkpoints: the holder unloads the copy it replaces.
     """
     from src.models.perception_backend import TwoStageBackend
-    from src.models.vlm import GuardedVlmBackend, Qwen3VLGrounder
+    from src.models.vlm import GuardedVlmBackend
+    from src.models.vlm.holder import shared_vlm
 
     assert models.pipeline is not None  # only reached from build_perception's pipeline branch
     vlm_cfg = models.pipeline.zero_shot.vlm
@@ -238,12 +252,12 @@ def _build_vlm_backend(models: PerceptionFields, *, debug_images: bool, segmente
         vlm_cfg.model_id, vlm_cfg.on_unavailable, vlm_cfg.preload,
         models.pipeline.zero_shot.segmenter,
     )
-    grounder = Qwen3VLGrounder(
-        model_id=vlm_cfg.model_id,
-        model_path=vlm_cfg.model_path,
-        local=vlm_cfg.local,
-        preload=vlm_cfg.preload,
-    )
+    grounder = shared_vlm().grounder_for(vlm_cfg)
+    if vlm_cfg.preload:
+        # Predictable latency and VRAM held from cell build. Raises what the load raised, as the
+        # grounder's own preload did: a cell that asked for the model at build learns it is missing
+        # at build. A copy already loaded (an earlier build, a command) is not loaded again.
+        grounder.ensure_loaded()
     # The segmenter is configurable here: the VLM supplies boxes, and OneFormer takes a box exactly
     # as SAM2 does, so both mask sources work on this route. A routed stack passes its own instance
     # in, so both routes share one copy of the weights.

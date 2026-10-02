@@ -84,10 +84,12 @@ for one with `isinstance()`.
 | `SupportsFreedrive` | `freedrive()` -> `FreedriveSession`: `free()`, `hold()` and `sample()` inside a with-block that holds the arm on every way out, an exception or Ctrl-C included, while every motion verb of the arm refuses as long as it is open; `controller_payload()` -> `ControllerPayload \| None`, the mass and centre of gravity the controller compensates for, or `None` where the controller does not report them |
 | `ChoosesConfigurations` | `nearest_configuration(pose)` -> `JointPositions`: the configuration this arm would take for a TCP pose, judged by its own inverse kinematics, joint window and endpoint gate, **with nothing moved**; `RobotKinematicsError` names what refused it. The generated view of a wrist pick screens every turn with it |
 | `DrivesJointLines` | `move_to_joints_on_the_line(joints)`: a joint move on the **straight joint line only**, judged like `move_to_joints`, and refused with nothing sent where the line is not clear. Never planned around. `UNSUPPORTED` on an arm whose paths nobody judges (the `ik` planner) |
+| `SupportsHalt` | `halt(reason)`, `clear_halt()`, `halt_state()`: the latch "halt now" sets. From the halt on every motion is refused with nothing sent and every output switch raises `ArmHalted`, until `clear_halt()`, which the console calls only once a person said the cell is clear (section 8) |
 
 The vendor-neutral `RobotMode` and `SafetyMode` enumerations turn a controller's integer status codes into
 portable words; the UR driver maps its integers in `src/robot/drivers/ur/arm.py`. `URRobotArm` is the only
-driver that implements any of the six; its `SupportsFreedrive` is the UR teach mode. Four more say how an
+driver that implements any of the first six; its `SupportsFreedrive` is the UR teach mode. It and the dummy arm
+carry `SupportsHalt`. Four more say how an
 arm moves rather than what it has: `KeepsLines` (what a straight line keeps, [05](05-pick-loop.md)
 section 2), `HomesTyped` (a typed move home), `CarriesPayload` (a model of the carried part) and
 `JudgesCarriedLines` (`carried_line_refusal`: a straight line judged as if the jaws held a part, before they
@@ -580,10 +582,56 @@ held frames of a pick clear it. What no camera saw stays free: the floor behind 
 depth, and a lone object the arm hides from every camera, such as a block under the shoulder housing seen
 only from above.
 
+**The stack finds what the parts stand on, on every world build** (`perceived.support_surfaces`, on for a
+cell; the owner, 2026-10-01: "der Stack muss selbst raffen wo was ist", no fixture boxes for a mat). A
+support is a large, nearly level surface in the cameras' own pixels: at least 100 x 100 mm and 75 mm wide, at
+most **5 degrees** off level, flat to the band in every view that sees it, and above the declared bench's band
+somewhere. A foam mat, a bin's floor, a bench read a little high: each is held as at most **four tilted
+solids** (twelve per world), from the declared bench up to the surface's local reading, plus what the reading
+stands over that (its p90), plus the band, and **`support_allowance_mm` (2) over that**. A mat that is gone
+tomorrow is gone from the world tomorrow. The declared bench is held as an upright solid over the workspace
+box, up to its band plus the allowance: before, the guard held no bench at all.
+
+**Nothing becomes free space that a solid does not hold.** A point leaves the world as the support's only
+where a solid holds **every pixel** it stands for; one with a pixel outside stands at that pixel. A cluster
+under `min_points` standing on a solid is a thing, never noise: a 3 mm pin 20 mm tall on the mat stays an
+obstacle. What the band swallows keeps the guard's 5 mm plus the allowance: on the owner's recorded looks
+(2026-10-01) the worst swallowed part kept **9.2 mm** at a true reading and **5.2 mm** with the camera reading
+4 mm low, and of 32 attack scenes (pins and squares on the mat, small cubes on the bare bench) none was left
+free, the least distance 13.2 mm. A property test pins that every pixel either stands for a kept point or
+lies inside a held solid. That is why `perceived_min_distance_mm` stays **5**. **What it does not cover:** a
+camera reading more than 4 mm low (the bench check below reports it; a ruler and a TCP touch-off measure it),
+the arm model's own vertical error of about 2.6 mm, which every guard distance carries, and a part above the
+band inside a target's 15 mm keep-out.
+
+**The guard and cuRobo hold the same tilted solids.** The solids take their slots first and are never
+merged (the obstacles get `max_boxes` less the solids; 7 of 64 on the owner's looks). Each goes to the planner
+with its whole turn as a quaternion and to the exact guard as the same tilted box; the capsule fallback judges
+its enclosure, the safe side. `scripts/curobo/probe_support_solids.py`, beside `probe_band_admission.py` and
+`probe_turned_boxes.py` and with the same `--cpu-replica`, places a box tilted 1, 3 and 5 degrees **10.00 mm**
+from the arm analytically, and the planner turns at 10.00 mm (GPU, 2026-10-02). The solids carry the camera's
+prefix (`seen_s<k>_support<i>`, `seen_s<k>_bench`), so where only the camera's boxes refuse the planner the
+guard decides them as it decides every seen box. **No support is found over the robot's base** (its radius,
+`margin_mm` and one cell of the axis): a disc at the shoulder's foot would put the shoulder in a solid and
+refuse every motion. A part's own top is no support either.
+
+**Every world refresh says what it found.** The `planner world refreshed` line in `robot.log` ends with the
+supports (`support0 at z 50.2 to 63.1 mm, tilted 1.1 deg, 0.412 m2, 3 solid(s)`), how high the bench is held
+and how the bare bench reads. **The bench check** reads the workspace cells in no support within the band
+plus 10 mm of the declared plane; where at least 16 read more than the allowance under it, a WARNING says
+where and by how much, at most once a minute (`live_world.log`). **Nothing is raised by it** (the owner,
+2026-10-02): a sagging bench and a camera that reads low look the same here, and only a ruler and a touch-off
+tell them apart. Two refusals come with the supports: a declared slab (`planning_world.support_plane`) that
+covers none of the workspace box is refused when the world is built, naming its centre, extent and the box,
+one covering part of it is a WARNING (`camera_world_wiring.log`); and with `include_fixtures` on and a real
+fixture declared, a `min_distance_mm` under **10** is refused at load, because a declared fixture's band is
+not held as solid.
+
 **A camera off its calibration lifts the bench.** A camera about 0.5 degrees off at 1 m lifts the far bench
-out of its band (`perceived.plane_clearance_mm`, 5 mm): 100 to 200 slab boxes fill the 64 slots and merge,
-and a slab beside the base can refuse the pose. Recalibrate, or raise `plane_clearance_mm` by the range
-times the error.
+out of its band (`perceived.plane_clearance_mm`, 5 mm). With the supports on, a reading up to 5 degrees off
+level is found as a support and held as a few tilted solids (the owner's looks: 45 to 66 merges a look, 63 to
+79 before). Without them, 100 to 200 slab boxes fill the 64 slots and merge, and a slab beside the base can
+refuse the pose. Either way recalibrate, or raise `plane_clearance_mm` by the range times the error.
 
 **Where only the camera's boxes refuse the planner, the exact guard decides.** cuRobo judges its world
 with its sphere cover, which reaches past the meshes by design, **25 to 29 mm past the UR10's shoulder
@@ -838,6 +886,13 @@ at, and a joint move gets its line's refusal with `no plan goes around it`. Only
 start's refusal. Every refusal names the sample and the term it stands on, and a joint bound reads
 `JOINT_LIMIT_REJECTED`.
 
+**A refusal by the planner's world names the boxes near it.** Its number is a sum, not a depth: `its
+collision spheres reach 37.0 mm into the world the planner holds, summed over every sphere that touches it`
+was three spheres a few millimetres in each (the owner's cell, 2026-10-01). Beside it a WARNING names every
+box of that world within 300 mm of the refused goal, or of the arm's frames at the refused joints by the
+bundled UR chain (base yaw 0): name, kind (`seen`, `support`, `bench` or `declared`), distance, centre, size,
+tilt and quaternion, the nearest twelve and how many more.
+
 **Screen the poses you teach.** Teaching by hand (example 11), `real_cell --start-planner` and every
 campaign's start screen each pose with both authorities, one line each, and nothing moves for it. A line ends
 `Nearby, both clear: (...) deg` where a pose within 20 degrees per joint clears both, and names no pose
@@ -942,7 +997,65 @@ output too. Four symptoms cover most of the confusion:
 
 ---
 
-## 8. What this layer does not give you
+## 8. Halt now, the emergency stop, and the way back
+
+**The emergency stop is the safety stop, and nothing in this software replaces it.** The operator console adds a
+controlled halt, "Sofort anhalten" (`POST /v1/cell/brake`), and says on the button that it is not the emergency
+stop. The two differ in every respect that matters:
+
+| | The emergency stop | Halt now |
+|---|---|---|
+| What it is | a safety-rated circuit of the controller | a request: browser, localhost, a thread pool, an 8 ms poll |
+| The move in flight | stopped by the controller's safety system | braked under control where `robot.ur.brake_on_halt` is on; run to its end where it is off, as shipped |
+| What comes after | released at the pendant, where the arm is visible | the arm latched: every next motion and output refused with nothing sent, until a person says the cell is clear |
+| It depends on | nothing here | the latency, an open tab, an awake laptop |
+
+**The latch** (`SupportsHalt`, section 1.2) is what makes a halt hold. `RobotStatus.is_operational` is the
+controller's own answer (`controller_operational`) and not halted, so every gate that asks whether the arm may
+move refuses a halted arm without a line of its own, while a halt never reads as a stopped controller: their
+remedies differ, a person's word against the pendant. A refused verb says `the arm is halted (<reason>): ...; a
+person confirms the cell is clear, then Restart`. The latch lives on the arm's connection, so it outlives a
+Disconnect and a Connect of the same arm, and only `clear_halt()` ends it; the console carries a halt to the arm
+of every later build too, so building again ends none. `URRobotArm.stop()` latches too: it used to send a stop
+from the calling thread, which a synchronous move in flight never read.
+
+**`robot.ur.brake_on_halt`** decides what becomes of the move in flight. **Off, as shipped**, every move is the
+synchronous call it always was, byte for byte: the move in flight runs to its end, and nothing after it is sent.
+**On**, every move is sent asynchronously and watched by the thread that sent it, every 8 ms, and answers true
+only at its target (joints within 2e-3 rad, a line's TCP within 1 mm); a halt makes that thread brake it with
+`stopJ` or `stopL` at max(2.0, the move's own acceleration). `HaltState.brake` says how it went: `none`,
+`pending`, `braked` (with `brake_s`), `ran_out`, or `unconfirmed`, where nobody saw the arm stand still: if it
+still moves, press the emergency stop. Measured against URSim CB3 (`scripts/ursim/probe_halt.py`): the
+deceleration began 12 to 37 ms after the request, the stop point stayed within 2.3e-7 rad of the judged joint
+line, 200 watched moves returned no early true, a braked path sent no later waypoint, and tool DO0 did not change
+after a halt. Switch it on in the cell's own profile only after those measurements and a supervised halt at the
+cell ([console_at_the_cell.md](../runbooks/console_at_the_cell.md)).
+
+**Nothing moves without a click.** Every motion the console makes starts on a person's click on a button that
+names it: Start, whose label names the first motion; Restart and Home, which ask first; "Jetzt öffnen", one
+change of a toggle's output. A command is only read, and speech only fills the box. After a person's hands were
+at the arm (a teach, "Jetzt öffnen", "Backen leer"), the next motion counts down 3 s, hands off.
+
+**Nothing moves on its own after a stop.** A pick, task or Home run that ends on a problem leaves the arm where it
+stands and the console a **stop record**, which outlives a Disconnect, a rebuild, a page reload and a restart of
+the server: `python -m api` keeps it, with a halt nobody cleared, in `logs/console/stop.<profile chain>.json`, and
+reads it back uncleared, since a restart is no "the cell is clear". Until a person says the cell is clear, every
+moving route and the jaws refuse (`cell_not_cleared`); after it, the two ways back are Restart and Home, whose
+first motion is the planned move to the return pose, and arriving there ends the record. "The cell is clear"
+(`POST /v1/cell/acknowledge`) clears the halt latch and a recovery's latch, and **never a protective stop**: a
+stopped controller refuses it until the stop is cleared at the pendant. No run clears a latch silently: a run that
+meets one ends with nothing commanded.
+
+**A task needs the carried part modelled.** Between the close and the release only the planner holds the part:
+the exact guard holds the arm, the hand, the coupling and the camera, not the part. A task therefore refuses an arm
+that models none (`carried_part_not_modelled`: declare `safety.planning_world.payload.length_mm`,
+[01](01-configuration.md)), reads after every pick that the planner carries the part (else it ends
+`part_still_held` where the arm stands), and Home refuses while a part is held, so no motion of the console outside
+a task carries one. The full contract is [`api/README.md`](../../api/README.md).
+
+---
+
+## 9. What this layer does not give you
 
 This is a software collision-avoidance layer, not the safety system of a cell. It reduces collision risk.
 The safety guarantee of a real cell is independent, certified functional safety: the vendor's safety-rated
@@ -964,6 +1077,9 @@ README and [safety-math.md](../safety-math.md) say the same.
 | The wrist looks, the generated view, the move back and the push on a physical arm | never touched hardware |
 | The exact guard deciding the planner's self pairs, the band's legs, the turned camera boxes in 65 slots and a plan in a full world, against the real cuRobo kernel | measured on a GPU with the two probes on their own owner-like cell (the development box, 2026-09-30); not yet on the cell PC |
 | The exact guard deciding the camera's boxes beside the base: the sidecar setting them aside and every one back, a bin at 30, 40 and 47.7 mm admitted in the band and out of it, straight lines beside it run, the line out held while the hand's count says closed, a grasp's lift judged carrying refused while the same lift runs empty-handed, and on a cell that models the part, with the part in the sidecar, the whole grasp backing out with its jaws open beside the bin and closing once away from it, a declared bin's room | measured on a GPU with `probe_turned_boxes.py` on the same owner-like cell (the development box, 2026-10-01); not yet on the cell PC |
+| Halt now: the latch, the brake and its stop point, a braked path, no output change after a halt | measured against real controller software: URSim CB3, `scripts/ursim/probe_halt.py` |
+| The console's task, its halt, the way back and the jaws question with the toggle on tool DO0 | measured against real controller software: URSim CB3, `scripts/ursim/probe_console_task.py` |
+| Halt now and the console on a physical arm | never touched hardware |
 
 Next: [05](05-pick-loop.md), what happens above this layer once a motion is allowed, and
 [06](06-grippers.md), making an end-effector move.

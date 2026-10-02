@@ -11,7 +11,8 @@ only mean something together:
 
   1. `backend/**` still imports no web framework          -- the library claim, unchanged
   2. `api/**` is the ONLY tree allowed to                 -- one exception, named, not "somewhere"
-     (plus `tests/test_api_*.py`: testing an HTTP surface needs a client for it)
+     (plus `tests/test_api_*.py`: testing an HTTP surface needs a client for it; and, since commit 2, the
+     console's own tooling, each file named in `_CONSOLE_TOOLING`)
   3. nothing under `backend/**` imports `api`             -- the dependency arrow points ONE way
 
 Without (3), (1) would be satisfiable by a library module that reaches the framework through the console
@@ -29,6 +30,18 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _BACKEND = _ROOT / "src"
 _API = _ROOT / "api"
 _FORBIDDEN_TOP_LEVEL = {"fastapi", "uvicorn", "starlette"}
+
+#: The console's own tooling outside ``api/`` (commit 2): each file drives the console app in-process through its test
+#: client, and none ships with the library. Named one by one, never as a folder, so a new script or a library test
+#: cannot pick up a framework import by accident; an HTTP test of the console belongs in ``tests/test_api_*.py``.
+_CONSOLE_TOOLING = frozenset({
+    # Writes the frontend's captured event logs from the console itself (frontend/src/test/fixtures).
+    "scripts/console/capture_event_log.py",
+    # The console's task, stops and way back against URSim (build plan 6.5, item 2).
+    "scripts/ursim/probe_console_task.py",
+    # The scripted cell the console's own tests (tests/test_api_*.py) and the capture drive.
+    "tests/_console_task_fakes.py",
+})
 
 
 def _imported_top_modules(tree: ast.AST):
@@ -66,7 +79,9 @@ class NoWebFrameworkImportTests(unittest.TestCase):
         which cannot exercise an HTTP surface without a client for it. That exemption is scoped to
         files named `test_api_*.py` rather than to `tests/` as a whole, so a library test cannot pick
         up a framework import by accident; and tests ship with the repo but never with the library, so
-        it does not widen what an installed Willy depends on.
+        it does not widen what an installed Willy depends on. The console's own tooling (a capture, a
+        URSim probe, the scripted cell of its tests) is the same exception, each file named in
+        `_CONSOLE_TOOLING`.
         """
         allowed = _API.resolve()
         offenders: list[str] = []
@@ -81,6 +96,8 @@ class NoWebFrameworkImportTests(unittest.TestCase):
                 continue
             if py.parent.name == "tests" and py.name.startswith("test_api_"):
                 continue
+            if py.relative_to(_ROOT).as_posix() in _CONSOLE_TOOLING:
+                continue
             try:
                 tree = ast.parse(py.read_text(encoding="utf-8"))
             except (SyntaxError, UnicodeDecodeError):  # pragma: no cover - defensive
@@ -92,6 +109,13 @@ class NoWebFrameworkImportTests(unittest.TestCase):
             offenders, [],
             "only api/** may import a web framework; offenders: " + "; ".join(offenders),
         )
+
+    def test_each_named_exception_is_a_file_of_the_console_tooling_that_exists(self) -> None:
+        """A name that no longer exists would be a door left open for whatever takes its path next."""
+        for name in sorted(_CONSOLE_TOOLING):
+            with self.subTest(file=name):
+                self.assertTrue((_ROOT / name).is_file(), f"{name} is named as console tooling and does not exist")
+                self.assertFalse(name.startswith("src/"), "the library is never console tooling")
 
     def test_the_library_never_imports_the_console(self) -> None:
         """The dependency arrow points ONE way, and this is the assertion that makes the other two mean

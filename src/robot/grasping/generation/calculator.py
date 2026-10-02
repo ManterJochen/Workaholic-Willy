@@ -15,6 +15,7 @@ and its small ``compute(...)`` contract, which returns
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Sequence
 from typing import Any, TYPE_CHECKING
@@ -34,7 +35,17 @@ from src.robot.grasping.generation._support_footprint_stage import (
     support_footprint_breakdowns,
 )
 from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps
-from src.robot.grasping.generation.support_footprint import SupportFootprintJaw
+from src.robot.grasping.generation.scene_obstacles import (
+    NO_GRASP_SAID,
+    SceneObstacleRules,
+    SceneObstacles,
+    corridor_seen_in,
+    envelope_verdicts,
+    least_part_height_mm,
+    scene_obstacle_points,
+    why_no_grasp,
+)
+from src.robot.grasping.generation.support_footprint import DEFAULT_FLOOR_MARGIN_MM, SupportFootprintJaw
 from src.robot.grasping.contacts import (
     ContactPair,
     dense_surface_samples,
@@ -286,6 +297,18 @@ class GraspCalculator:
         # ``safety.planning_world.perceived.plane_clearance_mm``; ``Scene.from_robot_config`` passes
         # the larger of the two, and a construction site for a real cell should pass the same.
         support_footprint_floor_margin_mm: float | None = None,
+        # What the camera saw beside the part, as obstacles (``robot.grasping.scene_obstacles``, fix plan Track A). A
+        # prompt names one part, and on the owner's cell the calculator saw that part alone: it offered grasps whose open
+        # fingers stood inside the parts beside the Zollstock, and the guard refused all of them. With rules, every
+        # compute reads the depth around the part by the planner world's own rules (see scene_obstacles.py), hands it
+        # to SFE and to the post-hoc filter, keeps the open hand off the support solids and the declared boxes the guard
+        # holds, and says why a part got no grasp. A pre-filter: the guard judges every motion either way. None, the
+        # default, is the calculator of before, byte for byte.
+        scene_obstacles: "SceneObstacleRules | None" = None,
+        # Side approaches in SFE (``robot.grasping.side_approaches``, the owner's "gleichwertig nach Geometrie"): every
+        # tilt the hand fits at is a candidate, ranked by the room it keeps, and only space this frame's depth saw counts
+        # as clear for a tilted one. False, the library default, is SFE as before.
+        side_approaches: bool = False,
     ) -> None:
         validate_calculator_args(
             min_grip_width_mm=min_grip_width_mm,
@@ -442,6 +465,10 @@ class GraspCalculator:
                              f"{support_footprint_floor_margin_mm!r}")
         self._support_footprint_floor_margin_mm: float | None = (
             None if support_footprint_floor_margin_mm is None else float(support_footprint_floor_margin_mm))
+        if scene_obstacles is not None and not isinstance(scene_obstacles, SceneObstacleRules):
+            raise TypeError(f"scene_obstacles takes SceneObstacleRules or None, got {type(scene_obstacles).__name__}")
+        self._scene_obstacles: SceneObstacleRules | None = scene_obstacles
+        self._side_approaches = bool(side_approaches)
         # The float() sweep is what makes YAML's ints and numpy scalars behave; naming the five
         # elements keeps the shape the callee promises. Widening it to "some floats" would let a
         # four-weight config reach the scorer silently short.
@@ -655,6 +682,11 @@ class GraspCalculator:
         other_object_masks: list[np.ndarray] | tuple[np.ndarray, ...] | None = None,
         semantic_policy: SemanticPolicy | None = None,
         deformable_class: DeformableClass | None = None,
+        # The camera world's support model of this frame (``support_surfaces.SupportModel``, the fix plan's contract
+        # 7), handed per call beside ``support_plane``. Read only with ``scene_obstacles``: a surface it holds decides
+        # what of its pixels is support, SFE's support is the higher of the plane and the model's reading under the
+        # part, and the open hand keeps the guard's distance from its solids. None reads the plane alone.
+        support_model: Any = None,
     ) -> list[GraspPoint]:
         """Generate ranked grasp candidates.
 
@@ -1069,6 +1101,28 @@ class GraspCalculator:
                     scene_points_mm = np.vstack(
                         [np.asarray(scene_points_mm, dtype=np.float64), neighbours]
                     )
+        # What the camera saw beside the part, by the planner world's rules (fix plan Track A). It joins the scene
+        # points the way the neighbours' masks do above, so SFE's grid and the post-hoc filter both see it.
+        scene: SceneObstacles | None = None
+        scene_support_mm: float | None = None
+        if self._scene_obstacles is not None:
+            telemetry["candidates_final_source"] = "prompt_only"
+            if transform is not None:
+                scene_support_mm = self._scene_support_mm(
+                    support_plane, support_model, cloud, geometry_points_base_mm, transform, telemetry)
+                scene = scene_obstacle_points(
+                    depth_arr * scale, mask_bool, intrinsics, transform, rules=self._scene_obstacles,
+                    support_height_mm=scene_support_mm, support_model=support_model)
+                telemetry["scene_obstacle_points"] = int(scene.points_base_mm.shape[0])
+                telemetry["scene_obstacle_clusters"] = int(scene.clusters)
+                telemetry["scene_obstacle_world_rule_points"] = int(scene.world_rule_base_mm.shape[0])
+                telemetry["candidates_final_source"] = "scene"
+                self.logger.info("scene obstacles: %s", scene.render())
+                if scene.points_base_mm.shape[0]:
+                    _to_cam = np.linalg.inv(np.asarray(transform, dtype=np.float64))
+                    _scene_cam = scene.points_base_mm @ _to_cam[:3, :3].T + _to_cam[:3, 3]
+                    scene_points_mm = (_scene_cam if scene_points_mm is None
+                                       else np.vstack([np.asarray(scene_points_mm, dtype=np.float64), _scene_cam]))
         telemetry["candidates_geometry"] = len(geometry_poses)
         ranking_config = GeometricScoreConfig(
             min_width_mm=self.min_grip_mm,
@@ -1168,11 +1222,19 @@ class GraspCalculator:
                         and np.asarray(rigid_obstacle_points_mm).size > 0):
                     _rp = np.asarray(rigid_obstacle_points_mm, dtype=np.float64).reshape(-1, 3)
                     rigid_base = (transform[:3, :3] @ _rp.T).T + transform[:3, 3]
+                sfe_jaw = self._support_footprint_jaw(gripper_model, min_table_clearance_mm)
+                sfe_support_mm = (float(support_plane.offset_mm) if scene_support_mm is None
+                                  else max(float(support_plane.offset_mm), scene_support_mm))
+                # Only space this frame's depth saw counts as clear for a tilted approach (the fix plan's contract 5).
+                sfe_side: dict[str, Any] = {}
+                if self._side_approaches:
+                    sfe_side = {"side_approaches": True,
+                                "corridor_seen": corridor_seen_in(depth_arr * scale, intrinsics, transform)}
                 sfe_ranked, sfe_telemetry = support_footprint_breakdowns(
                     target_base,
                     camera_to_base=transform,
-                    support_height_mm=float(support_plane.offset_mm),
-                    jaw=self._support_footprint_jaw(gripper_model, min_table_clearance_mm),
+                    support_height_mm=sfe_support_mm,
+                    jaw=sfe_jaw,
                     obstacle_points_base_mm=obstacles_base,
                     rigid_obstacle_points_base_mm=rigid_base,
                     max_candidates=self.max_candidates,
@@ -1180,8 +1242,20 @@ class GraspCalculator:
                     palm_aware=self._support_footprint_palm_aware,
                     score_weights=self._support_footprint_score_weights,
                     floor_margin_mm=self._support_footprint_floor_margin_mm,
+                    **sfe_side,
                 )
                 telemetry.update(sfe_telemetry)
+                if self._scene_obstacles is not None:
+                    telemetry["scene_table_clearance_mm"] = float(sfe_jaw.table_clearance_mm)
+                if self._scene_obstacles is not None and not sfe_ranked:
+                    # What a "too short" reads against: how high the part stands over the support SFE planned on, and
+                    # how high it has to stand for this hand at any tilt of SFE's ladder.
+                    _floor = sfe_support_mm + (DEFAULT_FLOOR_MARGIN_MM if self._support_footprint_floor_margin_mm is None
+                                               else self._support_footprint_floor_margin_mm)
+                    _over = target_base[np.isfinite(target_base).all(axis=1) & (target_base[:, 2] > _floor), 2]
+                    if _over.size:
+                        telemetry["scene_part_height_mm"] = round(float(np.percentile(_over, 98.0)) - sfe_support_mm, 1)
+                    telemetry["scene_least_part_height_mm"] = round(least_part_height_mm(sfe_jaw), 1)
                 telemetry["geometry_stage"] = "support_footprint"
                 # An abstention is not a rejection. SFE returns an empty list for two very different
                 # reasons: it looked and found no legal grasp, or it could not look at all;
@@ -1227,6 +1301,8 @@ class GraspCalculator:
             scale=scale,
             other_object_masks=other_object_masks,
             telemetry=telemetry,
+            held_solids=(tuple(getattr(support_model, "solids", ()) or ())
+                         if self._scene_obstacles is not None and support_model is not None else ()),
         )
         self.last_telemetry = telemetry
         if rgb_image is not None:
@@ -1256,7 +1332,14 @@ class GraspCalculator:
                 or workspace is not None
                 or ik_service is not None
             ),
+            scene_obstacles=self._scene_obstacles is not None,
         )
+        if self._scene_obstacles is not None and not candidates:
+            said = why_no_grasp(telemetry)[1]
+            if said:
+                # Said once, in the robot log and on the result, so a pick that got no grasp names why (RC6).
+                telemetry[NO_GRASP_SAID] = said
+                self.logger.info("no grasp: %s", said)
         self.last_failure_reasons = reasons
         self.last_result = GraspResult(
             candidates=tuple(candidates),
@@ -1269,14 +1352,18 @@ class GraspCalculator:
             # orchestrator can validate the approach/retreat sweep against it (the calculator only checks
             # the final grasp pose). The orchestrator transforms it to the candidate frame. Empty when no
             # neighbours (single-object), so the validator sees NO_OBSTACLES (byte-identical).
-            metadata=(
-                {
+            metadata={
+                **({
                     "scene_points_mm": np.asarray(scene_points_mm, dtype=np.float64).copy(),
                     "scene_points_frame": "camera",
-                }
-                if scene_points_mm is not None and np.asarray(scene_points_mm).size > 0
-                else {}
-            ),
+                } if scene_points_mm is not None and np.asarray(scene_points_mm).size > 0 else {}),
+                # The fix plan's contract 2, for the pick loop's push: what A kept, and every point the camera world's
+                # rule keeps within the reach, both BASE. Only where the scene was read.
+                **({
+                    "scene_obstacle_points_base_mm": scene.points_base_mm.copy(),
+                    "scene_points_world_rule_base_mm": scene.world_rule_base_mm.copy(),
+                } if scene is not None else {}),
+            },
         )
         return candidates
 
@@ -1432,6 +1519,7 @@ class GraspCalculator:
         scale: float,
         other_object_masks: list[np.ndarray] | tuple[np.ndarray, ...] | None,
         telemetry: dict,
+        held_solids: Sequence[Any] = (),
     ) -> list[GraspPoint]:
         """The post-ranking stage of :meth:`compute`: collision/table/workspace + IK filtering, the
         :class:`GraspPoint` build, the per-candidate corridor-risk stamp, the optional base-frame transform,
@@ -1450,6 +1538,10 @@ class GraspCalculator:
                 collision_margin_mm=collision_margin_mm,
             )
             telemetry.update(stage_telemetry)
+        if self._scene_obstacles is not None and transform is not None:
+            ranked_all = self._keep_off_what_the_guard_holds(
+                ranked_all, held_solids=held_solids, gripper_model=gripper_model, transform=transform,
+                telemetry=telemetry)
 
         telemetry.setdefault("rejected_ik", 0)
         kept_quality: list[IKQualityMetrics | None] = []
@@ -1826,6 +1918,7 @@ class GraspCalculator:
         candidates: list[GraspPoint],
         telemetry: dict,
         had_filters: bool,
+        scene_obstacles: bool = False,
     ) -> tuple[GraspFailureReason, ...]:
         """Map telemetry counters to reason codes for the success path.
 
@@ -1833,9 +1926,15 @@ class GraspCalculator:
         result is a success and no reasons are emitted. If the
         post-filter list is empty but filters were active, the reasons
         name which stage exhausted the candidates.
+
+        With ``scene_obstacles`` the reasons are read off SFE's refusal counts and the filters' counters by
+        ``scene_obstacles.why_no_grasp``: a neighbour the camera saw is ``ALL_COLLIDED``, the one reason the push
+        answers; a declared body, the support, or a part too short for the hand is ``ALL_TABLE_CONFLICT``.
         """
         if candidates:
             return ()
+        if scene_obstacles:
+            return why_no_grasp(telemetry)[0]
         if not had_filters:
             return (
                 GraspFailureReason.NO_VALID_GRASP,
@@ -1858,6 +1957,86 @@ class GraspCalculator:
             reasons.append(GraspFailureReason.NO_VALID_GRASP)
         reasons.append(GraspFailureReason.RESCAN_RECOMMENDED)
         return tuple(reasons)
+
+    def _scene_support_mm(
+        self,
+        support_plane: SupportPlane | None,
+        support_model: Any,
+        cloud: Any,
+        geometry_points_base_mm: np.ndarray | None,
+        transform: np.ndarray,
+        telemetry: dict,
+    ) -> float | None:
+        """The support the part stands on, BASE z: the plane the pick resolved, raised to the support model's highest
+        local reading under the part's foot where one lies higher (design 3.8). ``None`` where neither says."""
+        plane = (float(support_plane.offset_mm)
+                 if support_plane is not None and support_plane.frame is Frame.BASE else None)
+        under: float | None = None
+        if support_model is not None:
+            if geometry_points_base_mm is not None and np.asarray(geometry_points_base_mm).size:
+                foot = np.asarray(geometry_points_base_mm, dtype=np.float64).reshape(-1, 3)
+            elif not cloud.is_empty:
+                foot = (np.asarray(cloud.points_mm, dtype=np.float64).reshape(-1, 3) @ transform[:3, :3].T
+                        + transform[:3, 3])
+            else:
+                foot = np.zeros((0, 3))
+            if foot.shape[0]:
+                value = support_model.height_under(foot[:, :2])
+                under = None if value is None else float(value)
+        if under is not None and (plane is None or under > plane):
+            telemetry["scene_support_mm"] = round(under, 2)
+            telemetry["scene_support_from"] = "support_model"
+            return under
+        if plane is not None:
+            telemetry["scene_support_mm"] = round(plane, 2)
+            telemetry["scene_support_from"] = "plane"
+        return plane
+
+    def _keep_off_what_the_guard_holds(
+        self,
+        ranked: Sequence[GraspScoreBreakdown],
+        *,
+        held_solids: Sequence[Any],
+        gripper_model: GripperGeometryStrategy | None,
+        transform: np.ndarray,
+        telemetry: dict,
+    ) -> list[GraspScoreBreakdown]:
+        """Drop the candidates whose open hand stands nearer a support's solid or a declared box than the guard keeps.
+
+        The guard holds a support's solid as a camera box and keeps ``perceived_min_distance_mm`` from it, and keeps
+        ``min_distance_mm`` from a declared box. A candidate whose envelope comes nearer would be refused there, and a
+        try spent on it is a try not spent on one the guard admits. Counted as ``rejected_support`` and
+        ``rejected_declared``; the nearest held solid and its distance are stamped for the sentence.
+        """
+        rules = self._scene_obstacles
+        assert rules is not None  # noqa: S101 (the caller checks)
+        telemetry["rejected_support"] = 0
+        telemetry["rejected_declared"] = 0
+        telemetry["scene_support_distance_mm"] = float(rules.support_distance_mm)
+        telemetry["scene_declared_distance_mm"] = float(rules.declared_distance_mm)
+        if not ranked or (not held_solids and not rules.declared_boxes):
+            return list(ranked)
+        rotation_cb, translation_cb = transform[:3, :3], transform[:3, 3]
+        poses = [(rotation_cb @ np.asarray(score.pose.position_mm, dtype=np.float64) + translation_cb,
+                  rotation_cb @ np.asarray(score.pose.rotation_matrix, dtype=np.float64)) for score in ranked]
+        verdicts = envelope_verdicts(
+            poses, gripper_model=gripper_model if gripper_model is not None else ParallelJawGripperModel(),
+            open_width_mm=self.max_grip_mm, solids=held_solids, support_distance_mm=rules.support_distance_mm,
+            declared_boxes=rules.declared_boxes, declared_distance_mm=rules.declared_distance_mm)
+        kept: list[GraspScoreBreakdown] = []
+        for score, verdict in zip(ranked, verdicts):
+            if verdict.refused == "declared":
+                telemetry["rejected_declared"] += 1
+                telemetry["scene_declared_nearest"] = verdict.nearest
+            elif verdict.refused == "support":
+                telemetry["rejected_support"] += 1
+                telemetry["scene_support_nearest"] = verdict.nearest
+            else:
+                kept.append(score)
+        finite = [v.distance_mm for v in verdicts if math.isfinite(v.distance_mm)]
+        if finite:
+            telemetry["scene_held_least_mm"] = round(min(finite), 2)
+        return kept
 
     def _apply_collision_filters(
         self,

@@ -22,4 +22,4 @@ mushroom.
 __all__ = ["__version__"]
 
 #: Console version, independent of the library's. Bumped when the HTTP surface changes shape.
-__version__ = "0.1.0"
+__version__ = "0.2.0"

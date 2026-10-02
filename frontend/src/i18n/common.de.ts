@@ -1,0 +1,181 @@
+/**
+ * The shell's words, in German: the console's default language.
+ *
+ * This file DEFINES the keys of the shared core; `common.en.ts` is typed by it, so an English text that is missing
+ * fails `tsc`. Placeholders are `{name}`; `{n|one|other}` picks the singular or the plural by the number, and `#`
+ * in a form is the number itself. Areas (cockpit, setup, screens, audience window) keep their own catalogs.
+ */
+
+const de = {
+  'app.name': 'Workaholic-Willy',
+  'app.console': 'Bedienkonsole',
+  'app.skip': 'Zum Inhalt springen',
+
+  'nav.label': 'Hauptnavigation',
+  'nav.cockpit': 'Cockpit',
+  'nav.setup': 'Einrichten',
+  'nav.history': 'Verlauf',
+  'nav.settings': 'Einstellungen',
+
+  'chip.label': 'Zustand der Zelle',
+  'chip.cell': 'Zelle',
+  'chip.hand': 'Hand',
+  'chip.controller': 'Steuerung',
+  'chip.run': 'Lauf',
+  'chip.noBackend': 'kein Server',
+
+  'cellState.disconnected': 'getrennt',
+  'cellState.built': 'aufgebaut',
+  'cellState.connecting': 'verbindet …',
+  'cellState.connected': 'verbunden',
+  'cellState.unknown': 'unbekannt',
+
+  'prov.sim-driver': 'simulierter Arm',
+  'prov.sim-controller': 'Simulator (URSim)',
+  'prov.controller': 'Steuerung',
+  'prov.unknown': 'unbelegt',
+
+  'hand.none': 'keine Hand',
+  'hand.jaws.open': 'Backen OFFEN',
+  'hand.jaws.closed': 'Backen ZU',
+  'hand.jaws.unknown': 'Backen UNBEKANNT',
+  'hand.jaws.not_counted': 'nicht gezählt',
+  'hand.counted': 'gezählt, kein Sensor',
+  'hand.noSensor': 'kein Sensor',
+  'hand.kind.jaw': 'Backengreifer',
+  'hand.kind.width': 'Greifer mit Weitenvorgabe',
+  'hand.kind.suction': 'Sauggreifer',
+  'hand.toolOutput': 'Tool-DO{pin}',
+  'hand.output': 'DO{pin}',
+
+  'controller.ready': 'bereit',
+  'controller.halted': 'angehalten',
+  'controller.stopped': 'gestoppt',
+  'controller.needsPerson': 'Person nötig',
+  'controller.offline': 'nicht verbunden',
+  'controller.unknown': 'unbekannt',
+
+  'run.none': 'kein Lauf',
+  'run.part': 'Teil {part}',
+  'run.phase.idle': 'bereit',
+  'run.phase.countdown': 'Countdown',
+  'run.phase.running': 'läuft',
+  'run.phase.stopping': 'stoppt nach dem Teil',
+  'run.phase.stopping.between_attempts': 'stoppt vor dem nächsten Versuch',
+  'run.phase.halting': 'hält an …',
+  'run.phase.finished': 'fertig',
+  'run.phase.cancelled': 'abgebrochen',
+  'run.phase.failed': 'gestoppt',
+  'run.phase.lost': 'nicht mehr bekannt',
+  'run.recovery.open': 'Stopp offen: Zelle freigeben',
+  'run.recovery.cleared': 'Stopp offen: Neustart oder Home',
+
+  'step.look': 'Schauen',
+  'step.detect': 'Erkennen',
+  'step.grasp': 'Greifen',
+  'step.place': 'Ablegen',
+  'step.return': 'Zurück',
+  'step.countdown': 'Hände weg',
+  'step.survey': 'Ziel suchen',
+  'step.lookN': 'Blick {n}',
+  'step.lookOf': 'Blick {n}/{total}',
+  'step.attempt': 'Versuch {n}/{total}',
+
+  'scope.once': 'Einmal',
+  'scope.until_empty': 'Bis leer',
+  // The scope inside a sentence ("…, bis leer."): the capital is the switch's label, not a word mid-line.
+  'scope.inline.once': 'einmal',
+  'scope.inline.until_empty': 'bis leer',
+
+  'verdict.clear': 'frei',
+  'verdict.band': 'frei, mit kurzem geraden Anfangsstück',
+  'verdict.guard_refused': 'von der Kollisionsprüfung abgelehnt',
+  'verdict.planner_refused': 'vom Planer abgelehnt',
+  'verdict.unscreened': 'nicht geprüft',
+  'verdict.error': 'abgelehnt',
+
+  'view.label': 'Ansicht',
+  'view.demo': 'Demo',
+  'view.tech': 'Technik',
+
+  'lang.label': 'Sprache',
+  'lang.de': 'DE',
+  'lang.en': 'EN',
+
+  'theme.label': 'Design',
+  'theme.dark': 'Dunkel',
+  'theme.light': 'Hell',
+  'theme.toLight': 'Zum hellen Design wechseln',
+  'theme.toDark': 'Zum dunklen Design wechseln',
+
+  'voice.on': 'Sprachausgabe an',
+  'voice.off': 'Sprachausgabe aus',
+  'voice.hint': 'Willy sagt Start, Ende und Probleme laut an.',
+
+  'audience.open': 'Publikumsfenster',
+  'audience.hint': 'Öffnet die Publikumsansicht in einem eigenen Fenster: auf den Projektor ziehen, dann F11.',
+
+  'diag.open': 'Diagnose',
+  'diag.title': 'Diagnose',
+  'diag.lede': 'Was diese Zelle kann: Treiber, Planer, Wahrnehmung, Netzwerk. Von hier aus bewegt sich nichts.',
+  'diag.vendors': 'Treiber',
+  'diag.motion': 'Bewegungsplanung',
+  'diag.perception': 'Wahrnehmung',
+  'diag.network': 'Netzwerk',
+  'diag.ready': 'bereit',
+  'diag.notReady': 'nicht bereit',
+  'diag.notRegistered': 'nicht registriert',
+  'diag.reachable': 'erreichbar in {ms} ms',
+  'diag.unreachable': 'nicht erreichbar',
+  'diag.notChecked': 'nicht geprüft',
+  'diag.yes': 'ja',
+  'diag.no': 'nein',
+  'diag.reload': 'Neu lesen',
+  'diag.model': 'Robotermodell',
+  'diag.curobo': 'cuRobo',
+  'diag.collision': 'Kollisionsprüfung',
+  'diag.meshes': 'Netzpaket',
+  'diag.anchored': 'vollständig verankert',
+  'diag.pipeline': 'Pipeline',
+  'diag.backend': 'Erkennung',
+  'diag.segmenter': 'Segmentierung',
+  'diag.router': 'Router',
+  'diag.vlm': 'VLM',
+  'diag.weights': 'Gewichte',
+  'diag.address': 'Adresse',
+
+  'confirm.cancel': 'Abbrechen',
+  'confirm.firstMotion': 'Erste Bewegung: {motion}.',
+  'confirm.countdown': 'Hände weg: 3 s Countdown, dann die erste Bewegung.',
+  'confirm.straightLeg': 'Eine geplante Fahrt kann mit einem geraden Stück von höchstens 10° je Gelenk beginnen.',
+
+  'common.loading': 'Lese {what} …',
+  'common.retry': 'Erneut versuchen',
+  'common.detail': 'Details',
+  'common.refused': 'Abgelehnt ({code})',
+  'common.raw': '{text}',
+  'common.none': '—',
+  'common.home': 'Home',
+  'common.anything': 'alles, was die Kamera sieht',
+  'common.defaultPlace': 'Standard-Ablage',
+  'common.close': 'Schließen',
+  'common.http': 'HTTP {status}',
+  'common.noAnswer': 'Keine Antwort vom Server unter {origin}. Läuft er?',
+
+  'chat.willy': 'Willy',
+  'chat.you': 'Du',
+  'chat.next': 'Was soll ich als Nächstes tun?',
+  'chat.gap': '{dropped|# Ereignis|# Ereignisse} verloren: Was davor geschah, fehlt hier.',
+  'chat.summary': '{command} → {title}',
+  'chat.lost': 'Der Server kennt diesen Lauf nicht mehr (neu gestartet?): wie er endete, ist hier nicht zu sehen. Den Arm an der Zelle prüfen.',
+
+  'screen.cockpit.lede': 'Live-Bild, Gespräch und Ablauf an einem Ort. Der Roboter fährt erst nach einem Klick auf Start.',
+  'screen.setup.lede': 'Prüfen, aufbauen, verbinden: dann ist die Zelle bereit.',
+  'screen.cockpit.empty': 'Hier entstehen das Live-Bild, der Chat und der Ablauf eines Auftrags.',
+
+
+  'notFound.title': 'Diese Seite gibt es nicht',
+  'notFound.body': 'Unter dieser Adresse gibt es nichts. Oben eine Seite wählen.',
+}
+
+export default de

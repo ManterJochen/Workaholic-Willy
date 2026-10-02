@@ -89,8 +89,17 @@ No built-in profile lists `container_agitate`, so a config-built cell never agit
   fixed camera rescan where they stand.
 - **`next_target`** records the failed part and rescans past it: same label only, never another object.
   The part's exclusion zone is a circle in BASE XY about its centre, radius max(30 mm, half its footprint
-  diagonal), held for this pick and the next 2 (`ExclusionZones`). The centre is measured on a
-  no-candidate failure too. With only excluded parts left, the pick stops with a sentence. On a wrist
+  diagonal), held for this pick and the next 2 (`ExclusionZones`). Beside the zones a task keeps whole
+  **regions** out for its whole length (`ExclusionRegion`, a turned rectangle or a circle, for one label or every
+  label, kept until `forget_regions()`): the bin it places into, its footprint grown by 10 mm, and 150 mm about a
+  pose drop for "until empty", laid only where the arm's own kinematics say where the pose puts the tool.
+  `applies(label)` says whether a zone or a region applies, the empty label included, and the pick loop skips
+  such parts. `kept_out_by_a_region` asks of every part it skips whether a region holds it, whatever zone holds
+  it too; on an attempt that saw only skipped parts, `PickAttempt.excluded_by_regions` says a region held every
+  one. A look that saw only parts a region kept out is an empty look for the task (`only_kept_out`);
+  `only_excluded` says a pick saw only skipped parts, for any reason, and one that saw only a part a zone skipped
+  after a failed pick is a failed pick. The centre is measured on a no-candidate failure too. With only excluded
+  parts left, the pick stops with a sentence. On a wrist
   camera the new part gets the look sequence again (the early stop, at most one generated view); a rescan
   of the same part never repeats the looks. It also follows `MOTION_PLAN_REFUSED`, and the next motion
   is judged whole. Without the memory, or when the failed report names no part, it is refused before
@@ -175,21 +184,29 @@ as its campaign starts, before any pick; the console answers `422 push_distance_
   housing's thickness, `palm_thickness_mm`, 75 mm on the Hand-E. A cell that names no hand, or carries no
   parallel jaw, plans no push.
 - **The direction.** Each offered axis is tried both ways, at 0, 45, 90 and 135 deg. The swept open hand
-  keeps the camera world's margin plus its line clearance from every neighbour point (25 mm with the
-  shipped values), so the planner plans no push the line judge's clearance check would refuse; the judge
-  can still refuse a line for other reasons (*A stop*, below). The part's own path
-  keeps 5 mm from every neighbour point not behind it, and its clearance to its neighbours grows by at
-  least 10 mm. The largest gain wins.
+  keeps the camera world's margin plus its line clearance from every neighbour point (25 mm with the shipped
+  values), so the planner plans no push the line judge's clearance check would refuse; the judge can still
+  refuse a line for other reasons (*A stop*, below). **Beside the pushed part it keeps 10 mm**
+  (`BESIDE_THE_PART_CLEARANCE_MM`, the owner's decision of 2026-10-02): a neighbour point inside the box the
+  push keeps out of the camera world round the part and its path (the smallest rectangle about them, as the
+  world boxes a target, grown by the world's margin) is one the guard does not see while the push runs. The
+  part's own path keeps 5 mm from every neighbour point not behind it, and its clearance to its neighbours
+  grows by at least 10 mm. The largest gain wins.
 - **The height.** The part must rest on the support: its base, the 2nd percentile of its heights, at most
   10 mm above it (`part_not_on_support`: a part on something nobody segmented, or seen only from above).
   No push for a part under 15 mm of its own height, none for one that reaches within 5 mm of the palm's
   underside (`part_reaches_the_palm`), and none on a support tilted more than 5 deg. The fingertip rides
-  at support + clamp(own height / 2, 10, 20) mm.
+  at support + clamp(own height / 2, 10, 20) mm, and never under the **finger floor**: over a surface the
+  camera world holds as a solid, the solid's top along the hand's sweep plus the guard's distance plus 1 mm
+  (`finger_floor_mm`); a push whose finger would pass over the part there is refused
+  (`refused_finger_floor_over_the_part`). The support is the surface the part stands on, read on its own
+  local plane, where the camera world found one (`SupportModel.surface_under`, its `table_points`).
 - **The workspace.** Every TCP point of the push stays 20 mm inside every face of the workspace box,
   `z_min` included. The finger rides 10 to 20 mm over the table, so a `workspace_limits.z_min` set well
   above the table refuses every push: the base tree's 100 mm does, for a table at base Z 0. Check it on
   the cell.
-- **The push box.** With no container, the workspace box intersected with the table the camera saw,
+- **The push box.** With no container, the extent of the surface the part stands on where the camera world
+  found one, else the workspace box intersected with the table the camera saw,
   shrunk by the push plus 30 mm; with a declared container, its interior. A declared fixture box only
   narrows it; without one, this box alone bounds the push. The predicted landing plus 15 mm stays inside.
   The seen table is kept as 5 mm cells in BASE XY: every cell within the push plus 45 mm of each landing
@@ -262,8 +279,9 @@ starts, or a program calls `acknowledge_needs_person()`. **Clear the cell first*
 drives the arm from wherever the push left it to its first look.
 
 **What it records.** The attempt's action `push` and its `push` code, every push the pick considered in
-`telemetry['pushes']` and a stopped one's sentence in `telemetry['push_stopped']`, and a `nudge_target`
-row in the record's `recovery_actions` for every push whose arm left the look (`plan_reason`
+`telemetry['pushes']` (with the plan's `finger_height_mm` and `landing_box_xy_mm` and every motion's
+`leg_verdicts`, which robot.log says too) and a stopped one's sentence in `telemetry['push_stopped']`, and a
+`nudge_target` row in the record's `recovery_actions` for every push whose arm left the look (`plan_reason`
 `push_in_the_pick`, `recovered_success` on the last row where the recovery ended in a success). The trail's
 actions never list a push. All of it is additive.
 
@@ -354,7 +372,7 @@ class you list. Three entries are rules rather than tuning:
 | --- | --- |
 | The recovery loop and container agitation | measured in simulation: `run_dense_pick` drives the service's loop with `--recovery`, and agitation with `--g6` through a strategy it builds itself |
 | The push planner, the budgets and the exclusion zones | pinned by tests on synthetic scenes; never touched hardware |
-| The push motion | pinned by tests: a fake arm and a fake live world record every call, and the owner's toggle Hand-E runs as a real `JawIOGripper` on fake I/O; not yet run in Isaac or in URSim; never touched hardware |
+| The push motion | pinned by tests: a fake arm and a fake live world record every call, and the owner's toggle Hand-E runs as a real `JawIOGripper` on fake I/O; ran on URSim CB3 on 2026-10-02 with the owner's tree and a recorded look as the camera ([`probe_push_on_the_mat.py`](../../../../scripts/ursim/probe_push_on_the_mat.py)), not yet in Isaac; never touched hardware |
 
 ## Files
 
@@ -367,7 +385,8 @@ class you list. Three entries are rules rather than tuning:
 | `push_motion.py` | `execute_push`, `PushOutcome`, `PushOutcomeCode`, `push_tool_quaternion` |
 | `push_gate.py` | `PushGate`, `PushCell`, `PushCampaign`, `PickPush`, `FailedPart`, `support_points_of_views`: what the service hands a pick, what a campaign keeps, what a push came to |
 | `push_budgets.py` | `PushBudgets`: 1 push per part, 2 per pick, 5 per campaign |
-| `exclusion_zones.py` | `ExclusionZones`: the failed parts `next_target` skips |
+| `exclusion_zones.py` | `ExclusionZones`: the failed parts `next_target` skips, and the `ExclusionRegion`s a task keeps out for its whole length |
+| `blocker.py` | clear the blocker: `clusters_of`, `not_a_blocker`, `mask_of`, `free_spot`, `release_pose`, `taught_place`, `BlockerRecord` and its codes ([`loop/`](../loop/README.md) runs it, before the push) |
 | `trail_serialize.py` | `recovery_actions_from_trail`, the trail as the record's `recovery_actions` block |
 
 ## Details

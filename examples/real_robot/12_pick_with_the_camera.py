@@ -23,8 +23,8 @@ LOOK = [
     JointPositions.deg(-70.0, -100.0, -110.0, -60.0, 90.0, 0.0),
 ]
 
-# Start 60 mm above the grasp, close 5 mm below the measured width, lift 100 mm. A field left out keeps the service's
-# own, and a value that cannot be a motion raises here, before any cell exists; closing_axis grips along one axis only.
+# Start 60 mm above the grasp: a grasp refused before anything was sent then gets the look's next (at 10 mm the jaws
+# stand in the part). Close 5 mm below the measured width, lift 100 mm; a field left out keeps the service's own.
 motion = GraspMotion(standoff_mm=60.0, close_squeeze_mm=5.0, retreat_mm=100.0)  # opt in: closing_axis="-y" (30 deg)
 
 # The whole cell: its cameras, perception, the grasp stack, the arm and the hand. Every motion is checked against the
@@ -39,8 +39,7 @@ debug_dir.mkdir(parents=True, exist_ok=True)
 
 def _each_attempt(attempt: PickAttempt) -> None:
     print(attempt)  # the outcome, the looks tried, where the object was seen and the tool closed, the put back
-    # The same as values for a program of your own, None where the attempt did not get that far: the object's seen
-    # centre in BASE millimetres, and the whole pose the tool closed at, its orientation included.
+    # As values, None where the attempt did not get that far: the seen centre in BASE mm, the whole pose closed at.
     print(f"    object_mm={attempt.object_mm}\n    grasp_pose={attempt.grasp_pose}")
     png = cell.service.last_debug_image_png  # None where the attempt never reached perception
     if png:
@@ -56,7 +55,8 @@ with LiveView(show=SHOW_CAMERAS) as view:
         prompt="a red cube",  # what every camera grounds, for this campaign only
         look=LOOK,
         both_faces=False,  # True asks each pick to see both jaw contact faces before it grips: safety-critical parts
-        record_views=False,  # True keeps each pick's looks (images, depth, tool poses) under logs/ for training
+        record_views=True,  # each pick's looks (images, depth, tool poses) under logs/robot/views: read back, train on
+        push_mm=50.0,  # a boxed-in part no blocker frees is pushed 50 mm where the cell arms it: 30 planned no push
         put_back=True,  # a part that does not go back stops the campaign: no pick starts with a part in the hand
         recording=Recording.to_file("logs/picks.jsonl"),  # one attempt record per line: positions, scores, outcome
         # Four of five must succeed; the default rule is every one. Without a sensor in the hand a success is the

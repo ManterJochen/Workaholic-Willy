@@ -1,0 +1,488 @@
+/*
+ * The cockpit's own styles (build plan 4.4: area styles live beside their area; `styles.css` keeps the tokens and the
+ * shell). Every colour is one of the shell's tokens, in both themes; the stage stays black in both (`--stage-*`).
+ *
+ * The layout is the owner's fifth round, approved on a preview: the live image left (about 62 %), the run strip under
+ * it (the steps, the two stop buttons, Home), the numbers on top of the right column and a real chat window filling
+ * the rest of it, the ready bar or the run header across the top. The cockpit fills the window under the top bar and
+ * no more (`--ck-fit`, measured: `hooks.useWindowFit`): the stop strip always ends on screen, the live image takes the
+ * height the strip leaves (letterboxed on the black stage), and a tall window's height goes to the chat. Below 1200 px
+ * it stacks: the bar, the image, the run strip, the numbers, the chat; the stop buttons then stay in view while the
+ * page scrolls. Every target is at least 44 px; text is 15 px, a step larger in the demo view.
+ *
+ * The brand (owner, 2026-10-01): the banner's L corner marks (`.hud-frame`) on the stage and on the main cards only;
+ * chips, counts and numbers in monospace; the logo's lime only for what is active, chosen or leading. Calm: the image is
+ * the brightest thing on screen.
+ */
+
+/* The shell's layer order, stated again: Vite may put this file BEFORE styles.css, and the first file to name a
+   layer fixes the order. Named here first, `components` would rank below Tailwind's `base` (its preflight). */
+@layer theme, base, components, utilities;
+
+@layer components {
+  /* ── the grid ─────────────────────────────────────────────────────────────────────────────────────────────── */
+  .cockpit {
+    display: grid;
+    grid-template-columns: minmax(0, 62fr) minmax(0, 38fr);
+    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "top top" "main side";
+    gap: 0.75rem;
+    max-width: 125rem;
+    /* 1rem of the main area's padding above and below: the page ends where the cockpit ends. */
+    margin: -0.5rem auto -3rem;
+    /* The window's height under the top bar (measured), never less than a working cockpit. */
+    height: var(--ck-fit, calc(100vh - 8.5rem));
+    min-height: 36rem;
+    font-size: 0.9375rem;
+    line-height: 1.45;
+  }
+  .ck-main { grid-area: main; display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; min-height: 0; }
+  /* The right column is as tall as the left one and no taller: the chat scrolls inside it. */
+  .ck-side { grid-area: side; display: flex; flex-direction: column; gap: 0.75rem; min-width: 0; min-height: 0; }
+
+  /* ── the top: the ready bar, the run header, a stop ──────────────────────────────────────────────────────── */
+  .ck-top {
+    grid-area: top;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.45rem 1rem;
+    min-height: 3.25rem; padding: 0.55rem 1rem;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-panel);
+    box-shadow: var(--shadow-xs);
+  }
+  /* A row of its own under the lights: a refusal, a "not connected" under a stop. */
+  .ck-top-error, .ck-top-row { flex: 1 0 100%; }
+  .ck-top-error .banner { margin-bottom: 0; }
+  .ck-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 0.55rem; font-weight: 600; }
+  .ck-notice .icon { color: var(--warn); }
+  .ck-link {
+    display: inline-flex; align-items: center; min-height: 2.75rem; padding: 0 0.9rem;
+    border: 1px solid var(--line-strong); border-radius: var(--radius-field); color: var(--fg); font-weight: 600;
+  }
+  .ck-link:hover { border-color: var(--accent); text-decoration: none; }
+
+  .ck-lights { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 1.1rem; list-style: none; margin: 0; padding: 0; }
+  .ck-light { display: inline-flex; align-items: center; gap: 0.45rem; font-size: 0.875rem; }
+  .ck-light .ck-dot {
+    width: 0.6rem; height: 0.6rem; border-radius: 9999px; flex: none; background: var(--fg-subtle);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--fg-subtle) 16%, transparent);
+  }
+  .ck-light.ok .ck-dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 18%, transparent); }
+  .ck-light.wait .ck-dot { background: var(--warn); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 20%, transparent); }
+  .ck-light.blocked .ck-dot { background: var(--alarm); box-shadow: 0 0 0 3px color-mix(in srgb, var(--alarm) 20%, transparent); }
+  .ck-light.info .ck-dot { background: var(--info); }
+  .ck-light .k { font-family: var(--font-mono); font-size: 0.6875rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-muted); }
+  .ck-light .v { color: var(--fg); }
+  .ck-light-act { min-height: 2.75rem; padding: 0.2rem 0.75rem; font-size: 0.8125rem; font-weight: 600; }
+  .ck-light-say { font-size: 0.8125rem; color: var(--fg-muted); }
+  .ck-blockers { display: flex; flex-wrap: wrap; gap: 0.3rem 0.8rem; list-style: none; margin: 0; padding: 0; font-size: 0.8125rem; }
+  .ck-blockers li::before { content: "■ "; color: var(--warn); }
+  /* Written as words in the catalogs, drawn in the banner's capitals here. */
+  .ck-verdict { margin-left: auto; font-family: var(--font-mono); font-size: 0.8125rem; font-weight: 700; letter-spacing: 0.1em;
+                text-transform: uppercase; }
+  .ck-verdict.all { color: var(--accent); }
+  .ck-verdict.not { color: var(--warn); }
+  .ck-verdict.unknown { color: var(--fg-muted); }
+
+  .ck-run-title { font-size: 1.0625rem; font-weight: 700; letter-spacing: -0.005em; }
+  .ck-run-part {
+    font-family: var(--font-mono); font-size: 0.8125rem; padding: 0.1rem 0.5rem; border-radius: 0.3rem;
+    background: color-mix(in srgb, var(--accent) 14%, transparent); border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+  }
+  .ck-run-meta { color: var(--fg-muted); font-size: 0.875rem; }
+  .ck-run-right { margin-left: auto; display: inline-flex; flex-wrap: wrap; gap: 0.6rem; font-size: 0.8125rem; color: var(--fg-muted); }
+  .ck-run-right > span + span::before { content: "·"; margin-right: 0.6rem; color: var(--fg-subtle); }
+  .ck-run-phase { color: var(--fg); }
+  .ck-runhead.stopped {
+    border-color: color-mix(in srgb, var(--alarm) 50%, var(--line));
+    background: color-mix(in srgb, var(--alarm) 8%, var(--panel));
+  }
+  .ck-alarm-icon { color: var(--alarm); flex: none; }
+
+  /* ── the stage: the live image, as tall as the strip under it leaves it ──────────────────────────────────── */
+  .ck-stage {
+    position: relative; flex: 1 1 0; min-height: 12rem; overflow: hidden;
+    border: 1px solid var(--line); border-radius: var(--radius-panel); box-shadow: var(--shadow-sm);
+    --hud-size: 1.6rem; --hud-weight: 3px; --hud-inset: 0.65rem;
+  }
+  .ck-frame { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block;
+              transition: filter 240ms var(--ease-calm); }
+  .ck-frame.dim { filter: brightness(0.42) saturate(0.6); }
+  /* Under a banner the banner speaks: the no-picture reason would show through its shade (the badge still says it). */
+  .ck-stage.has-banner .ck-blank { visibility: hidden; }
+  .ck-blank { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 0.6rem;
+              color: var(--stage-fg); opacity: 0.8; font-size: 0.9375rem; text-align: center; padding: 1rem; }
+
+  .ck-badges { position: absolute; left: 1.1rem; top: 1.1rem; z-index: 3; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .ck-badge {
+    display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.22rem 0.6rem; border-radius: 0.3rem;
+    font-family: var(--font-mono); font-size: 0.75rem; letter-spacing: 0.06em; font-variant-numeric: tabular-nums;
+    color: var(--stage-fg); background: color-mix(in srgb, var(--stage) 74%, transparent);
+    border: 1px solid color-mix(in srgb, var(--stage-fg) 20%, transparent); backdrop-filter: blur(4px);
+  }
+  .ck-badge.live { color: var(--stage-accent); border-color: color-mix(in srgb, var(--stage-accent) 45%, transparent); font-weight: 700; }
+  .ck-badge.probe { border-color: color-mix(in srgb, var(--bench) 70%, transparent); font-weight: 700; }
+  .ck-badge.none { border-color: color-mix(in srgb, var(--alarm) 70%, transparent); font-weight: 700; }
+  .ck-badge.warn { border-color: color-mix(in srgb, var(--warn) 70%, transparent); }
+  .ck-dot { width: 0.5rem; height: 0.5rem; border-radius: 9999px; background: currentColor; box-shadow: 0 0 0.5rem currentColor;
+            animation: ck-blink 1.6s var(--ease-calm) infinite; }
+
+  .ck-rigs { position: absolute; right: 1.1rem; top: 1.1rem; z-index: 3; display: flex; flex-wrap: wrap; gap: 0.4rem; }
+  .ck-rig {
+    min-height: 2.75rem; padding: 0.2rem 0.75rem; display: inline-flex; flex-direction: column; align-items: flex-start; gap: 0;
+    font-family: var(--font-mono); font-size: 0.75rem; color: var(--stage-fg); box-shadow: none;
+    background: color-mix(in srgb, var(--stage) 74%, transparent); border: 1px solid color-mix(in srgb, var(--stage-fg) 22%, transparent);
+  }
+  .ck-rig:hover:not(:disabled) { background: color-mix(in srgb, var(--stage) 60%, transparent); border-color: var(--stage-accent); }
+  .ck-rig[aria-pressed='true'] { color: var(--stage-accent); border-color: var(--stage-accent); }
+  .ck-rig-kind { font-size: 0.625rem; letter-spacing: 0.08em; text-transform: uppercase; opacity: 0.8; }
+
+  /* An overlay is its own image, pinned over the stage for a moment: never drawn over the moving live picture. */
+  .ck-pin { position: absolute; inset: 0; z-index: 2; margin: 0; background: var(--stage); animation: ck-in 220ms var(--ease-calm); }
+  .ck-pin img { width: 100%; height: 100%; object-fit: contain; display: block; }
+  .ck-pin figcaption {
+    position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.4rem 0.8rem;
+    padding: 1.6rem 1.2rem 0.85rem; color: var(--stage-fg); font-family: var(--font-mono); font-size: 0.8125rem;
+    background: linear-gradient(transparent, color-mix(in srgb, var(--stage) 88%, transparent) 55%);
+  }
+  .ck-pin-kind { color: var(--stage-accent); font-weight: 700; letter-spacing: 0.1em; }
+  .ck-stage.has-banner .ck-pin { filter: brightness(0.42) saturate(0.6); }
+
+  .ck-banner {
+    position: absolute; left: 50%; top: 50%; z-index: 4; transform: translate(-50%, -50%);
+    display: grid; justify-items: center; gap: 0.4rem; max-width: min(36rem, 86%); padding: 1rem 1.8rem;
+    border-radius: 12px; text-align: center; color: var(--stage-fg);
+    background: color-mix(in srgb, var(--stage) 84%, transparent); border: 2px solid var(--alarm);
+    box-shadow: 0 1rem 3rem color-mix(in srgb, #000 55%, transparent);
+  }
+  .ck-banner strong { font-family: var(--font-display); font-size: clamp(1.5rem, 2.8vw, 2.6rem); font-weight: 800; line-height: 1.1; }
+  .ck-banner span { font-size: 0.9375rem; }
+  .ck-banner.countdown { border-color: var(--warn); }
+  .ck-banner.halted { border-color: var(--halt); }
+
+  /* ── the run strip under the stage: the steps, then the stops and Home ─────────────────────────────────── */
+  .ck-strip { display: grid; gap: 0.6rem; flex: none; }
+  .ck-timeline {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.6rem; padding: 0.6rem 0.9rem;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-panel);
+  }
+  .ck-steps { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem; list-style: none; margin: 0; padding: 0; }
+  .ck-step { display: inline-flex; align-items: center; gap: 0.25rem; }
+  .ck-step-sep { color: var(--fg-subtle); }
+  .ck-step-pill {
+    display: inline-flex; align-items: center; gap: 0.4rem; min-height: 2.25rem; padding: 0.25rem 0.85rem;
+    border: 1px solid var(--line); border-radius: 9999px; color: var(--fg-muted); font-weight: 550;
+    transition: background 200ms var(--ease-calm), color 200ms var(--ease-calm), border-color 200ms var(--ease-calm);
+  }
+  .ck-step.active .ck-step-pill { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 700;
+                                   animation: ck-glow 1.6s var(--ease-calm) infinite; }
+  /* A step that runs alongside the one filled (the detection of each look's frame): outlined, never a second fill. */
+  .ck-step.active.along .ck-step-pill { background: transparent; color: var(--fg); border-color: var(--accent); font-weight: 600;
+                                         animation: none; }
+  .ck-step.done .ck-step-pill { color: var(--fg); border-color: color-mix(in srgb, var(--ok) 50%, var(--line)); }
+  .ck-step.done .ck-step-pill .icon { color: var(--ok); }
+  .ck-step.warn .ck-step-pill { color: var(--fg); border-color: color-mix(in srgb, var(--warn) 55%, var(--line));
+                                 background: color-mix(in srgb, var(--warn) var(--tint), transparent); }
+  .ck-step.failed .ck-step-pill { color: var(--fg); border-color: var(--alarm); background: color-mix(in srgb, var(--alarm) var(--tint), transparent); }
+  .ck-step.failed .ck-step-pill .icon { color: var(--alarm); }
+  .ck-step.skipped .ck-step-pill { opacity: 0.55; text-decoration: line-through; }
+  .ck-step-note { font-family: var(--font-mono); font-size: 0.75rem; font-weight: 600; padding: 0 0.4rem; border-radius: 0.3rem;
+                  background: color-mix(in srgb, currentColor 16%, transparent); }
+  .ck-chip {
+    display: inline-flex; align-items: center; gap: 0.35rem; min-height: 2.25rem; padding: 0.2rem 0.75rem;
+    border: 1px solid var(--line-strong); border-radius: 0.3rem; font-family: var(--font-mono); font-size: 0.8125rem; color: var(--fg);
+  }
+  .ck-chip.warn { border-color: var(--warn); background: color-mix(in srgb, var(--warn) var(--tint), transparent); }
+  .ck-chip.active { border-color: var(--accent); }
+  .ck-chip.done .icon { color: var(--ok); }
+  .ck-chip.failed { border-color: var(--alarm); }
+  .ck-where { margin-left: auto; font-size: 0.8125rem; color: var(--fg-muted); }
+
+  /* The halt is one click whatever else is open: the stop row lies above every layer that is not about safety, the
+     Diagnostics drawer's backdrop (44) included, and under the drawer itself (46), the confirm dialog of a motion (50)
+     and the jaws question (57). Under the backdrop the first click only closed the drawer. */
+  .ck-stops { position: relative; z-index: 45; display: grid; gap: 0.6rem; }
+  .ck-stop-row { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0.6rem; }
+  .ck-stopbtn {
+    display: inline-flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 0.12rem;
+    min-height: 3.5rem; padding: 0.55rem 1.15rem; border-radius: 10px; text-align: left; font-size: 0.9375rem;
+  }
+  .ck-stopbtn small { font-size: 0.75rem; font-weight: 500; opacity: 0.9; }
+  .ck-stopbtn-title { display: inline-flex; align-items: center; gap: 0.45rem; font-weight: 700; }
+  .ck-stopafter { background: var(--panel); }
+  .ck-halt { min-width: 15rem; }
+  /* Calm while nothing runs (the approved preview showed the halt quiet at rest): still the halt's own form, a filled
+     orange with its dark label (styles.css: the orange is only ever a filled button), a darker orange (its label still
+     above 4.5:1) and no glow. The full orange comes back under the pointer and the focus, and whenever a run holds the
+     cell (StopButtons). Enabled throughout: a calm halt is one click as well. */
+  .ck-halt.calm:not(:hover):not(:focus-visible):not(:disabled) {
+    background: color-mix(in srgb, var(--halt) 82%, #000);
+    border-color: color-mix(in srgb, var(--halt) 82%, #000);
+    box-shadow: none;
+  }
+  .ck-home { margin-left: auto; min-width: 9rem; }
+  .ck-halt-state { align-self: center; max-width: 16rem; font-family: var(--font-mono); font-size: 0.8125rem; color: var(--fg-muted); }
+  .ck-halt-state.done { color: var(--fg); }
+  /* The one red that is a fill: the alarm a person must act on. Its words stay in --fg on the tint. */
+  .ck-alarm {
+    display: flex; align-items: center; gap: 0.8rem; padding: 0.8rem 1rem; border-radius: 10px;
+    border: 2px solid var(--alarm); background: color-mix(in srgb, var(--alarm) 18%, var(--panel)); color: var(--fg);
+    animation: ck-alarm 1s var(--ease-calm) infinite;
+  }
+  .ck-alarm .icon { color: var(--alarm); flex: none; }
+  .ck-alarm div { display: grid; gap: 0.1rem; }
+  .ck-alarm strong { font-size: 1.0625rem; }
+  .ck-alarm span { font-size: 0.8125rem; color: var(--fg-muted); }
+  .ck-stops .banner { margin-bottom: 0; }
+
+  .ck-facts { flex: none; max-height: 30vh; overflow: auto; padding: 0.6rem 0.9rem; background: var(--panel); border: 1px solid var(--line);
+              border-radius: var(--radius-panel); }
+  .ck-facts summary { cursor: pointer; min-height: 2rem; font-family: var(--font-mono); font-size: 0.75rem; letter-spacing: 0.08em;
+                      text-transform: uppercase; color: var(--fg-muted); }
+  .ck-facts .kv { margin-top: 0.4rem; }
+
+  /* ── the numbers on top of the right column: number first in every tile, on one line ─────────────────────── */
+  .ck-stats { display: grid; grid-template-columns: 1.35fr 1fr 1fr; gap: 0.6rem; flex: none; }
+  .ck-stats.tech { grid-template-columns: 1.35fr 1fr 1fr 1fr; }
+  .ck-stat-lead { padding: 0.6rem 0.9rem; gap: 0.1rem; }
+  .ck-stat-lead .big { color: var(--accent); font-size: 1.75rem; line-height: 1.1; }
+  .ck-stat {
+    display: grid; align-content: start; gap: 0.1rem; min-width: 0; padding: 0.6rem 0.9rem;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-field);
+  }
+  .ck-stat b { font-size: 1.75rem; line-height: 1.1; font-weight: 700; }
+  .ck-stat-name { font-family: var(--font-mono); font-size: 0.6875rem; line-height: 1.45; letter-spacing: 0.08em; text-transform: uppercase;
+                  color: var(--fg-muted); }
+  .ck-stat-sub { font-family: var(--font-sans); font-size: 0.75rem; line-height: 1.35; color: var(--fg-muted); }
+  .ck-stat-outcomes { font-size: 0.6875rem; color: var(--fg-muted); overflow-wrap: anywhere; }
+
+  /* ── the chat window ─────────────────────────────────────────────────────────────────────────────────────── */
+  .ck-chat {
+    flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+    background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-panel); box-shadow: var(--shadow-sm);
+  }
+  .ck-chat-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; padding: 0.65rem 1rem;
+                  border-bottom: 1px solid var(--line); }
+  .ck-chat-head h3 { margin: 0; font-size: 1rem; font-weight: 700; }
+  .ck-chat-state { font-family: var(--font-mono); font-size: 0.75rem; color: var(--fg-muted); }
+  /* The flow, and over its foot the way back to the newest lines while the reader is away from them. */
+  .ck-flow-box { position: relative; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  .ck-flow { position: relative; flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 0.65rem;
+             padding: 0.9rem 1rem 1.1rem; overscroll-behavior: contain; }
+  .ck-newest {
+    position: absolute; left: 50%; bottom: 0.75rem; z-index: 2; translate: -50% 0;
+    min-height: 2.75rem; padding: 0.3rem 1rem; border-radius: 9999px; font-size: 0.8125rem; font-weight: 600;
+    background: var(--panel); border-color: color-mix(in srgb, var(--accent) 55%, var(--line-strong)); box-shadow: var(--shadow-sm);
+    animation: ck-in 200ms var(--ease-calm);
+  }
+  .ck-newest .icon { color: var(--accent); }
+  /* Whatever is scrolled under the window's top edge fades out there: never half a line of glyphs under the header. */
+  .ck-flow[data-top='cut'] {
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 1.75rem);
+    mask-image: linear-gradient(to bottom, transparent 0, #000 1.75rem);
+  }
+  .ck-cards { display: grid; gap: 0.65rem; }
+  .ck-chat-foot { padding: 0.7rem 1rem 0.8rem; border-top: 1px solid var(--line); background: var(--panel-alt); }
+  .ck-empty { display: grid; justify-items: center; gap: 0.8rem; margin: auto 0; padding: 1rem; color: var(--fg-muted); text-align: center; }
+  .ck-empty p { margin: 0; max-width: 34ch; }
+  .ck-empty-mark { width: 3.5rem; height: 3.5rem; opacity: 0.9;
+                   filter: drop-shadow(0 0 0.5rem color-mix(in srgb, var(--brand-neon) var(--mark-glow), transparent)); }
+
+  .ck-who { display: flex; align-items: center; gap: 0.45rem; font-family: var(--font-mono); font-size: 0.6875rem;
+            letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-muted); }
+  .ck-bubble { display: grid; gap: 0.2rem; max-width: 92%; animation: ck-in 200ms var(--ease-calm); }
+  .ck-bubble p { margin: 0; }
+  .ck-bubble.me {
+    align-self: flex-end; max-width: 88%; padding: 0.5rem 0.85rem; border-radius: 12px 12px 4px 12px;
+    background: color-mix(in srgb, var(--accent) 12%, var(--panel-alt)); border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--line));
+  }
+  .ck-bubble.me .ck-who { justify-content: flex-end; }
+  .ck-bubble.willy { align-self: flex-start; }
+  .ck-bubble.willy.follows { margin-top: -0.3rem; }
+  .ck-bubble.willy.warn p { color: var(--fg); }
+  .ck-badge-spoken { padding: 0 0.4rem; border-radius: 0.25rem; letter-spacing: 0.04em; color: var(--fg);
+                     border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--line)); }
+  .ck-summary { align-self: center; display: inline-flex; flex-wrap: wrap; gap: 0.5rem; max-width: 100%; padding: 0.15rem 0.75rem;
+                border-radius: 9999px; background: var(--panel-alt); font-size: 0.8125rem; color: var(--fg-muted); }
+  .ck-willy { display: grid; gap: 0.25rem; }
+
+  .ck-line { display: grid; gap: 0.12rem; padding-left: 0.75rem; border-left: 2px solid var(--line-strong); color: var(--fg-muted); }
+  .ck-line.ok { border-left-color: var(--ok); color: var(--fg); }
+  .ck-line.warn { border-left-color: var(--warn); color: var(--fg); }
+  .ck-line.error { border-left-color: var(--alarm); color: var(--fg); font-weight: 600; }
+  .ck-line.now { display: flex; align-items: center; gap: 0.45rem; border-left-color: var(--accent); color: var(--fg); font-weight: 600; }
+  .ck-line.now::after { content: ""; width: 0.45rem; height: 0.45rem; flex: none; border-radius: 9999px;
+                        background: var(--accent); animation: ck-blink 1.2s var(--ease-calm) infinite; }
+  .ck-human { font-family: var(--font-mono); font-size: 0.75rem; line-height: 1.4; color: var(--fg-muted); overflow-wrap: anywhere; }
+  .ck-data summary { cursor: pointer; font-family: var(--font-mono); font-size: 0.6875rem; color: var(--fg-muted); }
+  .ck-data pre { margin: 0.25rem 0 0; padding: 0.45rem 0.6rem; max-height: 16rem; overflow: auto; font-size: 0.6875rem;
+                 background: var(--inset); border: 1px solid var(--line); border-radius: var(--radius-field); color: var(--fg-muted);
+                 white-space: pre-wrap; overflow-wrap: anywhere; }
+  .ck-seq { color: var(--fg-muted); }
+
+  /* ── cards in the flow ───────────────────────────────────────────────────────────────────────────────────── */
+  .ck-card {
+    position: relative; padding: 0.85rem 1rem 0.9rem; border-radius: 12px;
+    background: var(--panel-alt); border: 1px solid var(--line-strong); animation: ck-in 220ms var(--ease-calm);
+    --hud-size: 0.9rem; --hud-weight: 2px; --hud-inset: 0.3rem;
+  }
+  .ck-card-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.6rem; margin-bottom: 0.55rem; }
+  .ck-card-head h3 { margin: 0; font-size: 1.0625rem; font-weight: 700; }
+  .ck-card-meta { font-size: 0.8125rem; color: var(--fg-muted); overflow-wrap: anywhere; }
+  .ck-card-sub { margin: 0.7rem 0 0.35rem; font-family: var(--font-mono); font-size: 0.6875rem; letter-spacing: 0.08em; text-transform: uppercase;
+                 color: var(--fg-muted); font-weight: 600; }
+  .ck-card-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.7rem; }
+  /* A refusal of the buttons under it: said right above them, and brought into view (`hooks.useBroughtIntoView`). */
+  .ck-refusal { margin-top: 0.7rem; scroll-margin: 0.75rem; }
+  .ck-refusal .banner { margin-bottom: 0; }
+  .ck-refusal .banner + .banner { margin-top: 0.5rem; }
+  .ck-say { margin: 0; }
+  .ck-say.warn { padding: 0.4rem 0.65rem; border-radius: var(--radius-field); border-left: 3px solid var(--warn);
+                 background: color-mix(in srgb, var(--warn) var(--tint), var(--panel-alt)); }
+  .ck-quiet { margin: 0.35rem 0 0; font-size: 0.8125rem; color: var(--fg-muted); }
+  .ck-ok-icon { color: var(--accent); flex: none; }
+  .ck-ask-icon { color: var(--warn); flex: none; }
+  .ck-go { display: inline-flex; flex-direction: column; align-items: flex-start; gap: 0.12rem; text-align: left; }
+  .ck-go small { font-size: 0.75rem; font-weight: 500; opacity: 0.92; }
+  .ck-go-title { display: inline-flex; align-items: center; gap: 0.5rem; font-weight: 750; }
+
+  /* A card per part */
+  .ck-part { display: grid; grid-template-columns: 5rem minmax(0, 1fr); gap: 0.75rem; align-items: start; padding: 0.6rem 0.75rem; }
+  .ck-part.current { border-color: color-mix(in srgb, var(--accent) 45%, var(--line-strong)); }
+  .ck-thumb { width: 5rem; height: 3.75rem; overflow: hidden; display: grid; place-items: center; border-radius: 8px;
+              background: var(--stage); color: var(--stage-fg); border: 1px solid var(--line); }
+  .ck-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .ck-part-body { display: grid; gap: 0.3rem; min-width: 0; }
+  .ck-part-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.3rem 0.6rem; }
+  .ck-part-head strong { font-size: 0.9375rem; }
+  .ck-part-status { font-size: 0.8125rem; color: var(--fg-muted); }
+  .ck-part-status.ok { color: var(--fg); }
+  .ck-part-status.ok::before { content: "✓ "; color: var(--ok); }
+  /* The looks that found nothing more: one quiet line, the way "until empty" ends. */
+  .ck-part-none { color: var(--fg-muted); }
+  .ck-tags { display: flex; flex-wrap: wrap; gap: 0.3rem; list-style: none; margin: 0; padding: 0; }
+  .ck-tags li, .ck-tag, .ck-gate {
+    display: inline-flex; align-items: center; gap: 0.25rem; padding: 0.08rem 0.45rem; border-radius: 0.3rem; white-space: nowrap;
+    font-family: var(--font-mono); font-size: 0.6875rem; color: var(--fg-muted); border: 1px solid var(--line-strong);
+  }
+  .ck-tags li.warn, .ck-tag.warn { color: var(--fg); border-color: color-mix(in srgb, var(--warn) 60%, var(--line));
+                                   background: color-mix(in srgb, var(--warn) 10%, transparent); }
+  .ck-tag.acc { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); font-weight: 700; }
+  .ck-tag-note { font-weight: 500; }
+  .ck-steps-live { display: grid; gap: 0.3rem; margin-top: 0.15rem; }
+  .ck-part-lines summary { cursor: pointer; font-family: var(--font-mono); font-size: 0.6875rem; color: var(--fg-muted); }
+  .ck-part-lines .ck-line { margin-top: 0.3rem; }
+
+  /* The Understood card */
+  .ck-understood { border-color: color-mix(in srgb, var(--accent) 40%, var(--line-strong)); }
+  .ck-fields { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.5rem 0.9rem; align-items: start; margin: 0; }
+  .ck-fields dt { padding-top: 0.6rem; font-family: var(--font-mono); font-size: 0.6875rem; letter-spacing: 0.08em; text-transform: uppercase;
+                  color: var(--fg-muted); }
+  .ck-fields dd { display: grid; gap: 0.25rem; min-width: 0; margin: 0; }
+  .ck-fields small { font-size: 0.78rem; color: var(--fg-muted); }
+  .ck-fields select { min-height: 2.75rem; max-width: 100%; font-size: 0.9375rem; }
+  .ck-field-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+  .ck-input-phrase { flex: 1 1 11rem; min-width: 0; min-height: 2.75rem; font-size: 0.9375rem; font-weight: 600; }
+  .ck-ask-pick { display: grid; gap: 0.3rem; padding: 0.45rem 0.65rem; border-radius: var(--radius-field); border: 1px dashed var(--line-strong); }
+  .ck-ask-pick p { margin: 0; font-weight: 600; }
+  .ck-check-line { display: flex; align-items: center; gap: 0.5rem; min-height: 2.75rem; cursor: pointer; }
+  .ck-check-line input, .ck-switch input { width: 1.15rem; height: 1.15rem; flex: none; }
+  .ck-seg { display: inline-flex; justify-self: start; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--radius-field); }
+  .ck-seg button { min-height: 2.75rem; padding: 0 1.05rem; border: 0; border-radius: 0; box-shadow: none; background: transparent; color: var(--fg-muted); }
+  .ck-seg button + button { border-left: 1px solid var(--line-strong); }
+  .ck-seg button[aria-pressed='true'] { background: var(--accent); color: var(--accent-fg); font-weight: 700; }
+  .ck-notes { margin: 0.55rem 0 0; padding-left: 1.1rem; font-size: 0.8125rem; color: var(--fg-muted); }
+  .ck-start { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.85rem; scroll-margin-bottom: 0.75rem; }
+  .ck-startbtn { flex: 1 1 18rem; min-height: 3.25rem; padding: 0.7rem 1.1rem; font-size: 1rem; }
+  .ck-off { margin-top: 0.5rem; font-size: 0.8125rem; color: var(--fg-muted); }
+  .ck-off ul { margin: 0.2rem 0 0; padding-left: 1.1rem; }
+  .ck-off li { color: var(--fg); }
+
+  .ck-adv { margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px dashed var(--line-strong); }
+  .ck-adv summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.6rem; min-height: 2.75rem; padding-top: 0.6rem;
+                    cursor: pointer; list-style: none; font-size: 0.8125rem; color: var(--fg-muted); }
+  .ck-adv summary::-webkit-details-marker { display: none; }
+  .ck-adv summary::before { content: "▸"; color: var(--accent); }
+  .ck-adv[open] summary::before { content: "▾"; }
+  .ck-adv-title { font-weight: 700; color: var(--fg); }
+  .ck-adv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 0.65rem 1rem; margin-top: 0.4rem; }
+  /* Each setting's lines pack to the top of its cell: a neighbour whose help wraps longer moves nothing here. */
+  .ck-switch { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; align-content: start; gap: 0.1rem 0.55rem;
+               min-height: 2.75rem; cursor: pointer; }
+  .ck-field { display: grid; align-content: start; gap: 0.25rem; }
+  .ck-switch-name { font-weight: 600; }
+  .ck-help { grid-column: 2; font-size: 0.75rem; color: var(--fg-muted); }
+  .ck-field .ck-help { grid-column: auto; }
+  .ck-field select, .ck-number input { min-height: 2.75rem; }
+  .ck-number { display: inline-flex; align-items: center; gap: 0.4rem; font-family: var(--font-mono); }
+  .ck-number input { width: 6rem; }
+
+  /* The ask card and the stop card */
+  .ck-askcard { border-color: color-mix(in srgb, var(--warn) 50%, var(--line-strong)); --hud-color: var(--warn); }
+  .ck-stopcard { border-color: color-mix(in srgb, var(--alarm) 55%, var(--line-strong));
+                 background: color-mix(in srgb, var(--alarm) 6%, var(--panel-alt)); --hud-color: var(--alarm); }
+  .ck-stopcard.folded { background: var(--panel-alt); border-style: dashed; }
+  .ck-checklist { display: grid; gap: 0.45rem; margin: 0; padding: 0; list-style: none; }
+  .ck-check { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.3rem 0.6rem;
+              padding: 0.45rem 0.65rem; border: 1px dashed var(--line-strong); border-radius: var(--radius-field); }
+  .ck-check > .icon { color: var(--fg-muted); }
+  .ck-check.done { border-style: solid; border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+  .ck-check.done > .icon { color: var(--ok); }
+  .ck-check.info { border: 0; padding: 0.15rem 0.65rem; color: var(--fg-muted); font-size: 0.8125rem; }
+  .ck-check .ck-quiet { grid-column: 2 / -1; }
+  .ck-gates { display: flex; flex-wrap: wrap; gap: 0.3rem; margin-top: 0.6rem; }
+  .ck-gate .icon { color: var(--alarm); }
+  .ck-gate.ok { color: var(--fg); border-color: color-mix(in srgb, var(--ok) 50%, var(--line)); }
+  .ck-gate.ok .icon { color: var(--ok); }
+
+  /* ── the demo view: read from a step back ────────────────────────────────────────────────────────────────── */
+  :root[data-view='demo'] .cockpit { font-size: 1rem; }
+  :root[data-view='demo'] .ck-flow { font-size: 1.0625rem; gap: 0.75rem; }
+  :root[data-view='demo'] .ck-run-title { font-size: 1.1875rem; }
+
+  /* ── motion, calm ────────────────────────────────────────────────────────────────────────────────────────── */
+  @keyframes ck-blink { 50% { opacity: 0.35; } }
+  @keyframes ck-in { from { opacity: 0; transform: translateY(4px); } }
+  @keyframes ck-glow { 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 22%, transparent); } }
+  @keyframes ck-alarm { 50% { box-shadow: 0 0 0 4px color-mix(in srgb, var(--alarm) 35%, transparent); } }
+
+  /* ── a short window beside the wide layout (a laptop's 768 px): the chat keeps its room ─────────────────── */
+  @media (min-width: 1200px) and (max-height: 860px) {
+    .ck-top { min-height: 2.75rem; padding: 0.35rem 0.9rem; }
+    .ck-stat, .ck-stat-lead { padding: 0.45rem 0.8rem; }
+    .ck-stat b, .ck-stat-lead .big { font-size: 1.4rem; }
+    .ck-stat-sub { display: none; }
+    .ck-chat-head { padding: 0.45rem 1rem; }
+    .ck-chat-foot { padding: 0.5rem 1rem 0.55rem; }
+    .ck-flow { padding: 0.7rem 1rem 0.9rem; }
+    .ck-timeline { padding: 0.4rem 0.75rem; }
+  }
+
+  /* ── narrower windows: one column, then compact ──────────────────────────────────────────────────────────── */
+  @media (max-width: 1199px) {
+    /* One column of the page's own height. The image is as wide as the window and no taller than leaves the run
+       strip on screen under it at the page's top (the image is letterboxed on the black stage); the stop buttons
+       stay in view as the page scrolls. */
+    .cockpit { display: flex; flex-direction: column; height: auto; min-height: 0; margin-bottom: 0; }
+    .ck-main, .ck-strip { display: contents; }
+    .ck-stage { flex: none; aspect-ratio: 16 / 9; min-height: 0; max-height: max(15rem, calc(100dvh - var(--ck-bar, 8rem) - 16.5rem)); }
+    .ck-chat { flex: none; height: min(46rem, max(24rem, calc(100dvh - var(--ck-bar, 8rem) - 7rem))); }
+    /* Sticky to the window between the top bar and the window's foot, for as long as the cockpit is on the page: the
+       halt is never scrolled away, whether the person reads the image above or the chat below. */
+    .ck-stops {
+      position: sticky; top: var(--ck-bar, 0px); bottom: 0.5rem; z-index: 45;
+      margin: -0.45rem; padding: 0.45rem; border-radius: calc(var(--radius-panel) + 0.3rem);
+      background: color-mix(in srgb, var(--ground) 86%, transparent); backdrop-filter: blur(8px);
+    }
+  }
+  @media (max-width: 760px) {
+    .ck-stats, .ck-stats.tech { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .ck-stat-lead { grid-column: 1 / -1; }
+    .ck-stopbtn { flex: 1 1 calc(50% - 0.3rem); min-width: 0; }
+    .ck-halt { min-width: 0; }
+    .ck-home { flex-basis: 100%; margin-left: 0; }
+    .ck-where { margin-left: 0; }
+    .ck-fields { grid-template-columns: minmax(0, 1fr); }
+    .ck-fields dt { padding-top: 0.2rem; }
+    .ck-badges { left: 0.7rem; top: 0.7rem; }
+    .ck-rigs { right: 0.7rem; top: auto; bottom: 0.7rem; }
+  }
+}

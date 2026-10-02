@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import math
 import re
+import threading
 from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING
 
@@ -42,7 +43,7 @@ from src.robot.core import (
     resolve_camera_world,
     stamp_result,
 )
-from src.robot.core.arm_capabilities import LineMotion, LineReading, PayloadModel
+from src.robot.core.arm_capabilities import HaltState, LineMotion, LineReading, PayloadModel, halted_refusal
 from src.robot.core.camera_world import without_camera_world as _without_camera_world
 from src.robot.core.gripper import why_not_known_open
 from src.robot.safety import (
@@ -80,7 +81,7 @@ from src.robot.safety.planning.band import (
 from src.robot.safety.planning.hand import planner_hand
 from src.robot.safety.workspace import WorkspaceGuard
 
-from .connection import URConnection
+from .connection import HALT_ENDS, MoveEnd, URConnection
 from .freedrive import HAND_GUIDED_MESSAGE, URFreedriveSession, raise_unless_operational
 from .motion import MotionController
 from .pose import URPose
@@ -286,11 +287,14 @@ class URRobotArm(RobotArm):
         self.config = config
         self.logger = create_robot_logger("URRobotArm", UR_ARM_LOG_FILE)
 
+        # The halt latch lives on this connection, which the arm keeps for its life, so a disconnect and a connect of
+        # the same arm keep it; brake_on_halt decides whether a halt also brakes the move in flight.
         self._conn = URConnection(
             ip=config.ur.ip,
             vel=config.motion_limits.max_velocity,
             acc=config.motion_limits.max_acceleration,
             frequency=config.ur.rtde_frequency,
+            brake_on_halt=config.ur.brake_on_halt,
         )
         self._guard = WorkspaceGuard(config.workspace_limits)
         self._motion = MotionController(
@@ -335,6 +339,11 @@ class URRobotArm(RobotArm):
         self._hand: object | None = None
         self._curobo_client_factory = curobo_client_factory
         self._curobo_ur: CuroboUrPlanner | None = None
+        #: Guards building, starting and closing ``_curobo_ur``: a disconnect waits for a planner start in progress
+        #: and closes what it started, rather than dropping a planner a start is about to hand a sidecar.
+        self._planner_lock = threading.RLock()
+        #: Whether :meth:`start_planner` runs now; read without the lock, for :attr:`planner_state`.
+        self._planner_starting = False
         #: The flange to TCP the controller applied when this arm last connected, derived by the tool
         #: frame check on a ``polyscope`` cell; None before a connect and after a disconnect.
         self._observed_tool_frame: "np.ndarray | None" = None
@@ -826,21 +835,65 @@ class URRobotArm(RobotArm):
                 f"robot.ur.motion_planner is {self._motion_planner!r}, so this cell starts no planner: its moves are "
                 f"solved by the controller's IK and judged by the exact mesh guard alone"
             )
-        return self._curobo_ur_planner().start()
+        # Under the planner lock for the whole start, about a minute on the cell: a disconnect or a stop_planner meanwhile
+        # waits for it and closes the sidecar it started.
+        with self._planner_lock:
+            self._planner_starting = True
+            try:
+                return self._curobo_ur_planner().start()
+            finally:
+                self._planner_starting = False
 
     def stop_planner(self) -> None:
-        """Shut down the planner :meth:`start_planner` or a move started. Idempotent, and the connection is untouched."""
-        if self._curobo_ur is not None:
-            self._curobo_ur.close()
-            self._curobo_ur = None
+        """Shut down the planner :meth:`start_planner` or a move started. Idempotent, and the connection is untouched.
+
+        A start in progress is waited for, and the sidecar it started is closed. The planner is retired, not only
+        closed: a move still holding it starts no sidecar on it (:meth:`CuroboUrPlanner.retire`).
+        """
+        with self._planner_lock:
+            self._retire_planner()
 
     def disconnect(self) -> None:
-        """Close the RTDE connection, and shut down the cuRobo planning server where one was started."""
-        if self._curobo_ur is not None:
-            self._curobo_ur.close()
-            self._curobo_ur = None
+        """Close the RTDE connection, and shut down the cuRobo planning server where one was started.
+
+        A planner start in progress is waited for first (the sidecar's ready timeout bounds it), and the sidecar it
+        started is closed, so none is orphaned: the planner is retired, so a move still judging its route on it starts
+        no sidecar either. The halt latch lives on the connection and is kept.
+        """
+        with self._planner_lock:
+            self._retire_planner()
         self._observed_tool_frame = None
         self._conn.disconnect()
+
+    def _retire_planner(self) -> None:
+        """Shut the planner down for good and drop it, under the planner lock; a double with only ``close`` is closed."""
+        planner = self._curobo_ur
+        if planner is None:
+            return
+        retire = getattr(planner, "retire", None)
+        if callable(retire):
+            retire()
+        else:
+            planner.close()
+        self._curobo_ur = None
+
+    @property
+    def planner_state(self) -> str:
+        """Where this arm's cuRobo planner is: ``not_used``, ``off``, ``starting`` or ``ready``.
+
+        ``not_used`` on an arm that plans nothing (``motion_planner`` ik). ``starting`` while :meth:`start_planner`
+        runs, or while a move starts it. ``ready`` once a sidecar started and passed its checks. Read on every poll of
+        the console's cell state: attribute reads only, so it never waits for the planner lock and never raises.
+        """
+        if self._motion_planner != "curobo":
+            return "not_used"
+        if self._planner_starting:
+            return "starting"
+        planner = self._curobo_ur
+        if planner is None:
+            return "off"
+        state = getattr(planner, "state", "off")
+        return state if state in ("off", "starting", "ready") else "off"
 
     def __enter__(self) -> URRobotArm:
         self.connect()
@@ -1161,8 +1214,70 @@ class URRobotArm(RobotArm):
         )
 
     def stop(self) -> None:
-        """Emergency stop."""
-        self._conn.stop()
+        """Halt the arm: :meth:`halt` with "stop() was called". Always safe, never raises, sends nothing itself.
+
+        Not an emergency stop; the red button is. Before the halt this sent ``stopJ`` and ``stopL`` from the calling
+        thread, which a synchronous move in flight did not read until it ended (``scripts/ursim/probe_halt.py`` M0),
+        and latched nothing, so the next move went out as if nothing had been pressed.
+        """
+        self.halt("stop() was called")
+
+    # --- SupportsHalt ---
+    def halt(self, reason: str) -> HaltState:
+        """Latch the arm ("halt now"): no motion and no output from now on until :meth:`clear_halt`. Never raises.
+
+        Nothing is sent from the calling thread. With ``robot.ur.brake_on_halt`` the move in flight is braked under
+        control by the thread that sent it (``stopJ``/``stopL``); without it, as shipped, that move runs to its end and
+        nothing after it is sent. The latch lives on the connection, so a disconnect and a connect of this arm keep it.
+        """
+        return self._conn.request_halt(reason)
+
+    def clear_halt(self) -> None:
+        """End the latch, which gives motion and the outputs back: the console's "Zelle ist frei"."""
+        self._conn.clear_halt()
+
+    def halt_state(self) -> HaltState | None:
+        """The latch while it is set, else ``None``: a lock-free read that never raises."""
+        return self._halt_record()
+
+    def brakes_in_motion(self) -> bool:
+        """Whether a halt brakes a move in flight here (``robot.ur.brake_on_halt``), or lets it run to its end."""
+        return self._conn.brake_on_halt is True
+
+    def _halt_record(self) -> HaltState | None:
+        """The connection's latch while it is set; strict, so a connection double that answers anything is not halted."""
+        read = getattr(self._conn, "halt_state", None)
+        try:
+            state = read() if callable(read) else None
+        except Exception:  # noqa: BLE001 (a latch that cannot be read is no latch; the connection's own refuses on)
+            return None
+        return state if isinstance(state, HaltState) else None
+
+    def _cancelled_by_the_halt(
+        self, command: MotionCommand, verb: str, *,
+        target_pose: Pose | None = None, target_joints: JointPositions | None = None,
+    ) -> MotionResult:
+        """The CANCELLED result of a move the halt ended, saying whether ``verb`` was sent and how it ended."""
+        end = getattr(self._conn, "last_move_end", None)
+        state = self._halt_record()
+        reason = state.reason if state is not None else "a halt that has been cleared since"
+        stop = "stopJ" if verb == "moveJ" else "stopL"
+        if end is MoveEnd.BRAKED:
+            took = (f", standing still {state.brake_s:.2f} s after the halt" if state is not None
+                    and state.brake_s is not None else "")
+            what = (f"{verb} was sent and braked under control ({stop}){took}: the arm stands where the brake stopped "
+                    f"it")
+        elif end is MoveEnd.BRAKE_UNCONFIRMED:
+            what = (f"{verb} was sent and braked ({stop}), and the arm was not seen to stand still: if it still moves, "
+                    f"press the emergency stop")
+        else:
+            what = f"{verb} was not sent, and nothing reached the controller"
+        return MotionResult.failed(MotionStatus.CANCELLED, command, target_pose=target_pose,
+                                   target_joints=target_joints, message=halted_refusal(reason, what))
+
+    def _ended_by_the_halt(self) -> bool:
+        """Whether the last move the connection was asked for was refused or braked by the halt latch."""
+        return getattr(self._conn, "last_move_end", None) in HALT_ENDS
 
     def wait_until_steady(
         self,
@@ -1361,6 +1476,10 @@ class URRobotArm(RobotArm):
             if self._motion.last_reject_status is not None
             else MotionStatus.CONTROLLER_REJECTED
         )
+        if not ok and failure_status is MotionStatus.CANCELLED:
+            # The halt refused or braked it: said as the halt, with whether it was sent.
+            return self._cancelled_by_the_halt(MotionCommand.MOVE_TO, "moveL" if linear else "moveJ",
+                                               target_pose=pose)
         return MotionResult.from_bool(
             ok, MotionCommand.MOVE_TO, target_pose=pose, failure_status=failure_status,
         )
@@ -2472,8 +2591,32 @@ class URRobotArm(RobotArm):
         return self._curobo_ur.detach_payload()
 
     def _curobo_ur_planner(self) -> CuroboUrPlanner:
-        """Lazily build the real-UR cuRobo execution glue bound to this arm's RTDE connection."""
-        if self._curobo_ur is None:
+        """Lazily build the real-UR cuRobo execution glue bound to this arm's RTDE connection, under the planner lock.
+
+        A halted arm keeps none it builds for a move: where a disconnect or a stop_planner dropped the glue, a move
+        still in flight would get a fresh one here, and its next refresh or check would start a sidecar for a move that
+        can send nothing, on an arm the console may build anew. It gets a glue retired at once instead, kept by
+        nobody: every ask that would start a sidecar is refused (``CuroboUnavailableError``, which every planner call
+        of a move already turns into a refusal), and its ``execute`` sends nothing past the latch. :meth:`start_planner`
+        builds and keeps one, halted or not, because a person asked for it.
+        """
+        planner = self._curobo_ur
+        if planner is not None:
+            return planner
+        with self._planner_lock:
+            if self._curobo_ur is None and not self._planner_starting:
+                halted = self._halt_record()
+                if halted is not None:
+                    unkept = self._build_curobo_ur_planner(keep=False)
+                    unkept.retire(f"the arm is halted ({halted.reason}), so no planner is started for a move: a person "
+                                  "confirms the cell is clear, and the next move starts one, or start_planner does now")
+                    return unkept
+            return self._build_curobo_ur_planner()
+
+    def _build_curobo_ur_planner(self, *, keep: bool = True) -> CuroboUrPlanner:
+        """The body of :meth:`_curobo_ur_planner`: built once, under the planner lock, and kept; with ``keep`` false a
+        new one every call, which the arm does not hold."""
+        if self._curobo_ur is None or not keep:
             from src.robot.safety.planning.reservation import PlannerReservation
             from src.robot.safety.planning.world import (
                 build_planner_cuboids,
@@ -2498,7 +2641,7 @@ class URRobotArm(RobotArm):
             # the planner own.
             world_cfg = getattr(self.config.safety, "planning_world", None)
             reservation = PlannerReservation.from_config(robot_cfg=self.config)
-            self._curobo_ur = CuroboUrPlanner(
+            built = CuroboUrPlanner(
                 self._conn,
                 client_factory=self._curobo_client_factory or self._default_curobo_client_factory(),
                 vel=self.config.motion_limits.max_velocity,
@@ -2526,7 +2669,10 @@ class URRobotArm(RobotArm):
             )
             # The attach spheres the reservation counts, the same number the evidence lookup names.
             if reservation.sphere_slots:
-                self._curobo_ur.enable_payload(int(reservation.sphere_slots))
+                built.enable_payload(int(reservation.sphere_slots))
+            if not keep:
+                return built
+            self._curobo_ur = built
         return self._curobo_ur
 
     @property
@@ -3752,6 +3898,8 @@ class URRobotArm(RobotArm):
         if ok:
             return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
         status = self._motion.last_reject_status
+        if status is MotionStatus.CANCELLED:
+            return self._cancelled_by_the_halt(MotionCommand.MOVE_TO, "moveL", target_pose=pose)
         before_movel = {
             MotionStatus.CONNECTION_ERROR: "the arm is not connected",
             MotionStatus.WORKSPACE_REJECTED: "its end is outside the controller's workspace box",
@@ -3854,6 +4002,10 @@ class URRobotArm(RobotArm):
             raise RobotMotionRejected(message, result=MotionResult.failed(
                 MotionStatus.CONNECTION_ERROR, command, target_joints=joints, message=message, exception=exc,
             )) from exc
+        if not ok and self._ended_by_the_halt():
+            # The halt refused it or braked it: CANCELLED, not a controller refusal, and said as the halt.
+            cancelled = self._cancelled_by_the_halt(command, "moveJ", target_joints=joints)
+            raise RobotMotionRejected(cancelled.message, result=cancelled)
         if not ok:
             message = ("Driver reported moveJ() failure. moveJ was sent and the controller did not complete it, "
                        f"so the arm may have moved part of the way.{self._controller_state_text()}")
@@ -3915,6 +4067,9 @@ class URRobotArm(RobotArm):
             urpose, linear=True, vel=velocity, acc=acceleration, register=False,
             workspace_pose=self._coerce_urpose(pose),
         )
+        if not ok and self._motion.last_reject_status is MotionStatus.CANCELLED:
+            cancelled = self._cancelled_by_the_halt(MotionCommand.MOVE_TO, "moveL", target_pose=pose)
+            raise RobotMotionRejected(f"move_linear refused: {cancelled.message}", result=cancelled)
         if not ok:
             raise RobotMotionRejected(
                 f"Linear move to '{pose.label or '<unlabeled>'}' was rejected."
@@ -3957,6 +4112,14 @@ class URRobotArm(RobotArm):
         """Drive a controller digital output pin (bank ``port``) high/low."""
         self._conn.set_digital_out(int(pin), bool(value), str(port))
 
+    def end_output_pulse(self, pin: int, *, port: DigitalIOPort = DigitalIOPort.STANDARD) -> None:
+        """Drive ``pin`` low to end a pulse that began before a halt: the one output write a halted arm makes.
+
+        For a bistable valve's coil and a vacuum blow-off, whose pulse must end low however it ends; never for a toggle
+        hand, whose every change of its output moves the jaws (:meth:`URConnection.end_output_pulse`).
+        """
+        self._conn.end_output_pulse(int(pin), str(port))
+
     def get_digital_input(self, pin: int, *, port: DigitalIOPort = DigitalIOPort.STANDARD) -> bool:
         """Read a controller digital input pin (bank ``port``)."""
         return self._conn.get_digital_in(int(pin), str(port))
@@ -3990,14 +4153,36 @@ class URRobotArm(RobotArm):
         It is the vendor-neutral projection of the UR ``getRobotMode``,
         ``getSafetyMode``, ``isProtectiveStopped`` and ``isEmergencyStopped``, plus the
         dashboard ``safetystatus`` text: the enriched controller state a pipeline
-        surfaces instead of a bare motion rejection.
+        surfaces instead of a bare motion rejection. ``halted`` is the arm's halt latch, read beside the controller,
+        so ``is_operational`` refuses a halted arm and ``controller_operational`` keeps the controller's own answer.
         """
+        halted = self._halt_record()
         return RobotStatus(
             robot_mode=_UR_ROBOT_MODE.get(self._conn.get_robot_mode(), RobotMode.UNKNOWN),
             safety_mode=_UR_SAFETY_MODE.get(self._conn.get_safety_mode(), SafetyMode.UNKNOWN),
             protective_stopped=self._conn.is_protective_stopped(),
             emergency_stopped=self._conn.is_emergency_stopped(),
             message=self._conn.dashboard_safety_status(),
+            halted=halted.reason if halted is not None else "",
+        )
+
+    def quick_robot_status(self) -> RobotStatus:
+        """The controller's four fields from the RTDE receive stream and the halt latch: no dashboard round trip.
+
+        What a ready bar polls. :meth:`get_robot_status` asks the dashboard for its text on every call, a socket round
+        trip; this reads only what the receive interface already holds, and ``message`` stays empty. Raises
+        :class:`RobotConnectionError` on a closed connection.
+        """
+        if not self._conn.is_connected:
+            raise RobotConnectionError("quick_robot_status() requires an open connection.")
+        halted = self._halt_record()
+        return RobotStatus(
+            robot_mode=_UR_ROBOT_MODE.get(self._conn.get_robot_mode(), RobotMode.UNKNOWN),
+            safety_mode=_UR_SAFETY_MODE.get(self._conn.get_safety_mode(), SafetyMode.UNKNOWN),
+            protective_stopped=self._conn.is_protective_stopped(),
+            emergency_stopped=self._conn.is_emergency_stopped(),
+            message="",
+            halted=halted.reason if halted is not None else "",
         )
 
     def recover_from_protective_stop(self) -> bool:
@@ -4022,6 +4207,11 @@ class URRobotArm(RobotArm):
             raise RobotConnectionError("freedrive() requires an open connection.")
         if self._freedrive is not None:
             raise RobotMotionRejected(f"{HAND_GUIDED_MESSAGE}; leave it before opening another")
+        halted = self._halt_record()
+        if halted is not None:
+            # Said as the halt: the controller sentence a halted status reads in raise_unless_operational would name
+            # a controller that is fine.
+            raise RobotMotionRejected(halted_refusal(halted.reason, "a freedrive session was not opened"))
         raise_unless_operational(self.get_robot_status(), "a freedrive session")
         return URFreedriveSession(
             self._conn, tcp_pose=self.get_tcp_pose, robot_status=self.get_robot_status,
@@ -4055,12 +4245,19 @@ class URRobotArm(RobotArm):
         self, command: MotionCommand, *,
         target_pose: Pose | None = None, target_joints: JointPositions | None = None,
     ) -> MotionResult | None:
-        """The refusal of every motion while a freedrive session is open, or ``None``.
+        """The refusal of every motion while the arm is halted or a freedrive session is open, or ``None``.
 
         The one check every motion verb meets: :meth:`_refused_for_camera_world` asks it for every verb,
         and :meth:`_gate_pose` for the ik path of ``move_to`` and ``amove_to``, both before a planner or
-        the controller is asked anything.
+        the controller is asked anything. A halted arm is refused first, CANCELLED with nothing sent: a halt is
+        no controller refusal, and a person ends it.
         """
+        halted = self._halt_record()
+        if halted is not None:
+            return MotionResult.failed(
+                MotionStatus.CANCELLED, command, target_pose=target_pose, target_joints=target_joints,
+                message=halted_refusal(halted.reason, "nothing was sent to the controller"),
+            )
         if self._freedrive is None:
             return None
         return MotionResult.failed(

@@ -282,7 +282,8 @@ class TheRetractBelongsToThePlacementTests(unittest.TestCase):
 
         table = yaml.safe_load(Path(TABLE_PATH).read_text(encoding="utf-8"))
         self.assertEqual(table["rule"]["placement"], "+Y+X")
-        self.assertTrue(all(placement_of(row, table) in ("+Y+X", "+Z+X") for row in table["retracts"]))
+        # +Z-Y: the owner's cell, its tool frame turned -90 deg about the flange's Z (measured 2026-10-02).
+        self.assertTrue(all(placement_of(row, table) in ("+Y+X", "+Z+X", "+Z-Y") for row in table["retracts"]))
         self.assertEqual(len(self.rule.read_retract("ur5e", "robotiq_2f85", 0.0, 4.0, placement="+Y+X")), 6)
 
 
@@ -412,8 +413,9 @@ class ARunReplacesOnlyWhatItJudgedTests(unittest.TestCase):
         committed = self._committed()
         merged = merge_judged(self._committed(), self._run([self._row("acme_2f", 0.0, 4.0, 7.0)]))
         self.assertEqual(self._z_rows(merged)[:len(self._z_rows(committed))], self._z_rows(committed))
-        self.assertEqual(merged["retracts"][-1]["hand"], "acme_2f")
-        self.assertEqual(merged["retracts"][:len(committed["retracts"])], committed["retracts"])
+        # A new row lands at the end of its placement's block, and every committed row keeps its order.
+        self.assertEqual(self._z_rows(merged)[-1]["hand"], "acme_2f")
+        self.assertEqual([row for row in merged["retracts"] if row["hand"] != "acme_2f"], committed["retracts"])
 
     def test_a_pair_the_planner_could_not_be_asked_keeps_its_committed_row(self) -> None:
         from src.robot.safety.planning.robot.retract_table import merge_judged
@@ -457,7 +459,8 @@ class ARunReplacesOnlyWhatItJudgedTests(unittest.TestCase):
                                                            plates_mm_judged_for_mounting_face_hands=[35.0]))
         plates = sorted(row["plate_mm"] for row in self._z_rows(merged) if row["hand"] == "robotiq_hande")
         self.assertEqual(plates, [0.0, 20.0, 35.0])
-        self.assertEqual(merged["rule"]["plates_mm_judged_for_mounting_face_hands"], [0.0, 20.0, 35.0])
+        self.assertEqual(merged["rule"]["plates_mm_judged_for_mounting_face_hands"],
+                         sorted({*committed["rule"]["plates_mm_judged_for_mounting_face_hands"], 35.0}))
         self.assertEqual(len(merged["retracts"]), len(committed["retracts"]) + 1)
 
     def test_a_shared_rule_key_that_differs_names_both_values(self) -> None:

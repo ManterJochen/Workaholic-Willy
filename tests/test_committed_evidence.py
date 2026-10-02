@@ -117,10 +117,17 @@ class TheCellsThisRepositoryShipsAreMeasured(unittest.TestCase):
         self.assertEqual(evidence.criterion, REQUIRED_CRITERION, evidence.render())
 
     def test_every_committed_file_is_at_a_placement_the_derivation_admits(self) -> None:
-        """The two placements a cell can declare today and a file can therefore answer for: the Isaac cell's +Y and a
-        real flange's +Z, both closing along +X."""
+        """Every file answers for a placement a cell can declare: the derivation of the tool frame that places the hand
+        so gives its approach and closing back. Three are measured: the Isaac cell's +Y and a real flange's +Z, both
+        closing along +X, and the owner's flange +Z closing along -Y, its tool frame a quarter turn about Z."""
+        from src.robot.safety.planning._hand_placement import HandPlacement, placement_quaternion_xyzw
+
         placements = {path.name.split("_")[-3] for path in _FILES}
-        self.assertEqual(placements, {"+Y+X", "+Z+X"}, sorted(placements))
+        for placement in sorted(placements):
+            approach, closing = placement[:2], placement[2:]
+            derived = HandPlacement.from_quaternion_xyzw(placement_quaternion_xyzw(approach, closing))
+            self.assertEqual((derived.approach, derived.closing), (approach, closing), placement)
+        self.assertEqual(placements, {"+Y+X", "+Z+X", "+Z-Y"}, sorted(placements))
 
     def test_a_margin_the_sim_profile_does_not_ship_resolves_to_no_file(self) -> None:
         """⭐ The control: the margin is IN the key, so a file cannot answer for a cell at another one."""

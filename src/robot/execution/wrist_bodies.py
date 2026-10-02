@@ -33,16 +33,21 @@ door keeps the rules above.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.contracts import UNSET, Maybe, chosen
+from src.robot.constants import create_robot_logger
 
 if TYPE_CHECKING:
     from src.robot.safety.planning.body_link import WristBody
 
 __all__ = ["WristBodies", "WristBodyRequired", "WristBodyUnplaced"]
+
+#: The wrist bodies' own lines, to the robot log and ``wrist_bodies.log``.
+logger: logging.Logger = create_robot_logger(__name__, "wrist_bodies.log")
 
 
 class WristBodyRequired(ValueError):
@@ -137,6 +142,8 @@ class WristBodies:
                 continue
             if placed is not None:
                 bodies.append(placed)
+        if bodies or unmodelled:
+            _say_the_cable_window(robot_cfg, [body.link_name for body in bodies] + [rig for rig, _ in unmodelled])
         return cls(bodies=tuple(bodies), reader=reader, unmodelled=tuple(unmodelled),
                    unmodelled_reason=reason if unmodelled else "")
 
@@ -177,6 +184,25 @@ class WristBodies:
         return {"reader": self.reader, "bodies": [body.to_dict() for body in self.bodies],
                 "unmodelled": [{"rig_id": rig_id, "why": why} for rig_id, why in self.unmodelled],
                 "unmodelled_reason": self.unmodelled_reason}
+
+
+def _say_the_cable_window(robot_cfg: Any, cameras: "list[str]") -> None:
+    """Say it, once per build, where the arm carries a camera on its wrist and its joints may wind the camera's cable.
+
+    ``safety.joint_limits.within_half_turn_of_home`` keeps every full-turn joint within half a turn of home, so a cable
+    run along the arm is never wound further. Off, wrist 3 may turn the camera round the wrist: on the owner's cell it
+    was driven 200 degrees from home with the camera cable over the wrist (fix plan S3). A warning, not a refusal: side
+    approaches are on by the owner's decision, and some of their lines need the other wrist branch; turn it on after
+    the branch check on URSim.
+    """
+    limits = getattr(getattr(robot_cfg, "safety", None), "joint_limits", None)
+    if bool(getattr(limits, "within_half_turn_of_home", False)):
+        return
+    logger.warning(
+        "the arm carries the wrist camera(s) %s and safety.joint_limits.within_half_turn_of_home is off: a full-turn "
+        "joint may wind the camera's cable round the wrist (the owner's cell drove wrist 3 200 deg from home with the "
+        "cable over it). Turn it on after the branch check on URSim; nothing is refused for it",
+        ", ".join(cameras))
 
 
 def _place(robot_cfg: Any, rig: Any, calibration_of: Any, *, reader: str,

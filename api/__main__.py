@@ -16,11 +16,12 @@ they started is the thing in their browser, so it is printed last of the three.
 from __future__ import annotations
 
 import argparse
+import os
 import socket
 import sys
 from pathlib import Path
 
-from api.cell import Console, set_console
+from api.cell import STOP_FILE_ENV, Console, default_stop_file, set_console
 from src.config.loader import active_profile, set_active_profile
 
 _HOST = "127.0.0.1"
@@ -79,7 +80,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.profile is not None:
         set_active_profile(args.profile)
-    cell = Console(profile=args.profile if args.profile is not None else active_profile())
+    profile = args.profile if args.profile is not None else active_profile()
+    # A stop outlives a restart of this server (a problem stop, a halt, a person still to say the cell is clear): it is
+    # kept beside the console's grasp records for the shipped tree, and for a tree named with --data only where
+    # WILLY_CONSOLE_STOP_FILE names a file, so a scratch tree's stop never gates the cell's own console.
+    named = os.environ.get(STOP_FILE_ENV, "").strip()
+    stop_file = Path(named) if named else (None if args.data else default_stop_file(profile))
+    cell = Console(profile=profile, stop_file=stop_file)
     if args.data:
         cell.root = Path(args.data).resolve()
     set_console(cell)
@@ -98,6 +105,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  config    {cell.root}   profile: {chain}")
     print(f"  preflight {'0 blocking' if not blocking else f'{blocking} BLOCKING'}"
           f"  ({len(report.checks)} checks)")
+    if cell.recovery is not None or cell.carried_halt is not None:
+        # Said before serving: the cockpit shows the stop card, and this is the terminal's word for it.
+        print(f"  stop      a stop from before this start stands ({stop_file}): nothing moves until a person confirms "
+              "the cell is clear")
     # The port is claimed before it is announced. This line used to print several frames before
     # anything bound, so starting a second console on the port the first one holds still printed
     # "serving", and the operator's evidence that the thing they started is the thing in their
@@ -118,6 +129,9 @@ def main(argv: list[str] | None = None) -> int:
     sys.stdout.flush()
 
     if args.reload:
+        if stop_file is not None:
+            # The worker re-imports this package and builds the module's own console: the variable carries the file.
+            os.environ[STOP_FILE_ENV] = str(stop_file)
         uvicorn.run("api.app:app", host=_HOST, port=args.port, reload=True)
     else:
         from api.app import app

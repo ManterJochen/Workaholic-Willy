@@ -19,6 +19,13 @@ _SEEN_BOX_VOXEL_MM = 10.0
 #: decides them, so a config asking less is refused at load (``SelfCollisionSafetyConfig.perceived_min_distance_mm``).
 _SEEN_BOX_LEAST_MM = 5.0
 
+#: The least ``self_collision.min_distance_mm`` while a fixture is declared and the planning world includes it,
+#: millimetres: the camera world's band round a declared body (``perceived.DECLARED_SURFACE_MM``, 5) plus the 5 mm the
+#: guard keeps. What a camera sees within that band of a fixture leaves the world as the fixture's, and nothing holds
+#: the band as solid, so at 5 the guard would keep no margin over what the band took (fix plan S8, 2026-10-01). Its
+#: own number here, because the config layer imports no runtime module; a test pins it to that constant plus 5.
+_DECLARED_FIXTURE_LEAST_MM = 10.0
+
 
 class LimitsSafetyConfig(StrictModel):
     """Workspace-margin safety config.
@@ -570,6 +577,26 @@ class PerceivedWorldConfig(StrictModel):
     #: How far above the declared plane a point still counts as the plane, millimetres.
     plane_clearance_mm: float = Field(default=5.0, ge=0.0, le=200.0)
 
+    #: Find what the parts stand on, on every world build, and hold it as solid.
+    #:
+    #: The camera's own pixels say where the large, nearly level surfaces are: a mat on the bench, the bare bench, a
+    #: bin's floor, at most 5 degrees off level. Each one becomes a solid from the declared plane up to its own reading
+    #: plus the band, and the guard and the planner hold it. A point leaves the obstacles only where such a solid holds
+    #: every pixel it stands for, so nothing the band takes becomes free space. Nothing is declared for it: a mat that
+    #: is gone tomorrow is gone from the world tomorrow. The declared plane is held as a solid too, up to its band.
+    #: Off, the world is built as before: the band drops what lies on the declared plane and every surface above it
+    #: is obstacles, carried down to the bench.
+    support_surfaces: bool = Field(default=True)
+
+    #: How far the solids the guard and the planner hold stand over what their band took out, millimetres.
+    #:
+    #: The solid follows the camera's reading. Where the camera reads a surface low, a thin part the band took out
+    #: stands that much higher than its solid, and the guard keeps its distance from the solid. 2 mm keeps the
+    #: guard's 5 mm from such a part while the camera reads up to 4 mm low (the owner, 2026-10-02). It costs grasps
+    #: of short parts: the fingertip of a 30 mm part comes within reach of a higher solid. Only what the guard and the
+    #: planner hold rises; what the band takes out does not change.
+    support_allowance_mm: float = Field(default=2.0, ge=0.0, le=10.0)
+
     # The robot's own body is not a pair of radii here. The self filter takes a point for an arm link
     # only within ``margin_mm`` of that link's own surface, laid over the committed arm bundle, and for
     # the hand, a wrist camera's housing or a carried part where it falls inside their spheres or
@@ -705,6 +732,32 @@ class RobotSafetyConfig(StrictModel):
                 f"than safety.self_collision.min_distance_mm ({step:g}), was measured at: the boxes are fitted to one "
                 "pixel per voxel, and at 20 mm a pixel the camera measured lay 5.6 mm outside every box, where a "
                 f"sample the guard passes can touch it. Keep voxel_size_mm at {_SEEN_BOX_VOXEL_MM:g} or finer."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _keep_10_mm_over_a_declared_fixture(self) -> RobotSafetyConfig:
+        """A declared fixture the planning world includes keeps ``self_collision.min_distance_mm`` of at least 10 mm.
+
+        What a camera sees within 5 mm of a declared fixture leaves the camera world as the fixture's
+        (``perceived.DECLARED_SURFACE_MM``), and nothing holds that band as solid. The guard keeps
+        ``min_distance_mm`` from the fixture itself, so a thin part standing in the band keeps only the distance less
+        the band: at 10, 5 mm; at 5, none (fix plan S8). A fixture with a zero extent declares nothing, as the
+        planner reads it. A cell that declares no fixture, or keeps them out of the planning world, runs at 5.
+        """
+        if not bool(self.planning_world.include_fixtures):
+            return self
+        declared = [str(fixture.name) for fixture in self.self_collision.fixtures
+                    if min(float(h) for h in fixture.half_extents_mm) > 0.0]
+        step = float(self.self_collision.min_distance_mm)
+        if declared and step < _DECLARED_FIXTURE_LEAST_MM:
+            raise ValueError(
+                f"safety.self_collision.min_distance_mm ({step:g}) is below {_DECLARED_FIXTURE_LEAST_MM:g} mm while "
+                f"safety.planning_world.include_fixtures is true and the fixture(s) {declared} are declared. What a "
+                "camera sees within 5 mm of a declared fixture leaves the world as the fixture's and is held by "
+                "nothing, so the guard keeps only min_distance_mm less those 5 mm from a part standing there. Set "
+                f"min_distance_mm to {_DECLARED_FIXTURE_LEAST_MM:g} or more, or include_fixtures to false and let the "
+                "camera world find the surface itself."
             )
         return self
 

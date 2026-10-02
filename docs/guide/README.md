@@ -63,6 +63,12 @@ passed after the subcommand.
 | tell a wrist camera where to look from | [05](05-pick-loop.md), a wrist camera looks around, and [01](01-configuration.md) for `robot.look_joint_positions_deg` |
 | grip only once both jaw contact faces were seen | [05](05-pick-loop.md), `both_faces` |
 | let a dense pick skip a failed part, or push a boxed-in one | [05](05-pick-loop.md), recovery, and [grasping-config-reference.md](../grasping-config-reference.md) |
+| pick, place and return in one call, once or until empty | [05](05-pick-loop.md), the console's task |
+| give the cell a task from a browser, by text or by voice | [api/README.md](../../api/README.md) and [frontend/README.md](../../frontend/README.md) |
+| halt the arm from the console, and know what that is not | [04](04-robot-and-safety.md), halt now, the emergency stop, and the way back |
+| teach a place pose by hand and let a task use it | [01](01-configuration.md), `robot.named_poses` and `robot.default_place_pose` |
+| answer a toggle hand's jaws question in the browser | [06](06-grippers.md), the jaws question in the browser |
+| bring the console to a physical cell | [docs/runbooks/console_at_the_cell.md](../runbooks/console_at_the_cell.md) |
 
 ## What is on, and what is only built
 
@@ -119,7 +125,9 @@ camera picks through `PickRun` (example 12) and the `Locator` (example 13). Two 
 measured with a UR: `jaw_io` and the Robotiq driver over its URCap socket, whose port 63352 this cell
 refused, so its Hand-E runs as `jaw_io`; OnRobot and suction never touched hardware. **Not run there
 yet:** the wrist looks of 2026-09-29, their generated view and the push; the operator console and the
-API; and the deep grasp network, which was never trained. A few package pages write this level as
+API, whose task, halt now, way back after a stop and jaws question were measured against URSim CB3 (a UR10,
+2026-10-01 and 2026-10-02) and nowhere else; and the deep grasp network, which was never trained. A few
+package pages write this level as
 *measured on a UR10*, *measured against a UR10*, *measured against UR-Robot* or *measured on a real
 camera setup*.
 
@@ -148,7 +156,7 @@ These are not part of the walkthrough, but the guides link into them.
 | [examples/README.md](../../examples/README.md) | the same ground as short programs through `from willy import ...`: your cell, simulation, offline work |
 | [willy/README.md](../../willy/README.md) | every name `from willy import ...` gives you, and the example that shows it |
 | [docs/cli.md](../cli.md) | every command line, by topic, and the runbook that uses it |
-| [docs/runbooks/](../runbooks/) | bench procedures: cell bring-up, a first real pick, your own gripper, the Hand-E, UR arms, corpus builds, training |
+| [docs/runbooks/](../runbooks/) | bench procedures: cell bring-up, a first real pick, the console at the cell, your own gripper, the Hand-E, UR arms, corpus builds, training |
 | [docs/calibration-setup.md](../calibration-setup.md) | the bench procedure: print the board, run the sweep, wire the artifact in. [03](03-calibration.md) is the concepts, this is the session |
 | [docs/isaac-ready.md](../isaac-ready.md) | the cold-box simulator checklist: the standalone interpreter, the asset pack, the logging pattern and the gate criterion |
 | [ext_deps/README.md](../../ext_deps/README.md) | installing the planner and collision sidecars with `scripts/ext_deps/install.ps1` |

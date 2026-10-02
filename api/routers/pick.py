@@ -16,10 +16,12 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 
+from api import readiness as gates
 from api.cell import Console, console
+from api.codes import RunKind
 from api.constants import API_LOG_DIR, ROUTER_PICK_LOG_FILE
 from api.lifecycle import CellState
-from api.runs import RunConflict, RunRegistry
+from api.runs import RunConflict, RunRefused, RunRegistry
 from api.schemas import PickIn, RunOut
 from src.utility.log_cfg import create_logger
 
@@ -38,8 +40,11 @@ def _registry(cell: Console) -> RunRegistry:
     return cell.registry
 
 
-def _refuse_unroutable_prompt(cell: Console, prompt: str) -> None:
+def _refuse_unroutable_prompt(cell: Console, prompt: str, *, code: str = "prompt_not_routable") -> None:
     """Refuse a prompt this cell cannot ground correctly, before anything moves.
+
+    ``code`` names what the phrase is for: a pick's or a task's object (``prompt_not_routable``), or a camera place's
+    target (``target_not_routable``), which the same detector grounds the same way.
 
     The failure this guards is the one the whole perception arc exists to remove, and it is silent: a
     complex prompt handed to the phrase grounder does not come back empty, it comes back with a
@@ -80,7 +85,7 @@ def _refuse_unroutable_prompt(cell: Console, prompt: str) -> None:
     raise HTTPException(
         status_code=422,
         detail={
-            "code": "prompt_not_routable",
+            "code": "target_not_routable" if code == "target_not_routable" else "prompt_not_routable",
             "message": (
                 f"{prompt!r} needs the VLM route ({decision.describe()}), and {reason}. The phrase "
                 f"grounder does not fail loudly on prompts like this; it returns a confident box for "
@@ -126,7 +131,13 @@ def _refuse_unfit_push(cell: Console, push_mm: float | None) -> None:
 
 @router.post("/pick", response_model=RunOut, status_code=202, summary="Start a run (THIS MOVES)")
 def post_pick(cell: Annotated[Console, Depends(console)], body: PickIn) -> RunOut:
-    """202, not 200: the work is accepted and happening elsewhere, not finished when this returns."""
+    """202, not 200: the work is accepted and happening elsewhere, not finished when this returns.
+
+    Refused, before anything starts, where any moving route is: a run holding the lock, a halted arm, a stop not yet said
+    clear or still waiting for its Restart, a person needed after a recovery (the latch is kept: no run clears it
+    silently), a jaws question waiting for its answer. The stop is read once more as the run starts, under the run
+    lock, so one that landed after these gates still refuses it.
+    """
     if cell.session.state is not CellState.CONNECTED:
         raise HTTPException(
             status_code=409,
@@ -138,6 +149,7 @@ def post_pick(cell: Annotated[Console, Depends(console)], body: PickIn) -> RunOu
                 "detail": {"state": str(cell.session.state)},
             },
         )
+    gates.refuse_unless(cell, gates.PICK_GATES)
     _refuse_unroutable_prompt(cell, body.prompt)
     _refuse_unfit_push(cell, body.push_mm)
     try:
@@ -151,7 +163,11 @@ def post_pick(cell: Annotated[Console, Depends(console)], body: PickIn) -> RunOu
                 "detail": {"run_id": conflict.existing.id},
             },
         ) from conflict
-    return RunOut(**run.to_dict())
+    except RunRefused as stopped:
+        # A run that stopped on a problem between the gates above and this start wrote its record first.
+        raise gates.refusal(stopped.code, str(stopped), **stopped.detail) from stopped
+    # As accepted: a short run may have ended by the time this answers, and the 202 says it was started.
+    return RunOut(**run.as_accepted())
 
 
 @router.post("/pick/stop", response_model=RunOut, summary="Do not start the next attempt")
@@ -168,6 +184,16 @@ def post_stop(cell: Annotated[Console, Depends(console)], run_id: str | None = N
         raise HTTPException(
             status_code=404,
             detail={"code": "no_such_run", "message": "no run to stop.", "detail": {}},
+        )
+    if run.kind is not RunKind.PICK:
+        # Two stops, two meanings: a task's stop lets the part in hand be placed (POST /v1/task/stop), and "halt now"
+        # is POST /v1/cell/brake. This one acts between a pick run's attempts, and on nothing else.
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "not_a_pick", "message": (
+                f"run {run.id} is a {run.kind} run, not a pick run: stop a task with POST /v1/task/stop (after the "
+                "part in hand), or halt now with POST /v1/cell/brake."), "detail": {"run_id": run.id,
+                                                                                   "kind": str(run.kind)}},
         )
     registry.stop(run.id)
     return RunOut(**run.to_dict())

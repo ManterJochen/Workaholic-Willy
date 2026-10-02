@@ -1,8 +1,10 @@
 # The cell and the robot (`src/robot/execution`)
 
 A `Robot` is an arm and the hand on it: connect, move, grasp, pick and place, each answered by a
-report. A `Cell` is the whole pick (the robot, its cameras, perception and the grasp stack), and a
-`PickRun` is a campaign of picks against a cell, judged by a rule you state.
+report. A `Cell` is the whole pick (the robot, its cameras, perception and the grasp stack), a
+`PickRun` is a campaign of picks against a cell, judged by a rule you state, and a **task**
+(`run_task`) picks a part, sets it down, returns and looks again, once or until nothing is left: the
+operator console's unit of work.
 
 ```python
 from willy import Cell, PickRun, Recording, load_tree
@@ -45,6 +47,7 @@ desk on a dummy arm.
 | `Cell` | `from_tree`, `from_robot_config`, `rehearsal` | `preflight()`, `start_planner()`, `build()`, `safety()`, `connected()` | `PreflightReport`, `PlannerStartReport`, `SafetyAttestation` |
 | `PickRun` | `from_cell` (it owns the connect), `from_service` (you do); `look=` where each pick looks from, `put_back=True` to put each lifted part back, `both_faces=True` to grip only on both jaw contact faces seen, `record_views=True` to keep each pick's looks, `push_mm=` how far a push moves a part | `execute()` | `PickRunReport`, with one `PickAttempt` per pick: its looks and the ones fused, the jaw faces seen, the generated view, the hand-eye check, `object_mm`, `grasp_pose`, put back and where its views were kept |
 | `PassRule` | `PassRule(fraction=1.0, confirm=None)` | `accepts(attempts)` | the verdict rule; the default is every pick |
+| `TaskPlan` | `TaskPlan(object, place=PlaceAt(pose=...) or PlaceAt(camera=...), return_to="home", scope="once" or "until_empty", options=TaskOptions(...))` | `run_task(service, plan, hooks=, poses=)` | `TaskReport`: why it ended (`TaskStop`), the parts placed, the picks, whether the arm is back; `TaskRefused` before anything moved |
 | `Recording` | `Recording.off()`, `Recording.to_file(path)` | | where a campaign appends one record per attempt |
 | `HandEyeCalibration` | `from_tree(tree, rig_id=, mode=)`, `from_config`, `from_parts` | `check()`, `run(dry_run=False)` | `CalibrationCheck`, `CalibrationRunReport` |
 | `PlannerStart` | `from_robot_config` | `run()` | `PlannerStartReport` |
@@ -127,6 +130,118 @@ straight lines only; where a planned move has to reach it or leave it, re-teach 
 and screen it again. An `ERROR` pose goes nowhere: re-teach it at the nearby pose its line names, or by hand
 where both clear when it names none, then screen it again.
 
+## A task: pick, place, return
+
+```python
+from willy import Cell, JointPositions, PlaceAt, TaskPlan, load_tree, run_task
+
+
+class Said:
+    """What a program hears from a task: each event's sentence, and nothing that stops it."""
+
+    def event(self, name, /, **data):
+        print(name, "-", data.get("said", ""))
+
+    def pick_done(self, part, pick, report):
+        print(f"part {part}, pick {pick}: {report.outcome}")
+
+    def stop_after_part(self):
+        return False
+
+    def halted(self):
+        return False
+
+    def abandoned(self):
+        return ""
+
+
+cell = Cell.rehearsal(load_tree("console_dummy").robot)   # a dummy arm and a synthetic scene
+cell.build()
+with cell.connected():
+    report = run_task(cell.service, TaskPlan(object="", place=PlaceAt(pose="drop_left")), hooks=Said(),
+                      poses={"drop_left": JointPositions.deg(-60, -95, -120, -55, 90, 0)})
+print(report)   # task FINISHED, 1 part placed, the arm back home
+```
+
+The console's Start runs exactly this ([`api/README.md`](../../../api/README.md)); a program runs it the same
+way, with hooks of its own.
+
+- **The place.** `PlaceAt(pose=name)` is a taught pose from `poses`, and it says where the part's **bottom** is
+  let go: the tool goes there raised by the part's hang (the grasp height over the declared support; with no
+  grasp pose, `payload.length_mm`), keeping the grasp's tilt at the taught heading. `PlaceAt(camera="blue
+  bin")` is a bin the camera finds ([`place_target.py`](place_target.py)): before the first pick the task
+  visits its looks and keeps the bin (`survey`), then drops each part at rim + hang + air (`air_mm`, 10 to 50,
+  20 unset); a grasp within 5 degrees of vertical is turned about the vertical along
+  `robot.natural_closing_axis`. It checks the
+  bin again before every drop (`recheck`): moved more than min(100 mm, half its diagonal), another footprint
+  (20 %) or another rim (20 mm), and it is lost, the part goes back where it was gripped, the arm returns, and
+  the task asks. A wrist drop holds every frame of the bin's look across the drop and the return.
+- **The scope.** `once` ends when the part is placed and the arm is back; `until_empty` after
+  `empty_looks_to_end` (2) empty looks in a row; `max_failed_in_a_row` (3) failed picks end it where the arm
+  stands, and `max_parts` (100) end it `part_limit`. The two rows count apart, and only a placed part starts
+  both again. Its own drop area stays out of its picks (`ExclusionRegion`, [recovery](../grasping/recovery/README.md)):
+  the bin's footprint for both scopes, and `pose_keep_out_mm` (150 mm) about a pose drop for "until empty",
+  where the arm's own kinematics say where the pose puts the tool. A look that sees only those parts is empty.
+- **The order.** The service's needs-a-person latch first: a task that meets it ends `recovery_needs_person` with
+  nothing commanded and the latch kept, since it never starts the campaign that would clear it. Then every taught
+  pose it will use is screened before any motion (`pose_refused`), then the setup (push distance, prompt, closing
+  axis, overlay, cancel check, regions), put back as found whatever ended it. A Restart's plan
+  (`first_motion="return"`) moves to its return pose first.
+- **The hand and the carried part.** Before its first motion and before every pick it reads the hand: a toggle the
+  program believes closed or nobody can vouch for, a measured hold, or a planner that still models a part ends it
+  with nothing moved. After every pick the planner must carry the part (`payload_model` planner and filter), or it
+  ends `part_still_held` where the arm stands. A toggle changes DO0 exactly twice per part, and the place leaves the
+  count open. Nobody is asked on its thread (`asking_nobody`).
+- **The ends.** `TaskStop` has 19 codes in four classes: done (`finished`, `nothing_left`, `part_limit`), the
+  operator's (`stopped_after_part`) and the asks (`target_not_found`, `target_lost`, `target_unreachable`,
+  `part_does_not_fit`, `pose_refused`) return to `return_to` first; a problem (`halted`, `controller_stopped`,
+  `hand_needs_person`, `recovery_needs_person`, `part_still_held`, `return_failed`, `failed_in_a_row`,
+  `detector_failed`, `cell_fault`, `disconnected`) leaves the arm where it stands and commands nothing more, an
+  output included. A detector that failed is `detector_failed`, never "nothing left".
+- **The hooks.** `event` gets each `TaskEvent` with its data and `said`, the library's sentence; `pick_done`
+  each pick's report; `stop_after_part` is read at the top of every part and before the survey's looks;
+  `halted` and `abandoned` before every motion and in the pick's cancel check.
+- **What it refuses** before anything moves raises `TaskRefused` with the console's code: `unknown_pose`,
+  `route_refused`, `carried_part_not_modelled`, `object_required`, `closing_axis_refused`, `bad_request`,
+  `push_distance_refused`, `camera_target_unavailable`. Every end after the start is the report's.
+
+`AutonomousGraspService.pick(multi_view=False)` looks from the first look only, with no generated view, and
+`service.set_closing_axis(axis)` sets a task's axis (`closing_axis_refusal(axis)` says why one would be
+refused, with nothing changed).
+
+## Teaching one pose
+
+The console teaches a pose by hand with `teach_one` ([`teach.py`](teach.py)): one session on a connected arm
+that offers freedrive, the arm freed, captured once it stood still for half a second, held, screened at once by
+the exact guard and the planner, and written only where both clear it or it lies in the planner's band. An `ERROR`
+and an unscreened verdict are never written. The chain ends in the cell's own layer, whose file must exist (one
+comment line in `config/robot/robot.cell.yaml` is enough, and git ignores it; the loader refuses a layer with no
+file). The store names the file before anything is freed:
+
+```python
+from willy import Robot, load_tree
+from src.robot.execution.teach import ProfilePoseStore, teach_refusal
+
+tree = load_tree("console_dummy,cell")                               # the chain ends in the cell's own layer
+store = ProfilePoseStore(tree.tree, "drop_right", "Ablage rechts")   # refuses here a pose that could not be written
+print(store.target)                                                  # the file it goes to: robot/robot.cell.yaml
+robot = Robot.from_tree(tree)
+with robot.connected():
+    print(teach_refusal(robot, tree=tree, name="drop_right", store=store))   # no_hand_guiding on the desk's dummy
+```
+
+- **`ProfilePoseStore`** writes through the pose door into the chain's last layer, which git must keep out, and
+  refuses as it is made: `invalid_name`, `invalid_label`, `no_layer`, `name_taken` (unless `replace=True`), and a
+  word another pose already answers to.
+- **`teach_refusal`** says why no pose could be taught now, as `teach_one` would refuse it before anything is freed
+  (`TeachRefused` and its `code`: `invalid_name`, `no_hand_guiding`, `not_connected`, `screen_unavailable`,
+  `planner_not_ready`, `no_layer`), and the console's `GET /v1/poses` says the same. `ask_planner` is `True` only:
+  only a pose both authorities clear can be written.
+- **`StillnessGate`** is the hold the console asks for on its own (a lapsed heartbeat, the time limit): the arm is
+  held only once its fastest joint stayed below about 1.1 deg/s for half a second, never while it moves in a
+  person's hands. Save, Hold, Cancel, a halt and a Disconnect hold at once, even while a Save waits for the arm to
+  stand still.
+
 ## What it refuses
 
 | Refusal | When | What to do |
@@ -153,6 +268,9 @@ nothing plans their motions against the camera world or judges their paths.
 | Hand-eye calibration, eye to hand and eye in hand, through `CalibrationRoutine` | measured in simulation |
 | Connect, live telemetry and a refused motion, driven through the operator console | measured against real controller software |
 | `Robot`, `HandEyeCalibration`, `Cell` and `PickRun` on a physical arm | run on a physical cell: a UR10 (CB3) with a wrist D415 and a `jaw_io` Hand-E, through examples 03, 09 and 10, 12 and 13; not the looks, the generated view or the push |
+| `run_task` with a pose place, a camera place, the stops and the put-back | the offline suite on doubles and the real service with fake perception (`tests/test_a_task_*.py`); the console's task on `console_dummy` |
+| A task on a controller: three cycles with 2 DO0 edges each, halt in the approach and the carry, the way back | measured against real controller software: URSim CB3 (`scripts/ursim/probe_console_task.py`) |
+| A task, a camera place or `teach_one` on a physical arm | never touched hardware |
 | The KUKA driver behind the same nouns | never touched hardware |
 
 The default pick is open-loop: perceive, rank, gate, move, log. The decision gate,
@@ -180,7 +298,9 @@ a pick.
 | `planner_start.py` | `PlannerStart`: a cuRobo planner started and stopped at a desk, the configured looks screened on it (`PlannerStartReport.looks`) |
 | `hand_eye.py`, `calibration.py` | `HandEyeCalibration`, and the `CalibrationRoutine` that sweeps and solves `AX=XB` |
 | `hand_guiding.py` | the console, the stillness gate, the payload question and the red boundaries of a hand-guided arm, `HandGuidingRefused` |
-| `teach.py` | `teach_poses`: joint poses taught by guiding the arm by hand, each screened once held, printed to paste and kept in `logs/taught_poses.json` |
+| `teach.py` | `teach_poses`: joint poses taught by guiding the arm by hand, each screened once held, printed to paste and kept in `logs/taught_poses.json`; `teach_one`, `ProfilePoseStore`, `StillnessGate`, `teach_refusal`: the console's one pose, written into the cell's own layer |
+| `task.py` | `run_task`, `TaskPlan`, `PlaceAt`, `TaskOptions`, `TaskHooks`, `TaskReport`, `TaskStop`, `TaskRefused`: pick, place, return, once or until empty |
+| `place_target.py` | the bin a camera finds (`survey`, `recheck`, `KeptTarget`), the drop over its rim (`drop_plan`) and over a taught pose (`pose_drop`), and the screen of each |
 | `pose_provider.py` | workspace-checked and diversity-checked TCP poses for a sweep |
 | `ik_service.py` | reachability through the live controller; `URAnalyticIKService` needs `ur_ikfast`, which is not on PyPI |
 | `runtime_pick.py` | `RuntimePickService`, one open-loop attempt and its `PickSessionReport` |
@@ -197,4 +317,4 @@ vendor SDK on import.
 - Runbooks: [bringing up a cell](../../../docs/runbooks/cell_bringup.md), [the first pick on a physical arm](../../../docs/runbooks/real_cell_first_pick.md)
 - The guards every motion passes: [robot/safety](../safety/README.md); the contract the drivers keep: [robot/core](../core/README.md)
 - The operator console drives this layer over HTTP ([api/](../../../api/README.md)); nothing under `src/` imports it
-- Tests: `tests/test_robot.py`, `tests/test_robot_moves.py`, `tests/test_robot_pick_and_place.py`, `tests/test_cell.py`, `tests/test_pick_run.py`, `tests/test_cell_lifecycle.py`, `tests/test_hand_eye_calibration.py`
+- Tests: `tests/test_robot.py`, `tests/test_robot_moves.py`, `tests/test_robot_pick_and_place.py`, `tests/test_cell.py`, `tests/test_pick_run.py`, `tests/test_cell_lifecycle.py`, `tests/test_hand_eye_calibration.py`; the task in `tests/test_a_task_*.py`, `tests/test_a_bin_is_dropped_into_just_above_its_rim.py` and `tests/test_a_moved_bin_is_followed_only_close_by.py`; teaching one pose in `tests/test_one_pose_is_taught_screened_and_held.py`

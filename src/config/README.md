@@ -136,6 +136,18 @@ and push closes the way round nearer it and none is left out; `robot.tool_down` 
 it. It is read by `src.geometry.closing_axis`, so validating a tree that names it loads no grasping
 package. Unset by default and in every shipped profile.
 
+`robot.named_poses` holds the poses taught by hand in the operator console, each under its **name** (an ASCII
+identifier of at most 32 characters, no keyword, never `home`, no word YAML reads as true, false or null, no
+`__dunder__`) with its joints in degrees under the looks' rules, a **label** (free text of at most 40 characters,
+no newline, no `" #"`), when it was taught, its screen (`clear` or `band`) and a note. A pose answers to its name
+and its label, and two poses sharing a word, whatever the case, are refused at load. `robot.default_place_pose`
+names the one a task places at when its command names no target, or `null`; a name that is no pose of the tree is
+refused at load. Layers merge a pose key by key, so a task screens every pose again before it moves.
+
+`robot.ur.brake_on_halt` decides what the console's "halt now" does to a move already in flight: off, as shipped,
+every move is sent as it always was and the move in flight runs to its end; on, it is braked under control. Either
+way a halt latches the arm and is not an emergency stop.
+
 `config/grasping_presets/` holds `easy` (a single pick at the least risk) and `dense_clutter` (bin
 picking with a bounded rescan recovery). `verification_heavy` set the `closed_loop` mode; it was
 deleted on 2026-09-29 with that mode, whose two-scan refinement was the only path that ran the check
@@ -161,6 +173,10 @@ that the merge validates, and refuses a preset that names a removed mode, a remo
 | a closing direction that names none | `robot.natural_closing_axis` an unknown name, `""`, a quaternion that is none, a 3-vector, a number, or a quaternion whose tool +X stands within 10 degrees of the vertical | a name `Pose.tool_down` takes, or a taught pose's `[x, y, z, w]` |
 | a recovery that could not act | `container_agitate` with no `recovery.fixture` (the push, `nudge_target`, needs none); `container_agitate` while `grasping.support.container` declares no interior box; `recovery.fixture.max_nudge_mm` or `push_distance_mm` under 10 or over 50 mm, or the distance above the ceiling | declare what the sentence names; an old `max_nudge_mm: 5` is refused on purpose: delete it to take 50 mm, or write 10 to 50 with a `push_distance_mm` no longer than it |
 | a write outside the allowlist | `ConfigTree.write` of a limit, a threshold or a safety toggle | edit the profile by hand |
+| a taught pose written as a value (`NOT_WRITABLE`) | any key under `robot.named_poses`, or `robot.default_place_pose`, through `ConfigTree.write` or the console's `PATCH` | teach it in the console; edit the YAML to rename or delete one |
+| a pose with nowhere of its own to go (`NO_LAYER`) | the pose door under a chain with no layer, whose pose would land in the shared `robot.yaml`, or whose last layer git tracks or does not ignore, or a git that cannot be asked | end the chain in the cell's own layer: create `robot/robot.cell.yaml` (one comment line), which `config/**/*.cell.yaml` ignores, or list it in `.git/info/exclude` |
+| a pose name or label that is none (`INVALID_NAME`, `INVALID_LABEL`) | the pose door, with nothing written: a name that is no identifier, a keyword, `home`, a YAML true/false/null word or a dunder; a label that is empty, too long, or holds a newline or `" #"` | another name or label |
+| a pose the loader refuses (`INVALID_VALUE`) | the written tree does not validate, a default place that names no pose among them | every file is restored byte for byte; the message is the loader's |
 
 `ConfigTree.write` takes the bench measurements and site facts only: the payload mass and centre of
 gravity, the tool frame's `source`, `offset_mm` and `rotation_quat_xyzw`, a rig's `serial_number` and
@@ -168,6 +184,17 @@ gravity, the tool frame's `source`, `offset_mm` and `rotation_quat_xyzw`, a rig'
 `robot.kuka.controller_ip`. It rewrites one line in place so comments survive, validates the group as
 one transaction and restores every file if the loader rejects the result. The primary rig and the
 controller addresses are refused while anything is connected.
+
+**A taught pose has its own door.** `POSE_KEYS` (the five keys of a pose under `robot.named_poses.<name>`, and
+`robot.default_place_pose`) are never in `WRITABLE`. `set_named_pose(name, joints_deg=, label=, screen=,
+taught_at=, ...)` and `set_default_place_pose(name)` in [`edit.py`](edit.py), as `ConfigTree.write_named_pose`
+and `write_default_place_pose`, write them all or nothing into the robot overlay of the chain's **last** layer
+(`pose_target_file`), and `pose_layer_refusal` (also `ConfigTree.pose_layer_refusal`) says beforehand why that
+layer may not take one. A pose screened anything but `clear` or `band` raises `ValueError`: an unscreened or
+refused pose is never written. Clearing the default place writes `"__null__"`, the loader's reset: a `null` in an
+overlay would keep a lower layer's default. A pose taught again is rewritten in place, every comment kept; a
+joint list written by hand as a block is not rewritten, and the loader's refusal comes back with the file
+untouched.
 
 ## Files
 
@@ -177,7 +204,7 @@ controller addresses are refused while anything is connected.
 | `loader.py` | `load_config`, `load_robot_config`, the section loaders, `reload_config`, `ConfigError` |
 | `paths.py` | the path rule: `ConfigPath`, `${WILLY_PROJECT_ROOT}`, and `path_note` for a refusal that cannot find a file |
 | `explain.py`, `_provenance.py`, `_schema_index.py`, `_tiers.py` | `explain`, `where` and `decisions`: value, type, default, tier and the layer that set it |
-| `edit.py` | the allowlisted bench writes |
+| `edit.py` | the allowlisted bench writes, and the pose door: `set_named_pose`, `set_default_place_pose`, `pose_layer_refusal` |
 | `grippers.py`, `cameras.py`, `_registry.py`, `hand_numbers.py` | the hand and camera registries, and the robot keys a named hand fills |
 | `_merge.py` | the deep merge the layers are built on |
 | `schema/` | the `StrictModel` schemas, `robot/` split per vendor and subsystem |
@@ -191,4 +218,4 @@ controller addresses are refused while anything is connected.
   [real_cell_first_pick.md](../../docs/runbooks/real_cell_first_pick.md) and [cell_bringup.md](../../docs/runbooks/cell_bringup.md);
   measuring extrinsics: [calibration-setup.md](../../docs/calibration-setup.md)
 - The KPI gate `kpi_thresholds.yaml` feeds is a synthetic contract self-check, not a grasp quality measure
-- Tests: `tests/test_config_tree.py`, `tests/test_config_tree_with_values.py`, `tests/test_config_cli.py`, `tests/test_config_explain.py`, `tests/test_config_edit.py`, and `tests/test_a_removed_key_is_answered_wherever_it_is_asked.py` for every `REMOVED_KEYS` entry through `explain` and a preset
+- Tests: `tests/test_config_tree.py`, `tests/test_config_tree_with_values.py`, `tests/test_config_cli.py`, `tests/test_config_explain.py`, `tests/test_config_edit.py`, and `tests/test_a_removed_key_is_answered_wherever_it_is_asked.py` for every `REMOVED_KEYS` entry through `explain` and a preset; the poses in `tests/test_named_poses_load_and_refuse.py`, `tests/test_a_pose_is_written_only_through_its_own_door.py` and `tests/test_the_cells_own_layer_is_kept_out_of_git.py`

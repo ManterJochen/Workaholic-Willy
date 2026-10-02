@@ -18,9 +18,15 @@ centredness) and does not decompose into the calculator's three categories. Spli
 buckets would be an invention. The real margins ride along in ``components["support_footprint"]``
 instead, as contact angle, support clearance and grip width, where a reader can see them for what
 they are; ``metadata`` carries only the stage name and the ``score_is_undecomposed`` flag.
+
+Why SFE refused what it refused rides along too: ``support_footprint_refused`` holds one count per
+cause (``support_footprint.REFUSAL_CAUSES``), so a pick that got no grasp says whether the camera's
+neighbours, a declared body, the part's own fragments or the support stopped it.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 import numpy as np
 
@@ -30,6 +36,7 @@ from src.robot.grasping.scoring import GraspScoreBreakdown
 
 from .support_footprint import (
     DEFAULT_FLOOR_MARGIN_MM,
+    CorridorSeen,
     SupportFootprintCandidate,
     SupportFootprintJaw,
     generate_support_footprint_grasps,
@@ -76,6 +83,8 @@ def support_footprint_breakdowns(
     palm_aware: bool = False,
     score_weights: tuple[float, float, float, float, float] | None = None,
     floor_margin_mm: float | None = None,
+    side_approaches: bool = False,
+    corridor_seen: CorridorSeen | None = None,
 ) -> tuple[list[GraspScoreBreakdown], dict]:
     """Run SFE and return camera-frame breakdowns plus its telemetry.
 
@@ -84,7 +93,12 @@ def support_footprint_breakdowns(
 
     ``floor_margin_mm`` of None is the stage's own floor, ``DEFAULT_FLOOR_MARGIN_MM``, read from where it
     is declared.
+
+    ``side_approaches`` and ``corridor_seen`` are SFE's own (``generate_support_footprint_grasps``). The
+    library default stays off, so a direct caller is unchanged; a cell turns them on from
+    ``robot.grasping.side_approaches`` with ``corridor_seen`` built from the frame.
     """
+    refused: dict[str, int] = {}
     candidates = generate_support_footprint_grasps(
         target_cloud_base_mm,
         support_height_mm=support_height_mm,
@@ -96,6 +110,9 @@ def support_footprint_breakdowns(
         palm_aware=palm_aware,
         score_weights=score_weights,
         floor_margin_mm=DEFAULT_FLOOR_MARGIN_MM if floor_margin_mm is None else float(floor_margin_mm),
+        refusals=refused,
+        side_approaches=side_approaches,
+        corridor_seen=corridor_seen,
     )
     breakdowns: list[GraspScoreBreakdown] = []
     for candidate in candidates:
@@ -122,12 +139,17 @@ def support_footprint_breakdowns(
             },
         ))
     cloud = np.asarray(target_cloud_base_mm, dtype=np.float64).reshape(-1, 3)
-    # float-typed for the millimetre stamps below; the three counters stay ints at runtime.
-    telemetry: dict[str, float] = {
+    # Counters and millimetre stamps, and one dict: why every refused build was refused.
+    telemetry: dict[str, Any] = {
         "support_footprint_candidates": len(candidates),
         "support_footprint_kept": len(breakdowns),
         "support_footprint_points": int(cloud.shape[0]),
+        "support_footprint_refused": refused,
     }
+    if side_approaches:
+        telemetry["support_footprint_side_approaches"] = True
+        # Without a seen test no tilt past the first that fits is offered, so a reader needs to know which it was.
+        telemetry["support_footprint_corridor_seen"] = corridor_seen is not None
     # What the stage was looking at, and what it planned: both in BASE, both millimetres.
     #
     # SFE plans the table clearance and the calculator's collision filter re-checks it against the
@@ -146,4 +168,8 @@ def support_footprint_breakdowns(
         telemetry["support_footprint_top_anchor_z_mm"] = round(float(candidates[0].position_mm[2]), 2)
         telemetry["support_footprint_best_clearance_mm"] = round(
             max(float(c.clearance_mm) for c in candidates), 2)
+        if side_approaches:
+            # How far off vertical the one the robot would take approaches: a side grasp that won says so here.
+            telemetry["support_footprint_top_tilt_deg"] = round(float(np.degrees(np.arccos(
+                np.clip(-float(candidates[0].approach[2]), -1.0, 1.0)))), 1)
     return breakdowns, telemetry

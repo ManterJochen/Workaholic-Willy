@@ -42,7 +42,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from src.robot.core import RobotConnectionError
-from src.robot.core.arm_capabilities import DigitalIOPort, SupportsDigitalIO
+from src.robot.core.arm_capabilities import DigitalIOPort, SupportsDigitalIO, end_pulse
 from src.robot.core.gripper import HoldEvidence
 
 from ..constants import VACUUM_GRIPPER_LOG_FILE, create_robot_logger
@@ -217,8 +217,12 @@ class VacuumGripper:
         # blow-off pulse pushes it off deliberately.
         if not on and self._blow_off_pin is not None:
             self._io.set_digital_output(self._blow_off_pin, True, port=self._port)
-            self._sleep(self._blow_off_s)
-            self._io.set_digital_output(self._blow_off_pin, False, port=self._port)
+            try:
+                self._sleep(self._blow_off_s)
+            finally:
+                # The blow-off ends low however the pulse ends: an interrupt, or a halt that landed inside it, whose
+                # arm refuses the plain write and ends the pulse through its own door (``end_pulse``: only ever low).
+                end_pulse(self._io, self._blow_off_pin, port=self._port)
         self._vacuum_on = bool(on)
 
     def _await_vacuum(self) -> bool:

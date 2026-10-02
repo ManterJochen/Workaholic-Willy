@@ -58,7 +58,14 @@ two stages by hand, with a checkpoint the config does not name.
 | a `ConfigError` at load | `router.enabled: true` without `zero_shot.backend: vlm`, or under `closed_set` | switch the VLM on, or the router off |
 | `FileNotFoundError` from GroundingDINO | `local: true` and no directory at `model_path` | `python scripts/model_weights/fetch.py dino-tiny`, or `local: false` |
 | `VlmUnavailableError` | the VLM cannot load and `on_unavailable` is `refuse` | see [`vlm/`](vlm/README.md) |
-| an empty tuple from `perceive` | the detector raised; the traceback is in the model log | read `logs/`; a pick reports nothing found |
+| an empty tuple from `perceive` | the detector raised, or the segmenter raised on every detection; the traceback is in the model log | read `logs/`; a pick reports nothing found |
+
+**A model error is counted, not hidden.** `TwoStageBackend` turns a model that raised into "no objects", so one
+bad frame never kills a pick, and counts it: `failures` only grows and `last_failure` names the model and the
+exception (`failures_of(backend)` and `last_failure_of(backend)` read them on any backend, the routed and the
+guarded ones pass them through). A caller that must tell "the scene is empty" from "the model could not look"
+reads the count before and after: the console's task ends `detector_failed` on it, never "nothing left". A VLM that
+cannot load raises inside the detector, so it is counted the same way, before `on_unavailable` sees it.
 
 The shipped `model_path` directories sit under `assets/models/hf/` and are empty in a fresh clone:
 `python scripts/model_weights/fetch.py --list` names what to fetch. GroundingDINO, Whisper and Silero

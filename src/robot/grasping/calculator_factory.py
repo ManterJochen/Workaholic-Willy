@@ -110,10 +110,15 @@ _CARRIED: Final[frozenset[str]] = frozenset({
 #: on. `robot.ur3e.yaml` sets `isotropic_radial_closing: true` on a cell measured at 5/10 -> 10/10,
 #: so a deep run there says the lever is not in play instead of printing `True` and changing
 #: nothing.
+#:
+#: `scene_obstacles` and `side_approaches` (the cell fixes, 2026-10-01) are the analytic stage's view of the parts beside
+#: the one it grasps and its tilted approaches. Every cell passes both from its tree, so without them here every deep
+#: cell would refuse to build; the deep decoder plans its own approach, and the guard judges its grasps either way.
 _IGNORED_BY_DEEP: Final[frozenset[str]] = frozenset({
     "isotropic_radial_closing",
     "oblique_approach", "oblique_tilt_deg", "oblique_azimuths",
     "support_footprint_geometry", "support_footprint_inflate_mm",
+    "scene_obstacles", "side_approaches",
 })
 
 

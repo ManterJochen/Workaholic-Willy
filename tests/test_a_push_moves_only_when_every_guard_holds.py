@@ -1088,5 +1088,53 @@ class TheWristTurnsTheShortWay(unittest.TestCase):
         np.testing.assert_allclose(rotation[:, 0], -np.asarray(PLAN.direction), atol=1e-9)
 
 
+class AStopAskedForDuringThePushStopsWhereTheArmIs(unittest.TestCase):
+    """Track P's item 5, which the URSim gate of 2026-10-02 found open: a stop asked for while the push drives ends it
+    before its next leg, where the arm stands. Nothing more is commanded, not even the move back to the look, and a
+    person decides. It is read between the legs, as the controller and the toggle's count are; the leg in flight runs
+    out (halt now brakes it at the arm)."""
+
+    def _push(self, *, asked_from_call: int, answers: Optional[dict[int, Any]] = None) -> tuple[_Cell, PushOutcome]:
+        cell = _Cell(self, answers=answers)
+        cell.commands_before = cell.jaws.commands_sent
+        cell.log.events.clear()
+        outcome = execute_push(cell.arm, PLAN, gripper=cell.jaws, offer=OFFER,
+                               should_cancel=lambda: cell.arm.moves >= asked_from_call)
+        return cell, outcome
+
+    def test_a_stop_asked_for_during_the_push_leg_sends_nothing_after_it(self) -> None:
+        cell, outcome = self._push(asked_from_call=3)  # P0, down and the push leg ran; asked as it ran
+
+        self.assertIs(outcome.code, C.UNSAFE_RECOVERY_REFUSED, outcome.reason)
+        self.assertTrue(outcome.stopped)
+        self.assertEqual(outcome.legs_done, (APPROACH_LEG, *CONTACT_LEGS[:2]))
+        self.assertEqual(cell.motions(), ["move"] * 3)
+        self.assertIn("a stop was asked for", outcome.reason)
+        self.assertIn("a person decides", outcome.reason)
+        cell.assert_the_jaws_untouched()
+
+    def test_a_stop_asked_for_once_the_hand_is_up_is_no_finished_push(self) -> None:
+        """The caller moves the arm back to the look only after a finished push: none is reported."""
+        cell, outcome = self._push(asked_from_call=5)
+
+        self.assertTrue(outcome.stopped)
+        self.assertEqual(outcome.legs_done, (APPROACH_LEG, *CONTACT_LEGS))
+        self.assertEqual(cell.motions(), ["move"] * 5)
+
+    def test_a_down_leg_refused_while_a_stop_was_asked_for_stays_in_the_air(self) -> None:
+        """No fall-through, which would send the arm back to the look."""
+        cell, outcome = self._push(asked_from_call=2, answers={1: _refused(MotionStatus.SELF_COLLISION_REJECTED)})
+
+        self.assertTrue(outcome.stopped, outcome.reason)
+        self.assertEqual(outcome.legs_done, (APPROACH_LEG,))
+        self.assertEqual(cell.motions(), ["move"] * 2)
+
+    def test_no_stop_asked_for_pushes_as_before(self) -> None:
+        cell, outcome = self._push(asked_from_call=99)
+
+        self.assertIs(outcome.code, C.PUSHED)
+        self.assertEqual(cell.motions(), ["move"] * 5)
+
+
 if __name__ == "__main__":
     unittest.main()

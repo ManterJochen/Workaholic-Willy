@@ -45,7 +45,8 @@ class OneHandOnePlateTests(unittest.TestCase):
         plates = sorted(float(row["plate_mm"]) for row in table["retracts"]
                         if row["arm"] == "ur5e" and row["hand"] == "robotiq_hande" and row.get("placement") == "+Z+X")
         self.assertEqual(plates, [0.0, 20.0, 35.0])
-        self.assertEqual(table["rule"]["plates_mm_judged_for_mounting_face_hands"], [0.0, 20.0, 35.0])
+        committed = _table(TABLE)["rule"]["plates_mm_judged_for_mounting_face_hands"]
+        self.assertEqual(table["rule"]["plates_mm_judged_for_mounting_face_hands"], sorted({*committed, 35.0}))
 
     def test_a_plate_on_a_flange_hand_is_refused_before_anything_is_judged(self) -> None:
         done = run(["ur5e", "--hand", "robotiq_2f85", "--plate-mm", "20", *_Z])

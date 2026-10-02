@@ -183,6 +183,14 @@ flowchart LR
 
 ## Recovery inside the attempt
 
+**The next grasp of the same look comes first, and needs no recovery.** Where the policy's try was refused by
+a guard or the planner before anything was sent (`generated_view.REFUSED_BEFORE_SENDING`, or the planner's own
+no-plan sentence) and every pose it reached kept the open hand's jaw region out of the part's keep-out box, the
+attempt hands the policy the look's next grasp, up to `GRASPS_TRIED_PER_ATTEMPT` (4); with `both_faces` only the
+best. A stop asked for and the controller are read before each, a wrist pick that sent a motion goes back to its
+look on a judged move first, and a toggle is never switched between tries. Every try is a row of
+`PickAttempt.tries` (rank, outcome, motion status and message, sent, reached the part).
+
 Two recovery actions reach into the loop, and only where the service arms them
 ([recovery/](../recovery/README.md)):
 
@@ -191,25 +199,41 @@ Two recovery actions reach into the loop, and only where the service arms them
   and says so. On a wrist camera the new part gets the look sequence again: the early stop, at most one
   generated view. Before it drives the looks again, the service reads a toggle's count, and one nobody
   can vouch for ends the pick as a gripper fault before any look is driven.
-- **The push** (`nudge_target`, `dense_clutter` only) runs on a wrist camera's pick, after its looks
-  judged the part; a fixed camera never pushes. It is due when no candidate survived and at least one
-  collided (`ALL_COLLIDED`), or, where approach validation runs, when every approach was blocked; in both
-  cases a neighbour was seen within 25 mm of the part. The loop plans the push from the table and the
-  neighbours every look saw, drives it, goes back to the look like a grasp approach (to the view it
-  generated on the straight joint line alone), looks again and judges again. Never on `NO_VALID_GRASP` or
-  `NO_CANDIDATES_GENERATED`: nothing there says a neighbour is in the way, and a part the closing axis
-  refused carries only `NO_VALID_GRASP`, so it is never pushed, while a boxed-in neighbour of it still is.
-  The push reads the frame's failing part as the closing axis and the natural turn left it, and closes the
-  way round nearer the natural orientation where the cell names one (`execute_push(...,
-  natural_closing_axis=)`). A push refused before anything
-  moved lets the attempt go on, except two that end the pick with nothing commanded: a controller that
-  cannot move (`CONTROLLER_NOT_OPERATIONAL`) and a hand nobody can vouch for, a toggle's count or a
-  width-measuring gripper not connected or unreadable (`GRIPPER_FAULT`, the owner's rule of 2026-09-30). A
-  push that stopped once something may have moved, a toggle's count nobody can vouch for before a contact
-  leg or once the arm is up among it, ends the pick where the arm stands (`ABORTED`, which the service
-  reports `unsafe_recovery_refused`, or `CONTROLLER_NOT_OPERATIONAL`). The events carry it: `ATTEMPT_FINISHED` with action `push` and `push`,
-  `push_mm`, `push_reason`, `push_leg` or `looked_again` in `extra`, and a `NO_CANDIDATE` after a push
-  refused before motion with `push` and `push_reason`, or the zones' sentence as `excluded`.
+- **Clear the blocker** (the owner, 2026-10-02) runs where the push may, first: a part that failed
+  `ALL_COLLIDED` has a neighbour taken away where one can be (`_clear_the_blockers`, the rules in
+  [recovery/blocker.py](../recovery/blocker.py)): a separate object among Track A's obstacle points, on what
+  the part stands on, narrower than the hand opens, whose removal the calculator, asked again with its pixels
+  blanked, says frees a grasp of the part or spares one of its refusals, and on an arm that models a carried
+  part no longer past the fingertips than that model. It is gripped by the policy with the part back in the
+  planner world and the blocker held out of it, set down by the place verb on a free spot the camera saw or at
+  `blocker_place`, and the arm goes back to its look and looks again. No budget: each removal has to spare
+  some of the part's refusals, a blocker set down is never taken again, and the clearing stops with a typed
+  `BlockerRecord` (`orchestrator.blockers`). A blocker's grasp refused once the arm stood over it, the hand
+  known empty and open, sends the arm back to its look on a judged move, the blocker still held out of the
+  world as on the way down (`BLOCKER_NOT_REACHED`, that blocker not tried again); any other stop once
+  something moved is kept as a stopped push of trigger `clear_the_blocker`, which needs a person. The push
+  reads the pick's stop check between its legs: a stop asked for ends it where the arm stands. The events:
+  `ATTEMPT_FINISHED` with action `clear_blocker` and `blocker` (`set_aside` or the stop's code),
+  `blocker_at_mm`, `set_down`, `looked_again` or `blocker_reason` in `extra`.
+- **The push** (`nudge_target`, `dense_clutter` only) runs on a wrist camera's pick, after its looks judged
+  the part, where no blocker could be cleared; a fixed camera never pushes. It is due when no candidate
+  survived and at least one collided (`ALL_COLLIDED`), or, where approach validation runs, when every approach
+  was blocked; in both cases a neighbour was seen within 25 mm of the part. The loop plans the push from the
+  table and the neighbours every look saw, drives it, goes back to the look like a grasp approach (to the view
+  it generated on the straight joint line alone), looks again and judges again. Never on `NO_VALID_GRASP` or
+  `NO_CANDIDATES_GENERATED`: nothing there says a neighbour is in the way, and a part the closing axis refused
+  carries only `NO_VALID_GRASP`, so it is never pushed, while a boxed-in neighbour of it still is. The push
+  reads the frame's failing part as the closing axis and the natural turn left it, and closes the way round
+  nearer the natural orientation where the cell names one (`execute_push(..., natural_closing_axis=)`). A push
+  refused before anything moved lets the attempt go on, except two that end the pick with nothing commanded: a
+  controller that cannot move (`CONTROLLER_NOT_OPERATIONAL`) and a hand nobody can vouch for, a toggle's count
+  or a width-measuring gripper not connected or unreadable (`GRIPPER_FAULT`, the owner's rule of 2026-09-30).
+  A push that stopped once something may have moved, a toggle's count nobody can vouch for before a contact
+  leg or once the arm is up among it, ends the pick where the arm stands (`ABORTED`, which the service reports
+  `unsafe_recovery_refused`, or `CONTROLLER_NOT_OPERATIONAL`). The events carry it: `ATTEMPT_FINISHED` with
+  action `push` and `push`, `push_mm`, `push_reason`, `push_leg` or `looked_again` in `extra`, and a
+  `NO_CANDIDATE` after a push refused before motion with `push` and `push_reason`, or the zones' sentence as
+  `excluded`.
 
 ## Progress
 
@@ -263,7 +287,7 @@ other, and with a target label the choice is made before ordering is asked.
 | `CONTROLLER_NOT_OPERATIONAL` | measured against real controller software: a protective stop in URSim |
 | Clutter-aware ordering | never touched hardware: tested on synthetic scenes, no measured scene where order matters |
 | The wrist looks, the generated view, the move back and `both_faces` | pinned by tests on fake arms and cameras, and the Isaac arm generates no view; never touched hardware |
-| The push inside a wrist camera's attempt | pinned by tests with a fake arm and a fake live world; never touched hardware |
+| The push inside a wrist camera's attempt | pinned by tests with a fake arm and a fake live world; ran on URSim CB3 on 2026-10-02, a recorded look standing in for the camera ([`probe_push_on_the_mat.py`](../../../../scripts/ursim/probe_push_on_the_mat.py)); never touched hardware |
 
 ## Files
 

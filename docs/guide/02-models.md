@@ -214,6 +214,18 @@ to fail loudly. **The VLM route has run on a physical cell**, on a wrist D415, a
 is kept here: its grounding quality, its VRAM cost and the choice between the 4B and 8B checkpoints are
 yours to measure ([`src/models/vlm/README.md`](../../src/models/vlm/README.md)).
 
+**One VLM copy reads commands and detects.** The operator console reads an operator's sentence, German or
+English, with the same Qwen3-VL, as a text-only question (`src/models/vlm/command.py`), and a process holds
+**one copy** for both (`shared_vlm()`, [`vlm/`](../../src/models/vlm/README.md)): the factory takes its grounder
+from that holder, so a cell whose detector is the VLM reads commands with the copy it detects with. The 4B
+checkpoint holds **8.93 GB** of VRAM once loaded and peaks near **9.9 GB** while it answers (the development box's
+RTX 5080), beside SAM2, Whisper, the cuRobo sidecar and the desktop, so a second copy is not an option. The rule
+for loading: a cell that detects with the VLM loads it at its first command; any other cell refuses a command
+until a person presses "Laden" (`POST /v1/commands/warmup`), and building such a cell lets the copy go unless a
+person loaded it. **Switching the checkpoint takes a rebuild**: a command or "Laden" beside a copy of other
+weights is refused. A load takes about 6.3 to 7.3 s and a command about 2.2 s on a free card, 5.5 to 19 s while
+another GPU job runs. The cell PC's card is unmeasured.
+
 **`router.enabled`** routes each prompt from its text alone, before any weights load: plain English
 noun phrases go to the phrase grounder, everything else to the VLM. It is deterministic: the first
 matching rule wins, with no model and no image. The reason travels with the pick, so an operator seeing
@@ -509,6 +521,7 @@ constructs, and the VLM response parser with its coordinate-space contract.
 | RT-DETR, OneFormer, the MediaPipe detectors, the RT-DETR training script | never touched hardware: unit tests only; SAM2 against OneFormer is not compared |
 | Whisper and the Silero voice detector | never touched hardware: fakes, a random Whisper, and the real weights for load time, latency and memory only |
 | GroundingDINO, SAM2 and the VLM route on a physical camera | run on a physical cell: a wrist D415 on a UR10 (CB3); no measurement is kept here |
+| The VLM reading commands: load time, VRAM, latency, German and English sentences | measured on the development box's RTX 5080 against the real 4B weights (`tests/test_vlm_command_inference.py`); not on the cell PC |
 | The live RGB-D adapter | measured on a real camera setup ([perception status](../../src/robot/perception/README.md#status)) |
 | A learned depth model | does not exist |
 

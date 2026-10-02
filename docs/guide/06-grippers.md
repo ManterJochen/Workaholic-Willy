@@ -277,7 +277,7 @@ in `jaw_io` and in `vacuum`. A pin number measured in the control box needs `io_
 | no switches, `open_on_connect_without_feedback: true` | **opens unconditionally**, and anything held is dropped (refused for `single_toggle`) |
 | no switches, flag off | does not actuate at all |
 | `confirm_open_at_start: true` on a solenoid | first **asks** whether the jaws stand open, as a toggle does, then the row above that fits |
-| `single_toggle` | **asks** whether the jaws stand open, before anything moves, and writes nothing; closed is answered with one change to open them or an abort; with no terminal the connect is refused |
+| `single_toggle` | **asks** whether the jaws stand open, before anything moves, and writes nothing; closed is answered with one change to open them or an abort; with no terminal the connect is refused, and the operator console asks in the browser |
 
 ### A single toggle asks where its jaws stand
 
@@ -363,6 +363,43 @@ output already stands at that level, and `--pulse` (high, then low) moves them t
 from high. `--jaws open` (or `closed`) moves them through the driver, which
 asks the question first. Never push the jaws open by hand; switch the output at the pendant instead, and
 the next pick asks where they stand.
+
+### The jaws question in the browser
+
+The operator console asks the same question, **in the browser and nowhere else**: a question at the server's
+terminal cannot be cancelled, and nobody watching the console sees it. CLI programs and the examples keep
+asking at their own terminal, as above.
+
+- **Connect asks, and so does a check.** `POST /v1/cell/connect` asks while it connects the hand, and
+  `POST /v1/cell/jaws/check` asks again before the arm moves after a stop (Restart, Setup, the ready bar):
+  **a check always asks**, also where the count says open, because a person may have opened the jaws at the
+  pendant or emptied the hand meanwhile. After a stop it waits for "Zelle ist frei" (`409 cell_not_cleared`,
+  nobody asked), as every motion does.
+- **A count that says closed is never answered "open".** Where the program itself closed the jaws and nothing
+  moved them since (no failed or unread change, the output still at the level the count left), a check asks only
+  "Jetzt öffnen" or "Abbrechen": one wrong click on "Offen" would turn the count round with nothing sent, tell
+  the planner the hand is empty, and the next close would open the jaws on the part. An abort keeps the count
+  closed.
+- **No default.** The dialog offers exactly the hand's choices, `open` or `closed`, then after `closed`,
+  `open_now` or `abort`, with none lit or focused, and Escape answers nothing. A question unanswered for 120 s,
+  cancelled or cut by a Disconnect is refused, **never "open"**: the connect is rolled back.
+- **"Jetzt öffnen" is one change of the output**, which opens the jaws where the arm stands and releases what
+  they hold, so the dialog tells the person to hold the part first. It goes out only once a gate passed,
+  right before the change: no run holds the cell, the arm is not halted, the controller's own fields say it can
+  move, and no stop waits for "Zelle ist frei" (at Connect too). **A stopped controller gets no "open now"**,
+  with nothing sent.
+- **Open jaws hold nothing.** An answer that leaves the jaws open stamps the console and tells the planner the
+  hand is empty (`arm.detach_payload()`), so its part model is gone. After "open now" a person's hands were
+  at the jaws, and the next motion the robot makes by itself counts down 3 s.
+- **A hand that measures nothing else** is emptied by a person, who says so on the stop card: "Backen leer"
+  (`jaws_empty`), refused for a toggle whose count is not open and for a hand that measures a part.
+
+From a program, the same seam is `JawIOGripper.answer_questions_with(ask, before_change=gate)`: `ask` gets one
+`JawAsking` per attempt (its `stage`, its `choices`, where the output is, the reason, the attempt and why it is
+asked again) and returns one of its choices; `EOFError` is no answer. `confirm_where_the_jaws_stand(reason)` is
+the check that always asks, "open now" alone where the count says closed. The console installs its seam at every
+build, and refuses to connect a toggle without it (`jaws_seam_missing`); the full round trip is in
+[`api/README.md`](../../api/README.md).
 
 ### The travel time
 

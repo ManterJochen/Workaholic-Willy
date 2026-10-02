@@ -21,7 +21,11 @@ The owner's rules (2026-09-29), each one a named constant below:
      the planner does not plan a push the arm's line judge would predictably refuse. The fingers are checked
      at every height, the palm only above its own underside. Along the push the palm reaches the larger of the
      fingers' outer faces and half the housing's thickness (``PushHand.palm_thickness_mm``, 75 mm on the
-     Hand-E).
+     Hand-E). Beside the pushed part the owner's 10 mm stands instead (2026-10-02, ``beside_part_clearance_mm``):
+     a neighbour point inside the box the push keeps out of the camera world round the part and its path (the
+     smallest rectangle about them, as the world boxes a target, grown by ``beside_part_mm``) is one the guard
+     does not see while the push runs, and the open hand keeps that clearance from it; a point outside keeps
+     ``hand_clearance_mm``, the guard's own view of it.
   2. The part's own path keeps :data:`PATH_NEIGHBOUR_CLEARANCE_MM` from every neighbour point that is not
      behind it.
   3. The part's minimum clearance to its neighbours grows by at least :data:`MIN_CLEARANCE_GAIN_MM`.
@@ -72,6 +76,10 @@ from typing import Any, Optional, Sequence, Union
 
 import numpy as np
 from numpy.typing import ArrayLike
+
+#: A push is planned only on a support within this many degrees of level: the camera world's own bound for what the
+#: parts stand on, one number for both.
+from src.robot.safety.planning.support_surfaces import MAX_SUPPORT_TILT_DEG
 
 __all__ = [
     "AUTO_BOX_EXTRA_SHRINK_MM",
@@ -200,8 +208,6 @@ MIN_CLEARANCE_GAIN_MM = 10.0
 #: Points within this of the support plane are table, not part and not neighbour. It is the camera world's
 #: plane band (``plane_clearance_mm``).
 SUPPORT_BAND_MM = 5.0
-#: A push is planned only on a support within this many degrees of level.
-MAX_SUPPORT_TILT_DEG = 5.0
 #: Where the part rests is this percentile of its heights above the support (points down to the support band
 #: kept, since the bottom of a side face lies within it): a few stray low points do not decide it.
 PART_BASE_PERCENTILE = 2.0
@@ -702,6 +708,28 @@ def _min_swept_distance(target_uv: np.ndarray, points_uv: np.ndarray, distance: 
     return math.sqrt(best)
 
 
+def _inside_the_keep_out(points_ab: np.ndarray, target_ab: np.ndarray, direction_ab: np.ndarray, distance: float,
+                         margin: float) -> np.ndarray:
+    """Which of ``points_ab`` lie in the box the push keeps out of the camera world round the part and its path, in the
+    support plane: the part's points swept ``distance`` along ``direction_ab`` (as ``swept_target_points_mm`` offers
+    them), boxed as the world boxes a target (the smallest rectangle about them, ``height_map.turn_of``, the world's
+    ``_oriented_box``) and grown by ``margin``. Inside it the guard does not see a neighbour while the push runs."""
+
+    from src.robot.safety.planning.height_map import turn_of  # noqa: PLC0415 (the world's own fit)
+
+    if len(points_ab) == 0 or len(target_ab) == 0:
+        return np.zeros(len(points_ab), dtype=bool)
+    steps = max(1, int(math.ceil(float(distance) / SWEEP_STEP_MM)))
+    swept = np.vstack([target_ab + t * direction_ab[None, :] for t in np.linspace(0.0, float(distance), steps + 1)])
+    yaw = turn_of(swept)
+    cos_yaw, sin_yaw = math.cos(-yaw), math.sin(-yaw)
+    turn = np.array([[cos_yaw, -sin_yaw], [sin_yaw, cos_yaw]], dtype=np.float64)
+    local = swept @ turn.T
+    low, high = local.min(axis=0) - float(margin), local.max(axis=0) + float(margin)
+    points = points_ab @ turn.T
+    return np.asarray(np.all((points >= low - _EPS_MM) & (points <= high + _EPS_MM), axis=1), dtype=bool)
+
+
 def _inside_xy(points_xy: np.ndarray, box: tuple[Vec2, Vec2], margin: float = 0.0) -> bool:
     (lo_x, lo_y), (hi_x, hi_y) = box
     return bool(
@@ -878,6 +906,10 @@ class _Scene:
     workspace: AxisBox
     hand: PushHand
     hand_clearance: float         # the hand's clearance to every neighbour point, never under HAND_NEIGHBOUR_CLEARANCE_MM
+    # The hand's clearance to a neighbour point inside the push's keep-out (the box round the part and its path, grown
+    # by ``beside_mm``), never under HAND_NEIGHBOUR_CLEARANCE_MM; None keeps ``hand_clearance`` for every point.
+    beside_clearance: Optional[float] = None
+    beside_mm: float = 0.0
 
 
 def _refuse(code: str, sentence: str, candidates: tuple[DirectionVerdict, ...] = ()) -> PushRefusal:
@@ -898,6 +930,9 @@ def plan_push(
     operator_box: Optional[AxisBox] = None,
     push_axes_xy: Sequence[Sequence[float]] = DEFAULT_PUSH_AXES_XY,
     hand_clearance_mm: float = HAND_NEIGHBOUR_CLEARANCE_MM,
+    finger_floor_mm: float = FINGER_HEIGHT_MIN_MM,
+    beside_part_clearance_mm: Optional[float] = None,
+    beside_part_mm: float = 0.0,
 ) -> Union[PushPlan, PushRefusal]:
     """Plan one push of the failed part, or refuse with a reason.
 
@@ -911,13 +946,37 @@ def plan_push(
     take, in BASE XY; each is tried both ways. ``push_distance_mm`` is best settled first with
     :func:`resolve_push_distance`. ``hand_clearance_mm`` is how far the open hand keeps from every neighbour
     point; a value under :data:`HAND_NEIGHBOUR_CLEARANCE_MM` is raised to it (a clearance only narrows), and one
-    that is not a finite number of mm raises ``ValueError``.
+    that is not a finite number of mm raises ``ValueError``. ``finger_floor_mm`` is the least height above the
+    support the fingertip rides at: where the camera world holds the support as a solid, its top over the swept path
+    plus the guard's distance to it, so the guard never refuses the push's own path at the solid; a value under
+    :data:`FINGER_HEIGHT_MIN_MM` is raised to it, and one that is not a finite number of mm raises ``ValueError``.
+    ``beside_part_clearance_mm``, where given, is how far the open hand keeps from a neighbour point inside the box the
+    push keeps out of the camera world round the part and its path (the smallest rectangle about the part's points
+    swept along the push, as the world boxes a target, grown by ``beside_part_mm``, the world's margin), which the
+    guard does not see while the push runs: the owner's 10 mm of 2026-10-02. Every other point keeps
+    ``hand_clearance_mm``. A value under :data:`HAND_NEIGHBOUR_CLEARANCE_MM` is raised to it, and one
+    that is not a finite number of mm, or a ``beside_part_mm`` that is not, raises ``ValueError``. ``None``, the default,
+    keeps ``hand_clearance_mm`` for every point, as before.
     """
 
     clearance = float(hand_clearance_mm)
     if not math.isfinite(clearance) or clearance < 0.0:
         raise ValueError(f"hand_clearance_mm must be a non-negative number of mm, got {hand_clearance_mm!r}")
     clearance = max(clearance, HAND_NEIGHBOUR_CLEARANCE_MM)
+    beside: Optional[float] = None
+    if beside_part_clearance_mm is not None:
+        beside = float(beside_part_clearance_mm)
+        if not math.isfinite(beside) or beside < 0.0:
+            raise ValueError(f"beside_part_clearance_mm must be a non-negative number of mm, got "
+                             f"{beside_part_clearance_mm!r}")
+        beside = max(beside, HAND_NEIGHBOUR_CLEARANCE_MM)
+    beside_mm = float(beside_part_mm)
+    if not math.isfinite(beside_mm) or beside_mm < 0.0:
+        raise ValueError(f"beside_part_mm must be a non-negative number of mm, got {beside_part_mm!r}")
+    floor_mm = float(finger_floor_mm)
+    if not math.isfinite(floor_mm):
+        raise ValueError(f"finger_floor_mm must be a number of mm, got {finger_floor_mm!r}")
+    floor_mm = max(floor_mm, FINGER_HEIGHT_MIN_MM)
     distance = float(push_distance_mm)
     if not math.isfinite(distance) or distance <= 0.0:
         return _refuse(REFUSED_PUSH_DISTANCE_INVALID,
@@ -983,7 +1042,9 @@ def plan_push(
         return boxes
     landing_box, hand_region, seen = boxes
 
-    finger_height = min(FINGER_HEIGHT_MAX_MM, max(FINGER_HEIGHT_MIN_MM, 0.5 * part_height))
+    # Half the part's height within the owner's range, and never under the floor: over a support the camera world holds
+    # as a solid, the solid's top and the guard's distance to it.
+    finger_height = max(floor_mm, min(FINGER_HEIGHT_MAX_MM, max(FINGER_HEIGHT_MIN_MM, 0.5 * part_height)))
     palm_underside = finger_height + hand.palm_underside_above_tip_mm
     if part_top > palm_underside - PALM_PART_CLEARANCE_MM + _EPS_MM:
         return _refuse(REFUSED_PART_REACHES_THE_PALM,
@@ -1013,7 +1074,8 @@ def plan_push(
                    neighbour_cells=neighbour_cells, neighbour_tops=neighbour_tops, centre_ab=centre_ab,
                    part_height=part_height, part_base=part_base, finger_height=finger_height,
                    tcp_height=tcp_height, distance=distance, clearance_before=gap, landing_box=landing_box,
-                   hand_region=hand_region, seen=seen, workspace=workspace, hand=hand, hand_clearance=clearance)
+                   hand_region=hand_region, seen=seen, workspace=workspace, hand=hand, hand_clearance=clearance,
+                   beside_clearance=beside, beside_mm=beside_mm)
     verdicts: list[DirectionVerdict] = []
     best: Optional[tuple[float, np.ndarray, float]] = None
     for direction_ab in directions:
@@ -1171,9 +1233,16 @@ def _judge(scene: _Scene, direction_ab: np.ndarray) -> tuple[DirectionVerdict, O
     label: Vec2 = (float(xy[0]), float(xy[1]))
     st = _stations(scene, direction_ab)
     hand = scene.hand
-    clear = scene.hand_clearance
 
     n_uv = _uv(scene.neighbour_cells, direction_ab)
+    clear: Union[float, np.ndarray] = scene.hand_clearance
+    if scene.beside_clearance is not None:
+        # The owner's clearance beside the pushed part (2026-10-02): a point inside the box the push keeps out round the
+        # part and its path is the guard's blind spot while the push runs, and keeps the clearance beside the part;
+        # every other point keeps the clearance the guard's own view asks.
+        beside = _inside_the_keep_out(scene.neighbour_cells, scene.target_ab, direction_ab, scene.distance,
+                                      scene.beside_mm)
+        clear = np.where(beside, scene.beside_clearance, scene.hand_clearance)
     lateral = np.abs(n_uv[:, 1] - st.v_line)
     finger_u = (n_uv[:, 0] >= st.hand_u_low - clear) & (n_uv[:, 0] <= st.hand_u_high + clear)
     palm_u = (n_uv[:, 0] >= st.palm_u_low - clear) & (n_uv[:, 0] <= st.palm_u_high + clear)

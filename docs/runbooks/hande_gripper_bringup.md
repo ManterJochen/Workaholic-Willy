@@ -175,6 +175,11 @@ So a cell handling several parts either declares the longest as its worst case, 
 rather than per cell. The checklist refuses to let it say neither. Expect the first surprise at a bin
 wall, not in the logs.
 
+**The operator console's task needs the length.** A task carries every part it picks, so `POST /v1/task`
+refuses `409 carried_part_not_modelled` on an arm that models no carried part, and the ready bar's carried-part
+light stays red until the length is declared. After every pick the task also reads that the planner carries the
+part, and stops where the arm stands if it does not.
+
 
 ---
 
@@ -202,7 +207,10 @@ print(mesh_backend_status(c.robot.ur.model, None, h.guard_variant))"
 Then the arm, from [real_cell_first_pick.md](real_cell_first_pick.md), and one bench check of the
 driver: command a width, read it back, and confirm the two agree within a millimetre. A Hand-E switched
 over its I/O coupling (`jaw_io`, `single_toggle`) reads no width back: time its stroke both ways
-instead and set `close_settle_s` (real_cell_first_pick.md, Diagnose 2).
+instead and set `close_settle_s` (real_cell_first_pick.md, Diagnose 2). In the operator console the Hand-E's
+connect asks where its jaws stand in the browser, with no default: hold the part before you answer "Jetzt
+öffnen", which is one change of tool DO0, and count exactly two changes per part during a task
+([console_at_the_cell.md](console_at_the_cell.md)).
 
 ---
 

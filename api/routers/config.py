@@ -163,6 +163,11 @@ def patch_config(
             WriteRefused.INVALID_VALUE: 422,
             WriteRefused.NO_TARGET: 409,
             WriteRefused.CELL_CONNECTED: 409,
+            # The pose door's own refusals. This route never meets them today (a pose key is NOT_WRITABLE here first),
+            # but the map stays total, at the statuses the catalog gives them (api.codes.REFUSAL_STATUS).
+            WriteRefused.NO_LAYER: 422,
+            WriteRefused.INVALID_NAME: 422,
+            WriteRefused.INVALID_LABEL: 422,
         }[result.refused]  # type: ignore[index]
         raise HTTPException(
             status_code=status,

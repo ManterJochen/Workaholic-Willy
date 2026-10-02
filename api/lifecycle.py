@@ -25,16 +25,33 @@ answer this console gives, which it did not before 2026-09-09, when ``real_cell 
 reported ``3/3 succeeded`` on a cell this console refused to connect at all. What stays here is what
 a server has and a library does not: a typed code for the UI, a preview whose token must be
 invalidated, and a lock that was already taken. The sentence both print now has one author.
+
+A hand that asks a person before anything moves asks in the browser. The owner's toggle (a Hand-E on tool
+DO0, no sensor) asks at every connect where its jaws stand, and the console hands it a question seam that
+waits for the browser (``api.jaws``, installed at every build). So a connect can wait minutes for a person
+while it holds this session's lock, which brings three more rules:
+
+* a connect is refused while the built arm is halted (a latched arm switches no output, and "the cell is
+  clear" ends the latch), and refused for a hand that would ask and has no browser seam: the console never
+  falls back to the terminal of the server it runs in, where a question cannot be cancelled;
+* a Disconnect ends a waiting question before it takes the lock, so it never waits on a person;
+* a rebuild is refused at once while a connect is in flight, without waiting for its lock.
+
+A person may also have the arm in their hands: a teach frees it for them (``api.teach``). A Disconnect asks
+every open teach to hold the arm at once and waits (bounded) until it has, before it takes the arm down, so an
+arm is never brought down in teach mode, where only its watchdog would stop it in a person's hands.
 """
 
 from __future__ import annotations
 
 import secrets
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from api.constants import API_LOG_DIR, LIFECYCLE_LOG_FILE
 from src.robot.execution.lifecycle import (
@@ -54,9 +71,12 @@ __all__ = [
     "CellState",
     "release_perception",
     "ConnectRefused",
+    "JawsQuestions",
+    "JawsWatch",
     "MotionWarning",
     "CellSession",
     "ConnectPreview",
+    "TeachHolds",
 ]
 
 logger = create_logger("CellSession", LIFECYCLE_LOG_FILE, log_dir=API_LOG_DIR)
@@ -64,6 +84,13 @@ logger = create_logger("CellSession", LIFECYCLE_LOG_FILE, log_dir=API_LOG_DIR)
 #: How long a connect token stays valid. Long enough to read the warning and decide; short enough that
 #: a token found in a log or a stale tab is not a way to move a robot an hour later.
 _TOKEN_TTL = timedelta(minutes=5)
+#: How often a Disconnect that finds the session lock held ends a question that came up meanwhile and asks for the
+#: lock again: a connect or a jaws check holds it while a person is asked, for up to two minutes per question.
+_DISCONNECT_POLL_S = 0.05
+#: What a Disconnect tells a question it ends.
+_DISCONNECTED_WHILE_ASKED = "the cell was disconnected while the question waited"
+#: What a Disconnect tells a teach it holds.
+_DISCONNECTED_WHILE_TEACHING = "the cell is being disconnected"
 
 
 class CellState(StrEnum):
@@ -98,6 +125,50 @@ class ConnectRefused(StrEnum):
     DRIVER_REFUSED = "driver_refused"
     #: Already connected, or a connect is already in flight.
     WRONG_STATE = "wrong_state"
+    #: The built arm's halt latch is set ("halt now"): a latched arm switches no output and makes no move, and only a
+    #: person's "the cell is clear" (``POST /v1/cell/acknowledge``) ends it. Checked before the driver is reached.
+    HALTED = "halted"
+    #: The hand asks a person where its jaws stand before anything moves, and the browser question is not installed on
+    #: it: the console never falls back to the terminal of the server it runs in. A backstop, since a build whose seam
+    #: cannot be installed fails.
+    JAWS_SEAM_MISSING = "jaws_seam_missing"
+
+
+class JawsWatch(Protocol):
+    """One connect watched by the console's jaws question (``api.jaws``): told how the connect ended."""
+
+    def succeeded(self) -> None:
+        """The connect came up. Where a question was answered with the jaws standing open, the console stamps it and
+        tells the planner the hand is empty."""
+        ...
+
+    def failed(self, error: BaseException) -> str:
+        """The connect was refused or raised; what the refusal adds about the question (nobody answered, it was
+        cancelled), ``""`` for nothing."""
+        ...
+
+
+class JawsQuestions(Protocol):
+    """What the console's jaws question in the browser offers the session; ``api.jaws.install`` hands it over at every
+    build (:attr:`CellSession.questions`)."""
+
+    def connecting(self, gripper: Any) -> JawsWatch:
+        """Watch the questions a connect asks of ``gripper``, from now until the watch is told how it ended."""
+        ...
+
+    def cancel(self, why: str) -> bool:
+        """End a waiting question as unanswered, never "open"; ``True`` where one was waiting."""
+        ...
+
+
+class TeachHolds(Protocol):
+    """What the console's teach offers the session (``api.teach``, handed over as a teach starts,
+    :attr:`CellSession.teaches`): hold every open teach before the arm comes down."""
+
+    def hold_at_once(self, why: str) -> bool:
+        """Hold every open teach at once and wait (bounded) until each let go of the arm; ``True`` once none is
+        free."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,26 +257,30 @@ def motion_warnings(robot_config: "RobotConfig", gripper: object) -> tuple[Motio
         opts_in = bool(getattr(gripper, "_open_on_connect_without_feedback", False))
         # A toggle is the one jaw cell whose connect always depends on a PERSON: nothing reads its jaws back, so the
         # driver asks where they stand before anything moves, and counts its own changes from the answer. A solenoid
-        # asks too where it opted in (confirm_open_at_start), and then connects by its feedback as below.
+        # asks too where it opted in (confirm_open_at_start), and then connects by its feedback as below. The console
+        # asks in the browser (`api.jaws`), never at the terminal it runs in, and a question nobody answers in time is
+        # refused, never taken for "open".
+        from api.jaws import JAW_QUESTION_TIMEOUT_S  # noqa: PLC0415 (the session module loads no browser code first)
+
+        waits = (f"in the browser (never at the terminal this console runs in), and waits "
+                 f"{JAW_QUESTION_TIMEOUT_S:g} s for the answer; unanswered, the connect is refused.")
         toggle = toggle_without_sensor_of(gripper) is not None
         if not toggle and getattr(gripper, "asks_at_connect", False) is True:
             warnings.append(MotionWarning(
                 subject="gripper",
-                what="Connecting first ASKS whether the jaws stand open (confirm_open_at_start), at the terminal "
-                     "this console runs in, and waits for the answer; with no terminal the connect is refused.",
+                what=f"Connecting first ASKS whether the jaws stand open (confirm_open_at_start), {waits}",
                 precaution="Look at the jaws before you answer. If they stand closed you are offered to OPEN them, "
-                           "which releases anything between them where the arm stands; answer 'a' to abort instead.",
+                           "which releases anything between them where the arm stands; choose abort instead.",
             ))
         if toggle:
             warnings.append(MotionWarning(
                 subject="gripper",
-                what="Connecting first ASKS where the jaws stand, at the terminal this console runs in, and "
-                     "waits for the answer; with no terminal the connect is refused. The hand is a toggle on "
-                     "one output with no sensor, so every change of the output, on or off, moves the jaws, and "
-                     "only a person can say where the program's count of its changes starts.",
+                what=f"Connecting first ASKS where the jaws stand, {waits} The hand is a toggle on one output with no "
+                     "sensor, so every change of the output, on or off, moves the jaws, and only a person can say "
+                     "where the program's count of its changes starts.",
                 precaution="Look at the jaws before you answer. If they stand closed you are offered ONE CHANGE "
-                           "of the output to open them, which releases anything between them where the arm stands; "
-                           "answer 'a' to abort instead.",
+                           "of the output to open them, which releases anything between them where the arm stands, "
+                           "and goes out only while the controller says it can move; choose abort instead.",
             ))
         elif has_feedback:
             warnings.append(MotionWarning(
@@ -246,6 +321,12 @@ class CellSession:
     _token_expires: datetime | None = None
     #: Fingerprint of the config the token was issued against; a write invalidates the token.
     _token_fingerprint: str = ""
+    #: The console's jaws question in the browser, handed over at every build (``api.jaws.install``); ``None`` before.
+    #: A connect is watched by it, and a Disconnect ends its waiting question before taking :attr:`_lock`.
+    questions: JawsQuestions | None = field(default=None, repr=False)
+    #: The console's teaches, handed over as a teach starts (``api.teach``); ``None`` before. A Disconnect asks them to
+    #: hold the arm, and waits until they have, before it takes the arm down.
+    teaches: TeachHolds | None = field(default=None, repr=False)
     _lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
 
     # --- what was built ----------------------------------------------------------------------------
@@ -277,16 +358,25 @@ class CellSession:
         Split out of :meth:`adopt` so the caller can ask before it spends anything. A real build opens
         a camera and loads two models onto the GPU, and doing that first and asking afterwards means a
         refused rebuild has already claimed the device it was refused for.
+
+        The state is read once before the lock, too: a connect holds the lock while its jaws question waits for a
+        person, minutes perhaps, and a rebuild that waited for it would hold the console's own lock all that time
+        (``Console.build`` asks this under it), which every read of ``GET /v1/cell`` takes.
         """
+        if self.state in (CellState.CONNECTED, CellState.CONNECTING):
+            self._refuse_rebuild()
         with self._lock:
             if self.state in (CellState.CONNECTED, CellState.CONNECTING):
-                logger.warning("Rebuild refused: the cell is %s, not idle.", self.state.value)
-                raise CellTransitionError(
-                    ConnectRefused.WRONG_STATE,
-                    "the cell is connected; disconnect before rebuilding. Rebuilding under a live "
-                    "connection would leave the old arm and gripper connected with nothing holding "
-                    "them.",
-                )
+                self._refuse_rebuild()
+
+    def _refuse_rebuild(self) -> None:
+        logger.warning("Rebuild refused: the cell is %s, not idle.", self.state.value)
+        raise CellTransitionError(
+            ConnectRefused.WRONG_STATE,
+            "the cell is connected; disconnect before rebuilding. Rebuilding under a live "
+            "connection would leave the old arm and gripper connected with nothing holding "
+            "them.",
+        )
 
     def adopt(self, service: Any) -> None:
         """Install a freshly built service, releasing the one it replaces.
@@ -389,10 +479,15 @@ class CellSession:
                 raise CellTransitionError(
                     ConnectRefused.NO_REAL_GRIPPER, no_real_gripper_reason(substitution),
                 )
+            arm, gripper = self.arm, self.gripper
+            # Before anything reaches the driver, as the refusals above: neither has moved anything.
+            refused = _refused_before_the_driver(arm, gripper)
+            if refused is not None:
+                logger.warning("Connect refused (%s): %s", refused[0].value, refused[1])
+                raise CellTransitionError(*refused)
 
             self.state = CellState.CONNECTING
             self.cell_lock = cell_lock
-            arm, gripper = self.arm, self.gripper
             logger.info(
                 "Connecting: arm=%s, then gripper=%s. THIS MOVES; acknowledged by token.",
                 type(arm).__name__, type(gripper).__name__,
@@ -405,6 +500,9 @@ class CellSession:
                     # This moves. The preview said so and the token proves the operator read it.
                     logger.info("Gripper connected (%s).", type(gripper).__name__)
 
+            # The browser question watches the connect: a question the hand asks goes to the browser and waits for a
+            # person there, and how it ended is what the console stamps (open jaws hold nothing) or adds to a refusal.
+            watch = _watch(self.questions, gripper)
             try:
                 # One implementation, shared with the CLI, for the same reason the teardown is: two
                 # copies of the same transaction drift, and they drift first in the half that
@@ -415,7 +513,8 @@ class CellSession:
             except BaseException as exc:
                 # The arm is already rolled back by `connect_cell`. What is left here is the state
                 # this console keeps around it.
-                logger.error("Connect FAILED (%s: %s); rolled back.", type(exc).__name__, exc)
+                said = _failed(watch, exc)
+                logger.error("Connect FAILED (%s: %s)%s; rolled back.", type(exc).__name__, exc, said)
                 if cell_lock is not None:
                     cell_lock.release()
                 self.cell_lock = None
@@ -423,20 +522,37 @@ class CellSession:
                 self._invalidate_token()
                 if isinstance(exc, Exception):
                     raise CellTransitionError(
-                        ConnectRefused.DRIVER_REFUSED, f"{type(exc).__name__}: {exc}"
+                        ConnectRefused.DRIVER_REFUSED, f"{type(exc).__name__}: {exc}{said}"
                     ) from exc
                 raise  # KeyboardInterrupt / SystemExit propagate, rolled back first
             self.state = CellState.CONNECTED
             logger.info("Cell connected.")
             self._invalidate_token()
+        # Outside the session lock: the watch stamps the console, whose own lock a build holds while it asks for this
+        # one (``Console.build``), and the two must never be waited for the other way round. Its question stays pending
+        # until the watch is done, so nothing that moves can start in between.
+        _succeeded(watch)
 
     def disconnect(self) -> None:
         """Take the cell down. Idempotent, and it releases the cross-process lock.
 
         Gripper first, then arm: the reverse of connect. A vacuum cup's ``disconnect`` releases its
         output, and doing that while the arm is still up means the release actually reaches the I/O.
+
+        A waiting jaws question is ended first, as unanswered (never "open"), and only then is the lock taken: a connect
+        or a jaws check holds the lock while it waits for a person, and a Disconnect that queued behind it would wait
+        up to two minutes per question. A question that comes up while the lock is still held is ended too, until the
+        lock comes free: the connect or the check it belonged to is refused, with nothing sent, and lets go of it.
+
+        Then every open teach is asked to hold the arm at once, and the Disconnect waits (bounded) until it has: an arm
+        taken down in teach mode would be stopped by its watchdog in a person's hands, not held. Whatever the teach
+        answers or raises, the cell comes down.
         """
-        with self._lock:
+        self._end_the_question()
+        self._hold_the_teach()
+        while not self._lock.acquire(timeout=_DISCONNECT_POLL_S):
+            self._end_the_question()
+        try:
             was = self.state
             # One implementation, shared with the CLI. Two copies of this teardown drift, and they
             # drift first over which end comes down and whether the gripper comes down at all;
@@ -459,6 +575,46 @@ class CellSession:
                 # every release, and logging the no-op would bury the transition that mattered.
                 logger.info("Cell disconnected (gripper first, then arm); now %s.", self.state.value)
             self._invalidate_token()
+        finally:
+            self._lock.release()
+
+    @contextmanager
+    def while_connected(self) -> Iterator[None]:
+        """Hold the session for something that must meet no connect, disconnect or rebuild halfway: a jaws check, which
+        waits for a person's answer and may then send its one change of the output.
+
+        Refused (``WRONG_STATE``) unless the cell is connected. A Disconnect meanwhile ends the check's waiting
+        question first (:meth:`disconnect`), and otherwise waits for the check, so the arm never comes down in the
+        middle of the one change a person chose.
+        """
+        with self._lock:
+            if self.state is not CellState.CONNECTED:
+                raise CellTransitionError(ConnectRefused.WRONG_STATE,
+                                          f"the cell is {self.state.value}, not connected; nothing was asked.")
+            yield
+
+    def _end_the_question(self) -> None:
+        """End the jaws question waiting for its answer, as unanswered; the browser seam says it, never raises here."""
+        questions = self.questions
+        if questions is None:
+            return
+        try:
+            if questions.cancel(_DISCONNECTED_WHILE_ASKED):
+                logger.warning("A waiting jaws question was ended unanswered: the cell is being disconnected.")
+        except Exception as exc:  # noqa: BLE001 (a Disconnect must always be able to put the cell down)
+            logger.error("Ending the waiting jaws question failed (%s: %s); disconnecting anyway.",
+                         type(exc).__name__, exc)
+
+    def _hold_the_teach(self) -> None:
+        """Hold every open teach at once and wait until it let go of the arm; logged, never raised here."""
+        teaches = self.teaches
+        if teaches is None:
+            return
+        try:
+            if not teaches.hold_at_once(_DISCONNECTED_WHILE_TEACHING):
+                logger.error("An open teach did not let go of the arm in time; disconnecting anyway.")
+        except Exception as exc:  # noqa: BLE001 (a Disconnect must always be able to put the cell down)
+            logger.error("Holding the open teach failed (%s: %s); disconnecting anyway.", type(exc).__name__, exc)
 
     # --- token ------------------------------------------------------------------------------------
 
@@ -492,3 +648,65 @@ class CellTransitionError(RuntimeError):
     def __init__(self, reason: ConnectRefused, message: str) -> None:
         super().__init__(message)
         self.reason = reason
+
+
+def _refused_before_the_driver(arm: Any, gripper: Any) -> tuple[ConnectRefused, str] | None:
+    """Why a connect must not reach the driver, typed, or ``None``: a halted arm, then a hand that would ask a person
+    and has no browser question. Reads only; nothing is sent."""
+    from src.robot.core.arm_capabilities import halt_state_of  # noqa: PLC0415
+    from src.robot.core.gripper import toggle_without_sensor_of  # noqa: PLC0415
+
+    halted = halt_state_of(arm)
+    if halted is not None:
+        return ConnectRefused.HALTED, (
+            f"the arm is halted ({halted.reason}): a latched arm makes no move and switches no output, a connect's "
+            "jaws included. A person confirms the cell is clear (POST /v1/cell/acknowledge), which ends the latch; "
+            "then connect.")
+    try:
+        asks = toggle_without_sensor_of(gripper) is not None or getattr(gripper, "asks_at_connect", False) is True
+        installed = getattr(gripper, "question_seam_installed", None)
+        seam = callable(installed) and installed() is True
+    except Exception as exc:  # noqa: BLE001 (a hand nobody can read is no hand the browser asks for)
+        asks, seam = True, False
+        logger.warning("The hand could not say whether it asks at connect (%s: %s).", type(exc).__name__, exc)
+    if asks and not seam:
+        return ConnectRefused.JAWS_SEAM_MISSING, (
+            f"the hand ({type(gripper).__name__}) asks a person where its jaws stand before anything moves, and its "
+            "question is not handed to the browser on this build. The console never asks at the terminal of the "
+            "server it runs in, where a question cannot be cancelled and nobody watching the browser sees it. Build "
+            "the cell again: a build hands the question to the browser, and nothing was moved.")
+    return None
+
+
+def _watch(questions: JawsQuestions | None, gripper: Any) -> JawsWatch | None:
+    """The browser question's watch over one connect, or ``None`` where none is installed; a watch that cannot be had
+    is logged, and the connect goes on unwatched (the hand's own refusals still hold)."""
+    if questions is None:
+        return None
+    try:
+        return questions.connecting(gripper)
+    except Exception as exc:  # noqa: BLE001 (the watch says what happened; it never decides whether a connect runs)
+        logger.error("The jaws question could not watch this connect (%s: %s).", type(exc).__name__, exc)
+        return None
+
+
+def _failed(watch: JawsWatch | None, error: BaseException) -> str:
+    """What the browser question adds to a refused connect (`` Nobody answered ...``), ``""`` for nothing."""
+    if watch is None:
+        return ""
+    try:
+        said = watch.failed(error)
+    except Exception as exc:  # noqa: BLE001 (the refusal is reported whatever the watch did)
+        logger.error("The jaws question's watch failed on a refused connect (%s: %s).", type(exc).__name__, exc)
+        return ""
+    return f" {said}" if said else ""
+
+
+def _succeeded(watch: JawsWatch | None) -> None:
+    """Tell the browser question the connect came up; a watch that raises is logged, the connect stands."""
+    if watch is None:
+        return
+    try:
+        watch.succeeded()
+    except Exception as exc:  # noqa: BLE001 (the cell is up; what the watch failed to stamp is logged)
+        logger.error("The jaws question's watch failed on a connect that came up (%s: %s).", type(exc).__name__, exc)

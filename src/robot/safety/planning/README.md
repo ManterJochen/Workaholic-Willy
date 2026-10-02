@@ -128,6 +128,18 @@ another camera saw is not. Boxes and the world count `hidden_cells`, and a refus
 robot's own body hid from the cameras, filled to the height seen beside them)`. What the scene hides from
 itself, pixels with no depth and a lone object the robot hides from every camera stay free.
 
+**What the parts stand on is solid** (`support_surfaces.py`, `perceived.support_surfaces`, on for a cell). On
+every build the world finds the large, nearly level surfaces in its own pixels (at least 100 x 100 mm and 75 mm
+wide, at most 5 deg off level, above the declared band somewhere, none over the robot's base) and holds each as
+at most four tilted solids, from the declared bench up to the local reading plus its p90 excess plus the band,
+`support_allowance_mm` (2) over that; the declared bench is an upright solid up to its band. A thinned point
+leaves the world only where a solid holds every pixel it stands for (`DropReason.SUPPORT`), a cluster under
+`min_points` standing on a solid is kept, and the solids take their slots first, never merged. They carry the
+camera prefix (`seen_s<k>_support<i>`, `seen_s<k>_bench`) and reach the planner with their whole turn
+(`planner_cuboid(..., rotation=)`) and the exact guard as the same tilted boxes. The refresh line names each
+support and how the bare bench reads; a bench read lower than the allowance under its plane is a WARNING at most
+once a minute, and nothing is raised. `WorldBuildTuning()` built by hand keeps them off, byte for byte.
+
 ### What the camera world does not see
 
 A pixel with no depth is space the planner receives as free: the camera measured nothing along that
@@ -345,6 +357,7 @@ gap. Planner collision awareness is not a certified functional-safety stop.
 | [`doctor.py`](doctor.py) | `--doctor`: loads every engine and classifies an OS policy block |
 | [`curobo_client.py`](curobo_client.py), [`curobo_planner_server.py`](curobo_planner_server.py) | the client, and the sidecar it runs in the planner's interpreter |
 | [`world.py`](world.py), [`perceived.py`](perceived.py), [`live_world.py`](live_world.py) | declared geometry, camera geometry, and the world rebuilt before every plan |
+| [`support_surfaces.py`](support_surfaces.py) | what the parts stand on: `find_supports`, `SupportModel` (its solids, the bench's, the bench check) and what the calculator and the push ask of it |
 | [`height_map.py`](height_map.py) | an object's boxes: its height map in its own turn, the fill of what the robot hid, the merge to fit the slots |
 | [`band.py`](band.py) | the planner's cushion band: which refusals the exact guard decides, the escape and approach legs' neighbours, the pose screen |
 | [`depth_source.py`](depth_source.py) | a camera rig asked for depth alone |

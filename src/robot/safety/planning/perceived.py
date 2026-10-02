@@ -73,13 +73,17 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
 import numpy as np
 
 from src.robot.core.keep_out import KeepOutBox
 from src.robot.safety.planning._curobo_protocol import PERCEIVED_PREFIX
 from src.robot.safety.planning.height_map import Column, bridge_columns, coarsen, height_map_columns, turn_of
+from src.robot.safety.planning.support_surfaces import SupportModel, SupportSolid, detect, detection_step
+
+if TYPE_CHECKING:  # pragma: no cover (typing only: self_envelope imports this module)
+    from src.robot.safety.planning.self_envelope import BaseShape
 
 __all__ = [
     "DECLARED_SURFACE_MM",
@@ -189,6 +193,10 @@ class DropReason(StrEnum):
     #: geometry the planner already holds as declared, which it would otherwise hold a second time
     #: as a solid box.
     DECLARED = "declared"
+    #: Within a support surface's solid up to its band (``support_surfaces``): the mat, the bench or a bin's floor
+    #: the parts stand on, which the guard and the planner hold as that solid. Only where the solid holds every pixel
+    #: the point stands for.
+    SUPPORT = "support"
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +297,15 @@ class WorldBuildTuning:
     #: beside what it saw, the floor behind a wall it looked over, is free, as unseen space is
     #: everywhere else in the world, unless the robot's own body is what hid it (``_RobotShadow``).
     floor_to_plane: bool = True
+    #: Find what the parts stand on and hold it as solid (``support_surfaces.detect``): the large, nearly level
+    #: surfaces in the views' own pixels, each a few tilted solids from the declared bench up to its reading plus the
+    #: band, and the declared bench as an upright solid up to its band. A point leaves the world only where such a
+    #: solid holds every pixel it stands for, and a small cluster standing on one is no noise. Off is the world of
+    #: before, byte for byte: the library's default, so a caller that builds a tuning by hand gets what it always got.
+    #: A cell turns it on with ``planning_world.perceived.support_surfaces``.
+    support_surfaces: bool = False
+    #: How far the solids the guard and the planner hold stand over what they take out, millimetres (fix plan F3).
+    support_allowance_mm: float = 0.0
 
     def __post_init__(self) -> None:
         if float(self.voxel_size_mm) <= 0.0 or float(self.cluster_voxel_mm) <= 0.0:
@@ -308,6 +325,9 @@ class WorldBuildTuning:
             raise PerceptionGeometryError("margin_mm cannot be negative")
         if float(self.voxel_field_mm) < 0.0:
             raise PerceptionGeometryError("voxel_field_mm cannot be negative")
+        allowance = float(self.support_allowance_mm)
+        if not (math.isfinite(allowance) and allowance >= 0.0):
+            raise PerceptionGeometryError(f"support_allowance_mm is finite and not negative, got {allowance!r}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -528,6 +548,9 @@ class SelfEnvelope:
     frames_mm: tuple[np.ndarray, ...]
     #: The capsules, each on the frame it names.
     capsules: tuple[LinkCapsule, ...]
+    #: The robot's base about the BASE axis, where its shape is known (``self_envelope.ROBOT_BASES``): no support
+    #: surface is found over it, or its top would put the shoulder in a solid. ``None`` keeps none out.
+    base: "BaseShape | None" = None
 
     def reach(self, *, padding_mm: float = 0.0) -> ReachSphere:
         """The sphere about the base frame's origin that holds this body in every configuration.
@@ -773,6 +796,11 @@ class PerceivedBox:
     frame and the next, and a planner that is handed a differently tumbled world every 50 ms plans a
     different path for a scene that did not move. The planner and the exact mesh guard hold this
     box as it is, turned (``live_world._guard_boxes``).
+
+    A support surface's solid is the one box that tilts (``kind`` ``support``): it follows the surface's own reading,
+    which a camera reads a degree off level, and an upright box round a tilted reading stood up to 14 mm over it at its
+    low corner. Its ``rotation`` is the whole turn, and ``yaw_rad`` its heading alone. The bench's solid (``bench``)
+    stands upright.
     """
 
     name: str
@@ -795,6 +823,22 @@ class PerceivedBox:
     #: within the padding and :data:`_ROBOT_GAP_MM` of a link: it may be the robot itself, seen off where its model
     #: stands. ``None`` otherwise, or for a box with no point.
     robot_gap_mm: float | None = None
+    #: The box's whole turn, row-major 3x3 whose columns are its axes in BASE, for a box that tilts; ``None`` for one
+    #: turned about BASE Z alone by ``yaw_rad``.
+    rotation: tuple[float, ...] | None = None
+    #: ``seen`` for a box of what the cameras saw; ``support`` for a solid of a surface the parts stand on; ``bench``
+    #: for the declared bench's solid.
+    kind: str = "seen"
+    #: What a refusal against a solid adds: which surface it holds and how high.
+    detail: str = ""
+
+    @property
+    def rotation_matrix(self) -> np.ndarray:
+        """Its turn as a 3x3 whose columns are its axes in BASE."""
+        if self.rotation is not None:
+            return np.asarray(self.rotation, dtype=np.float64).reshape(3, 3)
+        c, s = math.cos(self.yaw_rad), math.sin(self.yaw_rad)
+        return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
 
     @property
     def enclosing_half_extents_mm(self) -> tuple[float, float, float]:
@@ -806,6 +850,9 @@ class PerceivedBox:
         the planner refused. That is the only direction of disagreement worth having between the
         thing that plans and the thing that decides.
         """
+        if self.rotation is not None:
+            enclosing = np.abs(self.rotation_matrix) @ (np.asarray(self.dims_mm, dtype=np.float64) / 2.0)
+            return (float(enclosing[0]), float(enclosing[1]), float(enclosing[2]))
         cos_yaw, sin_yaw = abs(math.cos(self.yaw_rad)), abs(math.sin(self.yaw_rad))
         half_x, half_y, half_z = (d / 2.0 for d in self.dims_mm)
         return (
@@ -816,7 +863,7 @@ class PerceivedBox:
 
     def to_dict(self) -> dict[str, Any]:
         """The wire view. A view of what was computed, never a second computation."""
-        return {
+        out = {
             "name": self.name,
             "center_mm": list(self.center_mm),
             "dims_mm": list(self.dims_mm),
@@ -827,10 +874,16 @@ class PerceivedBox:
             "hidden_cells": int(self.hidden_cells),
             "robot_gap_mm": None if self.robot_gap_mm is None else float(self.robot_gap_mm),
         }
+        if self.kind != "seen" or self.rotation is not None:
+            out.update(kind=self.kind, rotation=None if self.rotation is None else [float(v) for v in self.rotation],
+                       detail=self.detail)
+        return out
 
     def note(self) -> str:
         """What a refusal against this box should add, as text, ASCII; empty for a box of what was seen and nothing
         more."""
+        if self.kind != "seen":
+            return self.detail
         said = []
         if self.hidden_cells:
             said.append(f"{self.hidden_cells} of its cells the robot's own body hid from the cameras, filled to the "
@@ -940,6 +993,10 @@ class PerceivedWorld:
     #: them free, filled to the height seen beside them (``PerceivedBox.hidden_cells``); 0 when the robot hid nothing
     #: of what the cameras saw.
     hidden_cells: int = 0
+    #: The surfaces the parts stand on, their solids and the bench's, and how the bare bench reads, where the world
+    #: looked for them (``WorldBuildTuning.support_surfaces``); ``None`` where it did not. The solids are among
+    #: :attr:`boxes`, last.
+    supports: SupportModel | None = None
 
     @property
     def is_empty(self) -> bool:
@@ -994,11 +1051,13 @@ class PerceivedWorld:
             if box.robot_gap_mm is not None:
                 tail.append(f"  {box.name}: every point within {box.robot_gap_mm:.0f} mm of the robot's own links, "
                             "maybe the robot seen off where its model stands")
+        if self.supports is not None:
+            tail.append(f"  {self.supports.render()}")
         return "\n".join([head, *rows, *tail])
 
     def to_dict(self) -> dict[str, Any]:
         """The wire view."""
-        return {
+        out = {
             "boxes": [b.to_dict() for b in self.boxes],
             "dropped_points": dict(self.dropped_points),
             "dropped_clusters": dict(self.dropped_clusters),
@@ -1014,6 +1073,9 @@ class PerceivedWorld:
             "merged_to_fit": int(self.merged_to_fit),
             "hidden_cells": int(self.hidden_cells),
         }
+        if self.supports is not None:
+            out["supports"] = self.supports.to_dict()
+        return out
 
 
 def build_perceived_boxes(
@@ -1027,6 +1089,7 @@ def build_perceived_boxes(
     reach: "ReachSphere | None" = None,
     declared: Sequence[DeclaredBody] = (),
     cut_around: "Sequence[KeepOutBox] | None" = None,
+    base: "BaseShape | None" = None,
 ) -> PerceivedWorld:
     """Turn what the cameras see into the obstacles a planner should route around.
 
@@ -1082,6 +1145,17 @@ def build_perceived_boxes(
         lies within :data:`DECLARED_SURFACE_MM` of one of them, grown by the view's placement error
         as the bench band is and never wider than it, is that body, which the planner already holds,
         and is dropped by name (``DropReason.DECLARED``), counted per body (``declared_points``).
+    base
+        The robot's base about the BASE axis (``SelfEnvelope.base``), where ``tuning.support_surfaces`` looks for
+        supports: none is found over it.
+
+    Where ``tuning.support_surfaces`` is on, the surfaces the parts stand on are found in the pixels the self filters
+    left (``support_surfaces.detect``) and held as solids, the declared bench among them. Each pixel the world reads
+    is then judged on its own: under the bench band, or within a support's solid up to its band, it is the surface's.
+    A thinned point leaves the world only when every pixel it stands for is (``DropReason.SUPPORT``, or
+    ``BELOW_PLANE`` for the band alone), and one with pixels on both sides stands at its first pixel outside, so every
+    pixel either lies in a solid the guard holds or stands for a point that stays. A cluster under ``min_points``
+    standing on a solid is no noise. The solids come first in the slot budget, last in the boxes.
 
     Raises
     ------
@@ -1182,17 +1256,24 @@ def build_perceived_boxes(
     pixels = np.concatenate(per_view_pixels)
     view_of = np.concatenate(per_view_index)
     band_of = np.concatenate(per_view_band)
+    reference = (
+        np.asarray(near_point_mm, dtype=np.float64) if near_point_mm is not None
+        else np.zeros(3, dtype=np.float64)
+    )
+    # The support stage's model and solids, once it ran.
+    supports: SupportModel | None = None
+    solids: tuple[PerceivedBox, ...] = ()
 
     def _empty(declared_points: "dict[str, int] | None" = None) -> PerceivedWorld:
         return PerceivedWorld(
-            boxes=(), dropped_points=dropped_points, dropped_clusters={},
+            boxes=solids, dropped_points=dropped_points, dropped_clusters={},
             considered_points=0, source_timestamp=oldest, keep_out_points=keep_out_points,
             voxels=(
                 build_voxel_field(np.empty((0, 3)), limits=limits, tuning=tuning)
                 if tuning.voxel_field_mm > 0.0 else None
             ),
             depth_coverage=depth_coverage, bench_band_mm=bench_band_mm,
-            declared_points=dict(declared_points or {}),
+            declared_points=dict(declared_points or {}), supports=supports,
         )
 
     if points_base.shape[0] == 0:
@@ -1225,8 +1306,8 @@ def build_perceived_boxes(
                 on_own[member[own.contains(points_base[member])]] = True
         dropped_points[DropReason.SELF] = dropped_points.get(DropReason.SELF, 0) + int(np.count_nonzero(on_own))
         robot_read[read_as[on_own]] = True
-        points_base, pixels, view_of, band_of = (
-            points_base[~on_own], pixels[~on_own], view_of[~on_own], band_of[~on_own]
+        points_base, pixels, view_of, band_of, read_as = (
+            points_base[~on_own], pixels[~on_own], view_of[~on_own], band_of[~on_own], read_as[~on_own]
         )
         if points_base.shape[0] == 0:
             return _empty()
@@ -1236,6 +1317,21 @@ def build_perceived_boxes(
                         clear_of=_cutters(keep_out), taken_mm=read_points[robot_read])
         if bool(robot_read.any()) else None
     )
+
+    # What the parts stand on, found in what the self filters left, the targets still in; each pixel then judged on
+    # its own against the solids and the bench band (fix plan Track S, F4).
+    erasure: _Erasure | None = None
+    if tuning.support_surfaces:
+        alive = np.zeros(read_points.shape[0], dtype=bool)
+        alive[read_as] = True
+        erasure = _support_stage(
+            views, per_view_read, [points.shape[0] for points in per_view_points], per_view_band, alive, read_as,
+            points_base, pixels, band_of, limits=limits, tuning=tuning, base=base,
+            keep_out=tuple(keep_out if cut_around is None else cut_around),
+        )
+        supports = erasure.model
+        solids = _solid_boxes(erasure.model, reference)
+        points_base, pixels, band_of = erasure.points_mm, erasure.pixels, erasure.band_mm
 
     if keep_out:
         kept_out = np.zeros(points_base.shape[0], dtype=bool)
@@ -1247,11 +1343,19 @@ def build_perceived_boxes(
         points_base, pixels, view_of, band_of = (
             points_base[~kept_out], pixels[~kept_out], view_of[~kept_out], band_of[~kept_out]
         )
+        if erasure is not None:
+            erasure = erasure.taking(~kept_out)
         if points_base.shape[0] == 0:
             return _empty()
 
-    above = points_base[:, 2] > float(limits.support_plane_top_mm) + band_of
-    dropped_points[DropReason.BELOW_PLANE] = int(np.count_nonzero(~above))
+    if erasure is None:
+        above = points_base[:, 2] > float(limits.support_plane_top_mm) + band_of
+        dropped_points[DropReason.BELOW_PLANE] = int(np.count_nonzero(~above))
+    else:
+        # A point is the bench's or a support's only where every pixel it stands for is.
+        above = ~erasure.erased
+        dropped_points[DropReason.BELOW_PLANE] = int(np.count_nonzero(erasure.erased & erasure.banded))
+        dropped_points[DropReason.SUPPORT] = int(np.count_nonzero(erasure.erased & ~erasure.banded))
 
     # A declared body's band is the view's placement error on its own surface margin, never the slab's
     # clearance: a sink of the slab raises that by 50 mm, and a part beside a declared tote is not the
@@ -1281,14 +1385,11 @@ def build_perceived_boxes(
 
     keep = above & inside
     points, kept_pixels, kept_view = points_base[keep], pixels[keep], view_of[keep]
+    kept_free = None if erasure is None else erasure.free_pixels[keep]
     if points.shape[0] == 0:
         return _empty(declared_points)
 
     labels = _cluster(points, float(tuning.cluster_voxel_mm))
-    reference = (
-        np.asarray(near_point_mm, dtype=np.float64) if near_point_mm is not None
-        else np.zeros(3, dtype=np.float64)
-    )
     if reference.shape != (3,):
         raise PerceptionGeometryError(f"near_point_mm must be three numbers, got {near_point_mm!r}")
 
@@ -1301,7 +1402,10 @@ def build_perceived_boxes(
     mapped: list[tuple[np.ndarray, float, list[Column]]] = []
     for cluster_id in np.unique(labels):
         member = np.nonzero(labels == cluster_id)[0]
-        if member.size < int(tuning.min_points):
+        if member.size < int(tuning.min_points) and not (
+            supports is not None and kept_free is not None
+            and _stands_on_a_solid(points[member], kept_free[member], supports, tuning)
+        ):
             dropped_clusters[DropReason.TOO_FEW_POINTS] = (
                 dropped_clusters.get(DropReason.TOO_FEW_POINTS, 0) + 1
             )
@@ -1328,8 +1432,10 @@ def build_perceived_boxes(
         )
         if bridged:
             mapped.append((np.zeros(0, dtype=np.int64), 0.0, bridged))
-    # Past the slot budget the columns merge into the boxes that hold them, never into less.
-    merged_to_fit = coarsen([columns for _, _, columns in mapped], int(tuning.max_boxes))
+    # Past the slot budget the columns merge into the boxes that hold them, never into less. The solids of what the
+    # parts stand on come first and are never merged: the obstacles get what is left.
+    budget = max(0, int(tuning.max_boxes) - len(solids))
+    merged_to_fit = coarsen([columns for _, _, columns in mapped], budget)
     # How far each point lies from the robot's own links, where it lies close: a box of nothing else may be the robot,
     # seen off where its model stands, which a refusal then says (``PerceivedBox.robot_gap_mm``).
     gaps = (
@@ -1358,7 +1464,7 @@ def build_perceived_boxes(
             )
 
     candidates.sort(key=lambda box: box.distance_mm)
-    survivors = candidates[: int(tuning.max_boxes)]
+    survivors = candidates[:budget]
     if len(candidates) > len(survivors):
         dropped_clusters[DropReason.NO_SLOT] = len(candidates) - len(survivors)
 
@@ -1375,7 +1481,7 @@ def build_perceived_boxes(
             robot_gap_mm=box.robot_gap_mm,
         )
         for index, box in enumerate(survivors)
-    )
+    ) + solids
     return PerceivedWorld(
         boxes=boxes,
         dropped_points=dropped_points,
@@ -1393,6 +1499,7 @@ def build_perceived_boxes(
         keep_out_cuts=keep_out_cuts,
         merged_to_fit=merged_to_fit,
         hidden_cells=sum(box.hidden_cells for box in boxes),
+        supports=supports,
     )
 
 
@@ -1639,6 +1746,215 @@ def _base_points(
     homogeneous = np.column_stack((camera, np.ones(camera.shape[0], dtype=np.float64)))
     base = (np.asarray(camera_to_base, dtype=np.float64) @ homogeneous.T).T[:, :3]
     return base, pixels, np.linalg.norm(camera, axis=1), (read[0], read[1], rank[np.asarray(voxel).reshape(-1)])
+
+
+def _pixels_in_base(view: DepthView, stride: int, rows: np.ndarray, cols: np.ndarray) -> "tuple[np.ndarray, np.ndarray]":
+    """Every pixel :func:`_base_points` read of a view, ``rows`` and ``cols`` in the strided frame, as BASE points with
+    their ranges from the camera, computed as that function computes the points it keeps."""
+    step = max(1, int(stride))
+    if rows.size == 0:
+        return np.zeros((0, 3)), np.zeros(0)
+    z = np.asarray(view.surface_depth_mm, dtype=np.float64)[::step, ::step][rows, cols]
+    matrix = np.asarray(view.intrinsics, dtype=np.float64)
+    camera = np.column_stack((
+        ((cols * step).astype(np.float64) - float(matrix[0, 2])) * z / float(matrix[0, 0]),
+        ((rows * step).astype(np.float64) - float(matrix[1, 2])) * z / float(matrix[1, 1]),
+        z,
+    ))
+    transform = np.asarray(view.camera_to_base, dtype=np.float64)
+    return camera @ transform[:3, :3].T + transform[:3, 3], np.linalg.norm(camera, axis=1)
+
+
+def _first_pixel(owner: np.ndarray, which: np.ndarray, count: int) -> np.ndarray:
+    """Per point, the first pixel in read order among ``which`` that it stands for; -1 where it stands for none."""
+    out = np.full(count, -1, dtype=np.int64)
+    index = np.nonzero(which)[0]
+    if index.size:
+        owners = owner[index]
+        order = np.argsort(owners, kind="stable")
+        sorted_owners = owners[order]
+        starts = np.concatenate(([True], sorted_owners[1:] != sorted_owners[:-1]))
+        out[sorted_owners[starts]] = index[order][starts]
+    return out
+
+
+def _first_reads(owner: np.ndarray) -> np.ndarray:
+    """Per point of one view, the first pixel read that it stands for: the pixel it was taken from.
+
+    The points are numbered in the order their first pixel was read (:func:`_base_points`), so a point's first pixel is
+    where the running highest number read so far rises to it."""
+    if owner.size == 0:
+        return np.zeros(0, dtype=np.int64)
+    rises = np.concatenate(([True], owner[1:] > np.maximum.accumulate(owner)[:-1]))
+    return np.nonzero(rises)[0]
+
+
+@dataclass(frozen=True, slots=True)
+class _Erasure:
+    """What the support stage decided of each point still in the world, in the world's own order."""
+
+    model: SupportModel
+    #: Each point where it stands now: at its first pixel no solid and no band holds, where its first pixel was one.
+    points_mm: np.ndarray
+    pixels: np.ndarray
+    band_mm: np.ndarray
+    #: Every pixel it stands for lies within a support's solid up to its band, or under the bench band.
+    erased: np.ndarray
+    #: Every pixel it stands for lies under the bench band.
+    banded: np.ndarray
+    #: How many of the pixels it stands for neither holds.
+    free_pixels: np.ndarray
+
+    def taking(self, keep: np.ndarray) -> "_Erasure":
+        """The same for the points ``keep`` holds."""
+        return _Erasure(model=self.model, points_mm=self.points_mm[keep], pixels=self.pixels[keep],
+                        band_mm=self.band_mm[keep], erased=self.erased[keep], banded=self.banded[keep],
+                        free_pixels=self.free_pixels[keep])
+
+
+def _support_stage(
+    views: Sequence[DepthView],
+    read: Sequence["tuple[np.ndarray, np.ndarray, np.ndarray]"],
+    counts: Sequence[int],
+    view_bands: Sequence[np.ndarray],
+    alive: np.ndarray,
+    read_as: np.ndarray,
+    points_mm: np.ndarray,
+    pixels: np.ndarray,
+    band_of: np.ndarray,
+    *,
+    limits: WorldBuildLimits,
+    tuning: WorldBuildTuning,
+    base: "BaseShape | None",
+    keep_out: Sequence[KeepOutBox],
+) -> _Erasure:
+    """The supports of the pixels the self filters left, and what each point still in the world becomes.
+
+    ``read`` is each view's pixels read and the point each stands for, as :func:`_base_points` gives them, ``counts``
+    how many points each view kept, ``view_bands`` each view's points' bench bands, ``alive`` which of all the points
+    read the self filters left and ``read_as`` which of those each point in ``points_mm`` is.
+
+    Each pixel is judged on its own: under its bench band, or within a support's solid up to the band, it is the
+    surface's. A point all of whose pixels are leaves; one with a pixel neither holds stands at its first such pixel.
+    """
+    stride = max(1, int(tuning.pixel_stride))
+    step = detection_step(stride)
+    clearance = float(limits.plane_clearance_mm)
+    plane = float(limits.support_plane_top_mm)  # type: ignore[arg-type]
+    offsets = np.cumsum([0, *[int(count) for count in counts]])[:-1]
+    xyz_parts, owner_parts, band_parts, sampled_parts, view_parts, pixel_parts = [], [], [], [], [], []
+    first_parts: list[np.ndarray] = []
+    band_of_view: list[float] = []
+    read_before = 0
+    for index, (view, (rows, cols, owner), band) in enumerate(zip(views, read, view_bands)):
+        xyz, ranges = _pixels_in_base(view, stride, rows, cols)
+        error = float(view.placement_error_mm) + float(view.placement_error_rad) * ranges
+        xyz_parts.append(xyz)
+        first_parts.append(_first_reads(np.asarray(owner, dtype=np.int64)) + read_before)
+        read_before += xyz.shape[0]
+        owner_parts.append(np.asarray(owner, dtype=np.int64) + int(offsets[index]))
+        band_parts.append(clearance + np.minimum(error, MAX_DECLARED_BAND_MM))
+        sampled_parts.append((rows % step == 0) & (cols % step == 0))
+        view_parts.append(np.full(xyz.shape[0], index, dtype=np.int64))
+        pixel_parts.append(np.column_stack((rows * stride, cols * stride)).astype(np.int32))
+        band_of_view.append(float(np.max(band)) if np.size(band) else clearance)
+    xyz = np.concatenate(xyz_parts)
+    owner = np.concatenate(owner_parts)
+    pixel_band = np.concatenate(band_parts)
+    alive_pixel = alive[owner]
+    sampled = alive_pixel & np.concatenate(sampled_parts)
+    model = detect(xyz[sampled], np.concatenate(view_parts)[sampled], band_of_view, limits=limits, tuning=tuning,
+                   base=base, keep_out=keep_out)
+
+    banded = xyz[:, 2] <= plane + pixel_band
+    erasable = banded.copy()
+    asked = np.nonzero(alive_pixel & ~banded)[0]
+    if asked.size and model.support_solids:
+        erasable[asked] = model.erased_by_support(xyz[asked])
+    total = alive.size
+    free = alive_pixel & ~erasable
+    free_count = np.bincount(owner[free], minlength=total)
+    every_banded = np.bincount(owner[alive_pixel & ~banded], minlength=total) == 0
+    first_read = np.concatenate(first_parts) if first_parts else np.zeros(0, dtype=np.int64)
+
+    erased = free_count[read_as] == 0
+    # A point that stays though the pixel it was taken from is the surface's stands at its first pixel that is not.
+    mixed = ~erased & erasable[first_read[read_as]]
+    moved = np.nonzero(mixed)[0]
+    points_now, pixels_now, band_now = points_mm, pixels, band_of
+    if moved.size:
+        asked_points = np.zeros(total, dtype=bool)
+        asked_points[read_as[moved]] = True
+        to = _first_pixel(owner, free & asked_points[owner], total)[read_as[moved]]
+        points_now, pixels_now, band_now = points_mm.copy(), pixels.copy(), band_of.copy()
+        points_now[moved] = xyz[to]
+        pixels_now[moved] = np.concatenate(pixel_parts)[to]
+        band_now[moved] = pixel_band[to]
+    return _Erasure(model=model, points_mm=points_now, pixels=pixels_now, band_mm=band_now, erased=erased,
+                    banded=every_banded[read_as], free_pixels=free_count[read_as])
+
+
+def _solid_boxes(model: SupportModel, reference: np.ndarray) -> tuple[PerceivedBox, ...]:
+    """The model's solids as the boxes the planner and the guard hold, a support's tilted, the bench's upright."""
+    where = reference if reference.shape == (3,) else np.zeros(3)
+    surfaces = {surface.index: surface for surface in model.surfaces}
+    out = []
+    for solid in model.solids:
+        rotation = solid.rotation
+        tilted = solid.kind == "support"
+        out.append(PerceivedBox(
+            name=solid.name, center_mm=tuple(float(v) for v in solid.centre_mm),  # type: ignore[arg-type]
+            dims_mm=tuple(2.0 * float(v) for v in solid.half_extents_mm),  # type: ignore[arg-type]
+            yaw_rad=float(math.atan2(rotation[1, 0], rotation[0, 0])), points=0,
+            distance_mm=float(np.linalg.norm(solid.centre_mm - where)),
+            rotation=tuple(float(v) for v in rotation.reshape(-1)) if tilted else None,
+            kind=solid.kind, detail=_solid_detail(solid, surfaces.get(solid.surface)),
+        ))
+    return tuple(out)
+
+
+def _solid_detail(solid: SupportSolid, surface: Any) -> str:
+    """What a refusal against a solid adds: the surface it holds, and how high it is held."""
+    held = float(solid.excess_mm) + float(solid.band_mm) + float(solid.allowance_mm)
+    if solid.kind == "bench":
+        return (f"the declared bench, held as a solid up to {held:.1f} mm over its plane (its band "
+                f"{solid.band_mm:.1f} mm and the {solid.allowance_mm:g} mm allowance)")
+    where = ""
+    if surface is not None:
+        where = (f" (z {surface.z_range_mm[0]:.1f} to {surface.z_range_mm[1]:.1f} mm, tilted "
+                 f"{surface.tilt_deg:.1f} deg)")
+    name = surface.name if surface is not None else "a surface"
+    return (f"a solid of {name}, a surface the camera world found the parts standing on{where}, held up to its "
+            f"reading plus {held:.1f} mm (the reading's excess {solid.excess_mm:.1f}, the band {solid.band_mm:.1f} "
+            f"and the {solid.allowance_mm:g} mm allowance)")
+
+
+def _stands_on_a_solid(points: np.ndarray, free_pixels: np.ndarray, model: SupportModel,
+                       tuning: WorldBuildTuning) -> bool:
+    """Whether a cluster under ``min_points`` is a thing and not noise: its lowest point stands on a solid, a support's
+    or the bench's, within a cluster cell and a voxel over its erasure top (fix plan F1). A pin 3 mm across standing on
+    the mat shows fewer points than that.
+
+    What stays of the world stands outside every solid's erasure box, or it would have left with the solid, so such a
+    cluster stands out of the solid it stands on: never speckle under its top, which leaves with the solid. A solid's
+    sides lean with its surface, and a point beside a side is under no top, which is why the test is the box and not the
+    top over the point (a slab's side face 2 degrees off level, test_nothing_leaves_the_world_that_a_solid_does_not_hold).
+    ``free_pixels``, how many pixels the points stand for that no solid holds, is kept for the record.
+    """
+    low = points[int(np.argmin(points[:, 2]))]
+    # Over a solid, as high as one cluster cell and a voxel: a thin thing seen from straight above shows its top alone,
+    # and before the surface was a solid that top joined the surface's own cluster from that high (26 neighbours on
+    # cluster_voxel_mm). A 3 mm pin 21 mm tall standing on a slab, its top 14 mm over the slab's erasure top, was
+    # dropped at the voxel's 10 mm (test_nothing_leaves_the_world_that_a_solid_does_not_hold, 2026-10-02).
+    reach = float(tuning.cluster_voxel_mm) + float(tuning.voxel_size_mm)
+    if not model.stands_on_a_solid(low, float(tuning.voxel_size_mm), above_mm=reach):
+        return False
+    held = model.erased_by_support(points)
+    bench = model.bench_solid
+    if bench is not None:
+        held |= bench.erases(points)
+    del free_pixels
+    return bool(np.any(~held))
 
 
 def _cluster(points_mm: np.ndarray, cell_mm: float) -> np.ndarray:

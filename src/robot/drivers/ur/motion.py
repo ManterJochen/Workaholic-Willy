@@ -13,6 +13,7 @@ from src.geometry import Frame
 from src.robot.constants import HOME_JOINTS_DEFAULT, UR_MOTION_LOG_FILE, create_robot_logger
 from src.robot.core import JointPositions, MotionStatus
 from src.robot.drivers.ur import URConnection
+from src.robot.drivers.ur.connection import HALT_ENDS
 from src.robot.drivers.ur.pose import URPose
 from src.robot.drivers.ur.pose_adapter import urpose_to_pose
 from src.robot.safety.singularity import (
@@ -28,6 +29,17 @@ __all__ = ["MotionController"]
 
 
 _UR_DOF = 6
+
+
+def _refused_by_the_halt(conn: object, what: str) -> bool:
+    """Whether ``conn``'s halt latch refuses ``what``, nothing sent. Strict: a double that answers anything is not."""
+    refuse = getattr(conn, "refuse_if_halted", None)
+    return callable(refuse) and refuse(what) is True
+
+
+def _ended_by_the_halt(conn: object) -> bool:
+    """Whether the move ``conn`` was last asked for was refused or braked by the halt latch."""
+    return getattr(conn, "last_move_end", None) in HALT_ENDS
 
 
 class _URFKAdapter:
@@ -137,6 +149,11 @@ class MotionController:
             self.logger.error("Cannot move: robot is not connected.")
             self.last_reject_status = MotionStatus.CONNECTION_ERROR
             return False
+        if _refused_by_the_halt(self.conn, "moveL" if linear else "moveJ"):
+            # Refused before the inverse kinematics and the singularity check read the controller: nothing at all.
+            self.logger.error("Not moving to '%s': the arm is halted.", pose.label)
+            self.last_reject_status = MotionStatus.CANCELLED
+            return False
 
         # The workspace box alone, deliberately not `validate()`, which also runs the
         # pose-diversity check. That check, refusing a pose too similar to one already
@@ -205,13 +222,18 @@ class MotionController:
             self.guard.accept(boxed)
 
         if not ok:
-            self.last_reject_status = MotionStatus.CONTROLLER_REJECTED
+            # A move the halt refused or braked is CANCELLED, not a refusal of the controller's.
+            self.last_reject_status = (MotionStatus.CANCELLED if _ended_by_the_halt(self.conn)
+                                       else MotionStatus.CONTROLLER_REJECTED)
         return bool(ok)
 
     def move_home(self, home_joints=None) -> bool:
         """Move to a known safe home position in joint space."""
         if not self.conn.is_connected:
             self.logger.error("Cannot move home: robot is not connected.")
+            return False
+        if _refused_by_the_halt(self.conn, "moveJ"):
+            self.logger.error("Not moving home: the arm is halted.")
             return False
 
         if home_joints is None:

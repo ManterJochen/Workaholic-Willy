@@ -71,6 +71,18 @@ question whose connection changed while it waited, a disconnect or another conne
 another thread, is refused without a change. Nothing is kept between programs: the next
 program asks again.
 
+The operator console asks in the browser instead (build plan, item 10): it hands the hand a
+structured seam (:meth:`JawIOGripper.answer_questions_with`), which gets one :class:`JawAsking` per
+attempt, stage by stage, and acts only on a word it offered, and a gate, ``before_change``, asked
+under the lock right before the one change a person chose, which reads the controller: a stopped arm
+gets no "open now", and nothing is sent. Only the gate's empty sentence lets the change out, and the
+connection is read again after it, so a disconnect while the gate reads sends nothing either. A
+question nobody answers there is refused, never taken for "open", and a Restart asks every time
+(:meth:`JawIOGripper.confirm_where_the_jaws_stand`): where the jaws stand, or, where the program's own
+count says CLOSED and nobody switched the output since, only whether to open them now with one change,
+so no answer of "open" can turn a count round that a part is still clamped against (review of
+2026-10-02). CLI programs ask at their terminal as before.
+
 The solenoids are bucket 3: they have never touched a real gripper. The I/O calls they make
 are the ones the UR driver already exposes. What is unverified is the wiring, meaning the
 pin numbers, which port block, whether the reed switches are active-high, whether the
@@ -88,11 +100,12 @@ import itertools
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Callable, Iterator
 
 from src.robot.core import RobotConnectionError, RobotError
-from src.robot.core.arm_capabilities import DigitalIOPort, SupportsDigitalIO
+from src.robot.core.arm_capabilities import DigitalIOPort, SupportsDigitalIO, end_pulse
 from src.robot.core.gripper import HoldEvidence
 
 from ..constants import JAW_IO_GRIPPER_LOG_FILE, create_robot_logger
@@ -100,7 +113,7 @@ from ..constants import JAW_IO_GRIPPER_LOG_FILE, create_robot_logger
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.robot.robot_schema import GripperConfig
 
-__all__ = ["JawIOGripper", "JawQuestion", "JawState"]
+__all__ = ["BeforeChange", "JawAsking", "JawIOGripper", "JawQuestion", "JawState", "StructuredJawQuestion"]
 
 #: The seam a person answers through: it is shown one question and returns what was typed, exactly as ``input``
 #: does. The default where stdin is a terminal is ``input``, with the console's typeahead discarded before each
@@ -109,6 +122,52 @@ JawQuestion = Callable[[str], str]
 
 #: How often an answer that is none of the choices is asked again before the question counts as unanswered.
 _ASKS = 3
+
+
+@dataclass(frozen=True, slots=True)
+class JawAsking:
+    """One question a toggle hand asks through a structured seam (:meth:`JawIOGripper.answer_questions_with`), per
+    attempt.
+
+    ``stage`` is ``where`` (do the jaws stand open or closed?) or ``open_now``, asked after "closed", and first at a
+    check where the program's own count says CLOSED: open them now with the one command that opens them, which releases
+    whatever is between them, or abort. ``choices`` are the
+    answers that stage takes, in the console's words: ``open`` and ``closed``, then ``open_now`` and ``abort``. Through
+    the seam the hand takes exactly these, and for ``open_now`` also the build plan's own letters for them, ``p`` and
+    ``a``; the terminal's ``o``, ``c`` and ``pulse`` are none of the choices there. There is no default: an empty
+    answer is no answer, at connect too, and ``text`` says so. ``at_connect`` is true where a connect asks; otherwise a
+    check (:meth:`JawIOGripper.confirm_where_the_jaws_stand`) or a pick start does. ``reason`` is why the hand asks,
+    ``where`` the bank and pin as the pendant shows them (``tool output 0``), ``text`` the question in the hand's own
+    words (the terminal's, less a default the seam does not offer), ``attempt`` which attempt this is of ``of``, and
+    ``why_again`` why it is asked again (``""`` the first time).
+    """
+
+    stage: str
+    at_connect: bool
+    reason: str
+    where: str
+    choices: tuple[str, ...]
+    text: str
+    attempt: int
+    why_again: str
+    of: int = _ASKS
+
+
+#: The seam a console answers through: handed one :class:`JawAsking`, it returns one of its ``choices``. ``EOFError``
+#: (a timeout, a cancel, a disconnect) is no answer, and a question nobody answered is refused, never taken for "open".
+StructuredJawQuestion = Callable[[JawAsking], str]
+#: A gate asked under the hand's lock immediately before the one change a person chose to open the jaws: ``""`` lets it
+#: go out, anything else refuses it with nothing sent and is said in the refusal, an answer that is no sentence at all
+#: (``None``, ``False``, a blank) included. The console reads the controller here, so a stopped arm gets no "open now"
+#: (the order of the pick service: the controller before the hand).
+BeforeChange = Callable[[], str]
+
+#: The answers a question's two stages take through a structured seam, in the console's words.
+_WHERE_CHOICES = ("open", "closed")
+_OPEN_NOW_CHOICES = ("open_now", "abort")
+#: What a structured seam's answer may be, per stage: the choices it was offered, and for ``open_now`` the build plan's
+#: own letters for them (``p``, ``a``). The terminal's ``o``, ``c`` and ``pulse`` were never offered there.
+_SEAM_WORDS = {"where": frozenset(_WHERE_CHOICES), "open_now": frozenset((*_OPEN_NOW_CHOICES, "p", "a"))}
 
 #: How often an output is read back after a write: one CB3 controller cycle, 125 Hz. The output goes out over RTDE
 #: and its state comes back on the receive stream, so a read straight after a write reports the level before it
@@ -169,6 +228,19 @@ def _drain_typeahead(stdin: Any = None) -> int:
     return 0
 
 
+def _gate_said(answered: object) -> str:
+    """What a gate's answer (:data:`BeforeChange`) says, in one line: ``""`` for the empty sentence alone, which lets
+    the change go out; any other sentence's words; and why an answer that is no sentence (``None``, ``False``, a
+    number, a blank) refuses too: a gate that forgot its return fails closed, never open (review of 2026-10-01)."""
+    if isinstance(answered, str):
+        if answered == "":
+            return ""
+        words = " ".join(answered.split())
+        if words:
+            return words
+    return f"the check before the change answered no sentence ({answered!r}), and only an empty one lets it go out"
+
+
 class JawState(StrEnum):
     """What the wired feedback says the jaws are doing.
 
@@ -205,7 +277,8 @@ class JawIOGripper:
     stand: ``None``, the default, asks for a ``single_toggle`` and not otherwise, and
     ``False`` is refused for a toggle. ``ask`` is how the question reaches the person
     (:data:`JawQuestion`); ``None`` asks at the terminal where stdin is one, through
-    ``input``, with the console's typeahead discarded first.
+    ``input``, with the console's typeahead discarded first. A structured seam handed in later
+    (:meth:`answer_questions_with`) comes before both, with the gate asked before every change.
 
     One lock holds a question and the command it leads to together: :meth:`connect`,
     :meth:`set_closed` and :meth:`jaws_open_for_a_pick` take it, so a command from another
@@ -325,6 +398,11 @@ class JawIOGripper:
         self._min_width_mm = float(min_width_mm)
         self._max_width_mm = float(max_width_mm)
         self._ask = ask
+        # The console's structured seam and the gate it hands in with it (`answer_questions_with`): when set, every
+        # question goes through the seam, before `ask` and the terminal, and the gate is asked before every change a
+        # question leads to.
+        self._structured: StructuredJawQuestion | None = None
+        self._before_change: BeforeChange | None = None
         self._sleep = sleep
         # True only once a connect has finished, its question answered: a hand still being asked about is not
         # connected, so nothing can command it (review of 2026-09-24, a race found in the console).
@@ -463,6 +541,60 @@ class JawIOGripper:
     def asks_at_connect(self) -> bool:
         """Whether :meth:`connect` asks a person where the jaws stand: a ``single_toggle`` always, a solenoid opted in."""
         return self._asks_at_start
+
+    @property
+    def where_pin(self) -> str:
+        """The bank and pin the jaws are driven on, as a person reads it on the pendant: ``tool output 0``.
+
+        Read off the driver's own configuration, without its lock and without the controller, so it never waits and
+        never raises: the console reads it on every poll, also while a question holds the hand for minutes.
+        """
+        return self._where_pin()
+
+    @property
+    def before_change(self) -> "BeforeChange | None":
+        """The gate the console installed with its seam (:meth:`answer_questions_with`), or ``None``.
+
+        Read only. Setting it here is refused with ``AttributeError``: the gate comes and goes with the seam it was
+        installed for, so a gate set on its own would outlive that seam, or be dropped by the next install without a
+        word. Install it with ``answer_questions_with(ask, before_change=gate)``, or hand it to one check,
+        ``confirm_where_the_jaws_stand(reason, before_change=gate)``.
+        """
+        return self._before_change
+
+    @before_change.setter
+    def before_change(self, gate: "BeforeChange | None") -> None:
+        raise AttributeError(
+            "JawIOGripper.before_change is installed with the console's seam, never set on its own: "
+            "answer_questions_with(ask, before_change=gate) installs it for every question, and "
+            "confirm_where_the_jaws_stand(reason, before_change=gate) asks it at one check")
+
+    # --- who is asked -----------------------------------------------------
+    def answer_questions_with(
+        self, ask: "StructuredJawQuestion | None", *, before_change: "BeforeChange | None" = None,
+    ) -> "StructuredJawQuestion | None":
+        """Ask every question where the jaws stand through ``ask`` from now on; the seam it takes the place of.
+
+        ``ask`` gets one :class:`JawAsking` per attempt, stage by stage, and returns one of its ``choices``; an answer
+        that is none of them is asked again saying why, ``EOFError`` is no answer, and a question nobody answered is
+        refused, never taken for "open". It comes before the ``ask`` handed to the constructor and before the terminal;
+        ``None`` takes it away, and they ask again, as a CLI program always did. ``before_change`` comes and goes with
+        it: the gate asked immediately before every change a question leads to (:meth:`confirm_where_the_jaws_stand`
+        says how). Set under the lock, so it waits for a question in flight.
+        """
+        with self._lock:
+            previous = self._structured
+            self._structured = ask
+            self._before_change = before_change if ask is not None else None
+            return previous
+
+    def question_seam_installed(self) -> bool:
+        """Whether a structured seam asks this hand's questions (:meth:`answer_questions_with`).
+
+        The console refuses a connect and a check without one: it never falls back to the terminal of the server it
+        runs in, where a question cannot be cancelled and nobody watching the browser sees it.
+        """
+        return self._structured is not None
 
     # --- lifecycle --------------------------------------------------------
     def connect(self) -> None:
@@ -665,6 +797,45 @@ class JawIOGripper:
             refused = self._where_the_jaws_stand(why, at_connect=False)
             return f"not starting the pick: {refused}" if refused else ""
 
+    def confirm_where_the_jaws_stand(self, reason: str, *, before_change: "BeforeChange | None" = None) -> str:
+        """Ask a person where the jaws stand, whatever the count says; ``""`` where they stand open by the end, else the
+        one-line refusal.
+
+        For a check before the arm moves again after a stop (a Restart, Home after a stop, Setup): a person may have
+        held the part and opened the jaws at the pendant, or emptied the hand, or not, and a toggle's count says only
+        what the program commanded. So this ALWAYS asks, also where the count says open, with the pick start's wording:
+        only the word ``open`` or ``closed`` answers it, an empty answer is no answer. ``open`` starts the count there.
+        ``closed`` is where the count stands from then on, and the person chooses the one change that opens the jaws or
+        an abort; before that change every gate there is is asked, the one :meth:`answer_questions_with` installed and
+        ``before_change``, under the lock, and one that answers anything but the empty sentence (no sentence at all
+        included), or raises, refuses it with nothing sent. A disconnect that lands while a gate reads the controller
+        refuses it too: the connection is read again right before the change. No answer is a refusal, never "open",
+        and leaves the count as it was. A caller that reads :attr:`commands_sent` before and after knows whether that
+        change went out: a person's hands were at the jaws, and open jaws hold no part. The output switched at the
+        pendant while the person decided raises :class:`RobotError` from the change, with nothing sent, and the count
+        is nobody's until a person is asked again.
+
+        Where the program's own count says CLOSED and the output still reads the level that count left it at (no change
+        since failed or went unread, and nobody switched it at the pendant), "where" is not asked: an answer of ``open``
+        there would contradict the program's evidence, turn the count round with nothing sent, and leave a part the
+        task closed on clamped while every caller took the hand for empty (review of 2026-10-02: one click on "Offen"
+        after a halt in the carry let Restart and Home drive the part, and the next close dropped it). Only what follows
+        from closed is asked, ``open_now`` (one change, while a person holds the part) or ``abort``, by the rules above;
+        an abort keeps the count CLOSED, and its refusal says how a count starts anew where the jaws stand open all the
+        same (connect again: the connect asks where they stand).
+
+        A hand that is not a toggle answers ``""`` at once: it reads its jaws, or opens them by command. Refused
+        (``RobotConnectionError``) on a hand that is not connected, and with nobody to ask (a thread under
+        :meth:`asking_nobody`, or no seam, no question and no terminal) the answer is the refusal. Holds the lock, so a
+        command from another thread waits while the person is asked.
+        """
+        with self._lock:
+            self._require_connected("confirm_where_the_jaws_stand")
+            if self._actuation != "single_toggle":
+                return ""
+            return self._where_the_jaws_stand(reason, at_connect=False, before_change=before_change,
+                                              counted=self._counted_closed())
+
     def get_width_mm(self) -> float:
         """Reported opening: the closed band while closed, the open band while open.
 
@@ -766,8 +937,10 @@ class JawIOGripper:
                 raise RobotError(self._never_read(pin, True, "the valve may not have thrown"))
             self._sleep(self._pulse_s)
         finally:
-            # An interrupt or a coil that never read back must not leave it energised: that is what cooks it.
-            self._io.set_digital_output(pin, False, port=self._port)
+            # An interrupt or a coil that never read back must not leave it energised: that is what cooks it. Nor may a
+            # halt that lands inside the pulse: a halted arm refuses the plain write and sends nothing, so the coil's
+            # end goes out through the arm's own door for it (``end_pulse``: only ever low). Never a toggle's write.
+            end_pulse(self._io, pin, port=self._port)
 
     def _reads_back(self, pin: int, level: bool) -> bool:
         """Whether output ``pin`` reads ``level`` within :meth:`_read_back_s`, read once per controller cycle.
@@ -935,27 +1108,37 @@ class JawIOGripper:
         if refused:
             raise RobotError(f"JawIOGripper: not connecting: {refused}")
 
-    def _where_the_jaws_stand(self, reason: str, *, at_connect: bool) -> str:
+    def _where_the_jaws_stand(self, reason: str, *, at_connect: bool,
+                              before_change: "BeforeChange | None" = None, counted: str = "") -> str:
         """Ask a person whether the jaws stand open; ``""`` where they do by the end, else the one-line refusal.
 
         ``reason`` says why the question is asked, in the question and in a refusal. ``open``:
-        they stand open, and the count starts there. ``closed``: the person chooses ``p``, one
-        command now that opens them (a single change of a toggle's output, which releases
-        whatever is between them), and the stroke is waited out, or ``a``, which aborts. Nothing
-        moves without that choice. An answer that is none of these is asked again, and after
-        :data:`_ASKS` of them, or at end of input, nothing is taken for granted: the answer is
-        an abort. For a toggle, the level its output reads once the person has answered is where
-        the program's count starts: an output switched after that was switched by hand.
+        they stand open, and the count starts there. ``closed``: that is where the count stands
+        from then on, whatever comes next, and the person chooses ``p``, one command now that
+        opens them (a single change of a toggle's output, which releases whatever is between
+        them), and the stroke is waited out, or ``a``, which aborts. Nothing moves without that
+        choice, and before that one command every gate there is is asked, under the lock: the one
+        :meth:`answer_questions_with` installed and ``before_change``; one that answers anything but
+        the empty sentence, or raises, refuses it with nothing sent. An answer that is none of these is asked again,
+        and after :data:`_ASKS` of them, or at end of input, nothing is taken for granted: the
+        answer is an abort. For a toggle, the level its output reads once the person has answered
+        is where the program's count starts: an output switched after that was switched by hand.
 
-        Enter answers open only ``at_connect``, the owner's agreed answer at program start. At a
-        pick start the program already believes the jaws stand closed, or cannot say, so an
-        empty line there, which an Enter meant for something else also gives, is no answer: only
-        the word is, and the question says so.
+        Enter answers open only ``at_connect``, the owner's agreed answer at program start, and only
+        at a terminal or through a string seam: a structured seam offers no default, and its
+        question says so, at connect too. At a pick start the program already believes the jaws
+        stand closed, or cannot say, so an empty line there, which an Enter meant for something
+        else also gives, is no answer: only the word is, and the question says so.
 
         The answer is acted on only where the connection it was asked on still stands when it
-        comes back: a disconnect or another connect meanwhile (another thread, which the lock
-        does not hold off a disconnect) makes it an answer about a count nobody keeps any more,
-        and it is refused with nothing sent.
+        comes back, and again once every gate has been asked, right before the change: a
+        disconnect or another connect meanwhile (another thread, which the lock does not hold off a
+        disconnect) makes it an answer about a count nobody keeps any more, and it is refused with
+        nothing sent.
+
+        ``counted`` (:meth:`_counted_closed`, a check's alone) is the program's own evidence that the jaws stand
+        CLOSED: "where" is not asked then, since an answer of open would contradict it and turn the count round with
+        nothing sent; only the second question is, open them now or abort, by the rules above.
         """
         where = self._where_pin()
         nobody = getattr(self._nobody_asked, "why", "")
@@ -963,12 +1146,29 @@ class JawIOGripper:
             self.logger.warning("nobody is asked where the jaws on %s stand (%s): %s; nothing was sent", where,
                                 reason, nobody)
             return f"nobody is asked where the jaws on {where} stand ({reason}): {nobody}"
-        ask = self._question()
-        if ask is None:
+        seam = self._structured
+        ask = None if seam is not None else self._question()
+        if seam is None and ask is None:
             return (f"nobody can be asked where the jaws on {where} stand ({reason}): stdin is not a terminal and "
                     "no question was handed to the gripper; run it from a terminal")
         asked_on = (self._generation, self._connected)
-        if at_connect:
+        if counted:
+            # The program's own count says CLOSED, and the output still stands where that count left it: the program
+            # closed them, and nothing has moved them since. "Where" would offer "open" against that evidence: one
+            # wrong click turned the count round with nothing sent, the planner was told the hand was empty, and the way
+            # back drove the part a task had closed on (review of 2026-10-02). Only what follows from closed is asked.
+            self.logger.warning("the jaws on %s are not asked where they stand (%s): %s; only whether to open them now",
+                                where, reason, counted)
+            said = f"{counted[:1].upper()}{counted[1:]}"
+            return self._open_now_or_abort(
+                ask, seam, (f"\nThe jaws of the {self._actuation} hand on {where}: {reason}.\n{said}. [p] open them now "
+                            f"with {self._how_it_opens()}, which releases anything between them, so hold the part "
+                            "first; [a] abort: "),
+                reason=f"{reason}; {counted}", at_connect=at_connect, before_change=before_change, asked_on=asked_on,
+                closed_by=f"the program's count says the jaws on {where} stand CLOSED, and a person",
+                open_after_all=(" If they stand open all the same, connect again: the connect asks where they stand "
+                                "and starts the count anew."))
+        if at_connect and seam is None:
             question = (f"\nThe jaws of the {self._actuation} hand on {where}: {reason}.\n"
                         "Look at them. Do they stand OPEN? [Enter or 'open' = open, 'closed' = closed]: ")
             choices = {"": "open", "o": "open", "open": "open", "c": "closed", "closed": "closed"}
@@ -976,7 +1176,8 @@ class JawIOGripper:
             question = (f"\nThe jaws of the {self._actuation} hand on {where}: {reason}.\n"
                         "Look at them. Do they stand OPEN? [type 'open' or 'closed'; Enter alone is no answer here]: ")
             choices = {"o": "open", "open": "open", "c": "closed", "closed": "closed"}
-        answer = self._answer(ask, question, choices)
+        answer = self._answer(ask, question, choices, stage="where", offered=_WHERE_CHOICES, at_connect=at_connect,
+                              reason=reason, seam=seam)
         changed = self._changed_while_asked(asked_on, reason)
         if changed:
             return changed
@@ -987,25 +1188,93 @@ class JawIOGripper:
             return ""
         if answer is None:
             return f"no answer said where the jaws on {where} stand ({reason})"
-        choice = self._answer(ask, (f"They stand CLOSED. [p] open them now with {self._how_it_opens()}, which "
-                                    "releases anything between them; [a] abort: "),
-                              {"p": "pulse", "pulse": "pulse", "a": "abort", "abort": "abort"})
+        # A person looked and said CLOSED: that is the count from here, whatever is chosen next. Kept OPEN, the next
+        # close would be a change that opens jaws a person just saw closed (found writing the console's check).
+        self._closed, self._edge_unknown, self._unknown_why = True, False, ""
+        self._start_the_count_here()
+        return self._open_now_or_abort(
+            ask, seam, (f"They stand CLOSED. [p] open them now with {self._how_it_opens()}, which releases anything "
+                        "between them; [a] abort: "),
+            reason=reason, at_connect=at_connect, before_change=before_change, asked_on=asked_on,
+            closed_by=f"a person said the jaws on {where} stand CLOSED and")
+
+    def _open_now_or_abort(self, ask: "JawQuestion | None", seam: "StructuredJawQuestion | None", question: str, *,
+                           reason: str, at_connect: bool, before_change: "BeforeChange | None",
+                           asked_on: "tuple[int, bool]", closed_by: str, open_after_all: str = "") -> str:
+        """The second question, the jaws standing CLOSED: ``p``, the one command that opens them, or ``a``, an abort.
+
+        ``""`` once they stand open by the end, else the one-line refusal, nothing sent. ``closed_by`` says who says
+        they stand closed, ending where a refusal goes on with what the person did ("a person said the jaws on tool
+        output 0 stand CLOSED and", "the program's count says ..., and a person"); ``open_after_all`` is added to an
+        abort's or a missing answer's refusal (what to do where they stand open all the same). Before the one command
+        every gate is asked (:meth:`_refused_before_the_change`), and the connection the question was asked on is read
+        again after the answer and after the gates: a disconnect meanwhile sends nothing.
+        """
+        where = self._where_pin()
+        choice = self._answer(ask, question,
+                              {"p": "pulse", "pulse": "pulse", "open_now": "pulse", "a": "abort", "abort": "abort"},
+                              stage="open_now", offered=_OPEN_NOW_CHOICES, at_connect=at_connect, reason=reason,
+                              seam=seam)
         changed = self._changed_while_asked(asked_on, reason)
         if changed:
             return changed
         if choice != "pulse":
             # An abort is a choice; three wrong answers or the end of input are not, and the refusal says which it was.
             said = "chose not to open them" if choice == "abort" else "gave no clear answer to whether to open them"
-            self.logger.warning("a person said the jaws on %s stand CLOSED and %s (%s)", where, said, reason)
-            return f"a person said the jaws on {where} stand CLOSED and {said}"
-        self.logger.warning("a person said the jaws on %s stand CLOSED and had them opened (%s)", where, reason)
-        self._closed, self._edge_unknown, self._unknown_why = True, False, ""
+            self.logger.warning("%s %s (%s)", closed_by, said, reason)
+            return f"{closed_by} {said}" + (f".{open_after_all}" if open_after_all else "")
+        refused = self._refused_before_the_change(before_change, where, chose=f"{closed_by} chose to open them")
+        if refused:
+            return refused
+        # A gate reads the controller while the answer stands: a disconnect that landed meanwhile makes it stale too.
+        changed = self._changed_while_asked(asked_on, reason, during="the check before the change ran")
+        if changed:
+            return changed
+        self.logger.warning("%s had them opened (%s)", closed_by, reason)
         if self._actuation == "single_toggle":
-            self._start_the_count_here()
             self._toggle(False)
         else:
             self._actuate(close=False)
         self._sleep(self._close_settle_s)
+        return ""
+
+    def _counted_closed(self) -> str:
+        """The program's own evidence that a toggle's jaws stand CLOSED, in a clause, or ``""`` where it has none.
+
+        Its count says CLOSED (its own last change closed them, or a person said so since), no change since failed or
+        went unread, and the output still reads the level that count left it at, read now and never written: nothing
+        but the program moved the jaws since. Every other hand, a count that says open, a count nobody can vouch for and
+        an output that cannot be read have no such evidence.
+        """
+        if self._actuation != "single_toggle" or not self._closed or self._edge_unknown or self._level is None:
+            return ""
+        if self._switched_clause():
+            return ""
+        said = "HIGH" if self._level else "LOW"
+        return (f"the program's count says they stand CLOSED, and {self._where_pin()} still reads {said}, as that count "
+                "left it, so nothing but the program has moved them since")
+
+    def _refused_before_the_change(self, before_change: "BeforeChange | None", where: str, *,
+                                   chose: str = "") -> str:
+        """``""`` where every gate asked right before the one change that opens the jaws lets it go out, else the
+        one-line refusal, with nothing sent: the gate :meth:`answer_questions_with` installed, then ``before_change``.
+
+        A gate that raises lets nothing through either: a check that could not be made is no check. Only the empty
+        sentence lets the change go out: an answer that is no sentence (``None``, ``False``, a number, a blank) is a
+        gate that forgot to say, and refuses too. ``chose`` opens the refusal: who says the jaws stand closed, and that
+        a person chose to open them.
+        """
+        chose = chose or f"a person said the jaws on {where} stand CLOSED and chose to open them"
+        for gate in (self._before_change, before_change):
+            if gate is None:
+                continue
+            try:
+                said = _gate_said(gate())
+            except Exception as exc:  # noqa: BLE001 (a check that could not be made lets nothing through)
+                said = f"the check before the change could not be made ({type(exc).__name__}: {exc})"
+            if said:
+                self.logger.warning("not opening the jaws on %s: %s; nothing was sent", where, said)
+                return f"{chose}, and the check right before the one change refused it: {said}; nothing was sent"
         return ""
 
     def _start_the_count_here(self) -> None:
@@ -1013,26 +1282,43 @@ class JawIOGripper:
         if self._actuation == "single_toggle":
             self._level = self._read_level()
 
-    def _changed_while_asked(self, asked_on: "tuple[int, bool]", reason: str) -> str:
-        """``""`` where the connection a question was asked on still stands, else the refusal that sends nothing."""
+    def _changed_while_asked(self, asked_on: "tuple[int, bool]", reason: str, *,
+                             during: str = "the question waited") -> str:
+        """``""`` where the connection a question was asked on still stands, else the refusal that sends nothing.
+        ``during`` says what ran while it changed: the question by default, or the check before the change."""
         if (self._generation, self._connected) == asked_on:
             return ""
         where = self._where_pin()
-        self.logger.warning("the connection of the hand on %s changed while the question waited (%s); its answer is "
-                            "not acted on and nothing was sent", where, reason)
-        return (f"the connection of the hand on {where} changed while the question waited (a disconnect or another "
-                "connect came meanwhile), so its answer is about a count nobody keeps any more; nothing was sent")
+        self.logger.warning("the connection of the hand on %s changed while %s (%s); its answer is not acted on and "
+                            "nothing was sent", where, during, reason)
+        return (f"the connection of the hand on {where} changed while {during} (a disconnect or another connect came "
+                "meanwhile), so its answer is about a count nobody keeps any more; nothing was sent")
 
-    def _answer(self, ask: "JawQuestion", question: str, choices: "dict[str, str]") -> "str | None":
+    def _answer(self, ask: "JawQuestion | None", question: str, choices: "dict[str, str]", *, stage: str = "where",
+                offered: "tuple[str, ...]" = _WHERE_CHOICES, at_connect: bool = False, reason: str = "",
+                seam: "StructuredJawQuestion | None" = None) -> "str | None":
         """What the person chose among ``choices``, asked up to :data:`_ASKS` times; ``None`` for no clear answer.
 
         An answer that is none of the choices, an empty line included where Enter is not one, is
-        asked again with the question it answered, prefixed with why.
+        asked again with the question it answered, prefixed with why. Through a structured
+        ``seam`` each attempt is one :class:`JawAsking` of ``stage``, offering ``offered``, and
+        only what it offered answers it, or the build plan's own letter for it (``p``, ``a``):
+        an empty answer never does, since a browser offers no default, and neither do the
+        terminal's ``o``, ``c`` and ``pulse``. ``EOFError`` from either seam is no answer.
         """
-        asking = question
-        for _ in range(_ASKS):
+        if seam is not None:
+            taken = _SEAM_WORDS.get(stage, frozenset(offered))
+            choices = {said: meant for said, meant in choices.items() if said in taken}
+        asking, why = question, ""
+        for attempt in range(1, _ASKS + 1):
             try:
-                said = str(ask(asking)).strip().lower()
+                if seam is not None:
+                    said = str(seam(JawAsking(stage=stage, at_connect=at_connect, reason=reason, where=self._where_pin(),
+                                              choices=offered, text=asking.strip(), attempt=attempt,
+                                              why_again=why))).strip().lower()
+                else:
+                    assert ask is not None  # the caller asks through the seam or through ask, never neither
+                    said = str(ask(asking)).strip().lower()
             except EOFError:
                 return None
             if said in choices:

@@ -15,6 +15,12 @@
 # Pair it with `POST /v1/cell/build?rehearse=true`, which substitutes a fixed desk scene for the
 # camera and the perception models. Together: the whole console, at a desk, in seconds.
 #
+# A task needs somewhere to set its part down, and a dummy arm cannot be guided by hand to teach
+# one, so this profile ships two poses of its own: "Ablage links", the default place a command that
+# names none places at, and "Parkposition", a return the console offers beside Home. They are written
+# by hand and not screened (no `screen` key): a task screens every pose before anything moves. A real
+# cell teaches its own in the console, into the last layer of its own profile chain.
+#
 #   python -m api --profile console_dummy
 # ============================================================================
 
@@ -40,3 +46,13 @@ robot:
       enforce: true
       mass_kg: 1.5
       cog_mm: [0.0, 0.0, 60.0]
+
+  # The desk's place and park, in degrees as a pendant shows them (one per joint of the home).
+  named_poses:
+    drop_left:
+      joints_deg: [-60.0, -95.0, -120.0, -55.0, 90.0, 0.0]
+      label: "Ablage links"
+    park:
+      joints_deg: [30.0, -80.0, -100.0, -90.0, 90.0, 0.0]
+      label: "Parkposition"
+  default_place_pose: drop_left

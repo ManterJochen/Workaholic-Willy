@@ -1,0 +1,1083 @@
+{
+  "about": "Captured by scripts/console/capture_event_log.py on console_dummy: halt now pressed right after the pick, so the stopped run holds the part where the arm stands; 'the cell is clear', then 'Backen leer' (the dummy hand measures nothing, so the person's word empties it, and the planner is told so); the Restart counts down three seconds, hands off, before its first motion, the planned move home, and places a part.",
+  "scenario": "console_dummy_halted_backen_leer",
+  "events": [
+    {
+      "type": "run_started",
+      "run_id": "run-5e1d0a7c05",
+      "seq": 1,
+      "ts": 1790856000.0,
+      "severity": "info",
+      "human": "Task run started.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "kind": "task",
+        "plan": {
+          "object": "",
+          "object_said": null,
+          "place": {
+            "kind": "pose",
+            "pose": "drop_left",
+            "pose_label": "Ablage links",
+            "pose_joints_deg": [
+              -60.0,
+              -95.0,
+              -120.0,
+              -55.0,
+              90.0,
+              0.0
+            ],
+            "phrase": null,
+            "said": null
+          },
+          "return_to": "home",
+          "return_label": null,
+          "return_joints_deg": null,
+          "scope": "once",
+          "options": {
+            "multi_view": true,
+            "both_faces": false,
+            "closing_axis": null,
+            "push_mm": 30.0,
+            "record_views": false,
+            "rim_air_mm": null,
+            "pick_anything": false,
+            "overlay": true
+          },
+          "command": {
+            "text": "Nimm das Teil und leg es ab",
+            "source": "spoken",
+            "language": "de",
+            "parsed": true,
+            "edited": []
+          },
+          "first_motion": "look",
+          "countdown": false
+        }
+      }
+    },
+    {
+      "type": "task.pose_screened",
+      "run_id": "run-5e1d0a7c05",
+      "seq": 2,
+      "ts": 1790856000.05,
+      "severity": "info",
+      "human": "The place pose 'drop_left' is not screened: the move judges it when it runs.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "pose": "drop_left",
+        "role": "place",
+        "verdict": "unscreened",
+        "detail": "DummyRobotArm names no configuration for a pose, so it screens none and the move judges it when it runs (screened at the taught pose itself: the cell declares no carried part's hang)",
+        "nearby_deg": null
+      }
+    },
+    {
+      "type": "task.part_started",
+      "run_id": "run-5e1d0a7c05",
+      "seq": 3,
+      "ts": 1790856000.1,
+      "severity": "info",
+      "human": "Looking for part 1 of 1.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "part": 1,
+        "of": 1,
+        "pick": 1
+      }
+    },
+    {
+      "type": "pick.pick_started",
+      "run_id": "run-5e1d0a7c05",
+      "seq": 4,
+      "ts": 1790856000.15,
+      "severity": "info",
+      "human": "Starting a pick.",
+      "step": "pick_started",
+      "step_index": null,
+      "step_total": 5,
+      "data": {
+        "attempt_total": 5
+      }
+    },
+    {
+      "type": "pick.attempt_started",
+      "run_id": "run-5e1d0a7c05",
+      "seq": 5,
+      "ts": 1790856000.2,
+      "severity": "info",
+      "human": "Attempt 1 of 5.",
+      "step": "attempt_started",
+      "step_index": 0,
+      "step_total": 5,
+      "data": {
+        "attempt": 0,
+        "attempt_total": 5
+      }
+    },
+    {
+      "type": "pick.perceived",
+      "run_id": "run-5e1d0a7c05",
+      "seq": 6,
+      "ts": 1790856000.25,
+      "severity": "info",
+      "human": "Camera frame acquired: 1 object(s) segmented.",
+      "step": "perceived",
+      "step_index": 0,
+      "step_total": null,
+      "data": {
+        "attempt": 0,
+        "segmentation_count": 1
+      }
+    },
+    {
+      "type": "pick.ranked",
+      "run_id": "run-5e1d0a7c05",
+      "seq": 7,
+      "ts": 1790856000.3,
+      "severity": "info",
+      "human": "Ranked 8 grasp candidate(s), best score 0.71.",
+      "step": "ranked",
+      "step_index": 0,
+      "step_total": null,
+      "data": {
+        "attempt": 0,
+        "candidate_count": 8,
+        "target_index": 0,
+        "score": 0.7140131409782015
+      }
+    },
+    {
+      "type": "pick.executing",
+      "run_id": "run-5e1d0a7c05",
+      "seq": 8,
+      "ts": 1790856000.35,
+      "severity": "info",
+      "human": "Moving to the grasp at x=406 y=1 z=46 mm.",
+      "step": "executing",
+      "step_index": 0,
+      "step_total": null,
+      "data": {
+        "attempt": 0,
+        "target_index": 0,
+        "score": 0.7140131409782015,
+        "position_mm": [
+          406.036525,
+          1.2195,
+          46.39999999999998
+        ],
+        "overlay": "/v1/runs/run-5e1d0a7c05/overlays/1"
+      }
+    },
+    {
+      "type": "pick.attempt_finished",
+      "run_id": "run-5e1d0a7c05",
+      "seq": 9,
+      "ts": 1790856000.4,
+      "severity": "info",
+      "human": "Attempt ended: executed.",
+      "step": "attempt_finished",
+      "step_index": 0,
+      "step_total": null,
+      "data": {
+        "attempt": 0,
+        "action": "executed",
+        "outcome": "PickOutcome.EXECUTED",
+        "motion_status": "executed",
+        "motion_message": "",
+        "camera_world": "unplanned",
+        "camera_world_reason": "DummyRobotArm has no planner"
+      }
+    },
+    {
+      "type": "pick.pick_finished",
+      "run_id": "run-5e1d0a7c05",
+      "seq": 10,
+      "ts": 1790856000.45,
+      "severity": "info",
+      "human": "Pick finished: PickOutcome.EXECUTED.",
+      "step": "pick_finished",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "outcome": "PickOutcome.EXECUTED"
+      }
+    },
+    {
+      "type": "pick_result",
+      "run_id": "run-5e1d0a7c05",
+      "seq": 11,
+      "ts": 1790856000.5,
+      "severity": "success",
+      "human": "Pick 1: succeeded.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "outcome": "succeeded",
+        "succeeded": true,
+        "reason": "",
+        "looks": [],
+        "looks_fused": [],
+        "hand_eye_warn_mm": 6.0,
+        "hold_measured": false,
+        "controller_stopped": false,
+        "gripper_fault": "",
+        "needs_person": false,
+        "both_faces": false,
+        "grasp_pose": {
+          "position_mm": [
+            406.04,
+            1.22,
+            46.4
+          ],
+          "quaternion_xyzw": [
+            0.612372,
+            0.612372,
+            0.353553,
+            0.353553
+          ]
+        },
+        "object_centre_mm": [
+          399.39,
+          0.61,
+          50.0
+        ],
+        "fused_views": [],
+        "push_stopped": false,
+        "found_nothing": false,
+        "only_excluded": false,
+        "part": 1,
+        "pick": 1,
+        "detector_failed": false,
+        "overlay": "/v1/runs/run-5e1d0a7c05/overlays/1"
+      }
+    },
+    {
+      "type": "run_halt_requested",
+      "run_id": "run-5e1d0a7c05",
+      "seq": 12,
+      "ts": 1790856000.55,
+      "severity": "warn",
+      "human": "Halt now: the run commands nothing more, and the arm refuses every next motion until a person confirms the cell is clear. Not an emergency stop; the red button is.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "reason": "the operator pressed halt now in the console",
+        "in_motion": false,
+        "requested_at": 1790856000.55,
+        "braking": false
+      }
+    },
+    {
+      "type": "run_error",
+      "run_id": "run-5e1d0a7c05",
+      "seq": 13,
+      "ts": 1790856000.6,
+      "severity": "error",
+      "human": "The run stopped: the console halted the arm (the operator pressed halt now in the console): halt now was pressed; nothing more is commanded, the jaws included. The last pick said: succeeded",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "error": "the console halted the arm (the operator pressed halt now in the console): halt now was pressed; nothing more is commanded, the jaws included. The last pick said: succeeded",
+        "stop_code": "halted"
+      }
+    },
+    {
+      "type": "cell.recovery",
+      "run_id": "cell",
+      "seq": 1,
+      "ts": 1790856000.65,
+      "severity": "error",
+      "human": "The task run run-5e1d0a7c05 stopped where the arm stands (halted). Nothing moves until a person confirms the cell is clear; then Restart or Home, whose first motion is the planned move home.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "run_id": "run-5e1d0a7c05",
+        "kind": "task",
+        "stop_code": "halted",
+        "at": 1790856000.65
+      }
+    },
+    {
+      "type": "run_finished",
+      "run_id": "run-5e1d0a7c05",
+      "seq": 14,
+      "ts": 1790856000.7,
+      "severity": "warn",
+      "human": "Task run failed: halted.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "id": "run-5e1d0a7c05",
+        "prompt": "",
+        "requested_picks": 0,
+        "state": "failed",
+        "started_at": 1790856000.0,
+        "finished_at": 1790856000.65,
+        "succeeded": 1,
+        "attempted": 1,
+        "outcomes": [
+          "succeeded"
+        ],
+        "error": "the console halted the arm (the operator pressed halt now in the console): halt now was pressed; nothing more is commanded, the jaws included. The last pick said: succeeded",
+        "stop_requested": false,
+        "kind": "task",
+        "stop_code": "halted",
+        "stop_class": "problem",
+        "plan": {
+          "object": "",
+          "object_said": null,
+          "place": {
+            "kind": "pose",
+            "pose": "drop_left",
+            "pose_label": "Ablage links",
+            "pose_joints_deg": [
+              -60.0,
+              -95.0,
+              -120.0,
+              -55.0,
+              90.0,
+              0.0
+            ],
+            "phrase": null,
+            "said": null
+          },
+          "return_to": "home",
+          "return_label": null,
+          "return_joints_deg": null,
+          "scope": "once",
+          "options": {
+            "multi_view": true,
+            "both_faces": false,
+            "closing_axis": null,
+            "push_mm": 30.0,
+            "record_views": false,
+            "rim_air_mm": null,
+            "pick_anything": false,
+            "overlay": true
+          },
+          "command": {
+            "text": "Nimm das Teil und leg es ab",
+            "source": "spoken",
+            "language": "de",
+            "parsed": true,
+            "edited": []
+          },
+          "first_motion": "look",
+          "countdown": false
+        },
+        "parts_placed": 0,
+        "holding": true,
+        "restart_of": null,
+        "halt_requested": true,
+        "step": "grasp",
+        "refusal": null
+      }
+    },
+    {
+      "type": "cell.acknowledged",
+      "run_id": "cell",
+      "seq": 2,
+      "ts": 1790856000.75,
+      "severity": "info",
+      "human": "A person confirmed the cell is clear: halted, recovery cleared.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "cleared": [
+          "halted",
+          "recovery"
+        ],
+        "jaws_emptied": false
+      }
+    },
+    {
+      "type": "cell.acknowledged",
+      "run_id": "cell",
+      "seq": 3,
+      "ts": 1790856000.8,
+      "severity": "info",
+      "human": "A person confirmed the cell is clear: recovery cleared; the hand holds nothing.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "cleared": [
+          "recovery"
+        ],
+        "jaws_emptied": true
+      }
+    },
+    {
+      "type": "run_started",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 1,
+      "ts": 1790856000.85,
+      "severity": "info",
+      "human": "Task run started.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "kind": "task",
+        "plan": {
+          "object": "",
+          "object_said": null,
+          "place": {
+            "kind": "pose",
+            "pose": "drop_left",
+            "pose_label": "Ablage links",
+            "pose_joints_deg": [
+              -60.0,
+              -95.0,
+              -120.0,
+              -55.0,
+              90.0,
+              0.0
+            ],
+            "phrase": null,
+            "said": null
+          },
+          "return_to": "home",
+          "return_label": null,
+          "return_joints_deg": null,
+          "scope": "once",
+          "options": {
+            "multi_view": true,
+            "both_faces": false,
+            "closing_axis": null,
+            "push_mm": 30.0,
+            "record_views": false,
+            "rim_air_mm": null,
+            "pick_anything": false,
+            "overlay": true
+          },
+          "command": {
+            "text": "Nimm das Teil und leg es ab",
+            "source": "spoken",
+            "language": "de",
+            "parsed": true,
+            "edited": []
+          },
+          "first_motion": "return",
+          "countdown": true
+        },
+        "restart_of": "run-5e1d0a7c05"
+      }
+    },
+    {
+      "type": "run_countdown",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 2,
+      "ts": 1790856000.9,
+      "severity": "warn",
+      "human": "Hands off: the arm moves by itself in 3 s (a person's hands were at the jaws).",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "seconds_left": 3,
+        "because": "jaws_opened"
+      }
+    },
+    {
+      "type": "run_countdown",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 3,
+      "ts": 1790856000.95,
+      "severity": "warn",
+      "human": "Hands off: the arm moves by itself in 2 s (a person's hands were at the jaws).",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "seconds_left": 2,
+        "because": "jaws_opened"
+      }
+    },
+    {
+      "type": "run_countdown",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 4,
+      "ts": 1790856001.0,
+      "severity": "warn",
+      "human": "Hands off: the arm moves by itself in 1 s (a person's hands were at the jaws).",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "seconds_left": 1,
+        "because": "jaws_opened"
+      }
+    },
+    {
+      "type": "task.pose_screened",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 5,
+      "ts": 1790856001.05,
+      "severity": "info",
+      "human": "The place pose 'drop_left' is not screened: the move judges it when it runs.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "pose": "drop_left",
+        "role": "place",
+        "verdict": "unscreened",
+        "detail": "DummyRobotArm names no configuration for a pose, so it screens none and the move judges it when it runs (screened at the taught pose itself: the cell declares no carried part's hang)",
+        "nearby_deg": null
+      }
+    },
+    {
+      "type": "task.return_started",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 6,
+      "ts": 1790856001.1,
+      "severity": "info",
+      "human": "Returning home.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "to": "home",
+        "note": ""
+      }
+    },
+    {
+      "type": "task.returned",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 7,
+      "ts": 1790856001.15,
+      "severity": "info",
+      "human": "Back home.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "to": "home",
+        "note": ""
+      }
+    },
+    {
+      "type": "cell.recovery_ended",
+      "run_id": "cell",
+      "seq": 4,
+      "ts": 1790856001.2,
+      "severity": "success",
+      "human": "The arm is back at its return pose (restart); the stop of run run-5e1d0a7c05 is behind it.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "run_id": "run-5e1d0a7c05",
+        "by": "restart",
+        "ended_by": "run-5e1d0a7c06"
+      }
+    },
+    {
+      "type": "task.part_started",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 8,
+      "ts": 1790856001.25,
+      "severity": "info",
+      "human": "Looking for part 1 of 1.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "part": 1,
+        "of": 1,
+        "pick": 1
+      }
+    },
+    {
+      "type": "pick.pick_started",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 9,
+      "ts": 1790856001.3,
+      "severity": "info",
+      "human": "Starting a pick.",
+      "step": "pick_started",
+      "step_index": null,
+      "step_total": 5,
+      "data": {
+        "attempt_total": 5
+      }
+    },
+    {
+      "type": "pick.attempt_started",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 10,
+      "ts": 1790856001.35,
+      "severity": "info",
+      "human": "Attempt 1 of 5.",
+      "step": "attempt_started",
+      "step_index": 0,
+      "step_total": 5,
+      "data": {
+        "attempt": 0,
+        "attempt_total": 5
+      }
+    },
+    {
+      "type": "pick.perceived",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 11,
+      "ts": 1790856001.4,
+      "severity": "info",
+      "human": "Camera frame acquired: 1 object(s) segmented.",
+      "step": "perceived",
+      "step_index": 0,
+      "step_total": null,
+      "data": {
+        "attempt": 0,
+        "segmentation_count": 1
+      }
+    },
+    {
+      "type": "pick.ranked",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 12,
+      "ts": 1790856001.45,
+      "severity": "info",
+      "human": "Ranked 8 grasp candidate(s), best score 0.71.",
+      "step": "ranked",
+      "step_index": 0,
+      "step_total": null,
+      "data": {
+        "attempt": 0,
+        "candidate_count": 8,
+        "target_index": 0,
+        "score": 0.7140131409782015
+      }
+    },
+    {
+      "type": "pick.executing",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 13,
+      "ts": 1790856001.5,
+      "severity": "info",
+      "human": "Moving to the grasp at x=406 y=1 z=46 mm.",
+      "step": "executing",
+      "step_index": 0,
+      "step_total": null,
+      "data": {
+        "attempt": 0,
+        "target_index": 0,
+        "score": 0.7140131409782015,
+        "position_mm": [
+          406.036525,
+          1.2195,
+          46.39999999999998
+        ],
+        "overlay": "/v1/runs/run-5e1d0a7c06/overlays/1"
+      }
+    },
+    {
+      "type": "pick.attempt_finished",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 14,
+      "ts": 1790856001.55,
+      "severity": "info",
+      "human": "Attempt ended: executed.",
+      "step": "attempt_finished",
+      "step_index": 0,
+      "step_total": null,
+      "data": {
+        "attempt": 0,
+        "action": "executed",
+        "outcome": "PickOutcome.EXECUTED",
+        "motion_status": "executed",
+        "motion_message": "",
+        "camera_world": "unplanned",
+        "camera_world_reason": "DummyRobotArm has no planner"
+      }
+    },
+    {
+      "type": "pick.pick_finished",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 15,
+      "ts": 1790856001.6,
+      "severity": "info",
+      "human": "Pick finished: PickOutcome.EXECUTED.",
+      "step": "pick_finished",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "outcome": "PickOutcome.EXECUTED"
+      }
+    },
+    {
+      "type": "pick_result",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 16,
+      "ts": 1790856001.65,
+      "severity": "success",
+      "human": "Pick 1: succeeded.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "outcome": "succeeded",
+        "succeeded": true,
+        "reason": "",
+        "looks": [],
+        "looks_fused": [],
+        "hand_eye_warn_mm": 6.0,
+        "hold_measured": false,
+        "controller_stopped": false,
+        "gripper_fault": "",
+        "needs_person": false,
+        "both_faces": false,
+        "grasp_pose": {
+          "position_mm": [
+            406.04,
+            1.22,
+            46.4
+          ],
+          "quaternion_xyzw": [
+            0.612372,
+            0.612372,
+            0.353553,
+            0.353553
+          ]
+        },
+        "object_centre_mm": [
+          399.39,
+          0.61,
+          50.0
+        ],
+        "fused_views": [],
+        "push_stopped": false,
+        "found_nothing": false,
+        "only_excluded": false,
+        "part": 1,
+        "pick": 1,
+        "detector_failed": false,
+        "overlay": "/v1/runs/run-5e1d0a7c06/overlays/1"
+      }
+    },
+    {
+      "type": "task.drop_planned",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 17,
+      "ts": 1790856001.7,
+      "severity": "info",
+      "human": "The drop stands 46 mm above the taught pose: the part's hang.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "kind": "pose",
+        "pose_mm": [
+          406.036525,
+          1.2195,
+          192.79999999999995
+        ],
+        "rim_mm": null,
+        "hang_mm": 46.39999999999998,
+        "air_mm": null,
+        "verdict": "unscreened"
+      }
+    },
+    {
+      "type": "task.place_started",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 18,
+      "ts": 1790856001.75,
+      "severity": "info",
+      "human": "Placing the part at 'drop_left'.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "place": "pose:drop_left"
+      }
+    },
+    {
+      "type": "task.placed",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 19,
+      "ts": 1790856001.8,
+      "severity": "success",
+      "human": "Placed: the jaws opened at the drop.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "outcome": "executed",
+        "no_sensor": false,
+        "line_out_refused": false
+      }
+    },
+    {
+      "type": "task.return_started",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 20,
+      "ts": 1790856001.85,
+      "severity": "info",
+      "human": "Returning home.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "to": "home",
+        "note": ""
+      }
+    },
+    {
+      "type": "task.returned",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 21,
+      "ts": 1790856001.9,
+      "severity": "info",
+      "human": "Back home.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "to": "home",
+        "note": ""
+      }
+    },
+    {
+      "type": "task.part_finished",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 22,
+      "ts": 1790856001.95,
+      "severity": "success",
+      "human": "Part 1 is placed.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "part": 1,
+        "placed": true,
+        "duration_s": 12.5
+      }
+    },
+    {
+      "type": "run_finished",
+      "run_id": "run-5e1d0a7c06",
+      "seq": 23,
+      "ts": 1790856002.0,
+      "severity": "success",
+      "human": "Task run finished: finished.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "id": "run-5e1d0a7c06",
+        "prompt": "",
+        "requested_picks": 0,
+        "state": "finished",
+        "started_at": 1790856000.85,
+        "finished_at": 1790856002.0,
+        "succeeded": 1,
+        "attempted": 1,
+        "outcomes": [
+          "succeeded"
+        ],
+        "error": "",
+        "stop_requested": false,
+        "kind": "task",
+        "stop_code": "finished",
+        "stop_class": "done",
+        "plan": {
+          "object": "",
+          "object_said": null,
+          "place": {
+            "kind": "pose",
+            "pose": "drop_left",
+            "pose_label": "Ablage links",
+            "pose_joints_deg": [
+              -60.0,
+              -95.0,
+              -120.0,
+              -55.0,
+              90.0,
+              0.0
+            ],
+            "phrase": null,
+            "said": null
+          },
+          "return_to": "home",
+          "return_label": null,
+          "return_joints_deg": null,
+          "scope": "once",
+          "options": {
+            "multi_view": true,
+            "both_faces": false,
+            "closing_axis": null,
+            "push_mm": 30.0,
+            "record_views": false,
+            "rim_air_mm": null,
+            "pick_anything": false,
+            "overlay": true
+          },
+          "command": {
+            "text": "Nimm das Teil und leg es ab",
+            "source": "spoken",
+            "language": "de",
+            "parsed": true,
+            "edited": []
+          },
+          "first_motion": "return",
+          "countdown": true
+        },
+        "parts_placed": 1,
+        "holding": false,
+        "restart_of": "run-5e1d0a7c05",
+        "halt_requested": false,
+        "step": "return",
+        "refusal": null
+      }
+    }
+  ],
+  "runs": {
+    "run-5e1d0a7c05": {
+      "id": "run-5e1d0a7c05",
+      "prompt": "",
+      "requested_picks": 0,
+      "state": "failed",
+      "started_at": 1790856000.0,
+      "finished_at": 1790856000.65,
+      "succeeded": 1,
+      "attempted": 1,
+      "outcomes": [
+        "succeeded"
+      ],
+      "error": "the console halted the arm (the operator pressed halt now in the console): halt now was pressed; nothing more is commanded, the jaws included. The last pick said: succeeded",
+      "stop_requested": false,
+      "kind": "task",
+      "stop_code": "halted",
+      "stop_class": "problem",
+      "plan": {
+        "object": "",
+        "object_said": null,
+        "place": {
+          "kind": "pose",
+          "pose": "drop_left",
+          "pose_label": "Ablage links",
+          "pose_joints_deg": [
+            -60.0,
+            -95.0,
+            -120.0,
+            -55.0,
+            90.0,
+            0.0
+          ],
+          "phrase": null,
+          "said": null
+        },
+        "return_to": "home",
+        "return_label": null,
+        "return_joints_deg": null,
+        "scope": "once",
+        "options": {
+          "multi_view": true,
+          "both_faces": false,
+          "closing_axis": null,
+          "push_mm": 30.0,
+          "record_views": false,
+          "rim_air_mm": null,
+          "pick_anything": false,
+          "overlay": true
+        },
+        "command": {
+          "text": "Nimm das Teil und leg es ab",
+          "source": "spoken",
+          "language": "de",
+          "parsed": true,
+          "edited": []
+        },
+        "first_motion": "look",
+        "countdown": false
+      },
+      "parts_placed": 0,
+      "holding": true,
+      "restart_of": null,
+      "halt_requested": true,
+      "step": "grasp",
+      "refusal": null
+    },
+    "run-5e1d0a7c06": {
+      "id": "run-5e1d0a7c06",
+      "prompt": "",
+      "requested_picks": 0,
+      "state": "finished",
+      "started_at": 1790856000.85,
+      "finished_at": 1790856002.0,
+      "succeeded": 1,
+      "attempted": 1,
+      "outcomes": [
+        "succeeded"
+      ],
+      "error": "",
+      "stop_requested": false,
+      "kind": "task",
+      "stop_code": "finished",
+      "stop_class": "done",
+      "plan": {
+        "object": "",
+        "object_said": null,
+        "place": {
+          "kind": "pose",
+          "pose": "drop_left",
+          "pose_label": "Ablage links",
+          "pose_joints_deg": [
+            -60.0,
+            -95.0,
+            -120.0,
+            -55.0,
+            90.0,
+            0.0
+          ],
+          "phrase": null,
+          "said": null
+        },
+        "return_to": "home",
+        "return_label": null,
+        "return_joints_deg": null,
+        "scope": "once",
+        "options": {
+          "multi_view": true,
+          "both_faces": false,
+          "closing_axis": null,
+          "push_mm": 30.0,
+          "record_views": false,
+          "rim_air_mm": null,
+          "pick_anything": false,
+          "overlay": true
+        },
+        "command": {
+          "text": "Nimm das Teil und leg es ab",
+          "source": "spoken",
+          "language": "de",
+          "parsed": true,
+          "edited": []
+        },
+        "first_motion": "return",
+        "countdown": true
+      },
+      "parts_placed": 1,
+      "holding": false,
+      "restart_of": "run-5e1d0a7c05",
+      "halt_requested": false,
+      "step": "return",
+      "refusal": null
+    }
+  }
+}

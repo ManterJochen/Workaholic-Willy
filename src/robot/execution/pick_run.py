@@ -67,6 +67,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 from src.contracts import UNSET, Maybe, chosen
+from src.robot.constants import create_robot_logger
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.geometry import Pose
@@ -83,9 +84,11 @@ __all__ = [
     "PickRunReport",
     "Recording",
     "configured_looks_of",
+    "keep_pick_views",
 ]
 
-logger = logging.getLogger(__name__)
+#: PickRun's own lines, to the robot log and ``pick_run.log`` (RC6 of the cell-fix plan: they reached no file).
+logger: logging.Logger = create_robot_logger(__name__, "pick_run.log")
 
 #: The outcome string a service reports for a pick that worked. Compared as a string:
 #: `AutonomousGraspOutcome` lives one layer up, and importing it here to compare an enum member
@@ -702,30 +705,11 @@ class PickRun:
     def _keep_views(self, service: Any, report: Any, index: int) -> str:
         """Keep the looks of the pick that just ran, on a campaign that asked (`record_views`); where, or `""`.
 
-        Only a pick that says it looked (`report.looks`), from what the service's pick loop kept of those looks, so a
-        pick that ended before its first look, or a fixed camera's, writes nothing and never another pick's looks. The
-        file is named after the pick's record (`attempt_id`). One that cannot be written is said, and the campaign goes
-        on: the views are for training, and the pick they record is over.
+        :func:`keep_pick_views`, named `run<index>` where the pick's record names it nothing.
         """
         if not self.record_views:
             return ""
-        looks = getattr(report, "looks", ())
-        looked = getattr(service, "looked_around", None)
-        views = getattr(looked, "views", None)
-        if not (isinstance(looks, tuple) and looks) or not (isinstance(views, tuple) and views):
-            return ""
-        from src.robot.execution.record_views import record_views  # noqa: PLC0415
-
-        telemetry = getattr(report, "telemetry", None)
-        name = str(telemetry.get("attempt_id") or "") if isinstance(telemetry, Mapping) else ""
-        try:
-            written = record_views(views, target_cloud_base_mm=getattr(getattr(looked, "judged", None),
-                                                                        "target_cloud_base_mm", None),
-                                   name=name or f"run{index:03d}")
-        except Exception as exc:  # noqa: BLE001 (a lost training file never stops a campaign)
-            logger.warning("pick run: the looks of run %d were not kept: %s: %s", index, type(exc).__name__, exc)
-            return ""
-        return "" if written is None else str(written)
+        return keep_pick_views(service, report, name=f"run{index:03d}")
 
     def _put_back(self, service: Any, report: Any) -> "tuple[HandlingReport | None, str]":
         """The put back of a part a pick lifted, and why it did not go back: `""` when it did or none was asked for.
@@ -949,6 +933,35 @@ def _quietly(target: Any, method: str, *args: Any, **keywords: Any) -> None:
         call(*args, **keywords)
     except Exception as exc:  # noqa: BLE001 (a window is never a reason to stop a campaign)
         logger.debug("pick run: %s.%s raised %s: %s", type(target).__name__, method, type(exc).__name__, exc)
+
+
+def keep_pick_views(service: Any, report: Any, *, name: str) -> str:
+    """Keep the looks of the pick that just ran on ``service`` for training (`src.robot.execution.record_views`); where
+    they went, or `""`.
+
+    Only a pick that says it looked (`report.looks`), from what the service's pick loop kept of those looks, so a pick
+    that ended before its first look, or a fixed camera's, writes nothing and never another pick's looks. The file is
+    named after the pick's record (`attempt_id`), else `name`. One that cannot be written is said, and the caller goes
+    on: the views are for training, and the pick they record is over. What a campaign (`PickRun(record_views=True)`)
+    and a task (`TaskOptions(record_views=True)`) keep alike.
+    """
+    looks = getattr(report, "looks", ())
+    looked = getattr(service, "looked_around", None)
+    views = getattr(looked, "views", None)
+    if not (isinstance(looks, tuple) and looks) or not (isinstance(views, tuple) and views):
+        return ""
+    from src.robot.execution.record_views import record_views  # noqa: PLC0415
+
+    telemetry = getattr(report, "telemetry", None)
+    recorded = str(telemetry.get("attempt_id") or "") if isinstance(telemetry, Mapping) else ""
+    try:
+        written = record_views(views, target_cloud_base_mm=getattr(getattr(looked, "judged", None),
+                                                                    "target_cloud_base_mm", None),
+                               name=recorded or name)
+    except Exception as exc:  # noqa: BLE001 (a lost training file never stops a campaign or a task)
+        logger.warning("pick run: the looks of %s were not kept: %s: %s", recorded or name, type(exc).__name__, exc)
+        return ""
+    return "" if written is None else str(written)
 
 
 def configured_looks_of(service: Any) -> "tuple[LookPose, ...]":

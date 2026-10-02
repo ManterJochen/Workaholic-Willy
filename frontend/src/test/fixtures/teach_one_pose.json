@@ -1,0 +1,186 @@
+{
+  "about": "Written by hand, in the event envelope of api/events.py: teaching needs a hand-guided arm double, and scripts/console/capture_event_log.py has no teach scenario, so this log stays as written until one lands. 'events' holds every stream the scenario touches in arrival order (a run's own, and 'cell'); 'runs' holds each run as GET /v1/runs/{id} answers once it ended.",
+  "scenario": "teach_one_pose",
+  "events": [
+    {
+      "type": "run_started",
+      "run_id": "run-3b7f0d9e11",
+      "seq": 1,
+      "ts": 1790856000.4,
+      "severity": "info",
+      "human": "Teach run started.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "kind": "teach",
+        "name": "drop_left",
+        "label": "Ablage links",
+        "role": "place"
+      }
+    },
+    {
+      "type": "teach.free",
+      "run_id": "run-3b7f0d9e11",
+      "seq": 2,
+      "ts": 1790856002.0,
+      "severity": "info",
+      "human": "The arm is free: guide it by hand to the pose, then Save.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {}
+    },
+    {
+      "type": "teach.say",
+      "run_id": "run-3b7f0d9e11",
+      "seq": 3,
+      "ts": 1790856002.4,
+      "severity": "info",
+      "human": "Fingertips where the part's bottom is let go; every part is raised by its hang.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "line": "Fingertips where the part's bottom is let go; every part is raised by its hang."
+      }
+    },
+    {
+      "type": "teach.outside",
+      "run_id": "run-3b7f0d9e11",
+      "seq": 4,
+      "ts": 1790856014.4,
+      "severity": "warn",
+      "human": "The TCP is 40 mm outside the workspace box (y_min -700 mm).",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "sentence": "the TCP is 40 mm outside the workspace box (y_min -700 mm)"
+      }
+    },
+    {
+      "type": "teach.inside",
+      "run_id": "run-3b7f0d9e11",
+      "seq": 5,
+      "ts": 1790856017.4,
+      "severity": "info",
+      "human": "The TCP is inside the workspace box again.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {}
+    },
+    {
+      "type": "teach.time_warning",
+      "run_id": "run-3b7f0d9e11",
+      "seq": 6,
+      "ts": 1790856267.4,
+      "severity": "warn",
+      "human": "30 s left to save the pose.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "seconds_left": 30
+      }
+    },
+    {
+      "type": "teach.holding",
+      "run_id": "run-3b7f0d9e11",
+      "seq": 7,
+      "ts": 1790856273.4,
+      "severity": "info",
+      "human": "Holding the arm where it stands.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {}
+    },
+    {
+      "type": "teach.screening",
+      "run_id": "run-3b7f0d9e11",
+      "seq": 8,
+      "ts": 1790856273.7,
+      "severity": "info",
+      "human": "Screening the pose with the exact guard and the planner.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {}
+    },
+    {
+      "type": "teach.saved",
+      "run_id": "run-3b7f0d9e11",
+      "seq": 9,
+      "ts": 1790856275.6,
+      "severity": "success",
+      "human": "Saved 'Ablage links' (drop_left): clear.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "name": "drop_left",
+        "label": "Ablage links",
+        "verdict": "clear"
+      }
+    },
+    {
+      "type": "run_finished",
+      "run_id": "run-3b7f0d9e11",
+      "seq": 10,
+      "ts": 1790856275.7,
+      "severity": "success",
+      "human": "Teach run finished: taught.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "id": "run-3b7f0d9e11",
+        "prompt": "",
+        "requested_picks": 0,
+        "state": "finished",
+        "started_at": 1790856000.4,
+        "finished_at": 1790856275.7,
+        "succeeded": 0,
+        "attempted": 0,
+        "outcomes": [],
+        "error": "",
+        "stop_requested": false,
+        "kind": "teach",
+        "stop_code": "taught",
+        "stop_class": "done",
+        "plan": null,
+        "parts_placed": 0,
+        "holding": false,
+        "restart_of": null,
+        "halt_requested": false,
+        "step": ""
+      }
+    }
+  ],
+  "runs": {
+    "run-3b7f0d9e11": {
+      "id": "run-3b7f0d9e11",
+      "prompt": "",
+      "requested_picks": 0,
+      "state": "finished",
+      "started_at": 1790856000.4,
+      "finished_at": 1790856275.7,
+      "succeeded": 0,
+      "attempted": 0,
+      "outcomes": [],
+      "error": "",
+      "stop_requested": false,
+      "kind": "teach",
+      "stop_code": "taught",
+      "stop_class": "done",
+      "plan": null,
+      "parts_placed": 0,
+      "holding": false,
+      "restart_of": null,
+      "halt_requested": false,
+      "step": ""
+    }
+  }
+}

@@ -53,11 +53,14 @@ class Capsule:
 class TurnedBox:
     """An upright box as it stands turned about base Z: its half extents along its own axes and its turn, radians.
 
-    Its centre is the centre of the :class:`AxisAlignedBox` that carries it.
+    Its centre is the centre of the :class:`AxisAlignedBox` that carries it. A support surface's solid tilts with the
+    surface as the camera read it: ``rotation`` is then its whole turn, a 3x3 whose columns are its axes in BASE, and
+    ``yaw_rad`` its heading alone.
     """
 
     half_extents_mm: np.ndarray
     yaw_rad: float
+    rotation: np.ndarray | None = None
 
 
 @dataclass(frozen=True, slots=True)

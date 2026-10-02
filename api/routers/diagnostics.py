@@ -35,9 +35,9 @@ from src.utility.log_cfg import create_logger
 router = APIRouter(prefix="/diagnostics", tags=["diagnostics"])
 
 #: Only the probes that an operator asked for are logged. ``_perception`` and ``/route`` are excluded
-#: on purpose: the first is re-read by ``GET /v1/cell`` every 3-5 seconds (``App.tsx``, ``Demo.tsx``)
-#: and the second runs on a 350 ms debounce while a prompt is being typed, so a line each would be a
-#: poll trace rather than a record of anything.
+#: on purpose: the first is re-read by ``GET /v1/cell`` every 2 seconds (the console's shared poll, ``useCell``) and
+#: every second in the audience window, and the second runs on a 350 ms debounce while a prompt is being typed, so a
+#: line each would be a poll trace rather than a record of anything.
 logger = create_logger("DiagnosticsRouter", ROUTER_DIAGNOSTICS_LOG_FILE, log_dir=API_LOG_DIR)
 
 #: The RTDE port a UR controller listens on. Used only for a connect/close reachability probe: no

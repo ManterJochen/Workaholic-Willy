@@ -208,6 +208,46 @@ class TreeCleanlinessTests(unittest.TestCase):
         self.assertEqual(goldens_rewritten_during_session(), [])
 
 
+class TheRlDatasetRebuildKeepsTheCommittedStampsTests(unittest.TestCase):
+    """A tree without ``logs/rl`` rebuilds the RL dataset, and the build rewrites the committed manifest.
+
+    MEASURED 2026-10-02: ``ensure_rl_dataset`` built v1_bootstrap without the honesty stamps the committed manifest
+    carries, so docs/baselines/rl_datasets/v1_bootstrap.json came back with ``fitness_note: null`` in every fresh
+    tree. Built with the committed stamps, the rebuild writes the committed bytes.
+    """
+
+    @staticmethod
+    def _command(manifest: dict | None) -> list[str]:
+        import json
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+
+        from tests import _determinism
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            if manifest is not None:
+                (root / "docs" / "baselines" / "rl_datasets").mkdir(parents=True)
+                (root / "docs" / "baselines" / "rl_datasets" / "v9.json").write_text(
+                    json.dumps(manifest), encoding="utf-8"
+                )
+            with patch.object(_determinism, "repo_root", return_value=root), patch("subprocess.run") as run:
+                _determinism.ensure_rl_dataset("v9")
+        return list(run.call_args.args[0])
+
+    def test_the_build_is_asked_with_the_committed_stamps(self) -> None:
+        command = self._command(
+            {"dataset_origin": "canonical_bootstrap_replay_packs", "fitness_note": "NOT real-hardware validation."}
+        )
+        self.assertIn("--dataset-origin=canonical_bootstrap_replay_packs", command)
+        self.assertIn("--fitness-note=NOT real-hardware validation.", command)
+
+    def test_with_no_committed_manifest_the_build_takes_its_defaults(self) -> None:
+        command = self._command(None)
+        self.assertFalse([arg for arg in command if arg.startswith(("--dataset-origin", "--fitness-note"))])
+
+
 class TheStandDownAnnouncesItselfTests(unittest.TestCase):
     """A skip whose reason nobody prints is the old defect in a smaller costume.
 

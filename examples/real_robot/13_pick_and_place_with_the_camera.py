@@ -1,14 +1,11 @@
 """Pick what a camera finds and set it down on something else a camera finds: no coordinate in the program.
 
-Two prompts name the part and where it goes. Every camera the cell's world is built from is opened, one owner each
-(16), with a Locator each over one set of models (15), and the first camera that locates a prompt answers it. A camera
-on the wrist looks around for the part, its looks fused until the part's grasp is safe, and for the target from each
-look in turn until one sees it; a fixed one does not move. With SHOW_CAMERAS each camera shows live in a window.
-
-The set-down is measured: the target's top is a high percentile of its seen surface, and the part hangs below the grasp
-at least as far as the grasp stood above the table the cell declares (further where the looks saw it stand lower), never
-from its lowest seen point, which a hidden foot raises. So it comes down to 5 mm of air or more over the middle of the
-target's top, never into it, and the target is held out of the camera world for the place as the part was for the pick.
+Two prompts name the part and where it goes. Every camera of the cell's world is opened, one owner each (16), with a
+Locator each over one set of models (15); the first that locates a prompt answers it, and SHOW_CAMERAS shows each live.
+A wrist camera looks around for the part, its looks fused until the grasp is safe and kept (record_views), and for the
+target from each look in turn; a fixed one does not move. A grasp refused before anything was sent gets a fresh look and
+the next grasp. The part hangs at least as far below the grasp as the grasp stood above the declared table, so it comes
+down 5 mm or more over the middle of the target's seen top, never into it, the target held out of the world.
 
 Run it at the cell, under the cell's profile, once its cameras are calibrated (07-10):
     WILLY_PROFILE=<your cell> python examples/real_robot/13_pick_and_place_with_the_camera.py
@@ -21,12 +18,10 @@ from willy import Camera, CameraWorldPlan, JointPositions, LiveView, Located, Lo
 SHOW_CAMERAS = True  # False: no camera windows
 BOTH_FACES = False  # True: grip only once both jaw contact faces of the part's grasp were seen, else pick nothing
 OBJECT, TARGET = "a red cube", "the blue plate"  # what to pick, and what to set it down on
-# Where a wrist camera looks from, in order: degrees per joint, as the pendant shows them. FILL IN with 11's lines.
-LOOK = [JointPositions.deg(-90.0, -100.0, -110.0, -60.0, 90.0, 0.0),
+LOOK = [JointPositions.deg(-90.0, -100.0, -110.0, -60.0, 90.0, 0.0),  # FILL IN: wrist looks, pendant degrees (11)
         JointPositions.deg(-70.0, -100.0, -110.0, -60.0, 90.0, 0.0)]
 
-tree = load_tree()
-section = tree.app_config.camera.cameras
+section = (tree := load_tree()).app_config.camera.cameras
 plan = CameraWorldPlan.from_config(tree.robot, list(section.rigs), primary_rig_id=section.primary_rig_id)
 if plan.refusal() is not None or not plan.rig_ids:
     raise SystemExit(plan.refusal() or f"no camera feeds a world on this cell, and 13 finds by camera: {plan.reason}")
@@ -49,17 +44,22 @@ with ExitStack() as owners:  # one owner per rig, the primary first, each releas
         raise SystemExit(f"no camera located {prompt!r}; {otherwise}")
 
     with robot.connected():
-        for locator in locators:  # the part: the looks' frames stay in the camera world until the pick ends
-            print(seen := locator.look_around(OBJECT, LOOK, robot=robot, both_faces=BOTH_FACES))
-            if seen.refused or seen.objects:  # found, or a look not reached or a contact face no look showed
+        refused: list = []  # grasps a guard or the planner refused before anything was sent, the jaws left open
+        for _ in range(1 if BOTH_FACES else 4):  # the best grasp, then up to 3 next ones, each on a fresh look
+            for locator in locators:  # the part: the looks' frames stay in the camera world until the pick ends
+                print(seen := locator.look_around(OBJECT, LOOK, robot=robot, both_faces=BOTH_FACES, record_views=True))
+                if seen.refused or seen.objects:  # found, or a look not reached or a contact face no look showed
+                    break
+            if seen.refused or not seen.objects:
+                raise SystemExit((seen.refused or f"no camera located {OBJECT!r}") + "; nothing was picked")
+            print(grasps := (scene := seen.scene(0, tree.robot)).grasps().other_than(refused))  # or why none
+            if (best := grasps.best) is None:  # opt in: look_around(..., closing_axis="-y"); the scene takes it
+                raise SystemExit(f"no grasp on {OBJECT!r} as the camera saw it; nothing was picked")
+            print(picked := robot.pick(best.pose(), best.grip_width_mm, keep_out=seen.keep_out(0)))  # standoff_mm=80
+            if picked.ok or not picked.another_candidate_may_follow:
                 break
-        if seen.refused or not seen.objects:
-            raise SystemExit((seen.refused or f"no camera located {OBJECT!r}") + "; nothing was picked")
-        scene = seen.scene(0, tree.robot)  # the part's grasps, planned on what it stands on
-        if (best := scene.grasps().best) is None:  # opt in: look_around(..., closing_axis="-y"); the scene takes it
-            raise SystemExit(f"no grasp on {OBJECT!r} as the camera saw it; nothing was picked")
-        print(picked := robot.pick(best.pose(), best.grip_width_mm, keep_out=seen.keep_out(0)))
-        if not picked.ok:
+            refused.append(best)  # nothing was sent and the jaws stand open: look again, then the next grasp
+        if best is None or not picked.ok:
             raise SystemExit("the pick did not finish, so nothing is set down; the report above says what ran")
         onto = find(TARGET, "the part stays held, and nothing was released")  # a target is not gripped: first sight
         print(set_down := onto.set_down(0, grasp=best.pose(), part_bottom_mm=scene.part_bottom_mm))

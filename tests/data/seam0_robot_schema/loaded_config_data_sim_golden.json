@@ -353,7 +353,8 @@
       "model": "ur5e",
       "ip": "192.168.1.100",
       "rtde_frequency": 0.0,
-      "motion_planner": "curobo"
+      "motion_planner": "curobo",
+      "brake_on_halt": false
     },
     "sim": {
       "backend": "isaac",
@@ -620,6 +621,8 @@
     "home_joint_positions_deg": null,
     "look_joint_positions_deg": null,
     "natural_closing_axis": null,
+    "named_poses": {},
+    "default_place_pose": null,
     "safe_pose": {
       "x": 450.0,
       "y": -300.0,
@@ -738,7 +741,9 @@
           "margin_mm": 15.0,
           "max_boxes": 64,
           "floor_to_plane": true,
-          "plane_clearance_mm": 5.0
+          "plane_clearance_mm": 5.0,
+          "support_surfaces": true,
+          "support_allowance_mm": 2.0
         },
         "meshes": []
       }
@@ -748,6 +753,8 @@
       "max_attempts": 5,
       "calculator": "geometric",
       "isotropic_radial_closing": false,
+      "scene_obstacles": true,
+      "side_approaches": true,
       "record_log_path": null,
       "decision": {
         "enabled": false,

@@ -86,6 +86,19 @@ and 3 when the sweep raised. Every line below is used by
 A spoken command, the locator and a pick at a known pose have no command: they are objects a program
 holds between calls, so they are Python only ([examples/real_robot/](../examples/README.md)).
 
+### The operator console
+
+The console moves the arm only on a person's click in the browser, on a button that names the motion. Its
+routes are in [`api/README.md`](../api/README.md), its pages in [`frontend/README.md`](../frontend/README.md).
+
+| command | what it does | runbook |
+|---|---|---|
+| `python -m api --profile <your cell>,cell` | the console on http://127.0.0.1:8000, localhost only and no login, ending the chain in the cell's own git-ignored layer, where poses taught in the browser are written; a stop is kept in `logs/console/stop.<chain>.json` across a restart; `--port`, `--data` | [console_at_the_cell](runbooks/console_at_the_cell.md) |
+| `python -m api --profile console_dummy` | the same at a desk: a dummy arm, a dummy hand, the rehearsal scene, and its own two poses, "Ablage links" (the default place) and "Parkposition", so a task runs as shipped | |
+| `python scripts/ursim/probe_halt.py` | Moves the arm: "halt now" measured against URSim on 127.0.0.1, M0 to M9; `--only M7,M8` for the two that stop the controller's program | [console_at_the_cell](runbooks/console_at_the_cell.md) |
+| `python scripts/ursim/probe_console_task.py` | Moves the arm: the console's task, its halt and its way back against URSim on 127.0.0.1, C1 to C5; needs the cuRobo environment, and the arm at the probe's home, [-90, -90, -100, -80, 90, 0] deg: after `probe_halt.py` wrist 2 stands at -90 deg, outside the joint window about that home, and the probe refuses to start there (exit 2) | [console_at_the_cell](runbooks/console_at_the_cell.md) |
+| `python scripts/console/capture_event_log.py` | regenerates the event logs the frontend replays, through the console on `console_dummy` and a scripted cell; moves nothing | |
+
 ## Simulation
 
 ### At a desk

@@ -1624,5 +1624,50 @@ def _centre_of_mask(seg: Any, cell: _PushCell) -> np.ndarray:
     raise AssertionError("no box of the scene shows this mask")
 
 
+class AStopAskedForDuringThePushLeavesItToAPersonTests(unittest.TestCase):
+    """The pick's cancel check, asked while the push drives (Track P's item 5): nothing more is commanded after the leg
+    in flight, not the back and up legs and not the move back to the look, needs_person is latched, and the next pick
+    commands nothing until a person decides."""
+
+    def test_the_arm_stays_where_the_stop_found_it(self) -> None:
+        cell = _PushCell(self)
+        cell.service.set_cancel_check(lambda: len(cell.arm.pushes) >= 3)
+
+        with mock.patch("builtins.input", side_effect=AssertionError("asked at the terminal")):
+            run = cell.campaign()
+
+        self.assertEqual(PUSH_LABELS[:3], cell.arm.push_motions())
+        self.assertEqual(_keys(*LOOKS), cell.joint_moves(), "the arm went back to the look after the stop")
+        report = run.last
+        self.assertTrue(report.needs_person, report.render())
+        (push,) = report.telemetry["pushes"]
+        self.assertTrue(push["stopped"])
+        self.assertIn("a stop was asked for", push["sentence"])
+        self.assertEqual([], cell.policy.executed, "a grasp followed the stop")
+        cell.assert_the_jaws_untouched(self)
+
+
+class ThePushIsInTheRecordWithItsPlanAndEveryLegTests(unittest.TestCase):
+    """Track P's item 8, which the URSim gate of 2026-10-02 found open: the record and the robot log carry the plan's
+    finger height and landing box, and every leg's verdict."""
+
+    def test_the_record_and_the_log_say_the_plan_and_every_leg(self) -> None:
+        cell = _PushCell(self)
+
+        with self.assertLogs("src.robot.grasping.loop.pick_loop", level="INFO") as logged, mock.patch(
+                "builtins.input", side_effect=AssertionError("asked at the terminal")):
+            run = cell.campaign()
+
+        (push,) = run.last.telemetry["pushes"]
+        self.assertGreaterEqual(push["finger_height_mm"], 10.0)
+        self.assertEqual(2, len(push["landing_box_xy_mm"]))
+        self.assertEqual(["approach: executed", "down: executed", "push: executed", "back: executed", "up: executed"],
+                         push["leg_verdicts"])
+        said = " | ".join(logged.output)
+        self.assertIn("finger at", said)
+        self.assertIn("landing box", said)
+        self.assertIn("up: executed", said)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

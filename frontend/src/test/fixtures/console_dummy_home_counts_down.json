@@ -1,0 +1,164 @@
+{
+  "about": "Captured by scripts/console/capture_event_log.py on console_dummy: after a pose was taught by hand, Home to 'Parkposition' counts down three seconds, hands off, before its first motion.",
+  "scenario": "console_dummy_home_counts_down",
+  "events": [
+    {
+      "type": "run_started",
+      "run_id": "run-5e1d0a7c03",
+      "seq": 1,
+      "ts": 1790856000.0,
+      "severity": "info",
+      "human": "Home run started.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "kind": "home",
+        "to": "park",
+        "label": "Parkposition",
+        "joints_deg": [
+          30.0,
+          -80.0,
+          -100.0,
+          -90.0,
+          90.0,
+          0.0
+        ]
+      }
+    },
+    {
+      "type": "run_countdown",
+      "run_id": "run-5e1d0a7c03",
+      "seq": 2,
+      "ts": 1790856000.05,
+      "severity": "warn",
+      "human": "Hands off: the arm moves by itself in 3 s (a pose was taught by hand).",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "seconds_left": 3,
+        "because": "teach"
+      }
+    },
+    {
+      "type": "run_countdown",
+      "run_id": "run-5e1d0a7c03",
+      "seq": 3,
+      "ts": 1790856000.1,
+      "severity": "warn",
+      "human": "Hands off: the arm moves by itself in 2 s (a pose was taught by hand).",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "seconds_left": 2,
+        "because": "teach"
+      }
+    },
+    {
+      "type": "run_countdown",
+      "run_id": "run-5e1d0a7c03",
+      "seq": 4,
+      "ts": 1790856000.15,
+      "severity": "warn",
+      "human": "Hands off: the arm moves by itself in 1 s (a pose was taught by hand).",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "seconds_left": 1,
+        "because": "teach"
+      }
+    },
+    {
+      "type": "home.started",
+      "run_id": "run-5e1d0a7c03",
+      "seq": 5,
+      "ts": 1790856000.2,
+      "severity": "info",
+      "human": "Moving to Parkposition.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "to": "park",
+        "note": ""
+      }
+    },
+    {
+      "type": "home.arrived",
+      "run_id": "run-5e1d0a7c03",
+      "seq": 6,
+      "ts": 1790856000.25,
+      "severity": "success",
+      "human": "At Parkposition.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "to": "park",
+        "note": ""
+      }
+    },
+    {
+      "type": "run_finished",
+      "run_id": "run-5e1d0a7c03",
+      "seq": 7,
+      "ts": 1790856000.3,
+      "severity": "success",
+      "human": "Home run finished: finished.",
+      "step": "",
+      "step_index": null,
+      "step_total": null,
+      "data": {
+        "id": "run-5e1d0a7c03",
+        "prompt": "",
+        "requested_picks": 0,
+        "state": "finished",
+        "started_at": 1790856000.0,
+        "finished_at": 1790856000.3,
+        "succeeded": 0,
+        "attempted": 0,
+        "outcomes": [],
+        "error": "",
+        "stop_requested": false,
+        "kind": "home",
+        "stop_code": "finished",
+        "stop_class": "done",
+        "plan": null,
+        "parts_placed": 0,
+        "holding": false,
+        "restart_of": null,
+        "halt_requested": false,
+        "step": "return",
+        "refusal": null
+      }
+    }
+  ],
+  "runs": {
+    "run-5e1d0a7c03": {
+      "id": "run-5e1d0a7c03",
+      "prompt": "",
+      "requested_picks": 0,
+      "state": "finished",
+      "started_at": 1790856000.0,
+      "finished_at": 1790856000.3,
+      "succeeded": 0,
+      "attempted": 0,
+      "outcomes": [],
+      "error": "",
+      "stop_requested": false,
+      "kind": "home",
+      "stop_code": "finished",
+      "stop_class": "done",
+      "plan": null,
+      "parts_placed": 0,
+      "holding": false,
+      "restart_of": null,
+      "halt_requested": false,
+      "step": "return",
+      "refusal": null
+    }
+  }
+}

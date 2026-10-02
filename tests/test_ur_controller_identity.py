@@ -120,9 +120,22 @@ class SimulatorDisclosureTests(unittest.TestCase):
         self.assertEqual(snapshot["controller_serial"], "20195312345")
         self.assertEqual(snapshot["controller_host"], "192.168.1.10")
 
+    def test_ursim_cb3_is_proven_a_simulator(self) -> None:
+        # MEASURED 2026-10-02: URSim CB3 (PolyScope 3.15.8) answers "get serial number" with 2018309999.
+        snapshot = self._snapshot("2018309999", "127.0.0.1")
+        self.assertIs(snapshot["controller_is_simulator"], True)
+        self.assertEqual(snapshot["controller_serial"], "2018309999")
+
     def test_either_half_alone_is_not_proof(self) -> None:
         self.assertIsNone(self._snapshot("20195399999", "192.168.1.10").get("controller_is_simulator"))
         self.assertIsNone(self._snapshot("20195312345", "127.0.0.1").get("controller_is_simulator"))
+        self.assertIsNone(self._snapshot("2018309999", "192.168.1.10").get("controller_is_simulator"))
+
+    def test_the_placeholder_is_all_digits_and_has_its_length(self) -> None:
+        # The owner's rule of 2026-10-02: 10 digits ending 9999 (a CB3) or 11 ending 99999 (an e-Series), nothing else.
+        for serial in ("9999", "99999", "309999", "201830999999", "2018309999x", "201830 9999", "20183099990"):
+            with self.subTest(serial=serial):
+                self.assertIsNone(self._snapshot(serial, "127.0.0.1").get("controller_is_simulator"))
 
     def test_it_is_never_False(self) -> None:
         # The whole contract: absence of proof is absence of a claim, not a claim of the opposite.

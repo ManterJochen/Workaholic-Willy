@@ -1,19 +1,22 @@
 <!doctype html>
-<html lang="en">
+<html lang="de" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="light dark" />
+    <meta name="color-scheme" content="dark light" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <title>Workaholic-Willy — operator console</title>
+    <title>Workaholic-Willy — Bedienkonsole</title>
     <script>
-      // Applied BEFORE first paint, on purpose. `lib/theme.ts` reads the same key, but React effects
-      // run after the browser has painted -- so without this a saved dark choice shows one white
-      // frame on load, which on a console mounted next to a cell is a flash in someone's eye.
+      // Applied BEFORE the first paint, on purpose: dark unless light was chosen (OD 3), German unless English was.
+      // `lib/theme.ts` and `i18n/index.ts` read the same keys, but React effects run after the browser has painted,
+      // so without this a light choice would show one dark frame first, on a console mounted next to a cell.
       // Deliberately not a module and not deferred: both would be too late to be worth writing.
+      var d = document.documentElement
+      d.setAttribute('data-theme', 'dark')
+      d.lang = 'de'
       try {
-        var t = localStorage.getItem('willy.theme')
-        if (t === 'light' || t === 'dark') document.documentElement.setAttribute('data-theme', t)
+        if (localStorage.getItem('willy.theme') === 'light') d.setAttribute('data-theme', 'light')
+        if (localStorage.getItem('willy.lang') === 'en') d.lang = 'en'
       } catch (e) {}
     </script>
   </head>

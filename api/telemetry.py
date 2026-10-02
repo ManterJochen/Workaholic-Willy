@@ -76,8 +76,9 @@ class CellTelemetry:
     #: URSim UR3e therefore produces a full, plausible telemetry panel with ``simulated: False``,
     #: which a demo screen renders as "physical arm".
     #:
-    #: Proof, not a hint: the controller's serial is URSim's ``...99999`` placeholder and its address
-    #: is a loopback. Either alone is suggestive; a real cell's controller is not on 127.0.0.1.
+    #: Proof, not a hint: the controller's serial is URSim's placeholder (10 digits ending 9999 on a CB3,
+    #: 11 ending 99999 on an e-Series) and its address is a loopback. Either alone is suggestive; a real
+    #: cell's controller is not on 127.0.0.1.
     #: Anything less than both yields ``None``, because the opposite error, labelling a real arm a
     #: simulator, is the worse one.
     controller_is_simulator: bool | None = None
@@ -225,5 +226,17 @@ def _add_simulator_evidence(arm: Any, snapshot: dict[str, Any]) -> None:
     snapshot["controller_serial"] = serial
     snapshot["controller_host"] = host
     loopback = host in {"127.0.0.1", "::1", "localhost"} if host else False
-    if serial and serial.endswith("99999") and loopback:
+    if _is_placeholder_serial(serial) and loopback:
         snapshot["controller_is_simulator"] = True
+
+
+def _is_placeholder_serial(serial: str | None) -> bool:
+    """URSim's serial: 10 digits ending 9999 or 11 ending 99999, and nothing else (the owner's rule of 2026-10-02).
+
+    MEASURED: URSim CB3 (PolyScope 3.15.8) answers ``2018309999`` over the dashboard's "get serial number", URSim
+    e-Series ``20195399999``. A real controller's serial could end the same way only by chance, which is why the
+    loopback address is the other half of the proof.
+    """
+    if not serial or not serial.isdigit():
+        return False
+    return (len(serial) == 10 and serial.endswith("9999")) or (len(serial) == 11 and serial.endswith("99999"))

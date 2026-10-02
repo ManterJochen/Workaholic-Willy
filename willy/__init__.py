@@ -57,6 +57,16 @@ _HOME: dict[str, str] = {
     "PlannerStart": "src.robot.execution.planner_start",
     "RecordLog": "src.robot.grasping.replay.runs",
     "Recording": "src.robot.execution.pick_run",
+    # A task: pick a part, place it, return, once or until nothing is left.
+    "PlaceAt": "src.robot.execution.task",
+    "TaskEvent": "src.robot.execution.task",
+    "TaskHooks": "src.robot.execution.task",
+    "TaskOptions": "src.robot.execution.task",
+    "TaskPlan": "src.robot.execution.task",
+    "TaskRefused": "src.robot.execution.task",
+    "TaskReport": "src.robot.execution.task",
+    "TaskStop": "src.robot.execution.task",
+    "run_task": "src.robot.execution.task",
     # What a build or a connect refuses with.
     "CameraFusionPlan": "src.robot.execution.camera_fusion",
     "CameraWorldPlan": "src.robot.execution.camera_world_wiring",
@@ -177,6 +187,8 @@ else:  # pragma: no cover (the names as mypy reads them, each from the module th
     from src.robot.execution.pick_run import PassRule, PickAttempt, PickRun, PickRunReport, Recording
     from src.robot.execution.planner_start import PlannerStart
     from src.robot.execution.robot import LockKeyRequired, Robot
+    from src.robot.execution.task import (
+        PlaceAt, TaskEvent, TaskHooks, TaskOptions, TaskPlan, TaskRefused, TaskReport, TaskStop, run_task)
     from src.robot.execution.teach import teach_poses
     from src.robot.execution.wrist_bodies import WristBodyRequired
     from src.robot.grasping.calculator_factory import build_calculator, preflight_calculator

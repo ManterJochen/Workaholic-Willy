@@ -75,7 +75,7 @@ import math
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Any, Mapping, Optional, Union
+from typing import Any, Callable, Mapping, Optional, Union
 
 import numpy as np
 
@@ -84,7 +84,7 @@ from src.geometry.closing_axis import ClosingAxis
 from src.geometry.exceptions import GeometryError
 from src.geometry.quaternion import from_rotation_matrix, to_rotation_matrix
 from src.robot.core import NO_PLAN_FAIL_SAFE_MESSAGE, MotionResult, MotionStatus, SupportsRobotStatus
-from src.robot.core.arm_capabilities import LineMotion, LineReading, line_motion_of
+from src.robot.core.arm_capabilities import LineMotion, LineReading, halt_state_of, halted_refusal, line_motion_of
 from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.core.gripper import toggle_without_sensor_of, why_toggle_count_unknown, width_is_measured_of
 from src.robot.core.keep_out import SegmentationOffer, keeping_out
@@ -381,6 +381,7 @@ def execute_push(
     gripper: Any,
     offer: SegmentationOffer,
     natural_closing_axis: Optional[ClosingAxis] = None,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ) -> PushOutcome:
     """Drive one push: P0 like a grasp approach, then the four judged contact lines, all while the part and its
     swept travel are kept out of the arm's live camera world. See the module docstring for every rule.
@@ -391,7 +392,10 @@ def execute_push(
     masks for their camera, its BASE points and the frame's shutter time, as the pick holds it for a grasp); the push
     holds the same offer with the part's points swept along the push. ``natural_closing_axis`` is how the cell's hand
     and camera naturally stand (``robot.natural_closing_axis``): the push closes the way round nearer it
-    (:func:`push_tool_quaternion`); ``None`` keeps the way round nearer where the tool stands.
+    (:func:`push_tool_quaternion`); ``None`` keeps the way round nearer where the tool stands. ``should_cancel`` is the
+    pick's stop check: asked between the legs, as the controller and the toggle's count are, a stop asked for ends the
+    push where the arm stands, nothing more commanded, and a person decides (Track P's item 5); a check that raises
+    counts as asked.
 
     Every failure is a :class:`PushOutcome`. It raises only ``CameraWorldUnavailable``, which a motion raises where
     the camera world cannot vouch for the cell (nothing more is commanded, and the keep-out scope closes on the way
@@ -413,11 +417,11 @@ def execute_push(
             return _refused(PushOutcomeCode.REFUSED_KEEP_OUT_NOT_TAKEN,
                             f"The arm's camera world did not take the part and its push path to keep out "
                             f"({type(exc).__name__}: {exc}), so nothing was commanded.", plan=push_plan)
-        return _drive_push(arm, push_plan, poses, steady_s, gripper=gripper)
+        return _drive_push(arm, push_plan, poses, steady_s, gripper=gripper, should_cancel=should_cancel)
 
 
 def _drive_push(arm: Any, plan: PushPlan, poses: tuple[Pose, ...], steady_s: Optional[float], *,
-                gripper: Any = None) -> PushOutcome:
+                gripper: Any = None, should_cancel: Optional[Callable[[], bool]] = None) -> PushOutcome:
     """P0, then the four contact legs, inside the open keep-out scope: the outcome, and nothing moved after a stop.
     Before each contact leg, and once the up leg ended, a toggle's count is read again (``gripper``): one nobody can
     vouch for stops the push where the arm stands, as a controller that cannot be read does."""
@@ -444,7 +448,7 @@ def _drive_push(arm: Any, plan: PushPlan, poses: tuple[Pose, ...], steady_s: Opt
 
     for leg, pose in zip(plan.legs, poses[1:]):
         halted = _halt(arm, plan, f"Before the {leg.name} leg", leg.name, done, results, steady_s=steady_s,
-                       gripper=gripper)
+                       gripper=gripper, should_cancel=should_cancel)
         if halted is not None:
             return halted
         result, error = _drive(move, pose, linear=True, vel=leg.vel_m_s, acc=leg.acc_m_s2)
@@ -456,7 +460,15 @@ def _drive_push(arm: Any, plan: PushPlan, poses: tuple[Pose, ...], steady_s: Opt
         if leg.name == CONTACT_LEGS[0] and error is None and result is not None and _sent_nothing(result):
             # The down leg was refused before anything was sent: the arm is in the air at P0 and nothing touched the
             # part. A fall-through, not a stop (the lead's ruling of 2026-09-29, pending the owner): the caller moves the
-            # arm back to the look.
+            # arm back to the look. Unless a stop was asked for: then the arm stays in the air (Track P's item 5).
+            if _asked_to_stop(should_cancel):
+                return _finish(arm, PushOutcome(
+                    code=PushOutcomeCode.UNSAFE_RECOVERY_REFUSED,
+                    reason=(f"The line down beside the part was refused before anything was sent ({result.status.value}: "
+                            f"{result.message}), and a stop was asked for: the arm stays in the air at P0. {_STOP_WORDS}"),
+                    plan=plan, leg=leg.name, legs_done=tuple(done), results=tuple(results),
+                    motion_status=result.status, motion_message=result.message,
+                ))
             return _finish(arm, PushOutcome(
                 code=PushOutcomeCode.REFUSED_DOWN_NOT_SENT,
                 reason=(f"The line down beside the part was refused before anything was sent ({result.status.value}: "
@@ -467,7 +479,8 @@ def _drive_push(arm: Any, plan: PushPlan, poses: tuple[Pose, ...], steady_s: Opt
             ))
         return _stop(arm, plan, leg.name, result, error, done, results)
 
-    halted = _halt(arm, plan, "After the up leg", CONTACT_LEGS[-1], done, results, steady_s=None, gripper=gripper)
+    halted = _halt(arm, plan, "After the up leg", CONTACT_LEGS[-1], done, results, steady_s=None, gripper=gripper,
+                   should_cancel=should_cancel)
     if halted is not None:
         return halted
     return _finish(arm, PushOutcome(
@@ -697,12 +710,20 @@ def _offer_problem(plan: PushPlan, points: np.ndarray) -> str:
 
 def _controller_reading(arm: Any) -> tuple[str, str]:
     """(why the controller cannot move or ``""``, why it could not be read or ``""``). An arm that does not report
-    its controller passes, as it passes the grasp."""
+    its controller passes, as it passes the grasp; a halted arm never does. The halt latch is read first, of any arm
+    that carries one (the dummy included), then a status that says so in words, and a halt is said in its own words:
+    a person confirms the cell is clear, then Restart, never clears a stop that is not there."""
 
+    halted = halt_state_of(arm)
+    if halted is not None:
+        return _halted_words(halted.reason), ""
     if not isinstance(arm, SupportsRobotStatus):
         return "", ""
     try:
         status = arm.get_robot_status()
+        said = getattr(status, "halted", "")
+        if isinstance(said, str) and said:
+            return _halted_words(said), ""
         if status.is_operational:
             return "", ""
         detail = f": {status.message}" if status.message else ""
@@ -713,6 +734,12 @@ def _controller_reading(arm: Any) -> tuple[str, str]:
     except Exception as exc:  # noqa: BLE001 (a controller that cannot be read is said, never raised past the push)
         return "", f"{type(exc).__name__}: {exc}"
     return words, ""
+
+
+def _halted_words(reason: str) -> str:
+    """The push's words for a halted arm, said as its stopped controller's are: one sentence, capitalised."""
+    said = halted_refusal(reason, "the push goes no further")
+    return said[:1].upper() + said[1:]
 
 
 def _not_at_rest(arm: Any, timeout_s: Optional[float]) -> str:
@@ -827,13 +854,19 @@ def _sent_nothing(result: MotionResult) -> bool:
 
 
 def _halt(arm: Any, plan: PushPlan, when: str, leg: str, done: list[str], results: list[MotionResult], *,
-          steady_s: Optional[float], gripper: Any = None) -> Optional[PushOutcome]:
-    """The stop between two motions, or ``None`` where the next may run: the controller is read, a toggle's count is
-    read where ``gripper`` is handed in (before each contact leg and once the up leg ended; nobody can vouch for it once
-    DO0 was switched at the pendant while the push drove, the owner, 2026-09-30), and the arm waited on to rest where
-    ``steady_s`` is set.
+          steady_s: Optional[float], gripper: Any = None,
+          should_cancel: Optional[Callable[[], bool]] = None) -> Optional[PushOutcome]:
+    """The stop between two motions, or ``None`` where the next may run: a stop asked for (``should_cancel``, Track P's
+    item 5), the controller is read, a toggle's count is read where ``gripper`` is handed in (before each contact leg
+    and once the up leg ended; nobody can vouch for it once DO0 was switched at the pendant while the push drove, the
+    owner, 2026-09-30), and the arm waited on to rest where ``steady_s`` is set.
     Nothing is commanded either way, and nobody is asked."""
 
+    if _asked_to_stop(should_cancel):
+        return _finish(arm, PushOutcome(
+            code=PushOutcomeCode.UNSAFE_RECOVERY_REFUSED, reason=f"{when}: a stop was asked for. {_STOP_WORDS}",
+            plan=plan, leg=leg, legs_done=tuple(done), results=tuple(results),
+        ))
     words, read_error = _controller_reading(arm)
     said = words or (f"The controller could not be read ({read_error})" if read_error else "")
     unknown = "" if said or gripper is None else why_toggle_count_unknown(gripper)
@@ -846,6 +879,17 @@ def _halt(arm: Any, plan: PushPlan, when: str, leg: str, done: list[str], result
         reason=f"{when}: {said or jaws or restless}. {_STOP_WORDS}",
         plan=plan, leg=leg, legs_done=tuple(done), results=tuple(results), controller=said,
     ))
+
+
+def _asked_to_stop(should_cancel: Optional[Callable[[], bool]]) -> bool:
+    """Whether the pick's stop check says a stop was asked for; a check that raises counts as asked."""
+
+    if should_cancel is None:
+        return False
+    try:
+        return bool(should_cancel())
+    except Exception:  # noqa: BLE001 (a stop check that cannot answer is no permission to move on)
+        return True
 
 
 def _stop(arm: Any, plan: PushPlan, leg: str, result: Optional[MotionResult], error: Optional[BaseException],

@@ -1,13 +1,20 @@
 @import "tailwindcss";
 
 /*
- * The console's visual language.
+ * The console's visual language: a control room next to a robot cell.
  *
  * ── WHERE IT COMES FROM ───────────────────────────────────────────────────────────────────────
- * The concept is Aurora-VL's: a deep navy ground, a WARM neutral against it, one cool accent, and
- * semantic colour carried by a tinted surface rather than by text. That warm/cool pairing is the
- * distinctive move and it is kept. What is new follows from THIS product being an operator console
- * for a machine that moves: a tighter rhythm, two reds, and a sidebar that is a state surface.
+ * The brand (owner, 2026-10-01, binding): the full look of docs/assets/willy_logo.png and
+ * willy_banner.png. A black stage, the logo's NEON LIME as the one accent, the banner's L-shaped HUD
+ * corner marks around the live image and the main cards (`.hud-frame`), the Willy mark and the
+ * WORKAHOLIC WILLY wordmark in the top bar, status chips and numbers in monospace like the banner's
+ * STILL GRINDING box (`.chip`, `.readout`). Calm and readable, never noisy: the camera image is the
+ * brightest thing on screen, so everything around it is quiet, near-black surfaces, a warm-white
+ * text, and the lime used sparingly, for what is active, selected or focused, and for the brand.
+ * Dark by default, with a light theme on a switch for a bright hall.
+ *
+ * SYSTEM FONTS ONLY: system-ui for text, ui-monospace for chips and numbers, the system's heaviest
+ * italic for the wordmark. No font file is loaded, so there is nothing to license and nothing to fetch.
  *
  * ── THREE RULES THAT ARE SAFETY, NOT TASTE ────────────────────────────────────────────────────
  * 1. ONE STATUS, ONE COLOUR, everywhere. `block` is the same red on the preflight, the connect
@@ -16,134 +23,185 @@
  *    nobody can read at a glance, and this panel is read at a glance while a robot is moving.
  * 3. ANYTHING THAT MOVES THE ROBOT LOOKS DIFFERENT from anything that does not.
  *
- * ── THE TWO REDS ──────────────────────────────────────────────────────────────────────────────
- * Rules 1 and 3 used to collide: `block` was red and the two arming buttons were red. They are
- * separated now by BOTH colour and form, because either alone is one coincidence away from failing:
+ * ── TWO REDS AND ONE ORANGE ───────────────────────────────────────────────────────────────────
+ * Separated by colour AND by form, because either alone is one coincidence away from failing:
  *
- *     --alarm    a bright red, only ever a TINTED SURFACE with a border   "something is blocked"
- *     --arm      a deep red, only ever a FILLED button with white text    "this moves the arm"
+ *     --alarm    the status red: a TINTED SURFACE with a border, a dot,   "something is blocked"
+ *                or the words of a status line; NEVER a fill
+ *     --arm      a deep red, only ever a FILLED button with white text    "this arms something" (Connect, "Arm freigeben", "Jetzt öffnen")
+ *     --halt     an orange, only ever a FILLED button with dark text      "halt now (not the e-stop)"
  *
- * `button.danger` -- the only user of `--arm` -- appears on exactly two controls: Connect and Pick.
+ * `button.primary` (the lime accent) is a screen's main action, and every cockpit control that starts motion is one:
+ * Start, Restart and the ask card's moving options, each naming its first motion; Home is outlined and keeps its
+ * confirm dialog, whose confirm is lime (the owner's decision of 2026-10-02, after the approved preview; IEC 60204-1
+ * never colours a start push-button red).
+ * `button.danger` (--arm) stays for what arms something a person must be ready for: Connect (the cell), the teach
+ * dialog's "Arm freigeben" (an arm moved by hand) and the jaws question's "Jetzt öffnen" (one switch of Tool-DO0).
+ * `button.halt` (--halt) is "Sofort anhalten": it stops the run and latches the arm (it brakes a move in
+ * flight only where the arm is set to), and it is NOT the emergency stop. It is deliberately not red: the red
+ * mushroom at the cell is the e-stop, and a red button on a screen must never be mistaken for it, or it for a go
+ * button.
+ *
+ * ── THE ACCENT IS THE LOGO'S LIME ─────────────────────────────────────────────────────────────
+ * Neon lime on dark (#bef702, hue ~74 deg, sampled from the logo), a darker lime on light, each at
+ * least 4.5:1 as text on every surface it can land on. The camera stage stays dark in BOTH themes
+ * (the image is the content), so anything drawn over it uses `--stage-*`, whose lime is the neon one
+ * in both themes. The Willy mark is drawn in the logo's own colours in both themes (`--brand-neon`,
+ * `--brand-steel`, `--brand-steel-hi`), as a logo is: the one drawing on screen that ignores the theme.
  *
  * ── LIGHT AND DARK ────────────────────────────────────────────────────────────────────────────
- * Three states, not two: an explicit choice stamps `data-theme` on <html>, and the default stamps
- * nothing, so the un-stamped document has to work from `prefers-color-scheme` alone. Every colour is
- * a token defined in all three; no element is styled inside a media query.
+ * The inline script in each HTML entry stamps `data-theme` before the first paint, dark unless light
+ * was chosen, so the stamped blocks decide. The `prefers-color-scheme` block only serves a page whose
+ * scripts did not run. Every colour is a token defined in all three; no element is styled inside a
+ * media query. `tests/test_console_contrast.py` reads every number below and checks it.
  */
 
 /* ══════════════════════════════════════════════ tokens: light (the complete set) ══════════════ */
 :root {
-  --ground:       #fbfaf7;   /* warm paper -- pure white beside a sand border reads unfinished */
+  --ground:       #f5f6f1;   /* a light that leans to the logo's green, never pure white */
   --panel:        #ffffff;
-  --panel-alt:    #f5f3ed;
-  --inset:        #f0eee6;
-  --line:         #e4ded2;   /* sand: the warm counterpoint the whole identity rests on */
-  --line-strong:  #cdc5b5;
+  --panel-alt:    #eff1ea;
+  --inset:        #e8ebe2;
+  --line:         #d9ddd0;
+  --line-strong:  #bfc6b4;
 
-  --fg:           #0d1f42;   /* deep navy, softened from Aurora's #001e50 for 13px body text */
-  --fg-muted:     #4a5875;
-  --fg-subtle:    #5e6c8a;
+  --fg:           #121812;
+  --fg-muted:     #465046;
+  --fg-subtle:    #59645a;
 
-  --accent:       #0a758a;   /* instrument cyan, darkened for contrast on paper */
+  --accent:       #3f6100;   /* the logo's lime, darkened until it reads as text on every surface */
   --accent-fg:    #ffffff;
 
-  --ok:     #2f8f52;
-  --warn:   #a8760f;
-  --alarm:  #c4303a;         /* status red -- TINT ONLY */
-  --bench:  #7857c8;
-  --info:   #0d7fbe;
-  --arm:    #a8121c;         /* arming red -- FILLED ONLY, never a status */
-  --arm-hi: #8a0c15;
+  /* The status hues are also TEXT where a line is coloured by its status (.ev, .caution, the audience window's
+     lines): hue and saturation of the first pick, darkened until each clears 4.5:1 on every light surface. */
+  --ok:     #177740;
+  --warn:   #8e5e18;
+  --alarm:  #c62935;         /* status red: a tint, a dot, or a status line's text; never a fill */
+  --bench:  #7c5cd6;
+  --info:   #0b7fbf;
+  --arm:    #b4141d;         /* arming red: FILLED ONLY, never a status */
+  --arm-hi: #930f17;
+  --halt:   #ff7b1c;         /* halt now: FILLED ONLY, dark label; never red, never the e-stop */
+  --halt-fg: #140a00;
 
-  /* MEASURED, not eyeballed. This console is read across a hall, sometimes over a shoulder, and the
-     third text tier carries the honest half of several readouts -- the denominator under every figure
-     on the demo page, the vendor/profile labels in the sidebar. At the values this palette first
-     shipped with, `--fg-subtle` was 3.47:1 on --panel and 3.12:1 on --panel-alt, and `--accent` was
-     4.48:1 as link text on --ground: all below AA for normal text. The values above are the SMALLEST
-     lightness steps on the same hue that clear 4.5:1 on EVERY ground each token can land on -- which
-     for --accent is all four, because a link sits in a panel HEAD (--panel-alt) and can sit in a
-     caveat (--inset), not only on the page ground. Hue and saturation are untouched, so the palette's
-     character is unchanged and the muted -> subtle hierarchy still reads.
-     `tests/test_console_contrast.py` recomputes all of it from these very lines. */
+  --stage:        #030403;   /* the camera stage: black in both themes, the image is the content */
+  --stage-fg:     #eef2ee;
+  --stage-accent: #bef702;   /* marks over the stage: the neon lime in both themes */
+
+  /* The Willy mark, in the logo's own colours in every theme. Never text: its lime edges are held at a graphic's
+     3:1 on its steel, not at the 4.5:1 of text (tests/test_console_contrast.py). */
+  --brand-neon:     #bef702;
+  --brand-steel:    #121815;
+  --brand-steel-hi: #28322d;
+  --mark-glow:      0%;      /* the mark's lime halo: none on a light bar */
+
+  /* MEASURED, not eyeballed: every text tier clears 4.5:1 on every surface it can land on, the
+     accent included (it is link text and the active-tab label). tests/test_console_contrast.py
+     recomputes all of it from these very lines. */
   --tint:   13%;             /* how much semantic colour a surface carries... */
   --edge:   40%;             /* ...and its border */
   --hover:  color-mix(in srgb, var(--fg) 5%, transparent);
 
-  --shadow-xs: 0 1px 2px rgb(13 31 66 / 0.05);
-  --shadow-sm: 0 2px 6px rgb(13 31 66 / 0.07), 0 1px 2px rgb(13 31 66 / 0.04);
-  --shadow-lg: 0 12px 30px rgb(13 31 66 / 0.10), 0 3px 8px rgb(13 31 66 / 0.05);
-  --brand-wash: linear-gradient(135deg, #0b7f96 0%, #109ab4 55%, #2bbdd2 100%);
+  --shadow-xs: 0 1px 2px rgb(18 24 18 / 0.06);
+  --shadow-sm: 0 2px 6px rgb(18 24 18 / 0.08), 0 1px 2px rgb(18 24 18 / 0.05);
+  --shadow-lg: 0 18px 40px rgb(18 24 18 / 0.16), 0 4px 10px rgb(18 24 18 / 0.08);
+  --glow:      0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+  --brand-wash: linear-gradient(135deg, #24380a 0%, #3a5a06 55%, #4f7a00 100%);
 }
 
 /* ══════════════════════════════════════════════ tokens: dark ═════════════════════════════════ */
-/* The un-stamped (system) document, guarded so an explicit light choice still wins. */
+/* The un-stamped document (scripts did not run), guarded so an explicit light choice still wins. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --ground:      #0a1120;
-    --panel:       #111a2e;
-    --panel-alt:   #16203a;
-    --inset:       #070d18;
-    --line:        #23304c;
-    --line-strong: #37476e;
+    --ground:      #050706;   /* the logo's black stage */
+    --panel:       #0c100e;
+    --panel-alt:   #111613;
+    --inset:       #020302;
+    --line:        #1f2723;
+    --line-strong: #333e38;
 
-    --fg:          #e8ecf5;
-    --fg-muted:    #97a3bd;
-    --fg-subtle:   #7c88a2;
+    --fg:          #e9eee9;
+    --fg-muted:    #a4aea6;
+    --fg-subtle:   #88938b;
 
-    --accent:      #3ec8dd;
-    --accent-fg:   #04121a;
+    --accent:      #bef702;   /* the logo's neon lime */
+    --accent-fg:   #0c1003;
 
-    --ok:     #4cc36e;
-    --warn:   #e0a93b;
-    --alarm:  #e5484d;
+    --ok:     #3ddc84;
+    --warn:   #f5b83d;
+    --alarm:  #ff5a5f;
     --bench:  #a78bfa;
-    --info:   #4aa8e8;
-    --arm:    #c11722;
-    --arm-hi: #e02430;
+    --info:   #4cb8f0;
+    --arm:    #c8161f;
+    --arm-hi: #e0222c;
+    --halt:   #ff7b1c;
+    --halt-fg: #140a00;
 
-    --tint:   17%;
+    --stage:        #030403;
+    --stage-fg:     #eef2ee;
+    --stage-accent: #bef702;
+
+    --brand-neon:     #bef702;
+    --brand-steel:    #121815;
+    --brand-steel-hi: #28322d;
+    --mark-glow:      32%;
+
+    --tint:   16%;
     --edge:   45%;
     --hover:  color-mix(in srgb, var(--fg) 7%, transparent);
 
-    --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.40);
-    --shadow-sm: 0 2px 6px rgb(0 0 0 / 0.35), 0 1px 2px rgb(0 0 0 / 0.25);
-    --shadow-lg: 0 14px 34px rgb(0 0 0 / 0.45), 0 3px 8px rgb(0 0 0 / 0.30);
-    --brand-wash: linear-gradient(135deg, #0b7f96 0%, #1fb0c9 55%, #5adcee 100%);
+    --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.45);
+    --shadow-sm: 0 2px 8px rgb(0 0 0 / 0.40), 0 1px 2px rgb(0 0 0 / 0.30);
+    --shadow-lg: 0 24px 48px rgb(0 0 0 / 0.55), 0 4px 12px rgb(0 0 0 / 0.35);
+    --glow:      0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent), 0 0 18px color-mix(in srgb, var(--accent) 18%, transparent);
+    --brand-wash: linear-gradient(135deg, #24380a 0%, #3a5a06 55%, #4f7a00 100%);
   }
 }
 
-/* ...and again for the explicit toggle, so it wins in both directions. */
+/* ...and again for the stamped document, which is every page whose script ran: dark is the default. */
 :root[data-theme="dark"] {
-  --ground:      #0a1120;
-  --panel:       #111a2e;
-  --panel-alt:   #16203a;
-  --inset:       #070d18;
-  --line:        #23304c;
-  --line-strong: #37476e;
+  --ground:      #050706;   /* the logo's black stage */
+  --panel:       #0c100e;
+  --panel-alt:   #111613;
+  --inset:       #020302;
+  --line:        #1f2723;
+  --line-strong: #333e38;
 
-  --fg:          #e8ecf5;
-  --fg-muted:    #97a3bd;
-  --fg-subtle:   #7c88a2;
+  --fg:          #e9eee9;
+  --fg-muted:    #a4aea6;
+  --fg-subtle:   #88938b;
 
-  --accent:      #3ec8dd;
-  --accent-fg:   #04121a;
+  --accent:      #bef702;   /* the logo's neon lime */
+  --accent-fg:   #0c1003;
 
-  --ok:     #4cc36e;
-  --warn:   #e0a93b;
-  --alarm:  #e5484d;
+  --ok:     #3ddc84;
+  --warn:   #f5b83d;
+  --alarm:  #ff5a5f;
   --bench:  #a78bfa;
-  --info:   #4aa8e8;
-  --arm:    #c11722;
-  --arm-hi: #e02430;
+  --info:   #4cb8f0;
+  --arm:    #c8161f;
+  --arm-hi: #e0222c;
+  --halt:   #ff7b1c;
+  --halt-fg: #140a00;
 
-  --tint:   17%;
+  --stage:        #030403;
+  --stage-fg:     #eef2ee;
+  --stage-accent: #bef702;
+
+  --brand-neon:     #bef702;
+  --brand-steel:    #121815;
+  --brand-steel-hi: #28322d;
+  --mark-glow:      32%;
+
+  --tint:   16%;
   --edge:   45%;
   --hover:  color-mix(in srgb, var(--fg) 7%, transparent);
 
-  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.40);
-  --shadow-sm: 0 2px 6px rgb(0 0 0 / 0.35), 0 1px 2px rgb(0 0 0 / 0.25);
-  --shadow-lg: 0 14px 34px rgb(0 0 0 / 0.45), 0 3px 8px rgb(0 0 0 / 0.30);
-  --brand-wash: linear-gradient(135deg, #0b7f96 0%, #1fb0c9 55%, #5adcee 100%);
+  --shadow-xs: 0 1px 2px rgb(0 0 0 / 0.45);
+  --shadow-sm: 0 2px 8px rgb(0 0 0 / 0.40), 0 1px 2px rgb(0 0 0 / 0.30);
+  --shadow-lg: 0 24px 48px rgb(0 0 0 / 0.55), 0 4px 12px rgb(0 0 0 / 0.35);
+  --glow:      0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent), 0 0 18px color-mix(in srgb, var(--accent) 18%, transparent);
+  --brand-wash: linear-gradient(135deg, #24380a 0%, #3a5a06 55%, #4f7a00 100%);
 }
 
 /* ══════════════════════════════════════════════ the Tailwind theme ═══════════════════════════ */
@@ -173,11 +231,18 @@
   --color-bench: var(--bench);
   --color-info:  var(--info);
   --color-arm:   var(--arm);
+  --color-halt:  var(--halt);
+
+  --color-stage:        var(--stage);
+  --color-stage-fg:     var(--stage-fg);
+  --color-stage-accent: var(--stage-accent);
 }
 
 @theme {
-  --font-sans: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
-  --font-mono: "JetBrains Mono", "Cascadia Mono", "SF Mono", Consolas, monospace;
+  /* System fonts only (owner, 2026-10-01): no font file is loaded. */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "Cascadia Code", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
 
   --radius-field: 8px;
   --radius-panel: 14px;
@@ -187,23 +252,27 @@
 
 /* ══════════════════════════════════════════════ base ═════════════════════════════════════════ */
 @layer base {
-  html { color-scheme: light dark; }
+  /* Every size below is in rem, so a large screen scales the whole console from here: a TV or a
+     projector at the cell is read from metres away, not from a desk chair. */
+  html { color-scheme: dark light; font-size: 100%; }
   :root[data-theme="light"] { color-scheme: light; }
   :root[data-theme="dark"]  { color-scheme: dark; }
+  @media (min-width: 2400px) { html { font-size: 125%; } }
+  @media (min-width: 3400px) { html { font-size: 162.5%; } }
 
   body {
     margin: 0;
     background: var(--ground);
     color: var(--fg);
     font-family: var(--font-sans);
-    font-size: 13.5px;
+    font-size: 0.84375rem;
     line-height: 1.55;
     -webkit-font-smoothing: antialiased;
   }
 
-  h1 { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; margin: 0; }
-  h2 { font-size: 21px; font-weight: 650; letter-spacing: -0.015em; margin: 0 0 4px; }
-  h3 { font-size: 14px; font-weight: 600; margin: 0 0 8px; }
+  h1 { font-size: 0.9375rem; font-weight: 650; letter-spacing: -0.01em; margin: 0; }
+  h2 { font-family: var(--font-display); font-size: 1.375rem; font-weight: 650; letter-spacing: -0.015em; margin: 0 0 0.25rem; }
+  h3 { font-size: 0.875rem; font-weight: 600; margin: 0 0 0.5rem; }
 
   /* Rule 2, applied once rather than remembered per screen. */
   code, kbd, samp, pre { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
@@ -212,6 +281,8 @@
   a:hover { text-decoration: underline; text-underline-offset: 3px; }
 
   :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 5px; }
+
+  ::selection { background: color-mix(in srgb, var(--accent) 35%, transparent); color: var(--fg); }
 
   ::-webkit-scrollbar { width: 11px; height: 11px; }
   ::-webkit-scrollbar-thumb {
@@ -222,7 +293,7 @@
 
   /* Form controls: Tailwind's reset strips them, so every one is restated deliberately. */
   input[type='text'], input[type='number'], input[type='search'], select, textarea {
-    font: inherit; font-size: 13px;
+    font: inherit; font-size: 0.8125rem;
     padding: 0.4rem 0.6rem;
     border: 1px solid var(--line-strong);
     border-radius: var(--radius-field);
@@ -236,72 +307,252 @@
     box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent);
   }
   input[type='checkbox'] { accent-color: var(--accent); width: 14px; height: 14px; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: 0ms !important; animation-duration: 0ms !important; }
+  }
 }
 
 /* ══════════════════════════════════════════════ shell ════════════════════════════════════════ */
 @layer components {
-  .shell { display: grid; grid-template-columns: 232px 1fr; min-height: 100vh; }
+  /* `minmax(0, 1fr)`: no line of content, however long, can make the page wider than the window. */
+  .shell { display: grid; grid-template-rows: auto 1fr; grid-template-columns: minmax(0, 1fr); min-height: 100vh; }
 
-  .sidebar {
-    display: flex; flex-direction: column;
-    position: sticky; top: 0; height: 100vh;
-    padding: 1.1rem 0 1rem;
-    background: var(--panel);
-    border-right: 1px solid var(--line);
+  .skip-link {
+    position: absolute; left: 0.75rem; top: -3rem; z-index: 60;
+    padding: 0.5rem 0.9rem; border-radius: var(--radius-field);
+    background: var(--accent); color: var(--accent-fg); font-weight: 600;
+    transition: top 160ms var(--ease-calm);
   }
+  .skip-link:focus { top: 0.6rem; text-decoration: none; }
 
-  .brand { display: flex; align-items: center; gap: 0.6rem; padding: 0 1rem 0.9rem; }
-  /* The single place the brand gradient is allowed. Everything else in the console is quiet. */
-  .brand .mark {
-    width: 30px; height: 30px; flex: none;
-    border-radius: 9px;
-    background: var(--brand-wash);
-    box-shadow: var(--shadow-sm);
-    display: grid; place-items: center;
-    color: #fff; font-weight: 700; font-size: 14px; letter-spacing: -0.03em;
+  /* ── the top bar: brand, navigation, the switches; under them, the cell's state ────────────
+   * Two tiers. The first row navigates and switches; the second is the console's state surface: the
+   * chips say what the cell is, what the hand holds, whether the arm is halted and what runs, on every
+   * screen and in FULL words, because an operator watching the arm is not looking for a settings page
+   * and a state cut to "kein Se…" is not a state.
+   */
+  .topbar {
+    position: sticky; top: 0; z-index: 30;
+    background: color-mix(in srgb, var(--panel) 92%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+    box-shadow: var(--shadow-xs);
   }
-  .brand .sub { font-size: 10.5px; color: var(--fg-subtle); font-family: var(--font-mono); }
-
-  .nav { display: flex; flex-direction: column; gap: 2px; padding: 0.5rem 0.6rem; }
-  .nav a {
-    display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
-    position: relative;
-    padding: 0.44rem 0.6rem;
-    border-radius: var(--radius-field);
-    color: var(--fg-muted);
-    font-size: 13px; font-weight: 500;
-    transition: background 180ms var(--ease-calm), color 180ms var(--ease-calm);
+  .topbar-row {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem 1.25rem;
+    min-height: 3.5rem;
+    padding: 0.4rem 1.25rem;
   }
-  .nav a:hover { background: var(--hover); color: var(--fg); text-decoration: none; }
-  .nav a.active {
-    background: color-mix(in srgb, var(--accent) 12%, transparent);
-    color: var(--fg); font-weight: 600;
-  }
-  /* A left rail rather than a heavier fill: it reads the same in both themes. */
-  .nav a.active::before {
-    content: ""; position: absolute; left: -0.6rem; top: 20%; bottom: 20%;
-    width: 3px; border-radius: 0 3px 3px 0; background: var(--accent);
-  }
-
-  .sidebar-foot {
-    margin-top: auto; padding: 0.9rem 1rem 0;
+  /* The chips WRAP onto a second line in a narrow window: a strip that scrolls sideways with its scrollbar hidden cut
+     the last chip off with no hint that it was there. */
+  .statusbar {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem 0.5rem;
+    padding: 0.4rem 1.25rem;
     border-top: 1px solid var(--line);
+    background: color-mix(in srgb, var(--inset) 55%, transparent);
   }
-  .sidebar-foot .k { color: var(--fg-subtle); font-size: 10.5px; letter-spacing: 0.05em;
-                     text-transform: uppercase; margin-top: 0.55rem; }
-  .sidebar-foot .k:first-child { margin-top: 0; }
-  .sidebar-foot .v { font-family: var(--font-mono); font-size: 12px; color: var(--fg);
-                     overflow-wrap: anywhere; }
-
-  .foot-links {
-    display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
-    margin-top: 0.9rem; font-size: 11.5px;
+  .topbar::after {
+    /* A hairline of the accent under the bar's left half: the logo's HUD line, nothing louder. */
+    content: ""; position: absolute; left: 0; bottom: -1px; height: 1px; width: min(32rem, 40%);
+    background: linear-gradient(90deg, var(--accent), transparent);
+    opacity: 0.55; pointer-events: none;
   }
-  .theme-toggle { padding: 0.2rem 0.55rem; font-size: 10.5px; letter-spacing: 0.05em;
-                  text-transform: uppercase; color: var(--fg-subtle); }
 
-  .main { padding: 1.6rem 1.9rem 4rem; max-width: 1180px; }
-  .lede { color: var(--fg-muted); margin: 0 0 1.4rem; max-width: 74ch; }
+  .brand { display: flex; align-items: center; gap: 0.7rem; flex: none; color: var(--fg); }
+  .brand:hover { text-decoration: none; }
+  /* The Willy mark (icons.tsx `Logo`): the logo's hexagonal gripper holding its lime cube, with the logo's halo on dark. */
+  .brand-mark {
+    width: 2.75rem; height: 2.75rem; flex: none;
+    filter: drop-shadow(0 0 0.4rem color-mix(in srgb, var(--brand-neon) var(--mark-glow), transparent));
+  }
+  .brand-name { display: grid; line-height: 1.1; }
+  /* The logo's wordmark (owner, 2026-10-01): WORKAHOLIC WILLY in capitals, in the system's heaviest italic, WILLY in
+     the lime over the logo's brush stroke. */
+  .brand-name strong { font-family: var(--font-display); font-size: 1rem; font-weight: 900; font-style: italic;
+                       text-transform: uppercase; letter-spacing: 0.015em; white-space: nowrap; }
+  .brand-name strong em { position: relative; font-style: inherit; color: var(--accent); }
+  .brand-name strong em::after {
+    content: ""; position: absolute; left: 4%; right: -6%; bottom: -0.22em; height: 0.16em; border-radius: 0.1em;
+    background: linear-gradient(90deg, transparent, var(--accent) 30%, var(--accent));
+    transform: skewX(-24deg) rotate(-2deg); opacity: 0.85; pointer-events: none;
+  }
+  .brand-name span { font-size: 0.6875rem; color: var(--fg-subtle); font-family: var(--font-mono); letter-spacing: 0.08em;
+                     text-transform: uppercase; }
+
+  .topnav { display: flex; align-items: stretch; gap: 0.25rem; flex: none; }
+  .topnav a {
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    min-height: 2.75rem; padding: 0 0.8rem;
+    border-radius: var(--radius-field);
+    color: var(--fg-muted); font-size: 0.875rem; font-weight: 550;
+    position: relative;
+    transition: background 160ms var(--ease-calm), color 160ms var(--ease-calm);
+  }
+  .topnav a:hover { background: var(--hover); color: var(--fg); text-decoration: none; }
+  .topnav a.active { color: var(--fg); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+  .topnav a.active::after {
+    content: ""; position: absolute; left: 0.8rem; right: 0.8rem; bottom: -0.55rem; height: 2px;
+    border-radius: 2px; background: var(--accent); box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 60%, transparent);
+  }
+  .topnav svg { flex: none; }
+
+  /* Monospace with tabular numbers, like the banner's STILL GRINDING box (owner, 2026-10-01): a state that updates
+     every 2 s does not jitter in width. The label is --fg-muted: --fg-subtle fell below 4.5:1 on the dark tints. */
+  .chip {
+    display: inline-flex; align-items: center; gap: 0.5rem; flex: none;
+    max-width: 100%;
+    min-height: 2rem;
+    padding: 0.2rem 0.75rem 0.2rem 0.6rem;
+    border: 1px solid var(--line);
+    border-radius: 0.3rem;     /* squared off: a readout, not a pill */
+    background: var(--panel-alt);
+    color: var(--fg);
+    font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+    font-size: 0.75rem; line-height: 1.2;
+    white-space: nowrap;
+  }
+  .chip .k {
+    font-size: 0.625rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--fg-muted);
+  }
+  .chip .v { min-width: 0; }
+  .chip .v .mono { font-size: 0.75rem; }
+  .chip::before { content: ""; width: 7px; height: 7px; border-radius: 9999px; flex: none; background: var(--fg-subtle); }
+  .chip.ok    { background: color-mix(in srgb, var(--ok)    var(--tint), var(--panel)); border-color: color-mix(in srgb, var(--ok)    var(--edge), var(--line)); }
+  .chip.warn  { background: color-mix(in srgb, var(--warn)  var(--tint), var(--panel)); border-color: color-mix(in srgb, var(--warn)  var(--edge), var(--line)); }
+  .chip.block { background: color-mix(in srgb, var(--alarm) var(--tint), var(--panel)); border-color: color-mix(in srgb, var(--alarm) var(--edge), var(--line)); }
+  .chip.info  { background: color-mix(in srgb, var(--info)  var(--tint), var(--panel)); border-color: color-mix(in srgb, var(--info)  var(--edge), var(--line)); }
+  .chip.bench { background: color-mix(in srgb, var(--bench) var(--tint), var(--panel)); border-color: color-mix(in srgb, var(--bench) var(--edge), var(--line)); }
+  .chip.ok::before    { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .chip.warn::before  { background: var(--warn); }
+  .chip.block::before { background: var(--alarm); box-shadow: 0 0 8px var(--alarm); }
+  .chip.info::before  { background: var(--info); }
+  .chip.bench::before { background: var(--bench); }
+  .chip.live::before  { animation: chip-pulse 1.6s var(--ease-calm) infinite; }
+  @keyframes chip-pulse { 50% { opacity: 0.35; } }
+
+  /* They wrap rather than run past the window's edge: at a narrow width no switch is cut off. */
+  .switches { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem; flex: 0 1 auto; max-width: 100%;
+              margin-left: auto; }
+
+  /* A segmented switch (Demo | Technik, DE | EN): every option visible, the chosen one lit. */
+  .seg {
+    display: inline-flex; padding: 0.125rem; gap: 0.125rem;
+    border: 1px solid var(--line); border-radius: 0.625rem; background: var(--inset);
+  }
+  .seg button {
+    justify-content: center; min-height: 2.75rem; min-width: 2.75rem; padding: 0 0.75rem; border: 0; box-shadow: none;
+    background: transparent; color: var(--fg-muted);
+    font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; border-radius: 0.45rem;
+  }
+  .seg button:hover:not(:disabled) { background: var(--hover); color: var(--fg); border-color: transparent; }
+  .seg button[aria-pressed='true'] { background: var(--panel); color: var(--fg); box-shadow: var(--shadow-xs), var(--glow); }
+
+  /* A square icon button. 44 px to hit, whatever the icon's size (build plan 4.4). */
+  .iconbtn {
+    justify-content: center; width: 2.75rem; height: 2.75rem; padding: 0;
+    background: transparent; border-color: var(--line); box-shadow: none; color: var(--fg-muted);
+  }
+  .iconbtn:hover:not(:disabled) { color: var(--fg); background: var(--hover); border-color: var(--line-strong); }
+  .iconbtn[aria-pressed='true'] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); box-shadow: var(--glow); }
+  .textbtn { min-height: 2.75rem; font-size: 0.8125rem; color: var(--fg-muted); background: transparent; box-shadow: none; }
+  .textbtn:hover:not(:disabled) { color: var(--fg); }
+
+  .main { min-width: 0; padding: 1.5rem 1.75rem 4rem; }
+  /* A reading page (setup, settings, history): wide enough for two panels, never a 4K line length. */
+  .page { max-width: 82rem; margin: 0 auto; }
+  .lede { color: var(--fg-muted); margin: 0 0 1.4rem; max-width: 76ch; font-size: 0.9375rem; }
+
+  .screen-head { position: relative; display: grid; gap: 0.15rem; margin: 0.25rem 0 1.25rem; padding-left: 1rem; }
+  .screen-head::before {
+    content: ""; position: absolute; left: 0; top: 0.35rem; bottom: 0.35rem; width: 3px; border-radius: 3px;
+    background: var(--accent); box-shadow: 0 0 12px color-mix(in srgb, var(--accent) 50%, transparent);
+  }
+  .screen-head .lede { margin: 0; }
+
+  /* ── HUD corner marks: the banner's four L-shaped brackets (owner, 2026-10-01) ─────────────────────────────────────
+   * Around the live image and the main cards, nowhere else: a frame that is everywhere frames nothing. Square, in the
+   * accent, drawn just INSIDE the frame, as the logo draws them inside its rounded square: so they sit on any card,
+   * a rounded one that clips its content included, and they never take the room of a neighbour. One pseudo-element
+   * (`::after`), so `::before` stays free for the element's own use; never in the way of a click. Tuned per use with
+   * `--hud-inset` (a negative one draws them outside an element that clips nothing), `--hud-size` and `--hud-weight`;
+   * over the camera stage they take the stage's neon lime. `.hud` is the same frame under its first name.
+   */
+  .hud-frame, .hud {
+    position: relative;
+    --hud-color: var(--accent);
+    --hud-size: 1rem;
+    --hud-weight: 2px;
+    --hud-inset: 0.375rem;
+  }
+  .hud-frame::after, .hud::after {
+    content: ""; position: absolute; inset: var(--hud-inset); z-index: 2; pointer-events: none;
+    background:
+      linear-gradient(var(--hud-color) 0 0) top    left  / var(--hud-size)   var(--hud-weight),
+      linear-gradient(var(--hud-color) 0 0) top    left  / var(--hud-weight) var(--hud-size),
+      linear-gradient(var(--hud-color) 0 0) top    right / var(--hud-size)   var(--hud-weight),
+      linear-gradient(var(--hud-color) 0 0) top    right / var(--hud-weight) var(--hud-size),
+      linear-gradient(var(--hud-color) 0 0) bottom left  / var(--hud-size)   var(--hud-weight),
+      linear-gradient(var(--hud-color) 0 0) bottom left  / var(--hud-weight) var(--hud-size),
+      linear-gradient(var(--hud-color) 0 0) bottom right / var(--hud-size)   var(--hud-weight),
+      linear-gradient(var(--hud-color) 0 0) bottom right / var(--hud-weight) var(--hud-size);
+    background-repeat: no-repeat;
+    opacity: 0.9;
+  }
+
+  /* ── a readout: the banner's STILL GRINDING box ──────────────────────────────────────────────────────────────────
+   * Monospace lines with tabular numbers in a thin lime frame with cut corners, a lime dot before the title, dotted
+   * leaders to the value: for numbers read from a step back (the cockpit's statistics, the audience window's counters).
+   * Never a control. The frame is the element's own background, shown as a 1 px edge around `::before`, which carries
+   * the surface; both are cut by the same polygon, so the edge follows the cut corners too.
+   */
+  .readout {
+    --cut: 0.7rem;
+    position: relative; isolation: isolate;
+    display: grid; gap: 0.2rem; align-content: start;
+    padding: 0.75rem 1rem 0.85rem;
+    background: color-mix(in srgb, var(--accent) 65%, var(--line));
+    clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+    color: var(--fg);
+    font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 0.8125rem; line-height: 1.5;
+  }
+  .readout::before {
+    content: ""; position: absolute; inset: 1px; z-index: -1;
+    background: var(--panel);
+    clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
+  }
+  .readout-title {
+    display: flex; align-items: center; gap: 0.55rem; margin-bottom: 0.2rem;
+    color: var(--accent); font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  .readout-title::before {
+    content: ""; width: 0.55rem; height: 0.55rem; border-radius: 9999px; flex: none;
+    background: var(--accent); box-shadow: 0 0 0.5rem color-mix(in srgb, var(--accent) 70%, transparent);
+  }
+  .readout-row { display: flex; align-items: baseline; gap: 0.5ch; min-width: 0; }
+  .readout-row .k { color: var(--fg-muted); white-space: nowrap; }
+  .readout-row .lead { flex: 1; min-width: 1ch; border-bottom: 1px dotted var(--line-strong); transform: translateY(-0.25em); }
+  .readout-row .v { color: var(--fg); font-weight: 600; white-space: nowrap; }
+  /* The one number a readout leads with, read from across the hall. */
+  .readout .big { font-size: 1.75rem; font-weight: 700; line-height: 1.1; color: var(--fg); letter-spacing: -0.01em; }
+
+  /* A screen that another part of the build fills: titled, and saying what will be here. */
+  .placeholder {
+    display: grid; place-items: center; align-content: center; gap: 0.9rem; text-align: center;
+    min-height: min(60vh, 38rem); padding: 3rem 1.5rem;
+    border: 1px dashed var(--line-strong); border-radius: var(--radius-panel);
+    background:
+      radial-gradient(60rem 30rem at 50% 0%, color-mix(in srgb, var(--accent) 6%, transparent), transparent 70%),
+      var(--panel);
+    color: var(--fg-muted);
+  }
+  .placeholder .mark { width: 4.5rem; height: 4.5rem; color: var(--accent); opacity: 0.9; }
+  .placeholder p { max-width: 52ch; margin: 0; font-size: 0.9375rem; }
+
+  /* The stage token, for whoever draws over a camera frame: dark in both themes, and its marks in the neon lime. */
+  .stage { background: var(--stage); color: var(--stage-fg); }
+  .stage.hud-frame, .stage .hud-frame, .stage.hud, .stage .hud { --hud-color: var(--stage-accent); }
 
   /* ── the status system ──────────────────────────────────────────────────────────────────────
    * One class per status, and the colour is used the SAME WAY every time: a tinted surface, a
@@ -317,7 +568,7 @@
     background: var(--panel-alt);
     color: var(--fg-muted);
     font-family: var(--font-mono);
-    font-size: 10.5px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase;
+    font-size: 0.65625rem; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase;
     white-space: nowrap;
   }
   .pill::before { content: ""; width: 6px; height: 6px; border-radius: 9999px;
@@ -363,18 +614,13 @@
     background: var(--panel-alt);
   }
   .panel-head h3 {
-    margin: 0; font-size: 11.5px; font-weight: 600;
+    margin: 0; font-size: 0.71875rem; font-weight: 600;
     letter-spacing: 0.07em; text-transform: uppercase; color: var(--fg-muted);
   }
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.1rem; align-items: start; }
-  @media (max-width: 980px) {
-    .grid-2 { grid-template-columns: 1fr; }
-    .shell  { grid-template-columns: 1fr; }
-    .sidebar { position: static; height: auto; }
-  }
 
   .verdict-line { display: flex; align-items: center; gap: 0.55rem; margin-bottom: 0.15rem; }
-  .verdict-line strong { font-size: 14px; font-weight: 600; }
+  .verdict-line strong { font-size: 0.875rem; font-weight: 600; }
 
   /* ── count tiles ──────────────────────────────────────────────────────────
    * The same tint-and-border language as a pill, at the one size where a number can be read from a
@@ -382,7 +628,6 @@
    * for, and a tile that disappears when it is empty makes them count the remaining tiles to be sure.
    */
   .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.7rem; margin-bottom: 1.1rem; }
-  @media (max-width: 700px) { .tiles { grid-template-columns: repeat(2, 1fr); } }
   .tile {
     padding: 0.6rem 0.8rem;
     border: 1px solid var(--line);
@@ -390,9 +635,9 @@
     background: var(--panel);
     box-shadow: var(--shadow-xs);
   }
-  .tile .n { font-family: var(--font-mono); font-size: 22px; font-weight: 600; line-height: 1.15;
+  .tile .n { font-family: var(--font-mono); font-size: 1.375rem; font-weight: 600; line-height: 1.15;
              font-variant-numeric: tabular-nums; }
-  .tile .t { font-size: 10.5px; letter-spacing: 0.07em; text-transform: uppercase;
+  .tile .t { font-size: 0.65625rem; letter-spacing: 0.07em; text-transform: uppercase;
              color: var(--fg-muted); }
   .tile.zero .n { color: var(--fg-subtle); }
   .tile.zero { background: var(--panel); border-color: var(--line); }
@@ -407,7 +652,7 @@
 
   /* ── checklist rows ─────────────────────────────────────────────────────────────────────── */
   .row {
-    display: grid; grid-template-columns: 92px 1fr; gap: 0.9rem;
+    display: grid; grid-template-columns: 5.75rem 1fr; gap: 0.9rem;
     align-items: start;
     margin: 0 -1.15rem;
     padding: 0.7rem 1.15rem;
@@ -416,33 +661,33 @@
   }
   .row:hover { background: var(--hover); }
   .row:first-of-type { border-top: none; padding-top: 0.2rem; }
-  .row .name { font-weight: 600; font-size: 13px; }
-  .row .detail { color: var(--fg-muted); font-size: 12.5px; }
+  .row .name { font-weight: 600; font-size: 0.8125rem; }
+  .row .detail { color: var(--fg-muted); font-size: 0.78125rem; }
   /* The fix line is the whole point of a checklist, so it is the one thing that gets a surface. */
   .row .fix {
     margin-top: 0.4rem; padding: 0.45rem 0.7rem;
     background: var(--inset);
     border-left: 2px solid var(--accent);
     border-radius: 0 var(--radius-field) var(--radius-field) 0;
-    font-family: var(--font-mono); font-size: 11.5px; color: var(--fg);
+    font-family: var(--font-mono); font-size: 0.71875rem; color: var(--fg);
     white-space: pre-wrap; overflow-wrap: anywhere;
   }
 
   /* ── key/value readouts ─────────────────────────────────────────────────────────────────── */
   .kv { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1.1rem;
-        font-size: 12.5px; margin: 0; }
+        font-size: 0.78125rem; margin: 0; }
   .kv dt { color: var(--fg-subtle); }
   .kv dd { margin: 0; font-family: var(--font-mono); font-variant-numeric: tabular-nums;
            overflow-wrap: anywhere; }
 
   /* ── controls ───────────────────────────────────────────────────────────────────────────────
-   * Rule 3 made visual: `button.danger` is the ONLY filled red in the console, on the only two
-   * controls that command motion. Everything else is deliberately quiet, so those two are loud by
-   * contrast rather than by being shouted.
+   * Rule 3 made visual: `button.primary` is the filled lime of every cockpit control that starts motion,
+   * `button.halt` the filled orange of "halt now", `button.danger` the red of arming something. Everything
+   * else is deliberately quiet, so those are loud by contrast rather than by being shouted.
    */
   button {
     display: inline-flex; align-items: center; gap: 0.4rem;
-    font: inherit; font-size: 12.5px; font-weight: 500;
+    font: inherit; font-size: 0.78125rem; font-weight: 500;
     padding: 0.42rem 0.85rem;
     border: 1px solid var(--line-strong);
     border-radius: var(--radius-field);
@@ -451,29 +696,37 @@
     cursor: pointer;
     box-shadow: var(--shadow-xs);
     transition: background 180ms var(--ease-calm), border-color 180ms var(--ease-calm),
-                transform 120ms var(--ease-calm);
+                box-shadow 180ms var(--ease-calm), transform 120ms var(--ease-calm);
   }
   button:hover:not(:disabled) { background: var(--panel-alt); border-color: var(--fg-subtle); }
   button:active:not(:disabled) { transform: translateY(1px); }
   button:disabled { opacity: 0.42; cursor: not-allowed; box-shadow: none; }
 
   button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-fg);
-                   font-weight: 600; }
+                   font-weight: 650; }
   button.primary:hover:not(:disabled) {
     background: color-mix(in srgb, var(--accent) 86%, var(--fg));
     border-color: color-mix(in srgb, var(--accent) 86%, var(--fg));
+    box-shadow: var(--glow);
   }
 
-  button.danger { background: var(--arm); border-color: var(--arm); color: #fff; font-weight: 600;
+  button.danger { background: var(--arm); border-color: var(--arm); color: #fff; font-weight: 650;
                   box-shadow: 0 1px 3px color-mix(in srgb, var(--arm) 45%, transparent); }
   button.danger:hover:not(:disabled) { background: var(--arm-hi); border-color: var(--arm-hi); }
+
+  button.halt { background: var(--halt); border-color: var(--halt); color: var(--halt-fg); font-weight: 750;
+                letter-spacing: 0.01em; box-shadow: 0 2px 10px color-mix(in srgb, var(--halt) 40%, transparent); }
+  button.halt:hover:not(:disabled) { background: color-mix(in srgb, var(--halt) 88%, #fff); border-color: var(--halt); }
 
   button.ghost { background: transparent; border-color: var(--line); box-shadow: none; }
   button.ghost:hover:not(:disabled) { background: var(--hover); border-color: var(--line-strong); }
 
+  /* A control a person may touch at the cell: 44 px to hit (tablet later; gloves today). */
+  button.big { min-height: 2.75rem; padding: 0.6rem 1.15rem; font-size: 0.875rem; }
+
   .actions { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
   label.check { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer;
-                user-select: none; font-size: 12px; color: var(--fg-muted); }
+                user-select: none; font-size: 0.75rem; color: var(--fg-muted); }
 
   /* ── banners: the pill's tint language, at panel scale ──────────────────────────────────── */
   .banner {
@@ -487,8 +740,9 @@
     box-shadow: var(--shadow-xs);
   }
   .banner .body { flex: 1; min-width: 0; }
-  .banner .code { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-subtle);
+  .banner .code { font-family: var(--font-mono); font-size: 0.65625rem; color: var(--fg-muted);
                   letter-spacing: 0.03em; }
+  .banner .said { margin-top: 0.15rem; color: var(--fg-muted); font-size: 0.78125rem; }
   .banner.ok    { background: color-mix(in srgb, var(--ok)    var(--tint), var(--panel));
                   border-color: color-mix(in srgb, var(--ok)    var(--edge), var(--line));
                   border-left-color: var(--ok); }
@@ -509,66 +763,66 @@
     border-top: 1px dashed var(--line);
     background: var(--inset);
     color: var(--fg-muted);
-    font-size: 11.5px;
+    font-size: 0.71875rem;
   }
   .caveat .mono { color: var(--fg); }
 
-  /* ── the Pick screen's split ───────────────────────────────────────────────────────
-   * Picture left, narration right. The picture column is capped rather than fluid: past about 400 px a
-   * 4:3 viewfinder starts pushing the event list off the fold, and the list is the thing being read.
+  /* ── dialogs: a confirm before a motion, and the jaws question ─────────────────────────────
+   * Modal, centred, and the only thing that can be clicked while open. The motion it confirms is
+   * named in its own band, in the arming red's tint: the first thing read, before any button.
    */
-  .pick-split { display: grid; grid-template-columns: minmax(260px, 360px) 1fr; gap: 1.1rem;
-                align-items: start; }
-  @media (max-width: 1000px) { .pick-split { grid-template-columns: 1fr; } }
-  .instruction-row { margin-bottom: 0.7rem; }
-  .instruction-row input[type='text'] { flex: 1; min-width: 240px; }
+  .dialog-backdrop {
+    position: fixed; inset: 0; z-index: 50;
+    display: grid; place-items: center; padding: 1rem;
+    background: color-mix(in srgb, #000 58%, transparent);
+    backdrop-filter: blur(3px);
+  }
+  .dialog {
+    width: min(36rem, 100%); max-height: calc(100vh - 2rem); overflow: auto;
+    background: var(--panel); color: var(--fg);
+    border: 1px solid var(--line-strong); border-radius: var(--radius-panel);
+    box-shadow: var(--shadow-lg);
+  }
+  .dialog-head { display: flex; align-items: center; gap: 0.75rem; padding: 1rem 1.25rem 0.5rem; }
+  .dialog-head h2 { font-size: 1.125rem; margin: 0; }
+  .dialog-head .icon { color: var(--accent); flex: none; }
+  .dialog-body { padding: 0.25rem 1.25rem 1rem; display: grid; gap: 0.75rem; font-size: 0.875rem; }
+  .dialog-motion {
+    display: flex; align-items: flex-start; gap: 0.6rem;
+    padding: 0.7rem 0.85rem; border-radius: var(--radius-field);
+    background: color-mix(in srgb, var(--arm) 14%, var(--panel));
+    border: 1px solid color-mix(in srgb, var(--arm) 45%, var(--line));
+    font-weight: 600;
+  }
+  .dialog-notes { margin: 0; padding-left: 1.1rem; color: var(--fg-muted); font-size: 0.8125rem; display: grid; gap: 0.3rem; }
+  .dialog-foot {
+    display: flex; justify-content: flex-end; gap: 0.6rem; flex-wrap: wrap;
+    padding: 0.85rem 1.25rem; border-top: 1px solid var(--line); background: var(--panel-alt);
+  }
+
+  /* ── the Diagnostics drawer (tech view) ─────────────────────────────────────────────────── *
+   * Its backdrop lies UNDER the cockpit's stop row (45, `cockpit/cockpit.css`): it may be open during a run, and a
+   * click on "Sofort anhalten" must halt, never only close the drawer. */
+  .drawer-backdrop { position: fixed; inset: 0; z-index: 44; background: color-mix(in srgb, #000 40%, transparent); }
+  .drawer {
+    position: fixed; top: 0; right: 0; bottom: 0; z-index: 46;
+    width: min(34rem, 100vw); display: grid; grid-template-rows: auto 1fr;
+    background: var(--panel); border-left: 1px solid var(--line-strong); box-shadow: var(--shadow-lg);
+  }
+  .drawer-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+                 padding: 1rem 1.25rem; border-bottom: 1px solid var(--line); }
+  .drawer-head h2 { font-size: 1.125rem; margin: 0; }
+  .drawer-body { overflow-y: auto; padding: 1rem 1.25rem 2rem; display: grid; gap: 1rem; align-content: start; }
+  .drawer-section h3 {
+    display: flex; align-items: center; gap: 0.5rem;
+    font-size: 0.71875rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-muted);
+  }
+  .drawer-section .kv { font-size: 0.8125rem; }
+  .vendor-row { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+                padding: 0.45rem 0; border-top: 1px solid var(--line); }
+  .vendor-row:first-of-type { border-top: 0; }
+
   .run-line { margin-bottom: 0.7rem; }
-  .outcomes { margin-top: 0.9rem; }
-
-  /* ── the viewfinder ─────────────────────────────────────────────────────────
-   * The picture sits on the INSET ground, not on the panel: a camera frame is data the cell produced,
-   * and giving it the same surface as the console's own chrome is how a render starts reading as UI.
-   * The badge is absolutely positioned over it and never scrolls away, because it is the half of this
-   * component that says whether the picture is live.
-   */
-  .viewfinder { display: grid; gap: 0.6rem; }
-  .vf-stage {
-    position: relative;
-    aspect-ratio: 4 / 3;
-    background: var(--inset);
-    border: 1px solid var(--line);
-    border-radius: var(--radius-field);
-    overflow: hidden;
-    display: grid; place-items: center;
-  }
-  .vf-stage img { width: 100%; height: 100%; object-fit: contain; display: block; }
-  /* A held frame is dimmed rather than removed: blanking the moment a pick starts reads as a fault. */
-  .vf-stage.stale img { filter: grayscale(0.55) brightness(0.72); }
-
-  .vf-blank { display: grid; justify-items: center; gap: 0.5rem;
-              color: var(--fg-subtle); font-size: 12px; }
-  .vf-blank-mark {
-    width: 26px; height: 20px; border: 2px solid var(--line-strong); border-radius: 4px;
-    position: relative;
-  }
-  .vf-blank-mark::after {
-    content: ""; position: absolute; inset: 4px 6px; border-radius: 9999px;
-    border: 2px solid var(--line-strong);
-  }
-
-  .vf-badges { position: absolute; top: 0.5rem; left: 0.5rem; display: flex; gap: 0.35rem; }
-  /* Over an arbitrary photograph the theme surface is not enough contrast on its own. */
-  .vf-badges .pill { backdrop-filter: blur(6px);
-                     box-shadow: 0 1px 3px rgb(0 0 0 / 0.25); }
-  .vf-dims { position: absolute; right: 0.5rem; bottom: 0.45rem;
-             font-size: 10.5px; color: #fff; opacity: 0.75;
-             text-shadow: 0 1px 3px rgb(0 0 0 / 0.8); }
-
-  .vf-says { margin: 0; color: var(--fg-muted); font-size: 12px; }
-  .vf-controls { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem 0.8rem; }
-  /* A refused overlay toggle. Its own colour AND its own state, because sharing the poll's error
-     meant the reason was wiped by the next successful tick 160 ms later. */
-  .vf-refused { color: var(--alarm); flex-basis: 100%; }
 
   /* ── the run stream ─────────────────────────────────────────────────────────────────────── */
   .stream {
@@ -577,26 +831,30 @@
     border-radius: var(--radius-field);
     max-height: 460px; overflow-y: auto;
   }
-  .ev { display: grid; grid-template-columns: 44px 1fr; gap: 0.6rem;
+  .ev { display: grid; grid-template-columns: 2.75rem 1fr; gap: 0.6rem;
         padding: 0.4rem 0.75rem; border-top: 1px solid var(--line); }
   .ev:first-child { border-top: none; }
-  .ev .seq { font-family: var(--font-mono); font-size: 10.5px; color: var(--fg-subtle);
+  .ev .seq { font-family: var(--font-mono); font-size: 0.65625rem; color: var(--fg-subtle);
              text-align: right; padding-top: 2px; }
-  .ev .txt { overflow-wrap: anywhere; font-size: 12.5px; }
+  .ev .txt { overflow-wrap: anywhere; font-size: 0.78125rem; }
   .ev.warn .txt    { color: var(--warn); }
   .ev.error .txt   { color: var(--alarm); }
   .ev.success .txt { color: var(--ok); font-weight: 600; }
   .ev.gap { background: color-mix(in srgb, var(--warn) var(--tint), transparent); }
-  .ev .payload { margin-top: 0.25rem; font-family: var(--font-mono); font-size: 10.5px;
+  /* On the gap's tint the quiet tier moves up one: --fg-subtle falls below 4.5:1 there. */
+  .ev.gap .seq { color: var(--fg-muted); }
+  .ev.gap .payload { color: var(--fg-muted); }
+  .ev .payload { margin-top: 0.25rem; font-family: var(--font-mono); font-size: 0.65625rem;
                  color: var(--fg-subtle); white-space: pre-wrap; overflow-wrap: anywhere; }
-  details.payload-toggle summary { cursor: pointer; color: var(--fg-subtle); font-size: 10.5px; }
+  /* --fg-muted, not --fg-subtle: it sits on an error banner's tint, and in the demo view it holds the server's sentence. */
+  details.payload-toggle summary { cursor: pointer; color: var(--fg-muted); font-size: 0.65625rem; }
 
   /* ── tables ─────────────────────────────────────────────────────────────────────────────── */
   .panel table { margin: 0 -1.15rem -1rem; width: calc(100% + 2.3rem); }
-  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.78125rem; }
   th {
     position: sticky; top: 0;
-    text-align: left; font-weight: 600; font-size: 10.5px;
+    text-align: left; font-weight: 600; font-size: 0.65625rem;
     letter-spacing: 0.07em; text-transform: uppercase; color: var(--fg-muted);
     padding: 0.5rem 0.75rem;
     background: var(--panel-alt);
@@ -628,13 +886,13 @@
    * own -- where they were silently unstyled. Defined standalone here, with the row versions above
    * still winning inside a row.
    */
-  .detail { color: var(--fg-muted); font-size: 12.5px; }
+  .detail { color: var(--fg-muted); font-size: 0.78125rem; }
   .fix {
     padding: 0.45rem 0.7rem;
     background: var(--inset);
     border-left: 2px solid var(--accent);
     border-radius: 0 var(--radius-field) var(--radius-field) 0;
-    font-family: var(--font-mono); font-size: 11.5px; color: var(--fg);
+    font-family: var(--font-mono); font-size: 0.71875rem; color: var(--fg);
     white-space: pre-wrap; overflow-wrap: anywhere;
   }
 
@@ -646,7 +904,7 @@
     background: var(--inset);
     border: 1px solid var(--line);
     border-radius: var(--radius-field);
-    font-size: 11px; color: var(--fg-muted);
+    font-size: 0.6875rem; color: var(--fg-muted);
     white-space: pre-wrap; overflow-wrap: anywhere;
     max-height: 240px; overflow: auto;
   }
@@ -660,11 +918,30 @@
   .prose { font-family: var(--font-sans); }
 
   /* ── small parts ────────────────────────────────────────────────────────────────────────── */
-  .spinner { color: var(--fg-subtle); font-size: 12.5px; padding: 0.6rem 0; }
-  .empty { color: var(--fg-subtle); padding: 1.4rem; text-align: center; font-size: 12.5px; }
+  .spinner { color: var(--fg-subtle); font-size: 0.78125rem; padding: 0.6rem 0; }
+  .empty { color: var(--fg-subtle); padding: 1.4rem; text-align: center; font-size: 0.78125rem; }
   .bar { height: 6px; background: var(--inset); border-radius: 9999px; overflow: hidden; }
   .bar > span { display: block; height: 100%; background: var(--ok); border-radius: 9999px;
                 transition: width 280ms var(--ease-calm); }
+
+  /* ── narrower windows: the audience button keeps its icon, then everything goes to one column ── */
+  @media (max-width: 1499px) {
+    .textbtn .label { display: none; }
+  }
+  @media (max-width: 1199px) {
+    .topbar-row { padding: 0.4rem 1rem; }
+    .statusbar { padding: 0.35rem 1rem; }
+    .main { padding: 1.1rem 1rem 3rem; }
+    .grid-2 { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 760px) {
+    .topnav a span { display: none; }
+    .brand-name span { display: none; }
+    .tiles { grid-template-columns: repeat(2, 1fr); }
+    /* Too narrow for one line: the chip's words wrap inside it, never run past the window's edge. */
+    .chip { white-space: normal; border-radius: var(--radius-field); }
+    .chip .v { overflow-wrap: anywhere; }
+  }
 }
 
 /* ══════════════════════════════════════════════ utility aliases ══════════════════════════════ */
@@ -672,11 +949,18 @@
   .mono  { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
   .dim   { color: var(--fg-muted); }
   .faint { color: var(--fg-subtle); }
-  .small { font-size: 11.5px; }
+  .small { font-size: 0.71875rem; }
   /* Inline caution, for a line that is a RESULT rather than a banner -- "that was too short to
      transcribe". `.warn` alone does not do this: it is only ever defined compounded (`.pill.warn`,
      `.banner.warn`, `.tile.warn`), so `class="small warn"` renders as an ordinary grey caption and
      an error reads as a hint. Found by grepping the stylesheet for the class before shipping it. */
   .caution { color: var(--warn); }
   .brand-wash { background: var(--brand-wash); }
+
+  /* `block` is a status here AND a Tailwind utility (`display: block`), and the utilities layer wins over the
+     components layer whatever the specificity: a blocking pill or chip lost its dot and its spacing. Restated here,
+     in the same layer, where two classes outrank one. (tests/test_console_contrast.py pins it.) */
+  .pill.block, .chip.block { display: inline-flex; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+             clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 }

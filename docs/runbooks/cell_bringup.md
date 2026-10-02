@@ -237,7 +237,10 @@ Exit 1: it answered and disagrees with its own configuration. Exit 2: there is n
 the driver refused the configuration before it opened a socket, and the line above says which.
 
 From Python, [`examples/real_robot/03_connect_and_move.py`](../../examples/real_robot/03_connect_and_move.py)
-connects the same way and then moves the arm.
+connects the same way and then moves the arm. The operator console's Connect (`python -m api`) does the same
+behind a preview token, asks a toggle hand's jaws question in the browser rather than at a terminal, and starts
+a cuRobo arm's planner by itself; it comes to a physical cell through
+[console_at_the_cell.md](console_at_the_cell.md).
 
 ---
 
@@ -326,7 +329,9 @@ wsl.exe -u root -- bash -lc '
 ```
 
 Then `scripts/ursim/ursim.sh {up MODEL|down|status}`, where `MODEL` is `UR5` or `UR3`, and
-`URSIM_FRESH=1` recreates the controller for a clean state. The
+`URSIM_FRESH=1` recreates the controller for a clean state. A CB3 controller, such as the owner's UR10, runs from
+its own image:
+`URSIM_IMAGE=universalrobots/ursim_cb3:latest URSIM_NAME=ursim_cb3 URSIM_FRESH=1 scripts/ursim/ursim.sh up UR10`. The
 [`scripts/ursim/` README](../../scripts/ursim/README.md) carries the container's failure modes and the
 ordered probes that prove this stack talks to the controller, from the raw SDK up to a pick loop meeting
 a protective stop.
@@ -347,6 +352,10 @@ a protective stop.
   program. Enable Remote Control at `http://localhost:6080/vnc.html` (Settings, System, Remote Control),
   then switch the selector at the top right from Local to Remote, after every start. A real controller
   needs the same, powered, with its brakes released and no pendant program owning it.
+* **A CB3 comes up differently.** It has no Remote/Local switch. First comes a "Power off" notice (click
+  **Not now**); power on and release the brakes (the dashboard's `power on` and `brake release`); only then does
+  "Confirm Safety Configuration" appear, and RTDE refuses until it is confirmed. After a protective stop the
+  control script has ended, and the first script upload after the release can time out once; connect again.
 
 **The profile.** `WILLY_PROFILE=ursim` points the driver at the container on localhost and declares a
 tool frame and a payload the simulator accepts; they are a simulator's numbers, never a cell's.

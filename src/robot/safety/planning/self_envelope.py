@@ -21,6 +21,10 @@ So the body is built from the files the guard and the planner check against:
   it would take real obstacles out;
 * a part in the gripper, one capsule from the fingertips along the hand's approach while it is
   attached;
+* the robot's base, a cylinder about the base axis from the mounting face up to its top
+  (:data:`ROBOT_BASES`), carrying its own surface like the arm links: the bundles hold no base, and a
+  camera that sees it registered it as a box the shoulder stood in (fix plan RC3, robot.log 425 and
+  448). The guard does not judge the base (the owner, 2026-09-30); only the camera world takes it out;
 * all of it placed with the model and the base yaw the self-collision guard uses, so the filter and
   the guard stand the arm in one place.
 
@@ -30,9 +34,11 @@ The padding is added where the world is built, from ``perceived.margin_mm``.
 from __future__ import annotations
 
 import math
-from dataclasses import replace
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final
 
 import numpy as np
@@ -51,9 +57,40 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from .hand import PlannerHand
 
 __all__ = [
-    "arm_capsules", "carried_part_box", "goal_keep_out", "hand_spheres", "payload_capsule", "self_envelope",
-    "yawed_link_transforms_mm",
+    "ROBOT_BASES", "BaseShape", "arm_capsules", "base_capsule", "carried_part_box", "goal_keep_out", "hand_spheres",
+    "payload_capsule", "self_envelope", "yawed_link_transforms_mm",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class BaseShape:
+    """A robot's base, as the camera world takes it for the robot: a cylinder about the base axis, from the mounting face
+    (base z 0) up to its top, which encloses the base's own mesh."""
+
+    #: The cylinder's radius about the base axis, millimetres: the farthest any vertex of the base lies from the axis.
+    radius_mm: float
+    #: Its top over the mounting face, millimetres: where the shoulder's own housing begins.
+    top_mm: float
+    #: Where the two numbers were measured.
+    provenance: str
+
+    def __post_init__(self) -> None:
+        for name in ("radius_mm", "top_mm"):
+            value = float(getattr(self, name))
+            if not (math.isfinite(value) and value > 0.0):
+                raise ValueError(f"a robot base's {name} is finite and above 0, got {value!r}")
+
+
+#: The robot bases the camera world takes for the robot, by the guard's arm model. A model with no entry keeps its
+#: base in the world as before: none is guessed.
+ROBOT_BASES: Final[Mapping[str, BaseShape]] = MappingProxyType({
+    "ur10": BaseShape(
+        radius_mm=95.05, top_mm=38.0,
+        provenance=("ur10_base.obj of cuRobo's ur_description (ext_deps/curobo/.../meshes/ur10), measured "
+                    "2026-10-01: 3736 vertices, z -0.002 to 38.000 mm, at most 95.05 mm from the base axis "
+                    "(four lugs; the round housing 79.2 mm)"),
+    ),
+})
 
 #: The bundle's arm links and the DH frame each is baked in, as
 #: scripts/isaac/bake_ur_collision_meshes.py writes them.
@@ -138,6 +175,45 @@ def _link_surface(name: str, vertices: np.ndarray, faces: np.ndarray) -> Declare
             laid.append(start + np.linspace(0.0, 1.0, count + 1)[:, None] * (end - start))
     points = np.unique(np.round(np.concatenate(laid), 6), axis=0)
     return DeclaredBody(name=name, surface_mm=points, spacing_mm=_SURFACE_SPACING_MM)
+
+
+def _cylinder_surface(name: str, radius_mm: float, top_mm: float) -> DeclaredBody:
+    """A base's surface in the base frame, its top disc and its side down to the mounting face, as points no point of
+    it lies further than :data:`_SURFACE_SPACING_MM` from, laid as the links' are, rows and points along them the spacing
+    over the square root of two apart.
+
+    The face it stands on is left out: under it is the plate, which the bench band takes, and no camera sees it.
+    """
+    step = _SURFACE_SPACING_MM / math.sqrt(2.0)
+    laid: list[np.ndarray] = [np.array([[0.0, 0.0, top_mm]])]
+    for ring in np.linspace(0.0, radius_mm, max(1, math.ceil(radius_mm / step)) + 1)[1:]:
+        count = max(3, math.ceil(2.0 * math.pi * float(ring) / step))
+        angles = np.linspace(0.0, 2.0 * math.pi, count, endpoint=False)
+        laid.append(np.column_stack((ring * np.cos(angles), ring * np.sin(angles), np.full(count, top_mm))))
+    count = max(3, math.ceil(2.0 * math.pi * radius_mm / step))
+    angles = np.linspace(0.0, 2.0 * math.pi, count, endpoint=False)
+    for height in np.linspace(0.0, top_mm, max(1, math.ceil(top_mm / step)) + 1):
+        laid.append(np.column_stack((radius_mm * np.cos(angles), radius_mm * np.sin(angles), np.full(count, height))))
+    return DeclaredBody(name=name, surface_mm=np.concatenate(laid), spacing_mm=_SURFACE_SPACING_MM)
+
+
+@lru_cache(maxsize=None)
+def base_capsule(model: str) -> LinkCapsule | None:
+    """``model``'s base on the base frame (frame 0), carrying its own surface, or ``None`` where :data:`ROBOT_BASES`
+    holds no base for it.
+
+    The capsule runs up the base axis from the mounting face to the base's top with the base's radius, so it holds the
+    whole cylinder; a point inside it is the base only within the padding of the cylinder's surface
+    (``perceived.SelfBody``), as a point beside an arm link is that link only within the padding of the link's.
+    """
+    shape = ROBOT_BASES.get(str(model).lower())
+    if shape is None:
+        return None
+    return LinkCapsule(
+        frame=0, start_mm=(0.0, 0.0, 0.0), end_mm=(0.0, 0.0, float(shape.top_mm)),
+        radius_mm=float(shape.radius_mm) + _ROUNDING_MM,
+        surface=_cylinder_surface("base", float(shape.radius_mm), float(shape.top_mm)),
+    )
 
 
 @lru_cache(maxsize=None)
@@ -309,6 +385,10 @@ def self_envelope(
     if spheres is None:
         return None
     body = capsules + spheres
+    # The robot's base, where its shape is known: a camera that sees it otherwise registers a box the shoulder stands in.
+    base = base_capsule(model)
+    if base is not None:
+        body = body + (base,)
     # A wrist camera's housing and bracket, the fill the planner carries, so a fixed camera does not
     # register the housing as an obstacle beside the arm.
     body = body + tuple(
@@ -317,7 +397,8 @@ def self_envelope(
     )
     if payload is not None:
         body = body + (payload_capsule(hand, spheres, length_mm=payload[0], lateral_margin_mm=payload[1]),)
-    return SelfEnvelope(frames_mm=tuple(frames), capsules=body)
+    # The base's shape also rides on its own, so the support detection leaves the disc round the base out.
+    return SelfEnvelope(frames_mm=tuple(frames), capsules=body, base=ROBOT_BASES.get(str(model).lower()))
 
 
 def goal_keep_out(preflight: Any, arm: Any, tcp_to_base_mm: Any) -> "GoalKeepOut":

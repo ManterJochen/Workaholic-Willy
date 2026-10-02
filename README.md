@@ -116,7 +116,7 @@ The looping previews above are muted GIFs. The full recordings live in [`docs/as
 | 📊 **Structured telemetry** | Every attempt → a frozen `GraspAttemptRecord` → KPI rollup · soak gate · failure taxonomy · offline RL. |
 | 🧠 **Offline RL (shadow)** | Train → OPE → promote, gated; runs shadow/canary-only and never overrides the safety mask. `check-dataset` answers *is this log trainable?* **before** the training run, not after. |
 | 🧠 **Deep Learning GraspEngine** | Generate Dataset or use GraspAnything → train → check result → See the magic happen. Use of your own CAD models is supported. |
-| 🎛 **Operator console** | FastAPI + React: preflight · cell · pick · history · config, with a live WebSocket event stream. |
+| 🎛 **Operator console** | FastAPI + React: say what to do, read what Willy understood, press **Start**. A task picks, places at a taught pose or into a bin the camera finds, and returns, once or until empty, with the live image, a step timeline, **halt now**, a stop card with Restart or Home, the jaws question in the browser, poses taught by hand, and an audience window for the projector. |
 | 🎲 **Synthetic data engine** | [`datagen/`](datagen/README.md) · path-traced scenes with posed arms, analytic grasp labels and a physics reward. Choice of engines: Isaac-Sim, Mujoco and no engine at all. |
 
 <!-- ────────────────────────────────────────────────────────────────────────── -->
@@ -183,29 +183,36 @@ A cell is either a profile or a custom data directory:
 
 ## Operator console
 
-A browser front end for the people who stand at the cell, to not have to interact with the command line directly.
+A browser front end for the people who stand at the cell: give Willy a task in one sentence, typed or spoken,
+watch it run, stop it, and bring the cell back after a stop, without the command line.
 
 ```bash
-# With the profile use:
-python -m api --profile console_dummy      # hardware-free; --profile ursim for a UR controller
-# -> http://127.0.0.1:8000
+# hardware-free: a dummy arm, a dummy hand, a desk scene, a place and a park pose
+python -m api --profile console_dummy          # -> http://127.0.0.1:8000
 
-#With your own data directory:
+# your cell: end the chain in its own git-ignored layer, where the poses taught at the cell are written
+python -m api --profile <your cell>,cell
+# or your own data directory
 python -m api --data /path/to/your/data
-# -> http://127.0.0.1:8000
 ```
 
-| Screen | Answers |
+| Page | Answers |
 |---|---|
-| **Preflight** | *Is this cell runnable?* Every check verbatim, with its `fix` string, nothing softened. |
-| **Cell** | Build · connect-preview · connect · live telemetry (TCP, joints, controller state, both stop flags). |
-| **Pick** | Run an attempt with a live event stream |
-| **History** | Every logged `GraspAttemptRecord`, rolled up. |
-| **Config** | The merged, validated tree, the same one the cell booted from. |
+| 🕹 **Cockpit** | *What should Willy do?* Type it or say it. The **Understood** card shows what was read, and nothing moves before **Start**, whose label names the first motion. The live image, the step timeline, the success rate and a real chat. |
+| 🛠 **Setup** | *Is this cell ready?* Check → Build → Preview → Connect (the jaws question in the browser) → Ready. Poses taught by hand, each screened by the exact guard and the planner at once. |
+| 📈 **History** | Every task of the session in numbers and two charts, and every logged `GraspAttemptRecord`, rolled up. |
+| ⚙ **Settings** | German or English, dark or light, the demo or the tech view, voice output, the talk key, and the bench values. |
+| 📽 **Audience window** | A read-only mirror for the projector: the live image, the step in big words, and the **STILL GRINDING** card. |
 
+**Nothing moves without a click** on a button that names the motion. **Nothing moves on its own after a stop**:
+a person says the cell is clear, then chooses Restart or Home, and the stop outlives a restart of the server.
+**"Sofort anhalten" is not the emergency stop**: one click stops the run and latches the arm, so nothing after
+the move in flight is sent, and only with `robot.ur.brake_on_halt` on (off as shipped) is that move braked under
+control. The red button at the cell stays the safety stop.
 
-Full surface, error envelope and event contract: [`api/README.md`](api/README.md) ·
-UI internals: [`frontend/README.md`](frontend/README.md).
+Full surface, refusals and events: [`api/README.md`](api/README.md) ·
+the pages: [`frontend/README.md`](frontend/README.md) ·
+at the cell: [`docs/runbooks/console_at_the_cell.md`](docs/runbooks/console_at_the_cell.md).
 
 <!-- ────────────────────────────────────────────────────────────────────────── -->
 
@@ -291,7 +298,7 @@ src/
         execution/          Robot, Cell, PickRun, the composition root, the real cell, calibration
     willy_sim/              the Isaac Sim runners, the full-motion validation platform
     utility/                paths, device selection, atomic IO, logging, unit scaling
-api/                        the console backend: FastAPI, seven routers, an event hub
+api/                        the console backend: FastAPI, thirteen routers, an event hub, the task and the way back
 frontend/                   the console UI: React and Vite, built into api/static/
 datagen/                    synthetic scenes, analytic grasp labels, a physics reward
 willy/                      the one import door: from willy import ...
@@ -306,13 +313,16 @@ docs/                       the guide, the runbooks, the math references, and th
 
 ## Testing
 
-Continuous integration runs lint, types, tests, coverage and the soak gate on every change. Locally:
+Continuous integration runs lint, types, tests, coverage and the soak gate of the Python tree on every change. Locally:
 
 ```bash
 ruff check src api datagen tests scripts examples willy
 mypy src api datagen scripts examples willy
 pytest tests --cov=src --cov=api --cov=datagen --cov-fail-under=80
 python -m src.robot.grasping.replay --soak-report
+
+# the console pages, not in CI yet
+cd frontend && npm ci && npm run lint && npm test && npm run build
 ```
 
 <!-- ────────────────────────────────────────────────────────────────────────── -->

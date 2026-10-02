@@ -186,6 +186,18 @@ The always-on tunings are a separate family and are not gated by mode:
 * `gripper_geometry` is the collision envelope the planner checks, parallel jaw or suction cup.
 * `watchdog` has a `mode` rather than an `enabled`, and it ships `shadow`.
 * `isotropic_radial_closing`, `max_attempts` and `record_log_path` sit at the top of the block.
+* `scene_obstacles` (**on**) makes the calculator hold every object the camera saw beside the part as an
+  obstacle, whether a prompt named it or not, with what the part stands on taken out; a part whose every
+  grasp meets one is `all_collided`, the failure a blocker or a push answers
+  ([05](guide/05-pick-loop.md), section 2). Off is the calculator of before, byte for byte.
+* `side_approaches` (**on**, the owner's decision of 2026-10-01) lets the support-footprint search offer
+  every tilt the hand fits at, scored by the room each grasp keeps, vertical on a tie, and a grasp 15
+  degrees or more off vertical only through space a depth ray saw. Off, a tilted grasp is offered only where
+  no vertical one fits.
+* The two that come with them sit under `robot.safety.planning_world.perceived`: `support_surfaces`
+  (**on**) finds what the parts stand on and holds it as solid, and `support_allowance_mm` (**2**, 0 to 10)
+  is how far those solids stand over what they take out ([04](guide/04-robot-and-safety.md), 5.5). A
+  library caller building `WorldBuildTuning` by hand gets neither, as before.
 
 **The closing direction has no `grasping` key, on purpose.** A program's `closing_axis`, the opt-in filter
 that keeps only the grasps heading within 30 degrees of an axis, is its own choice, through `GraspMotion`,

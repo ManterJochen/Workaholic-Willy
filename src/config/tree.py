@@ -26,7 +26,7 @@ import copy
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from src.contracts import UNSET, Maybe, chosen
 
@@ -515,6 +515,64 @@ class ConfigTree:
             profile=self.profile,
             connected=connected,
         )
+
+    def pose_file(self) -> Path | None:
+        """The file a pose taught in the console is written to: the robot overlay of this chain's LAST layer.
+
+        ``None`` for a chain with no layer, which refuses every pose write (the shared ``robot.yaml`` is no place for
+        one cell's poses). Nothing is read or written: the console says it before the arm is freed (the owner, Q10).
+        """
+        from .edit import pose_target_file  # noqa: PLC0415
+
+        return pose_target_file(self.root, self.layers)
+
+    def pose_layer_refusal(self) -> str:
+        """Why no pose may be written under this chain, in one line, or ``""`` where one may
+        (`edit.pose_layer_refusal`).
+
+        The last layer must be the cell's own: a chain with no layer is refused, and inside a git work tree so is a last
+        layer git does not keep out (the owner, Q10). Nothing is written: the console says it before the arm is freed.
+        """
+        from .edit import pose_layer_refusal  # noqa: PLC0415
+
+        return pose_layer_refusal(self.root, self.layers)
+
+    def write_named_pose(
+        self,
+        name: str,
+        *,
+        joints_deg: "Sequence[float]",
+        label: str,
+        screen: str,
+        taught_at: str,
+        note: str = "",
+        make_default_place: bool = False,
+    ) -> "WriteResult":
+        """Write one taught pose through the pose door (`edit.set_named_pose`), into this chain's last layer.
+
+        `root`, `layers` and `profile` come from the tree, as in `write`. No `connected`: a pose decides no machine; it
+        is written while the arm that was taught it stays connected.
+        """
+        from .edit import set_named_pose  # noqa: PLC0415
+
+        return set_named_pose(
+            name,
+            joints_deg=joints_deg,
+            label=label,
+            screen=screen,
+            taught_at=taught_at,
+            note=note,
+            make_default_place=make_default_place,
+            root=self.root,
+            layers=self.layers,
+            profile=self.profile,
+        )
+
+    def write_default_place_pose(self, name: str | None) -> "WriteResult":
+        """Choose the default place pose, or ``None`` for none, through the pose door, in this chain's last layer."""
+        from .edit import set_default_place_pose  # noqa: PLC0415
+
+        return set_default_place_pose(name, root=self.root, layers=self.layers, profile=self.profile)
 
 
 def load_tree(

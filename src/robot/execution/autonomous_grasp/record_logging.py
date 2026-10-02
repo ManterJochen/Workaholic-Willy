@@ -166,6 +166,39 @@ def _look_extras(report: Any) -> dict[str, Any]:
     return extras
 
 
+def _attempt_extras(report: Any) -> dict[str, Any]:
+    """Each pick-loop attempt's motion, as record keys (fix plan Track E, RC6): its ``action``, its typed ``reasons``,
+    the ``motion_status`` and ``motion_message`` of the motion it ended on, and every grasp it tried
+    (``PickAttempt.tries``, the fix plan's contract 3: ``rank``, ``outcome``, ``motion_status``, ``motion_message``,
+    ``sent``, ``reached_part``).
+
+    Written only where an attempt says something of a motion, so the record of a pick that commanded none is the
+    record it always was. Read in the types the attempt promises; a double that answers every attribute adds nothing.
+    """
+    attempts = getattr(getattr(report, "pick_report", None), "attempts", ())
+    if not isinstance(attempts, tuple):
+        return {}
+    rows: list[dict[str, Any]] = []
+    for attempt in attempts:
+        status, message = getattr(attempt, "motion_status", None), getattr(attempt, "motion_message", None)
+        tries = getattr(attempt, "tries", ())
+        tried = [dict(entry) for entry in tries if isinstance(entry, Mapping)] if isinstance(tries, tuple) else []
+        if not isinstance(status, str) and not isinstance(message, str) and not tried:
+            continue
+        reasons = getattr(attempt, "reasons", ())
+        rows.append({
+            "attempt_index": getattr(attempt, "attempt_index", None) if isinstance(
+                getattr(attempt, "attempt_index", None), int) else None,
+            "action": str(getattr(attempt, "action", "")),
+            "reasons": [getattr(reason, "value", str(reason)) for reason in reasons] if isinstance(reasons, tuple)
+            else [],
+            "motion_status": status if isinstance(status, str) else None,
+            "motion_message": message if isinstance(message, str) else None,
+            "tries": tried,
+        })
+    return {"attempts": rows} if rows else {}
+
+
 def to_attempt_record(
     report: Any,
     *,
@@ -200,6 +233,8 @@ def to_attempt_record(
     record_extra: dict[str, Any] = dict(getattr(report, "telemetry", {}) or {})
     record_extra["safety_rejected"] = report.outcome in SAFETY_REJECTED_OUTCOMES
     record_extra.update(_look_extras(report))
+    # Every attempt's motion and the grasps it tried, where it commanded any (RC6: P5's failed moveJ was in no file).
+    record_extra.update(_attempt_extras(report))
     if extra:
         record_extra.update(extra)
     # The camera world the motions stood on, applied after the caller's bag, so a runner cannot

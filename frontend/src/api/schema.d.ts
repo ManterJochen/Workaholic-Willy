@@ -13,10 +13,10 @@ export interface paths {
         };
         /**
          * Is the server up?
-         * @description Deliberately says nothing about the cell -- that is what ``/v1/preflight`` is for.
+         * @description Deliberately says nothing about the cell; that is what ``/v1/preflight`` is for.
          *
-         *     A health check that reports on hardware turns "the server is running" and "the robot is ready"
-         *     into one answer, and then a green light means neither reliably.
+         *     A health check that reports on hardware turns "the server is running" and "the robot is
+         *     ready" into one answer, and then a green light means neither reliably.
          */
         get: operations["health_v1_health_get"];
         put?: never;
@@ -56,7 +56,7 @@ export interface paths {
          * @description The guided-write form, described by the library rather than duplicated in the frontend.
          *
          *     The ``measure`` text is what the operator needs and what a type annotation cannot give them: not
-         *     "float, kg" but *weigh the whole assembly including the coupling plate and the hoses*.
+         *     "float, kg" but "weigh the whole assembly including the coupling plate and the hoses".
          */
         get: operations["get_writable_v1_config_writable_get"];
         put?: never;
@@ -136,11 +136,17 @@ export interface paths {
         put?: never;
         /**
          * Assemble the cell (no robot is touched)
-         * @description Build through the same path the CLI runner uses -- literally the same functions.
+         * @description Build through the same functions the CLI runner uses.
          *
          *     ``rehearse=true`` builds the desk scene instead of opening a camera and loading models, which is how
          *     the whole console stays playable with no hardware attached. Not cheap otherwise: a real build takes
          *     tens of seconds while the detector and segmenter load onto the GPU.
+         *
+         *     Refused while a run is active, before anything is released: a build takes the cell down and closes its camera
+         *     first, and a run that outlived a Disconnect still has its thread in that cell.
+         *
+         *     A halt nobody has said the cell is clear of latches the new arm as well (``Console.carried_halt``), so Connect
+         *     answers ``halted`` after a rebuild too: only "the cell is clear" ends a halt, never building again.
          */
         post: operations["post_build_v1_cell_build_post"];
         delete?: never;
@@ -179,8 +185,12 @@ export interface paths {
          * Bring the cell up (THIS MOVES)
          * @description Arm first, then gripper, and roll the arm back if the gripper refuses.
          *
-         *     The cross-process lock is taken BEFORE the arm, so a cell already owned by the CLI runner is
+         *     The cross-process lock is taken before the arm, so a cell already owned by the CLI runner is
          *     refused without a single command reaching the controller.
+         *
+         *     And a run still active is refused before either: a run that outlived a Disconnect keeps its thread,
+         *     and a connect now would hand that thread a live arm and hand to go on with, the jaws' question
+         *     included, on a count a person had not answered for this connect.
          */
         post: operations["post_connect_v1_cell_connect_post"];
         delete?: never;
@@ -200,13 +210,13 @@ export interface paths {
          * Live telemetry (receive stream only)
          * @description A snapshot cheap enough to poll.
          *
-         *     The default reading is the RTDE **output stream** -- pose, joints, TCP wrench -- which the controller
-         *     is already broadcasting, so polling it costs a running motion nothing. Two neighbouring reads are
-         *     deliberately absent: ``get_joint_torques`` goes through the control interface a pick is using, and it
-         *     is never offered here.
+         *     The default reading is the RTDE output stream: pose, joints, TCP wrench, which the controller is
+         *     already broadcasting, so polling it costs a running motion nothing. ``get_joint_torques`` is
+         *     deliberately absent: it goes through the control interface a pick is using, and it is never
+         *     offered here.
          *
-         *     ``include_controller_state=true`` adds robot mode, safety mode and the human-readable safety text --
-         *     and costs a **dashboard socket round trip per call**, which is why it is opt-in rather than part of
+         *     ``include_controller_state=true`` adds robot mode, safety mode and the human-readable safety text,
+         *     and costs a dashboard socket round trip per call, which is why it is opt-in rather than part of
          *     the default tick. Poll it at seconds, not at frames.
          *
          *     Read-only in the strong sense: there is no counterpart that clears a protective stop. That is done
@@ -232,12 +242,169 @@ export interface paths {
         put?: never;
         /**
          * Take the cell down
-         * @description Gripper first, then arm -- the reverse of connect, so a cup's release still reaches the I/O.
+         * @description Gripper first, then arm: the reverse of connect, so a cup's release still reaches the I/O.
          *
          *     Idempotent: disconnecting an already-disconnected cell is a no-op rather than an error, because the
          *     one thing an operator must always be able to do is put the cell down.
+         *
+         *     An active run is stopped FIRST, and the order is the guarantee. Its flag is set before the arm and
+         *     the hand come down, so whatever of the run returns next meets the stop before it starts anything
+         *     new: ``pick()`` will not begin on it, the pick loop begins no attempt on it (the first one of a pick
+         *     that was waiting on a person's answer at its start included), and the run begins no next pick.
+         *     What is already inside an attempt meets a disconnected arm. The run keeps the console's run lock
+         *     until its thread ends, and Connect and Build refuse while it does, so the old run never meets a
+         *     reconnected cell. The disconnect is never held up by a moving run: putting the cell down does not
+         *     wait on one.
+         *
+         *     The whole order (build plan item 18, ``api.cell.take_down``): a jaws question waiting is cancelled first, before
+         *     anything takes the session lock its connect holds; a teach is ended and joined; a planner start is joined (it moves
+         *     nothing); the run is abandoned; the arm of an abandoned moving run is latched, and braked where it brakes a move in
+         *     flight; then the cell comes down. Where a move was in flight, or the arm braked one, the latch stays and the next
+         *     Connect waits for "the cell is clear"; with none in flight on an arm that lets a move run to its end, it is given
+         *     back once the cell is down.
          */
         post: operations["post_disconnect_v1_cell_disconnect_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cell/facts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * What this cell is (read after build and after connect)
+         * @description Its cameras and looks, its hand's natural axis, push, the detector, the brake, the carried part and how its
+         *     moves are planned. Moves nothing.
+         */
+        get: operations["get_facts_v1_cell_facts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cell/readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The ready bar: can the first task start?
+         * @description Six lights and the blockers. Always answers, moves nothing, and reads the controller from the receive stream
+         *     only. The server enforces its gates on its own; this only says them before a button is pressed.
+         */
+        get: operations["get_readiness_v1_cell_readiness_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cell/acknowledge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The cell is clear (a person's word)
+         * @description A person confirms the cell is clear after a stop: it clears the arm's halt latch (and the halt the console carries
+         *     to every later build), the service's latch of a recovery that needs a person, and stamps the recovery record
+         *     cleared. It moves nothing, and it never clears a protective stop: that is done at the pendant, where the arm is
+         *     visible.
+         *
+         *     ``jaws_empty: true`` is the person's word that the hand holds nothing: taken for a hand that cannot say it itself
+         *     (a toggle answers the jaws question instead, and is taken only while its count says open; a hand that measures a
+         *     part refuses it), and then the planner is told the hand is empty too. A person's hands were at the jaws for it, so
+         *     the next motion counts down 3 s first (owner decision Q2 = A); it answers no jaws question.
+         */
+        post: operations["post_acknowledge_v1_cell_acknowledge_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cell/brake": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Halt now: stops the run and latches the arm; brakes a move in flight where enabled; not an emergency stop
+         * @description Halt now: stops the run and latches the arm; not an emergency stop; the red button is.
+         *
+         *     The run stops commanding, and where the arm latches, every next motion and output switch is refused before
+         *     anything is sent, until a person confirms the cell is clear. Only where the arm also brakes a move in flight
+         *     (``robot.ur.brake_on_halt``, off as shipped) is that move braked under control; elsewhere the move in flight runs
+         *     to its end and nothing after it is sent. A request over a socket depends on latency, an open tab and an awake
+         *     laptop, which is why the red button stays the safety halt.
+         */
+        post: operations["post_brake_v1_cell_brake_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cell/home": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Drive to Home or a taught pose (THIS MOVES)
+         * @description A planned move, started only by this click, after a 3 s countdown where a person's hands were last at the arm.
+         *     Refused during a run, on a halted or stopped controller, while a person is needed, and while a part is held.
+         *
+         *     Its arrival ends the console's recovery record: with Restart, it is the way back after a stop, once a person
+         *     confirmed the cell is clear.
+         */
+        post: operations["post_home_v1_cell_home_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cell/planner": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start the planner (moves nothing)
+         * @description Starts cuRobo, which takes about a minute on a cell and moves nothing. Connect starts it by itself on a cuRobo
+         *     arm whose planner is off; this starts it again after it stopped or failed.
+         */
+        post: operations["post_planner_v1_cell_planner_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -252,11 +419,11 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Which route a prompt would take -- no GPU, no model, no image
+         * Which route a prompt would take; no GPU, no model, no image
          * @description Answer 'why was that pick slow / why was it refused' by typing the prompt instead of running it.
          *
          *     Pure text analysis, so it costs nothing and works on a cell with no weights at all. It also reports
-         *     whether the chosen route could actually RUN here, which is the difference between "the router would
+         *     whether the chosen route could actually run here, which is the difference between "the router would
          *     send this to the VLM" and "this pick will work".
          */
         get: operations["preview_route_v1_diagnostics_route_get"];
@@ -277,11 +444,11 @@ export interface paths {
         };
         /**
          * Everything that can be checked without moving
-         * @description One call, because an operator at a bench wants one panel, not three requests.
+         * @description One call, because an operator at a bench wants one panel, not four requests.
          *
-         *     Ordered the way the runbook is: software first (free), then the planner (free), then the network
-         *     (cheap). Each stage's failure explains the next stage's failure, which is the whole reason the
-         *     runbook has an order.
+         *     Ordered the way the runbook is: software first (free), then the planner (free), then perception
+         *     (free), then the network (cheap). Each stage's failure explains the next stage's failure, which
+         *     is the reason the runbook has an order.
          */
         get: operations["get_diagnostics_v1_diagnostics_get"];
         put?: never;
@@ -304,6 +471,11 @@ export interface paths {
         /**
          * Start a run (THIS MOVES)
          * @description 202, not 200: the work is accepted and happening elsewhere, not finished when this returns.
+         *
+         *     Refused, before anything starts, where any moving route is: a run holding the lock, a halted arm, a stop not yet said
+         *     clear or still waiting for its Restart, a person needed after a recovery (the latch is kept: no run clears it
+         *     silently), a jaws question waiting for its answer. The stop is read once more as the run starts, under the run
+         *     lock, so one that landed after these gates still refuses it.
          */
         post: operations["post_pick_v1_pick_post"];
         delete?: never;
@@ -379,22 +551,20 @@ export interface paths {
         };
         /**
          * What the cell is looking at
-         * @description One picture and one sentence saying what the picture IS.
+         * @description One picture and one sentence saying what the picture is.
          *
          *     Polled rather than streamed, on purpose. A socket would have to decide what "no picture" looks like
          *     between frames, and every one of the four no-picture states here is a state an operator needs to
-         *     READ, not to infer from a stalled image. A poll makes each tick a complete, self-describing answer:
+         *     read, not to infer from a stalled image. A poll makes each tick a complete, self-describing answer:
          *     a cell that has not been built, a pick that owns the camera, a simulated source that cannot be
          *     peeked at, or a frame.
          *
-         *     **Declared ``def``, not ``async def``, and that is load-bearing.** A real ``grab()`` blocks on
+         *     Declared ``def``, not ``async def``, and that is load-bearing. A real ``grab()`` blocks on
          *     ``wait_for_frames``; FastAPI runs a synchronous route in its threadpool, so the block lands there
-         *     instead of on the event loop. An ``async def`` here would stall the run event stream every tick --
+         *     instead of on the event loop. An ``async def`` here would stall the run event stream every tick,
          *     the one thing on this server that must not pause while a robot is moving.
          *
-         *     The JPEG quality comes from ``runtime.image_encoding.frame_quality``, which has been in the config
-         *     schema (documented as "quality used for streamed ... preview images") with no reader since before
-         *     this endpoint existed.
+         *     The JPEG quality comes from ``runtime.image_encoding.frame_quality``.
          */
         get: operations["get_camera_v1_camera_get"];
         put?: never;
@@ -440,16 +610,78 @@ export interface paths {
         put?: never;
         /**
          * Speech to a prompt
-         * @description Turn a recording into text. It returns the TEXT; it does not start anything.
+         * @description Turn a recording into a proposal for the prompt box. It does not start anything.
          *
          *     Deliberately not a shortcut to a pick. A spoken command that went straight to motion would mean a
-         *     misheard word moves an arm, so speech lands in the prompt box and a human presses the button -- the
-         *     same button, with the same acknowledgement, as a typed prompt.
+         *     misheard word moves an arm, so speech lands in the prompt box and a human presses the button: the
+         *     same button, with the same acknowledgement, as a typed prompt. "Stopp" is no exception.
          *
-         *     Whisper is an optional dependency and it is loaded on first use, not at import: a console on a
-         *     machine without it must still start, and must say what is missing rather than fail to boot.
+         *     The answer is the speech library's `Proposal`: the words, or an empty text and the sentence saying
+         *     why there are none; what the voice detector found; and Whisper's `Transcript` when Whisper was
+         *     asked. A recording in which the detector hears no speech is never handed to Whisper, which answers
+         *     silence with a word. The text stays in the language it was spoken in. The process's one engine and
+         *     gate live in `src.models.speech.holder` and load on the first recording, never at import and never
+         *     per request: a console on a machine without the speech stack still starts, and answers 501 naming
+         *     what is missing.
          */
         post: operations["post_transcribe_v1_voice_transcribe_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/voice/talk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Press or release the talk switch
+         * @description Press or release the process's talk switch, the event a push to talk listen waits for.
+         *
+         *     A client sends ``pressed: true`` on the way down and ``pressed: false`` on the way up, and a switch
+         *     reader at the cell PC presses the same switch (`shared_talk_button()`). A press while the switch is
+         *     already down is not counted, so a key that repeats while it is held is one press. It moves nothing
+         *     and starts nothing. No console screen sends it yet: the console's talk button records in the browser
+         *     and uploads to ``/v1/voice/transcribe``.
+         */
+        post: operations["post_talk_v1_voice_talk_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/voice/listen": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Push to talk at the cell PC to a prompt
+         * @description Listen at the cell PC's own microphone for one push to talk turn, and propose what was said.
+         *
+         *     The turn is what the microphone catches while the talk switch is held (``/v1/voice/talk``). The route
+         *     opens the microphone, waits up to ``timeout_s`` for the press, drops the audio from before it, and at
+         *     the release hands everything held to the same voice gate and engine as an upload. The answer is the
+         *     same `Proposal`, and like an upload it starts nothing: the text lands in the prompt box and a person
+         *     confirms it, "Stopp" included.
+         *
+         *     A turn that proposes nothing is an answer, not a crash: 409 when the switch was not pressed in time or
+         *     the microphone ended, 422 when the switch came up before any audio or stayed down past Whisper's 30 s
+         *     window, each with the library's sentence and `TalkRecording.to_dict()`. A microphone this host cannot
+         *     open is 501, like a speech stack it cannot import. One turn at a time: a second listen is 409.
+         */
+        post: operations["post_listen_v1_voice_listen_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -465,10 +697,10 @@ export interface paths {
         };
         /**
          * KPIs over the logged records
-         * @description Rolled up with the SAME function the offline gate uses.
+         * @description Rolled up with the same function the offline gate uses.
          *
          *     A console that computed its own success rate would eventually disagree with
-         *     ``python -m backend.src.robot.grasping.replay --records``, and then nobody could say which number
+         *     ``python -m src.robot.grasping.replay --records``, and then nobody could say which number
          *     was real.
          */
         get: operations["get_kpis_v1_history_kpis_get"];
@@ -526,7 +758,7 @@ export interface paths {
         };
         /**
          * Grasp attempts as CSV
-         * @description One row per ATTEMPT: the analysis view.
+         * @description One row per attempt: the analysis view.
          *
          *     Only the blocks the serializer actually populates get columns. An empty ``selected_grasp`` column on
          *     every row would suggest the data exists and happened to be missing, rather than that it is never
@@ -561,10 +793,500 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/codes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Every typed code the console answers with
+         * @description Run kinds, stop codes and their classes, event types, refusal codes, readiness lights and blockers, the jaws
+         *     question's stages and choices, and the command reader's notes. Moves nothing, reads no cell.
+         */
+        get: operations["get_codes_v1_codes_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/task": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Start a task: pick, place, return (THIS MOVES)
+         * @description 202: the task is accepted and runs on its own thread. Its first motion is its first look, after a 3 s
+         *     countdown where a person's hands were last at the arm. Refused before anything moves (409, 422) where the cell or
+         *     the request is not fit for it.
+         */
+        post: operations["post_task_v1_task_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/task/stop": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stop the task after the part in hand
+         * @description Not a kill, and not an emergency stop: the part in hand is still placed and the arm returns, then the task
+         *     ends ``stopped_after_part``. During the countdown it ends ``cancelled`` with nothing moved.
+         *
+         *     A Home run is stopped too, before its one move is sent: during its countdown, or after it as long as the move has
+         *     not gone out, it ends ``cancelled`` with nothing moved; a move already under way runs to its end. Nothing is
+         *     latched, so no "the cell is clear" is owed, as after a halt.
+         */
+        post: operations["post_task_stop_v1_task_stop_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/task/restart": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Restart after a stop (THIS MOVES: first the planned move to the return pose)
+         * @description A new run of the stopped run's plan, whose first motion is the planned move to the return pose. Only the
+         *     console's recovery record restarts, once a person confirmed the cell is clear and the hand is empty.
+         *
+         *     A stopped task restarts as a new task (``restart_of`` the stopped run, ``first_motion`` ``return``); a stopped Home
+         *     run restarts as a Home run to the same pose. A toggle hand is asked where its jaws stand since the stop first.
+         *     Every refusal of a new task but ``restart_required`` holds, read against the cell as it is now.
+         */
+        post: operations["post_task_restart_v1_task_restart_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{run_id}/overlays/{n}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The n-th grasp overlay a task captured
+         * @description The grasp as decided, rendered before the arm moved: its own image, never drawn over the live picture.
+         */
+        get: operations["get_run_overlay_v1_runs__run_id__overlays__n__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{run_id}/target/overlay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The place target a task found
+         * @description The target the camera found (a bin), drawn over the frame it was seen in.
+         */
+        get: operations["get_target_overlay_v1_runs__run_id__target_overlay_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cell/jaws": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The hand, and the jaws question waiting for its answer
+         * @description Takes no session lock, like ``GET /v1/cell``: a connect waits on the question while this is polled.
+         *
+         *     ``question`` is the one waiting for the browser's answer, with its choices and no default; null once it is
+         *     answered, also while the hand still acts on the answer, and while a check reads the latch and the controller before
+         *     it asks (``CellOut.jaws_question`` stays true throughout).
+         */
+        get: operations["get_jaws_v1_cell_jaws_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cell/jaws/answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Answer the jaws question (open_now: ONE change of the output)
+         * @description ``open`` or ``closed`` where the question asks where they stand; ``open_now`` or ``abort`` after "closed".
+         *
+         *     Answers once the hand moved on (at most a few seconds): ``question`` is the next one where it asks another, and
+         *     null where its connect or check has ended. Refused: ``no_question`` (404), ``question_changed`` (409, a stale id)
+         *     and ``choice_not_offered`` (422); the question goes on waiting.
+         */
+        post: operations["post_jaws_answer_v1_cell_jaws_answer_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/cell/jaws/check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Ask where the jaws stand now (blocks until answered)
+         * @description Always asks, even where the count says open. A hand that is not a toggle answers at once, asking nothing.
+         *
+         *     Blocks until the question has ended: up to 120 s per question, which the browser answers through
+         *     ``POST /v1/cell/jaws/answer``. Refused, in order: ``not_connected``, ``run_active``, ``halted`` (confirm the cell is
+         *     clear first: a latched arm switches no output), ``controller_stopped``, ``cell_not_cleared`` (a stop record nobody
+         *     has said the cell is clear of: the jaws wait for it, as every motion does), ``jaws_question_pending``,
+         *     ``jaws_seam_missing``, and ``jaws_not_open`` with the hand's own sentence (closed and aborted, no answer, the change
+         *     refused). Where the hand's count says closed and nothing moved the jaws since, its first question is ``open_now``:
+         *     "open" is no answer there. A check and a run never go on together: the check is a jaws question in progress from its start, so a
+         *     moving route or a teach that comes in meanwhile is refused, and a run that took the cell all the same ends the
+         *     check's question at once (``run_active``, nothing sent).
+         */
+        post: operations["post_jaws_check_v1_cell_jaws_check_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/camera/live": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A live display frame of one camera
+         * @description Downscaled to ``max_width`` and JPEG-encoded; ``rig`` picks the camera (the primary where omitted).
+         *
+         *     Declared ``def``: a peek on a device runs on the thread pool, never on the event loop that streams a run's events.
+         *     No picture is an answer, not an error: ``not_built``, ``no_camera``, ``no_rig``, ``measuring`` (a pick is grabbing;
+         *     keep the last frame), ``encode_failed``. The rehearsal cell's picture is ``synthetic``, never ``camera``.
+         */
+        get: operations["get_live_v1_camera_live_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/poses": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Home and the taught poses
+         * @description Home (read-only), the named poses with their labels and screens, the default place, the file a taught pose is
+         *     written to, and whether one can be taught now (``teachable``; ``why_not`` says why not, ``why_not_code`` as its
+         *     code). Moves nothing.
+         */
+        get: operations["get_poses_v1_poses_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/poses/default-place": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Choose the default place pose
+         * @description Where a task puts its part when the command names no target; null to have none.
+         *
+         *     Written into the cell's own layer, all or nothing. Refused: ``run_active`` (409), ``unknown_pose`` (422),
+         *     ``no_layer`` (422: the chain has no layer of the cell's own), ``invalid_value`` (422).
+         */
+        put: operations["put_default_place_v1_poses_default_place_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/teach/payload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The payload the controller compensates for
+         * @description It decides whether a freed arm floats, sinks or rises; the person confirms it before the arm is freed.
+         */
+        get: operations["get_teach_payload_v1_teach_payload_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/teach": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Teach one pose (FREES THE ARM for a person)
+         * @description The arm is freed for a person to guide by hand. Refused while the planner is not ready, since every new pose
+         *     is screened at once.
+         *
+         *     Refused before anything is freed, in order: ``not_connected``, ``run_active``, ``halted``, ``controller_stopped``,
+         *     ``cell_not_cleared``, ``jaws_question_pending``, ``part_in_hand``, ``jaws_not_confirmed`` (a toggle count nobody can
+         *     vouch for), ``invalid_name``, ``no_hand_guiding``, ``screen_unavailable``, ``planner_not_ready``, ``invalid_label``,
+         *     ``name_taken``, ``no_layer`` and ``payload_changed``. The token in the answer goes with every poll, Save and Cancel.
+         */
+        post: operations["post_teach_v1_teach_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/teach/{run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A teach session (every poll is the heartbeat)
+         * @description Where the session stands. Without a poll for 3 s the arm is held, once it stands still.
+         */
+        get: operations["get_teach_v1_teach__run_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/teach/{run_id}/capture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Save the pose where the arm stands
+         * @description Captured once the arm stands still, then held, screened and written where the verdict allows. Refused
+         *     ``not_free`` where the arm is not free.
+         */
+        post: operations["post_teach_capture_v1_teach__run_id__capture_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/teach/{run_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Hold the arm and save nothing
+         * @description Holds at once. The page also sends it when it is closed; a session that already ended answers as it stands.
+         */
+        post: operations["post_teach_cancel_v1_teach__run_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/commands/parse": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Read a sentence into a task card (moves nothing)
+         * @description The whole sentence goes to the VLM, which answers the object and the place as English phrases with the
+         *     operator's own words, a taught pose by its NAME (a spoken label comes back as the name), the scope and where to go
+         *     after. Each phrase carries the route the detector would take.
+         *
+         *     A ``def`` route: a VLM cell's first command loads the model, several seconds, on the thread pool. Refused:
+         *     ``run_active`` (409) before anything is asked, ``vlm_not_loaded`` (409), ``vlm_unavailable`` (501),
+         *     ``vlm_model_missing`` (501), and a sentence that is no sentence (422 ``bad_request``).
+         */
+        post: operations["post_parse_v1_commands_parse_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/commands/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Is the command reader loaded?
+         * @description Where the reader stands (``ready``, ``idle``, ``loading``, ``missing``, ``failed``, ``not_configured``), and why.
+         *     It loads nothing.
+         */
+        get: operations["get_status_v1_commands_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/commands/warmup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Load the command reader (refused during a run)
+         * @description "Laden": load the VLM now, about six seconds on the cell PC, and answer where it stands then. A load that fails
+         *     answers ``failed`` with its cause. Refused during a run, and where loading is refused (missing weights, another
+         *     checkpoint on the card: rebuild the cell).
+         */
+        post: operations["post_warmup_v1_commands_warmup_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AcknowledgeIn
+         * @description A person's word that the cell is clear, and, where they emptied the hand, that the jaws hold nothing.
+         */
+        AcknowledgeIn: {
+            /**
+             * Cell Clear
+             * @constant
+             */
+            cell_clear: true;
+            /**
+             * Jaws Empty
+             * @default false
+             */
+            jaws_empty: boolean;
+        };
+        /**
+         * BlockerOut
+         * @description Why Start is disabled although the lights may be green.
+         */
+        BlockerOut: {
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "run_active" | "cell_not_cleared" | "restart_required" | "needs_person" | "part_still_held" | "jaws_question_pending";
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /** Run Id */
+            run_id?: string | null;
+        };
         /** Body_post_transcribe_v1_voice_transcribe_post */
         Body_post_transcribe_v1_voice_transcribe_post: {
             /**
@@ -573,6 +1295,90 @@ export interface components {
              * @description A recording to transcribe, as 16-bit PCM WAV: the format the operator console records. Any other format is refused with 415.
              */
             audio: string;
+        };
+        /**
+         * BrakeFactsOut
+         * @description What "halt now" can do on this arm.
+         */
+        BrakeFactsOut: {
+            /**
+             * Latches
+             * @default false
+             */
+            latches: boolean;
+            /**
+             * Brakes In Motion
+             * @default false
+             */
+            brakes_in_motion: boolean;
+        };
+        /**
+         * BrakeOut
+         * @description What "halt now" did. The run stops commanding; where the arm latches, nothing more is sent to it.
+         */
+        BrakeOut: {
+            /** Run Halted */
+            run_halted: boolean;
+            /** Latched */
+            latched: boolean;
+            /** Braking */
+            braking: boolean;
+            /** In Motion */
+            in_motion: boolean;
+            /** Run Id */
+            run_id?: string | null;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+        };
+        /**
+         * CameraPlaceIn
+         * @description Place into a target the camera finds, such as a bin: opened just above its rim.
+         */
+        CameraPlaceIn: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "camera";
+            /** Phrase */
+            phrase: string;
+            /** Said */
+            said?: string | null;
+        };
+        /**
+         * CellFactsOut
+         * @description What this cell is, read once: the cockpit's Advanced drawer, the stop buttons and the ready bar need it.
+         */
+        CellFactsOut: {
+            /**
+             * Wrist Camera
+             * @default false
+             */
+            wrist_camera: boolean;
+            /** Cameras */
+            cameras?: components["schemas"]["RigOut"][];
+            /** Looks */
+            looks?: string[];
+            /** Natural Closing Axis */
+            natural_closing_axis?: string | null;
+            push?: components["schemas"]["PushFactsOut"];
+            detector?: components["schemas"]["DetectorFactsOut"];
+            /**
+             * Hand Eye Warn Mm
+             * @default 6
+             */
+            hand_eye_warn_mm: number;
+            brake?: components["schemas"]["BrakeFactsOut"];
+            payload?: components["schemas"]["PayloadFactsOut"];
+            route: components["schemas"]["RouteFactsOut"];
+            /**
+             * Rehearsal
+             * @default false
+             */
+            rehearsal: boolean;
         };
         /**
          * CellOut
@@ -600,6 +1406,234 @@ export interface components {
             /** Active Run Id */
             active_run_id?: string | null;
             perception?: components["schemas"]["PerceptionStackOut"] | null;
+            hand?: components["schemas"]["HandOut"];
+            /**
+             * Needs Person
+             * @default
+             */
+            needs_person: string;
+            halted?: components["schemas"]["HaltStateOut"] | null;
+            planner?: components["schemas"]["PlannerOut"];
+            /**
+             * Payload Model
+             * @default not_applicable
+             * @enum {string}
+             */
+            payload_model: "none" | "filter_only" | "planner_and_filter" | "not_applicable" | "unknown";
+            recovery?: components["schemas"]["RecoveryOut"] | null;
+            /** Jaws Confirmed At */
+            jaws_confirmed_at?: number | null;
+            /**
+             * Countdown Due
+             * @default false
+             */
+            countdown_due: boolean;
+            /**
+             * Jaws Question
+             * @default false
+             */
+            jaws_question: boolean;
+        };
+        /**
+         * CodesOut
+         * @description Every typed code the console answers with (``api/codes.py``), each list in declaration order.
+         *
+         *     The frontend derives its unions from these fields (``Schemas['CodesOut']['stop_codes'][number]``), so every
+         *     translation table over them is exhaustive at compile time.
+         */
+        CodesOut: {
+            /** Run Kinds */
+            run_kinds: ("pick" | "task" | "home" | "teach" | "planner")[];
+            /** Moving Kinds */
+            moving_kinds: ("pick" | "task" | "home" | "teach" | "planner")[];
+            /** Stop Codes */
+            stop_codes: ("finished" | "nothing_left" | "part_limit" | "taught" | "planner_ready" | "stopped_after_part" | "cancelled" | "target_not_found" | "target_lost" | "target_unreachable" | "part_does_not_fit" | "pose_refused" | "teach_refused" | "heartbeat_lost" | "teach_time_limit" | "teach_not_saved" | "planner_failed" | "halted" | "controller_stopped" | "hand_needs_person" | "recovery_needs_person" | "part_still_held" | "return_failed" | "failed_in_a_row" | "detector_failed" | "cell_fault" | "disconnected" | "software_error")[];
+            /** Stop Classes */
+            stop_classes: ("done" | "operator" | "ask" | "teach" | "planner" | "problem")[];
+            /** Stop Class Of */
+            stop_class_of: {
+                [key: string]: "done" | "operator" | "ask" | "teach" | "planner" | "problem";
+            };
+            /** Event Types */
+            event_types: ("run_started" | "run_countdown" | "run_stop_requested" | "run_halt_requested" | "run_error" | "run_finished" | "pick.pick_started" | "pick.attempt_started" | "pick.perceived" | "pick.ranked" | "pick.no_candidate" | "pick.executing" | "pick.attempt_finished" | "pick.pick_finished" | "pick.cancelled" | "pick_result" | "task.pose_screened" | "task.survey_started" | "task.target_found" | "task.target_missing" | "task.part_started" | "task.nothing_found" | "task.carry_started" | "task.target_checked" | "task.target_lost" | "task.drop_planned" | "task.place_started" | "task.placed" | "task.place_failed" | "task.put_back" | "task.return_started" | "task.returned" | "task.return_failed" | "task.part_finished" | "home.started" | "home.arrived" | "home.refused" | "teach.free" | "teach.say" | "teach.outside" | "teach.inside" | "teach.time_warning" | "teach.holding_when_still" | "teach.holding" | "teach.screening" | "teach.saved" | "teach.refused" | "teach.not_saved" | "planner.starting" | "planner.ready" | "planner.failed" | "cell.jaws_question" | "cell.jaws_answered" | "cell.jaws_ended" | "cell.halted" | "cell.recovery" | "cell.recovery_ended" | "cell.acknowledged" | "cell.planner")[];
+            /** Refusal Codes */
+            refusal_codes: ("bad_request" | "no_robot_configured" | "no_such_run" | "not_built_yet" | "not_built" | "not_acknowledged" | "stale_token" | "cell_busy" | "no_real_gripper" | "driver_refused" | "wrong_state" | "build_refused" | "jaws_seam_missing" | "not_connected" | "run_active" | "halted" | "controller_stopped" | "cell_not_cleared" | "restart_required" | "needs_person" | "jaws_question_pending" | "part_still_held" | "jaws_not_confirmed" | "route_refused" | "carried_part_not_modelled" | "camera_target_unavailable" | "object_required" | "prompt_not_routable" | "target_not_routable" | "push_distance_refused" | "unknown_pose" | "no_place_declared" | "closing_axis_refused" | "not_a_task" | "not_a_pick" | "not_restartable" | "jaws_not_open" | "no_question" | "question_changed" | "choice_not_offered" | "planner_not_used" | "no_overlay" | "no_layer" | "no_hand_guiding" | "part_in_hand" | "planner_not_ready" | "screen_unavailable" | "payload_changed" | "name_taken" | "invalid_name" | "invalid_label" | "wrong_token" | "not_free" | "vlm_not_loaded" | "vlm_unavailable" | "vlm_model_missing" | "unknown_key" | "not_writable" | "invalid_value" | "no_target" | "cell_connected" | "empty_patch" | "empty_audio" | "audio_format_unsupported" | "audio_undecodable" | "audio_too_long" | "speech_model_missing" | "speech_unavailable" | "transcription_failed" | "listen_busy" | "talk_not_pressed" | "microphone_ended" | "nothing_recorded" | "microphone_unavailable" | "listen_failed")[];
+            /** Light Ids */
+            light_ids: ("robot" | "cameras" | "planner" | "gripper" | "carried_part" | "commands")[];
+            /** Light States */
+            light_states: ("ok" | "wait" | "blocked" | "info")[];
+            /** Light Codes */
+            light_codes: ("connected" | "not_built" | "not_connected" | "halted" | "controller_stopped" | "controller_unreadable" | "live" | "rehearsal" | "no_frame" | "none" | "ready" | "starting" | "off" | "failed" | "unplanned" | "route_refused" | "open_confirmed" | "jaws_unknown" | "jaws_closed" | "question_pending" | "modelled" | "not_modelled" | "not_applicable" | "idle" | "loading" | "missing" | "not_configured")[];
+            /** Light Codes Of */
+            light_codes_of: {
+                [key: string]: ("connected" | "not_built" | "not_connected" | "halted" | "controller_stopped" | "controller_unreadable" | "live" | "rehearsal" | "no_frame" | "none" | "ready" | "starting" | "off" | "failed" | "unplanned" | "route_refused" | "open_confirmed" | "jaws_unknown" | "jaws_closed" | "question_pending" | "modelled" | "not_modelled" | "not_applicable" | "idle" | "loading" | "missing" | "not_configured")[];
+            };
+            /** Blocker Codes */
+            blocker_codes: ("run_active" | "cell_not_cleared" | "restart_required" | "needs_person" | "part_still_held" | "jaws_question_pending")[];
+            /** Jaws Stages */
+            jaws_stages: ("where" | "open_now")[];
+            /** Jaws Choices */
+            jaws_choices: ("open" | "closed" | "open_now" | "abort")[];
+            /** Command Notes */
+            command_notes: ("object_not_in_sentence" | "place_not_in_sentence" | "pose_unknown" | "count_not_supported" | "retried")[];
+        };
+        /** CommandIn */
+        CommandIn: {
+            /** Text */
+            text: string;
+            /**
+             * Source
+             * @default typed
+             * @enum {string}
+             */
+            source: "typed" | "spoken";
+            /** Language */
+            language?: string | null;
+        };
+        /** CommandModelOut */
+        CommandModelOut: {
+            /** Model Id */
+            model_id: string;
+            /** Latency Ms */
+            latency_ms: number;
+            /**
+             * Attempts
+             * @default 1
+             */
+            attempts: number;
+            /**
+             * Loaded Now
+             * @default false
+             */
+            loaded_now: boolean;
+        };
+        /**
+         * CommandOut
+         * @description What the reader understood. It creates no run and touches no cell; Start does, after a person looked.
+         */
+        CommandOut: {
+            /** Understood */
+            understood: boolean;
+            /**
+             * Intent
+             * @enum {string}
+             */
+            intent: "task" | "stop" | "none";
+            object?: components["schemas"]["CommandPhraseOut"] | null;
+            place?: components["schemas"]["CommandPhraseOut"] | null;
+            /** Place Pose */
+            place_pose?: string | null;
+            /** Scope */
+            scope?: ("once" | "until_empty") | null;
+            /** Count */
+            count?: number | null;
+            /** Return To */
+            return_to?: string | null;
+            /** Notes */
+            notes?: ("object_not_in_sentence" | "place_not_in_sentence" | "pose_unknown" | "count_not_supported" | "retried")[];
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            model?: components["schemas"]["CommandModelOut"] | null;
+            /**
+             * Raw
+             * @default
+             */
+            raw: string;
+        };
+        /**
+         * CommandPhraseOut
+         * @description One field the reader filled: the English phrase, the operator's words, and how the detector would route it.
+         */
+        CommandPhraseOut: {
+            /** Phrase */
+            phrase: string;
+            /** Said */
+            said?: string | null;
+            /**
+             * Verified
+             * @default false
+             */
+            verified: boolean;
+            route?: components["schemas"]["RoutePreviewOut"] | null;
+        };
+        /**
+         * CommandProvenanceIn
+         * @description What the operator said or typed, for the record only: nothing is read from it to decide what moves.
+         */
+        CommandProvenanceIn: {
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /**
+             * Source
+             * @default typed
+             * @enum {string}
+             */
+            source: "typed" | "spoken";
+            /** Language */
+            language?: string | null;
+            /**
+             * Parsed
+             * @default false
+             */
+            parsed: boolean;
+            /** Edited */
+            edited?: string[];
+        };
+        /**
+         * CommandProvenanceOut
+         * @description The command a task came from, as the request gave it.
+         */
+        CommandProvenanceOut: {
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+            /**
+             * Source
+             * @default typed
+             * @enum {string}
+             */
+            source: "typed" | "spoken";
+            /** Language */
+            language?: string | null;
+            /**
+             * Parsed
+             * @default false
+             */
+            parsed: boolean;
+            /** Edited */
+            edited?: string[];
+        };
+        /** CommandStatusOut */
+        CommandStatusOut: {
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "ready" | "idle" | "loading" | "missing" | "failed" | "not_configured";
+            /** Model Id */
+            model_id?: string | null;
+            /** Weights Present */
+            weights_present?: boolean | null;
+            /**
+             * Cause
+             * @default
+             */
+            cause: string;
+            /** Last Latency Ms */
+            last_latency_ms?: number | null;
+            /**
+             * Shared With Detection
+             * @default false
+             */
+            shared_with_detection: boolean;
         };
         /**
          * ConfigPatchOut
@@ -620,9 +1654,9 @@ export interface components {
          * ConfigValueOut
          * @description A config key with the provenance the CLI's ``explain`` prints.
          *
-         *     ``source`` and ``layers`` are what make this worth an endpoint at all: with layered profiles, "what
-         *     is the value" is only half a question -- the other half is which layer won, and the UI must be able
-         *     to say so without the operator reconstructing a four-file merge in their head.
+         *     ``source`` and ``layers`` are what make this worth an endpoint: with layered profiles, "what is
+         *     the value" is only half a question. The other half is which layer won, and the UI must be able to
+         *     say so without the operator reconstructing a four-file merge in their head.
          */
         ConfigValueOut: {
             /** Key */
@@ -658,7 +1692,7 @@ export interface components {
         };
         /**
          * ConnectIn
-         * @description The acknowledgement. A token, and nothing else -- there is no force flag.
+         * @description The acknowledgement. A token, and nothing else: there is no force flag.
          */
         ConnectIn: {
             /** Token */
@@ -681,6 +1715,31 @@ export interface components {
             warnings?: components["schemas"]["MotionWarningOut"][];
             /** Blocking */
             blocking?: string[];
+        };
+        /**
+         * DefaultPlaceIn
+         * @description The default place pose, or null to have none.
+         */
+        DefaultPlaceIn: {
+            /** Name */
+            name: string | null;
+        };
+        /** DetectorFactsOut */
+        DetectorFactsOut: {
+            /**
+             * Backend
+             * @default
+             */
+            backend: string;
+            /**
+             * Router Enabled
+             * @default false
+             */
+            router_enabled: boolean;
+            /** Vlm Model Id */
+            vlm_model_id?: string | null;
+            /** Precision */
+            precision?: string | null;
         };
         /**
          * DiagnosticsOut
@@ -708,6 +1767,153 @@ export interface components {
             };
         };
         /**
+         * HaltStateOut
+         * @description The arm's halt latch ("halt now", ``POST /v1/cell/brake``), set until "the cell is clear" clears it.
+         */
+        HaltStateOut: {
+            /** Reason */
+            reason: string;
+            /** Requested At */
+            requested_at: number;
+            /**
+             * In Motion
+             * @default false
+             */
+            in_motion: boolean;
+            /**
+             * Braked
+             * @default false
+             */
+            braked: boolean;
+            /** Brake S */
+            brake_s?: number | null;
+            /** Brake */
+            brake?: ("none" | "pending" | "braked" | "unconfirmed" | "ran_out") | null;
+        };
+        /**
+         * HandOut
+         * @description The hand, as the hand chip and the stop card's gates read it (``api.jaws.hand_of``). Reads, never commands.
+         */
+        HandOut: {
+            /**
+             * Kind
+             * @default none
+             * @enum {string}
+             */
+            kind: "toggle" | "jaw" | "width" | "suction" | "none";
+            /**
+             * Driver
+             * @default
+             */
+            driver: string;
+            /**
+             * Where
+             * @default
+             */
+            where: string;
+            /**
+             * Connected
+             * @default false
+             */
+            connected: boolean;
+            /**
+             * Jaws
+             * @default not_counted
+             * @enum {string}
+             */
+            jaws: "open" | "closed" | "unknown" | "not_counted";
+            /**
+             * Why Unknown
+             * @default
+             */
+            why_unknown: string;
+            /**
+             * No Sensor
+             * @default false
+             */
+            no_sensor: boolean;
+            /** Commands Sent */
+            commands_sent?: number | null;
+        };
+        /**
+         * HomeIn
+         * @description Where the Home button drives: ``home`` or a name in ``robot.named_poses``.
+         */
+        HomeIn: {
+            /**
+             * To
+             * @default home
+             */
+            to: string;
+        };
+        /** JawAnswerIn */
+        JawAnswerIn: {
+            /** Question Id */
+            question_id: string;
+            /**
+             * Choice
+             * @enum {string}
+             */
+            choice: "open" | "closed" | "open_now" | "abort";
+        };
+        /**
+         * JawQuestionOut
+         * @description The question a toggle hand asks, waiting for its answer. It has no default: unanswered, it is refused.
+         */
+        JawQuestionOut: {
+            /** Question Id */
+            question_id: string;
+            /**
+             * Stage
+             * @enum {string}
+             */
+            stage: "where" | "open_now";
+            /**
+             * At
+             * @enum {string}
+             */
+            at: "connect" | "check";
+            /**
+             * Where
+             * @default
+             */
+            where: string;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+            /** Choices */
+            choices: ("open" | "closed" | "open_now" | "abort")[];
+            /**
+             * Attempt
+             * @default 1
+             */
+            attempt: number;
+            /**
+             * Of
+             * @default 3
+             */
+            of: number;
+            /**
+             * Why Again
+             * @default
+             */
+            why_again: string;
+            /** Expires At */
+            expires_at: number;
+            /**
+             * Text
+             * @default
+             */
+            text: string;
+        };
+        /** JawsOut */
+        JawsOut: {
+            hand: components["schemas"]["HandOut"];
+            question?: components["schemas"]["JawQuestionOut"] | null;
+        };
+        /**
          * LayerOut
          * @description One file that sets a key: where, what it wrote, and whether it won.
          */
@@ -718,6 +1924,86 @@ export interface components {
             raw: string;
             /** Winner */
             winner: boolean;
+        };
+        /**
+         * LightOut
+         * @description One light of the ready bar.
+         */
+        LightOut: {
+            /**
+             * Id
+             * @enum {string}
+             */
+            id: "robot" | "cameras" | "planner" | "gripper" | "carried_part" | "commands";
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "ok" | "wait" | "blocked" | "info";
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "connected" | "not_built" | "not_connected" | "halted" | "controller_stopped" | "controller_unreadable" | "live" | "rehearsal" | "no_frame" | "none" | "ready" | "starting" | "off" | "failed" | "unplanned" | "route_refused" | "open_confirmed" | "jaws_unknown" | "jaws_closed" | "question_pending" | "modelled" | "not_modelled" | "not_applicable" | "idle" | "loading" | "missing" | "not_configured";
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /**
+             * Blocks
+             * @default true
+             */
+            blocks: boolean;
+        };
+        /**
+         * ListenIn
+         * @description How long a push to talk listen at the cell PC waits for the talk switch.
+         */
+        ListenIn: {
+            /**
+             * Timeout S
+             * @default 10
+             */
+            timeout_s: number;
+        };
+        /**
+         * LiveFrameOut
+         * @description One display frame, never a measurement: read through ``Camera.peek``, which never waits.
+         */
+        LiveFrameOut: {
+            /** Rig Id */
+            rig_id?: string | null;
+            /** Rigs */
+            rigs?: components["schemas"]["RigOut"][];
+            /**
+             * Source
+             * @default none
+             * @enum {string}
+             */
+            source: "camera" | "synthetic" | "none";
+            /**
+             * Reason
+             * @default
+             * @enum {string}
+             */
+            reason: "" | "not_built" | "no_camera" | "measuring" | "encode_failed" | "no_rig";
+            /** Image Base64 */
+            image_base64?: string | null;
+            /**
+             * Width
+             * @default 0
+             */
+            width: number;
+            /**
+             * Height
+             * @default 0
+             */
+            height: number;
+            /** Captured At */
+            captured_at?: number | null;
+            /** Age S */
+            age_s?: number | null;
         };
         /**
          * MotionStackOut
@@ -755,7 +2041,7 @@ export interface components {
          * MotionWarningOut
          * @description One thing that physically moves when connect is pressed.
          *
-         *     Derived from what was BUILT, not from what config asked for: warning about a finger sweep that
+         *     Derived from what was built, not from what config asked for: warning about a finger sweep that
          *     cannot happen (because the gripper fell back to a substitute) teaches an operator to skip the
          *     warning that can.
          */
@@ -768,13 +2054,59 @@ export interface components {
             precaution: string;
         };
         /**
+         * PayloadFactsOut
+         * @description Whether the planner models a carried part; a task refuses to run unless it does (a real cuRobo arm).
+         */
+        PayloadFactsOut: {
+            /**
+             * Modelled
+             * @default false
+             */
+            modelled: boolean;
+            /** Declined Reason */
+            declined_reason?: string | null;
+            /** Length Mm */
+            length_mm?: number | null;
+        };
+        /**
+         * PayloadOut
+         * @description The payload the controller compensates for: it decides whether a freed arm floats, sinks or rises.
+         */
+        PayloadOut: {
+            /** Mass Kg */
+            mass_kg?: number | null;
+            /** Cog Mm */
+            cog_mm?: number[] | null;
+            /**
+             * Readable
+             * @default false
+             */
+            readable: boolean;
+            /**
+             * Source
+             * @default
+             */
+            source: string;
+        };
+        /**
+         * PayloadSeenIn
+         * @description The payload the person saw and confirmed before the arm is freed. A value that is no number (JSON's ``NaN`` or
+         *     ``Infinity``) is a malformed request (422), never a payload anybody saw.
+         */
+        PayloadSeenIn: {
+            /** Mass Kg */
+            mass_kg?: number | null;
+            /** Cog Mm */
+            cog_mm?: number[] | null;
+        };
+        /**
          * PerceptionStackOut
          * @description Which perception stack this cell is configured for, and whether it can actually run.
          *
-         *     Answers the question an operator asks before a pick and could not previously ask at all: *which
-         *     models will this prompt touch?* The VLM route can be perfectly configured and still unrunnable
-         *     because the weights are not on this box -- and until the first complex prompt arrives, nothing says
-         *     so. This checks presence WITHOUT loading anything.
+         *     Answers the question an operator asks before a pick: which models will this prompt touch? The VLM
+         *     route can be perfectly configured and still unrunnable because the weights are not on this box,
+         *     and nothing says so until the first complex prompt arrives. This checks presence without loading
+         *     anything.
          */
         PerceptionStackOut: {
             /**
@@ -832,6 +2164,110 @@ export interface components {
              * @default 1
              */
             picks: number;
+            /** Push Mm */
+            push_mm?: number | null;
+        };
+        /**
+         * PlanPlaceOut
+         * @description Where the resolved plan puts the part.
+         */
+        PlanPlaceOut: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "pose" | "camera";
+            /** Pose */
+            pose?: string | null;
+            /** Pose Label */
+            pose_label?: string | null;
+            /** Pose Joints Deg */
+            pose_joints_deg?: number[] | null;
+            /** Phrase */
+            phrase?: string | null;
+            /** Said */
+            said?: string | null;
+        };
+        /**
+         * PlannerOut
+         * @description cuRobo's state on this arm. Starting it moves nothing and takes about a minute.
+         */
+        PlannerOut: {
+            /**
+             * State
+             * @default not_used
+             * @enum {string}
+             */
+            state: "not_used" | "off" | "starting" | "ready";
+        };
+        /**
+         * PoseOut
+         * @description A named pose: Home from the config (read-only), or one taught in the console.
+         */
+        PoseOut: {
+            /** Name */
+            name: string;
+            /**
+             * Label
+             * @default
+             */
+            label: string;
+            /** Joints Deg */
+            joints_deg: number[];
+            /**
+             * Source
+             * @default config
+             * @enum {string}
+             */
+            source: "config" | "taught";
+            /** Screen */
+            screen?: ("clear" | "band") | null;
+            /**
+             * Note
+             * @default
+             */
+            note: string;
+            /** Taught At */
+            taught_at?: string | null;
+        };
+        /**
+         * PosePlaceIn
+         * @description Place at a taught pose. The pose says where the part's BOTTOM is let go: the tool goes there raised by the part's
+         *     hang, so every error goes toward more air.
+         */
+        PosePlaceIn: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            kind: "pose";
+            /** Pose */
+            pose?: string | null;
+        };
+        /** PosesOut */
+        PosesOut: {
+            home: components["schemas"]["PoseOut"];
+            /** Poses */
+            poses?: components["schemas"]["PoseOut"][];
+            /** Default Place */
+            default_place?: string | null;
+            /**
+             * Teachable
+             * @default false
+             */
+            teachable: boolean;
+            /**
+             * Why Not
+             * @default
+             */
+            why_not: string;
+            /**
+             * Why Not Code
+             * @default
+             */
+            why_not_code: ("bad_request" | "no_robot_configured" | "no_such_run" | "not_built_yet" | "not_built" | "not_acknowledged" | "stale_token" | "cell_busy" | "no_real_gripper" | "driver_refused" | "wrong_state" | "build_refused" | "jaws_seam_missing" | "not_connected" | "run_active" | "halted" | "controller_stopped" | "cell_not_cleared" | "restart_required" | "needs_person" | "jaws_question_pending" | "part_still_held" | "jaws_not_confirmed" | "route_refused" | "carried_part_not_modelled" | "camera_target_unavailable" | "object_required" | "prompt_not_routable" | "target_not_routable" | "push_distance_refused" | "unknown_pose" | "no_place_declared" | "closing_axis_refused" | "not_a_task" | "not_a_pick" | "not_restartable" | "jaws_not_open" | "no_question" | "question_changed" | "choice_not_offered" | "planner_not_used" | "no_overlay" | "no_layer" | "no_hand_guiding" | "part_in_hand" | "planner_not_ready" | "screen_unavailable" | "payload_changed" | "name_taken" | "invalid_name" | "invalid_label" | "wrong_token" | "not_free" | "vlm_not_loaded" | "vlm_unavailable" | "vlm_model_missing" | "unknown_key" | "not_writable" | "invalid_value" | "no_target" | "cell_connected" | "empty_patch" | "empty_audio" | "audio_format_unsupported" | "audio_undecodable" | "audio_too_long" | "speech_model_missing" | "speech_unavailable" | "transcription_failed" | "listen_busy" | "talk_not_pressed" | "microphone_ended" | "nothing_recorded" | "microphone_unavailable" | "listen_failed") | "";
+            /** Target File */
+            target_file?: string | null;
         };
         /**
          * PreflightCheckOut
@@ -889,6 +2325,23 @@ export interface components {
             speech: components["schemas"]["SpeechCheckOut"];
             transcript: components["schemas"]["TranscriptOut"] | null;
         };
+        /** PushFactsOut */
+        PushFactsOut: {
+            /**
+             * Can Push
+             * @default false
+             */
+            can_push: boolean;
+            /**
+             * Why Not
+             * @default
+             */
+            why_not: string;
+            /** Default Mm */
+            default_mm?: number | null;
+            /** Ceiling Mm */
+            ceiling_mm?: number | null;
+        };
         /**
          * ReachabilityOut
          * @description Is anything listening at the controller's address?
@@ -911,6 +2364,18 @@ export interface components {
             detail: string;
         };
         /**
+         * ReadinessOut
+         * @description ``ready`` means every light that blocks reads ok and nothing blocks. The server enforces its gates itself.
+         */
+        ReadinessOut: {
+            /** Ready */
+            ready: boolean;
+            /** Lights */
+            lights?: components["schemas"]["LightOut"][];
+            /** Blockers */
+            blockers?: components["schemas"]["BlockerOut"][];
+        };
+        /**
          * RecordOut
          * @description One logged grasp attempt, as the frozen telemetry contract stores it.
          */
@@ -929,12 +2394,71 @@ export interface components {
             };
         };
         /**
-         * RollupOut
-         * @description KPIs over the logged records, with the unmeasurable ones NAMED rather than zeroed.
+         * RecoveryOut
+         * @description The console's recovery record: a moving run ended on a problem code, and the arm stands where it stopped.
          *
-         *     ``unmeasurable`` is the load-bearing field. A KPI computed from a value nothing ever writes returns
-         *     a confident 0.0, not a blank -- and a 0.0% false-positive-grasp rate on a demo screen is a claim
-         *     nobody in this repo has ever been in a position to make.
+         *     While it stands and ``cleared_at`` is not after ``at``, every moving route refuses ``cell_not_cleared``; while it
+         *     stands at all, a new task or pick refuses ``restart_required``. Only a Restart's or a Home run's arrival at its
+         *     return pose ends it. It lives on the console, so it survives Disconnect, a rebuild and a page reload; ``python -m
+         *     api`` also keeps it in a file (``Console.stop_file``), so it comes back, uncleared, after a restart of the server.
+         */
+        RecoveryOut: {
+            /** Run Id */
+            run_id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "pick" | "task" | "home" | "teach" | "planner";
+            /**
+             * Stop Code
+             * @enum {string}
+             */
+            stop_code: "finished" | "nothing_left" | "part_limit" | "taught" | "planner_ready" | "stopped_after_part" | "cancelled" | "target_not_found" | "target_lost" | "target_unreachable" | "part_does_not_fit" | "pose_refused" | "teach_refused" | "heartbeat_lost" | "teach_time_limit" | "teach_not_saved" | "planner_failed" | "halted" | "controller_stopped" | "hand_needs_person" | "recovery_needs_person" | "part_still_held" | "return_failed" | "failed_in_a_row" | "detector_failed" | "cell_fault" | "disconnected" | "software_error";
+            /** At */
+            at: number;
+            /**
+             * Holding
+             * @default false
+             */
+            holding: boolean;
+            /** Cleared At */
+            cleared_at?: number | null;
+        };
+        /**
+         * RestartIn
+         * @description Restart the console's recovery record as a new run whose first motion is the planned move home.
+         */
+        RestartIn: {
+            /** Run Id */
+            run_id: string;
+        };
+        /**
+         * RigOut
+         * @description One camera rig the cell's picks see through.
+         */
+        RigOut: {
+            /** Rig Id */
+            rig_id: string;
+            /**
+             * Mounting
+             * @default unknown
+             * @enum {string}
+             */
+            mounting: "wrist" | "fixed" | "unknown";
+            /**
+             * Primary
+             * @default false
+             */
+            primary: boolean;
+        };
+        /**
+         * RollupOut
+         * @description KPIs over the logged records, with the unmeasurable ones named rather than zeroed.
+         *
+         *     ``unmeasurable`` is the load-bearing field. A KPI computed from a value nothing ever writes
+         *     returns a confident 0.0, not a blank, and a 0.0% false-positive-grasp rate on a demo screen is a
+         *     claim this stack cannot make.
          */
         RollupOut: {
             /** Total Attempts */
@@ -968,12 +2492,28 @@ export interface components {
             record_log_exists: boolean;
         };
         /**
+         * RouteFactsOut
+         * @description How the arm's moves are planned: through a planner ``Robot.place`` and ``Robot.home`` accept, or not.
+         */
+        RouteFactsOut: {
+            /**
+             * Route
+             * @enum {string}
+             */
+            route: "planned" | "unplanned" | "refused";
+            /**
+             * Sentence
+             * @default
+             */
+            sentence: string;
+        };
+        /**
          * RoutePreviewOut
-         * @description What route a prompt WOULD take -- decided without a GPU, a model, or an image.
+         * @description What route a prompt would take, decided without a GPU, a model, or an image.
          *
-         *     The router is pure text analysis, so this is free and instant. It exists because "why was that pick
-         *     slow?" and "why did it refuse?" are usually answered by the route, and an operator should be able
-         *     to find that out by typing the prompt rather than by running it.
+         *     The router is pure text analysis, so this is free and instant. It exists because "why was that
+         *     pick slow?" and "why did it refuse?" are usually answered by the route, and an operator should be
+         *     able to find that out by typing the prompt rather than by running it.
          */
         RoutePreviewOut: {
             /** Prompt */
@@ -1049,6 +2589,62 @@ export interface components {
              * @default false
              */
             stop_requested: boolean;
+            /**
+             * Kind
+             * @default pick
+             * @enum {string}
+             */
+            kind: "pick" | "task" | "home" | "teach" | "planner";
+            /**
+             * Stop Code
+             * @default
+             * @enum {string}
+             */
+            stop_code: "finished" | "nothing_left" | "part_limit" | "taught" | "planner_ready" | "stopped_after_part" | "cancelled" | "target_not_found" | "target_lost" | "target_unreachable" | "part_does_not_fit" | "pose_refused" | "teach_refused" | "heartbeat_lost" | "teach_time_limit" | "teach_not_saved" | "planner_failed" | "halted" | "controller_stopped" | "hand_needs_person" | "recovery_needs_person" | "part_still_held" | "return_failed" | "failed_in_a_row" | "detector_failed" | "cell_fault" | "disconnected" | "software_error" | "";
+            /**
+             * Stop Class
+             * @default
+             * @enum {string}
+             */
+            stop_class: "done" | "operator" | "ask" | "teach" | "planner" | "problem" | "";
+            plan?: components["schemas"]["TaskPlanOut"] | null;
+            /**
+             * Parts Placed
+             * @default 0
+             */
+            parts_placed: number;
+            /**
+             * Holding
+             * @default false
+             */
+            holding: boolean;
+            /** Restart Of */
+            restart_of?: string | null;
+            /**
+             * Halt Requested
+             * @default false
+             */
+            halt_requested: boolean;
+            /**
+             * Step
+             * @default
+             */
+            step: string;
+            refusal?: components["schemas"]["RunRefusalOut"] | null;
+        };
+        /**
+         * RunRefusalOut
+         * @description A refusal the library met inside a run, before anything moved: the cell changed between the request and the run,
+         *     and the run refused what the route would have refused.
+         */
+        RunRefusalOut: {
+            /**
+             * Code
+             * @enum {string}
+             */
+            code: "bad_request" | "no_robot_configured" | "no_such_run" | "not_built_yet" | "not_built" | "not_acknowledged" | "stale_token" | "cell_busy" | "no_real_gripper" | "driver_refused" | "wrong_state" | "build_refused" | "jaws_seam_missing" | "not_connected" | "run_active" | "halted" | "controller_stopped" | "cell_not_cleared" | "restart_required" | "needs_person" | "jaws_question_pending" | "part_still_held" | "jaws_not_confirmed" | "route_refused" | "carried_part_not_modelled" | "camera_target_unavailable" | "object_required" | "prompt_not_routable" | "target_not_routable" | "push_distance_refused" | "unknown_pose" | "no_place_declared" | "closing_axis_refused" | "not_a_task" | "not_a_pick" | "not_restartable" | "jaws_not_open" | "no_question" | "question_changed" | "choice_not_offered" | "planner_not_used" | "no_overlay" | "no_layer" | "no_hand_guiding" | "part_in_hand" | "planner_not_ready" | "screen_unavailable" | "payload_changed" | "name_taken" | "invalid_name" | "invalid_label" | "wrong_token" | "not_free" | "vlm_not_loaded" | "vlm_unavailable" | "vlm_model_missing" | "unknown_key" | "not_writable" | "invalid_value" | "no_target" | "cell_connected" | "empty_patch" | "empty_audio" | "audio_format_unsupported" | "audio_undecodable" | "audio_too_long" | "speech_model_missing" | "speech_unavailable" | "transcription_failed" | "listen_busy" | "talk_not_pressed" | "microphone_ended" | "nothing_recorded" | "microphone_unavailable" | "listen_failed";
+            /** Status */
+            status: number;
         };
         /**
          * SdkOut
@@ -1083,6 +2679,234 @@ export interface components {
             detector: string;
             /** Latency Ms */
             latency_ms: number;
+        };
+        /**
+         * TalkIn
+         * @description One edge of the talk switch: down when a person starts talking, up when they are done.
+         */
+        TalkIn: {
+            /** Pressed */
+            pressed: boolean;
+        };
+        /**
+         * TalkOut
+         * @description The talk switch after the edge.
+         */
+        TalkOut: {
+            /** Pressed */
+            pressed: boolean;
+            /** Presses */
+            presses: number;
+        };
+        /**
+         * TaskIn
+         * @description One task: what to pick, where to put it, where to go after, once or until empty. Start is the confirmation.
+         */
+        TaskIn: {
+            /**
+             * Object
+             * @default
+             */
+            object: string;
+            /** Object Said */
+            object_said?: string | null;
+            /** Place */
+            place: components["schemas"]["PosePlaceIn"] | components["schemas"]["CameraPlaceIn"];
+            /**
+             * Return To
+             * @default home
+             */
+            return_to: string;
+            /**
+             * Scope
+             * @default once
+             * @enum {string}
+             */
+            scope: "once" | "until_empty";
+            options?: components["schemas"]["TaskOptionsIn"];
+            command?: components["schemas"]["CommandProvenanceIn"] | null;
+        };
+        /**
+         * TaskOptionsIn
+         * @description The Advanced drawer: per task, never written to the cell's config.
+         */
+        TaskOptionsIn: {
+            /**
+             * Multi View
+             * @default true
+             */
+            multi_view: boolean;
+            /**
+             * Both Faces
+             * @default false
+             */
+            both_faces: boolean;
+            /** Closing Axis */
+            closing_axis?: string | null;
+            /** Push Mm */
+            push_mm?: number | null;
+            /**
+             * Record Views
+             * @default false
+             */
+            record_views: boolean;
+            /** Rim Air Mm */
+            rim_air_mm?: number | null;
+            /**
+             * Pick Anything
+             * @default false
+             */
+            pick_anything: boolean;
+            /**
+             * Overlay
+             * @default true
+             */
+            overlay: boolean;
+        };
+        /**
+         * TaskOptionsOut
+         * @description The options the task runs with, ``push_mm`` and ``rim_air_mm`` resolved.
+         */
+        TaskOptionsOut: {
+            /**
+             * Multi View
+             * @default true
+             */
+            multi_view: boolean;
+            /**
+             * Both Faces
+             * @default false
+             */
+            both_faces: boolean;
+            /** Closing Axis */
+            closing_axis?: ("x" | "-x" | "y" | "-y" | "radial" | "-radial" | "tangential" | "-tangential") | null;
+            /** Push Mm */
+            push_mm?: number | null;
+            /**
+             * Record Views
+             * @default false
+             */
+            record_views: boolean;
+            /** Rim Air Mm */
+            rim_air_mm?: number | null;
+            /**
+             * Pick Anything
+             * @default false
+             */
+            pick_anything: boolean;
+            /**
+             * Overlay
+             * @default true
+             */
+            overlay: boolean;
+        };
+        /**
+         * TaskPlanOut
+         * @description The resolved plan: echoed in ``run_started`` and in ``RunOut.plan``, and what a Restart runs again.
+         */
+        TaskPlanOut: {
+            /** Object */
+            object: string;
+            /** Object Said */
+            object_said?: string | null;
+            place: components["schemas"]["PlanPlaceOut"];
+            /**
+             * Return To
+             * @default home
+             */
+            return_to: string;
+            /** Return Label */
+            return_label?: string | null;
+            /** Return Joints Deg */
+            return_joints_deg?: number[] | null;
+            /**
+             * Scope
+             * @default once
+             * @enum {string}
+             */
+            scope: "once" | "until_empty";
+            options?: components["schemas"]["TaskOptionsOut"];
+            command?: components["schemas"]["CommandProvenanceOut"] | null;
+            /**
+             * First Motion
+             * @default look
+             * @enum {string}
+             */
+            first_motion: "look" | "return";
+            /**
+             * Countdown
+             * @default false
+             */
+            countdown: boolean;
+        };
+        /**
+         * TeachIn
+         * @description Teach one pose by hand. The names are checked by the route (``invalid_name``, ``invalid_label``).
+         */
+        TeachIn: {
+            /** Name */
+            name: string;
+            /** Label */
+            label: string;
+            /**
+             * Role
+             * @default other
+             * @enum {string}
+             */
+            role: "place" | "other";
+            /**
+             * Replace
+             * @default false
+             */
+            replace: boolean;
+            /**
+             * Make Default Place
+             * @default false
+             */
+            make_default_place: boolean;
+            payload_seen: components["schemas"]["PayloadSeenIn"] | null;
+        };
+        /**
+         * TeachStartOut
+         * @description The teach run, and the token its polls, capture and cancel carry.
+         */
+        TeachStartOut: {
+            run: components["schemas"]["RunOut"];
+            /** Token */
+            token: string;
+        };
+        /**
+         * TeachStateOut
+         * @description A teach session, polled: every poll is the browser's heartbeat.
+         */
+        TeachStateOut: {
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "freeing" | "free" | "holding_when_still" | "holding" | "screening" | "saved" | "refused" | "not_saved" | "ended";
+            /**
+             * Outside
+             * @default false
+             */
+            outside: boolean;
+            /** Lines */
+            lines?: string[];
+            /** Joints Deg */
+            joints_deg?: number[] | null;
+            /** Tcp Mm */
+            tcp_mm?: number[] | null;
+            /** Verdict */
+            verdict?: ("clear" | "band" | "guard_refused" | "planner_refused" | "unscreened") | null;
+            /** Nearby Deg */
+            nearby_deg?: number[] | null;
+            /**
+             * Message
+             * @default
+             */
+            message: string;
+            /** Time Left S */
+            time_left_s?: number | null;
         };
         /**
          * TelemetryOut
@@ -1190,12 +3014,12 @@ export interface components {
         };
         /**
          * ViewfinderOut
-         * @description What the cell is looking at, and -- always -- WHICH of two pictures this is.
+         * @description What the cell is looking at, and, always, which kind of picture this is.
          *
          *     The console can show three things that look alike and mean different things: a colour frame taken
          *     from a device now, a synthetic scene this process drew for a rehearsal, and the grasp overlay the
-         *     stack rendered during a pick. Rendering them identically is how a minutes-old segmentation -- or a
-         *     picture of a room that does not exist -- ends up on a screen an operator reads as live. So
+         *     stack rendered during a pick. Rendering them identically is how a minutes-old segmentation, or a
+         *     picture of a room that does not exist, ends up on a screen an operator reads as live. So
          *     ``source`` and ``age_s`` travel with every frame and ``human`` says it in words.
          *
          *     ``image_base64`` is ``None`` for the four "no picture" cases, and ``reason`` names which. That is
@@ -1603,6 +3427,188 @@ export interface operations {
             };
         };
     };
+    get_facts_v1_cell_facts_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CellFactsOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_readiness_v1_cell_readiness_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadinessOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    post_acknowledge_v1_cell_acknowledge_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AcknowledgeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CellOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    post_brake_v1_cell_brake_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BrakeOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    post_home_v1_cell_home_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HomeIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    post_planner_v1_cell_planner_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
     preview_route_v1_diagnostics_route_get: {
         parameters: {
             query: {
@@ -1884,6 +3890,72 @@ export interface operations {
             };
         };
     };
+    post_talk_v1_voice_talk_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TalkIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TalkOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    post_listen_v1_voice_listen_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ListenIn"] | null;
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProposalOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
     get_kpis_v1_history_kpis_get: {
         parameters: {
             query?: never;
@@ -2022,6 +4094,632 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RunOut"][];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_codes_v1_codes_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CodesOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    post_task_v1_task_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TaskIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    post_task_stop_v1_task_stop_post: {
+        parameters: {
+            query?: {
+                run_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    post_task_restart_v1_task_restart_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestartIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_run_overlay_v1_runs__run_id__overlays__n__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+                n: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The overlay, as a PNG. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": unknown;
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_target_overlay_v1_runs__run_id__target_overlay_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The overlay, as a PNG. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": unknown;
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_jaws_v1_cell_jaws_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JawsOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    post_jaws_answer_v1_cell_jaws_answer_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["JawAnswerIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JawsOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    post_jaws_check_v1_cell_jaws_check_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JawsOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_live_v1_camera_live_get: {
+        parameters: {
+            query?: {
+                rig?: string | null;
+                max_width?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LiveFrameOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_poses_v1_poses_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PosesOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    put_default_place_v1_poses_default_place_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DefaultPlaceIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PosesOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_teach_payload_v1_teach_payload_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PayloadOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    post_teach_v1_teach_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TeachIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeachStartOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_teach_v1_teach__run_id__get: {
+        parameters: {
+            query: {
+                token: string;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeachStateOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    post_teach_capture_v1_teach__run_id__capture_post: {
+        parameters: {
+            query: {
+                token: string;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeachStateOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    post_teach_cancel_v1_teach__run_id__cancel_post: {
+        parameters: {
+            query: {
+                token: string;
+            };
+            header?: never;
+            path: {
+                run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TeachStateOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    post_parse_v1_commands_parse_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CommandIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_status_v1_commands_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandStatusOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    post_warmup_v1_commands_warmup_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommandStatusOut"];
                 };
             };
             /** @description The one failure envelope. */

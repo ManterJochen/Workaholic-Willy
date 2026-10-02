@@ -38,13 +38,16 @@ needs the vendor safety-rated stop.
 
 from __future__ import annotations
 
+import inspect
 import math
+import threading
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from src.contracts import UNSET, Maybe
 from src.robot.constants import UR_CUROBO_LOG_FILE, create_robot_logger
 from src.robot.core import MotionCommand, MotionResult, MotionStatus
+from src.robot.core.arm_capabilities import HaltState, halted_refusal
 from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.safety.planning import (
     CuroboPlanClient,
@@ -55,6 +58,7 @@ from src.robot.safety.planning.curobo_client import PathJudgement, SidecarIdenti
 from src.robot.safety.planning.live_world import WorldRefresh, refresh_planner_world
 from src.robot.safety.planning.world import merge_planner_worlds
 
+from .connection import MoveEnd
 from .planner_frame import PlannerFrameClient
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
@@ -89,6 +93,71 @@ PLANNER_JOINT_ENVELOPE_RAD: tuple[tuple[float, ...], tuple[float, ...]] = (
     tuple(-(limit - 0.1) for limit in (2 * math.pi, 2 * math.pi, math.pi, 2 * math.pi, 2 * math.pi, 2 * math.pi)),
     tuple(limit - 0.1 for limit in (2 * math.pi, 2 * math.pi, math.pi, 2 * math.pi, 2 * math.pi, 2 * math.pi)),
 )
+
+
+def _halt_on(conn: object) -> HaltState | None:
+    """The halt latch of ``conn`` while it is set, else ``None``; a connection double with no latch is never halted.
+
+    A latch that cannot be read is no latch here: the connection's own ``moveJ`` refuses on its latch regardless.
+    """
+    read = getattr(conn, "halt_state", None)
+    try:
+        state = read() if callable(read) else None
+    except Exception:  # noqa: BLE001 (a double whose latch raises; the connection refuses on its own latch)
+        return None
+    return state if isinstance(state, HaltState) else None
+
+
+#: How the halt ended a move, by the connection's own word for it.
+_HALT_ENDED = {MoveEnd.REFUSED_HALTED: "refused", MoveEnd.BRAKED: "braked", MoveEnd.BRAKE_UNCONFIRMED: "unconfirmed"}
+
+
+def _halt_end_of(conn: object) -> str:
+    """How the halt ended the move ``conn`` was last asked for: ``refused``, ``braked``, ``unconfirmed``, or ``""``."""
+    end = getattr(conn, "last_move_end", None)
+    return _HALT_ENDED.get(end, "") if isinstance(end, MoveEnd) else ""
+
+
+def _halt_requests_of(conn: object) -> int | None:
+    """How many times ``conn``'s latch was set, or ``None`` for a connection double that does not count them."""
+    count = getattr(conn, "halt_requests", None)
+    return count if isinstance(count, int) and not isinstance(count, bool) else None
+
+
+#: What a planner the arm shut down answers every ask that would start a sidecar.
+_RETIRED = ("the planner was shut down by a disconnect or stop_planner, so nothing is planned on it any more: the arm "
+            "starts a fresh one with the next start_planner, or with the next move on a connected arm")
+
+
+class _KeptClient:
+    """The started planner client as the glue keeps it and hands it out: no call of it overlaps a retire, none follows.
+
+    ``CuroboPlanClient`` starts its sidecar again on any call once it was closed. A thread that took the client before
+    the glue was retired (a move whose route refresh was reading the camera while Disconnect was pressed) would then
+    start a sidecar the glue no longer holds. So each method call runs under the glue's start lock: a retire waits for
+    the call in flight, which the client's own timeouts bound, and every call after it is refused. Whatever is not a
+    method (the joint names, the identity, the last refusal) is the client's own, read as it is.
+    """
+
+    def __init__(self, client: Any, glue: CuroboUrPlanner) -> None:
+        self._kept = client
+        self._glue = glue
+
+    def __getattr__(self, name: str) -> Any:
+        if name in ("_kept", "_glue"):  # not set yet (a copy in the making): never recurse into itself
+            raise AttributeError(name)
+        attribute = getattr(self._kept, name)
+        if not (inspect.ismethod(attribute) or inspect.isfunction(attribute)):
+            return attribute
+        glue = self._glue
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            with glue._start_lock:
+                if glue._retired and name != "close":
+                    raise CuroboUnavailableError(glue._retired_because)
+                return attribute(*args, **kwargs)
+
+        return call
 
 
 class CuroboUrPlanner:
@@ -185,7 +254,23 @@ class CuroboUrPlanner:
         self._descriptor_check = descriptor_check
         #: A sentence about the controller's state after a sent moveJ failed; `None` adds nothing.
         self._controller_state = controller_state
+        #: Held while a sidecar starts and while one closes, so a close waits for a start in progress and closes what
+        #: it started: closed half way, the started client would be kept by nobody, a sidecar orphaned.
+        self._start_lock = threading.RLock()
+        #: Whether a sidecar is being started now; read without the lock, for :attr:`state`.
+        self._starting = False
+        #: Set by :meth:`retire`, under the start lock: this glue starts no sidecar again, so a thread still holding it
+        #: after the arm dropped it (a move judging its route across a disconnect) spawns none nobody would close.
+        self._retired = False
+        self._retired_because = _RETIRED
         self.logger = create_robot_logger("CuroboUrPlanner", UR_CUROBO_LOG_FILE)
+
+    @property
+    def state(self) -> str:
+        """``off``, ``starting`` or ``ready``: whether this glue holds a started sidecar. Never waits, never raises."""
+        if self._starting:
+            return "starting"
+        return "ready" if self._client is not None else "off"
 
     def enable_payload(self, sphere_slots: int) -> None:
         """Reserve collision spheres for a carried part. It is called before the planner starts."""
@@ -211,11 +296,23 @@ class CuroboUrPlanner:
         # entirely, and planned against the very world the first refusal was about.
         # `_register_world` returns immediately once the planner has confirmed the world in
         # full, so the retry costs nothing on the normal path.
+        client = self._client
+        if client is not None:
+            self._register_world(client)
+            return client
+        # A start holds the lock until its client is kept, so a close waits for it (see `close`).
+        with self._start_lock:
+            return self._start_locked()
+
+    def _start_locked(self) -> CuroboPlanClient:
+        """The body of :meth:`_client_or_start`'s start, under the start lock. A retired glue starts nothing."""
+        if self._retired:
+            raise CuroboUnavailableError(self._retired_because)
         if self._client is not None:
             self._register_world(self._client)
             return self._client
-
-        if self._client is None:
+        self._starting = True
+        try:
             # The planner's base is not the controller's. Every pose this glue hands the planner
             # is in the controller's DH base, and the planner is rooted at UR's URDF base_link,
             # half a turn away, so the client is seen through the turn from here on: goals,
@@ -246,9 +343,12 @@ class CuroboUrPlanner:
                 client.close()
                 self.logger.error("cuRobo planner refused: %s", refusal)
                 raise CuroboUnavailableError(refusal)
-            self._client = client
-            self._register_world(client)
-        return self._client
+            kept = cast("CuroboPlanClient", _KeptClient(client, self))
+            self._client = kept
+        finally:
+            self._starting = False
+        self._register_world(kept)
+        return kept
 
     def _register_world(self, client: CuroboPlanClient) -> None:
         """Hand the cell's obstacles to the planner, or refuse to plan at all.
@@ -462,12 +562,31 @@ class CuroboUrPlanner:
         return SidecarIdentity.from_client(self._client_or_start())
 
     def close(self) -> None:
-        """Shut down the planning server (idempotent). A closed server holds no part, and the next one starts empty."""
-        if self._client is not None:
-            self._client.close()
-            self._client = None
-        self._payload_handed = False
-        self._seen_held = None
+        """Shut down the planning server (idempotent). A closed server holds no part, and the next one starts empty.
+
+        A start in progress is waited for, and the server it started is closed: a close in the middle of it would find
+        no client yet, and the start would then keep one nobody holds.
+        """
+        with self._start_lock:
+            if self._client is not None:
+                self._client.close()
+                self._client = None
+            self._payload_handed = False
+            self._seen_held = None
+
+    def retire(self, why: str = _RETIRED) -> None:
+        """Shut the planning server down for good: this glue never starts another (idempotent).
+
+        What the arm's disconnect and ``stop_planner`` do, where :meth:`close` alone would let the next ask start a
+        fresh sidecar on this glue. A move judging its route holds the glue it took at its start, and every check, plan
+        and refresh of that route starts the sidecar where none runs; after the arm dropped the glue, such a sidecar
+        would be held by nobody. A retired glue refuses those asks with ``why`` (``CuroboUnavailableError``), so the
+        move fails closed. A start in progress is waited for, and what it started is closed.
+        """
+        with self._start_lock:
+            if not self._retired:
+                self._retired, self._retired_because = True, str(why)
+            self.close()
 
     # ------------------------------------------------------------------
     # Planning + execution
@@ -675,12 +794,22 @@ class CuroboUrPlanner:
         that was sent and raised is CONNECTION_ERROR, and one that was sent and returned ``False`` is
         CONTROLLER_REJECTED; after either the arm may have moved part of the way, and the message
         carries the controller's state where it can be read.
+
+        The halt latch ends the list where it is (CANCELLED, naming the waypoint): it is read before every waypoint,
+        and a halted connection sends none. With ``robot.ur.brake_on_halt`` a halt brakes the leg in flight and no
+        later waypoint follows; without it the leg in flight runs to its end and the next one is not sent. A halt
+        that came after the path began ends it even where it was cleared before the leg in flight ended: the latch's
+        count of halts (``halt_requests``) is taken before the first waypoint and read before each.
         """
         v = vel if vel is not None else self._vel
         a = acc if acc is not None else self._acc
         total = len(traj_ur)
         commanded: dict[str, Any] = {"target_pose": pose, "target_joints": target_joints}
+        halts_before = _halt_requests_of(self._conn)
         for index, waypoint in enumerate(traj_ur):
+            halted = _halt_on(self._conn)
+            if halted is not None or (halts_before is not None and _halt_requests_of(self._conn) != halts_before):
+                return self._cancelled_at(index, total, halted, "", command, commanded)
             try:
                 ok = self._conn.moveJ(list(waypoint), vel=v, acc=a)
             except ValueError as exc:
@@ -700,6 +829,9 @@ class CuroboUrPlanner:
                     exception=exc,
                 )
             if not ok:
+                ended = _halt_end_of(self._conn)
+                if ended:
+                    return self._cancelled_at(index, total, _halt_on(self._conn), ended, command, commanded)
                 return MotionResult.failed(
                     MotionStatus.CONTROLLER_REJECTED, command, **commanded,
                     message=(f"UR moveJ rejected waypoint {index + 1} of {total} of the judged path. moveJ "
@@ -708,6 +840,25 @@ class CuroboUrPlanner:
                 )
         self.logger.info("judged path executed on UR: %d moveJ", total)
         return MotionResult.executed(command, **commanded, message="curobo")
+
+    def _cancelled_at(self, index: int, total: int, halted: HaltState | None, ended: str, command: MotionCommand,
+                      commanded: "dict[str, Any]") -> MotionResult:
+        """The CANCELLED result of a path the halt ended at waypoint ``index`` (0-based): what ran, what did not.
+
+        ``halted`` is ``None`` where the latch was cleared between the end of the leg and this answer.
+        """
+        done = f"the {index} before it ran" if index else "nothing had moved"
+        if ended == "braked":
+            what = (f"waypoint {index + 1} of {total} of the judged path was braked under control in flight, and no "
+                    f"later waypoint was sent; the arm stands where the brake stopped it")
+        elif ended == "unconfirmed":
+            what = (f"waypoint {index + 1} of {total} of the judged path was braked in flight and the arm was not seen "
+                    f"to stand still: if it still moves, press the emergency stop; no later waypoint was sent")
+        else:
+            what = f"waypoint {index + 1} of {total} of the judged path was not sent, nor any after it, and {done}"
+        self.logger.warning("judged path ended by the halt: %s", what)
+        reason = halted.reason if halted is not None else "a halt that has been cleared since"
+        return MotionResult.failed(MotionStatus.CANCELLED, command, **commanded, message=halted_refusal(reason, what))
 
     def _state_text(self) -> str:
         """The controller's state as a sentence after a sent moveJ failed, or ``""``. Never a second fault."""

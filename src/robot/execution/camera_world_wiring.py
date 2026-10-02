@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from src.contracts import UNSET, Maybe, chosen
+from src.robot.constants import create_robot_logger
 from src.robot.safety.planning.depth_source import RigDepthSource
 from src.robot.safety.planning.live_world import CameraView, LivePlannerWorld
 from src.robot.safety.planning.perceived import WorldBuildTuning
@@ -31,7 +32,9 @@ from src.robot.safety.planning.world import build_planner_cuboids, build_planner
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.robot import RobotConfig
 
-__all__ = ["CameraWorldPlan", "CameraWorldRequired", "CameraWorldWiring", "OpenedCameras"]
+__all__ = ["CameraWorldPlan", "CameraWorldRequired", "CameraWorldWiring", "OpenedCameras", "SupportSlabMissesTheWorkspace"]
+
+logger = create_robot_logger(__name__, "camera_world_wiring.log")
 
 
 class CameraWorldRequired(ValueError):
@@ -271,16 +274,54 @@ def _answers_with_a_stereo_pair(handle: Any) -> bool:
     return getattr(frame, "depth", None) is None and hasattr(frame, "left") and hasattr(frame, "right")
 
 
+class SupportSlabMissesTheWorkspace(ValueError):
+    """The declared bench slab covers none of the workspace box: no declared world holds the bench the parts stand on."""
+
+
+def _slab_over_the_workspace(robot_cfg: "RobotConfig") -> None:
+    """Refuse a declared bench slab that covers none of the workspace box; say so where it covers only part of it.
+
+    The owner's slab stood at (500, 500) with an extent of 1000 x 1000 mm, behind the robot, while every part lay at
+    y -900 to -270 (fix plan S2): the planner held a bench where nothing stood and none under the parts. A slab that
+    covers part of the box holds part of the bench, and the rest is the camera world's to find.
+    """
+    plane = robot_cfg.safety.planning_world.support_plane
+    if plane is None:
+        return
+    workspace = robot_cfg.workspace_limits
+    cx, cy = (float(v) for v in (getattr(plane, "center_mm", None) or (0.0, 0.0)))
+    ex, ey = (float(v) for v in plane.extent_mm)
+    slab_x, slab_y = (cx - ex / 2.0, cx + ex / 2.0), (cy - ey / 2.0, cy + ey / 2.0)
+    box_x = (float(workspace.x_min), float(workspace.x_max))
+    box_y = (float(workspace.y_min), float(workspace.y_max))
+    over_x = min(slab_x[1], box_x[1]) - max(slab_x[0], box_x[0])
+    over_y = min(slab_y[1], box_y[1]) - max(slab_y[0], box_y[0])
+    said = (f"safety.planning_world.support_plane stands at centre ({cx:g}, {cy:g}) mm with extent {ex:g} x {ey:g} mm, "
+            f"x {slab_x[0]:g} to {slab_x[1]:g} and y {slab_y[0]:g} to {slab_y[1]:g}, and the workspace box "
+            f"(robot.workspace_limits) spans x {box_x[0]:g} to {box_x[1]:g} and y {box_y[0]:g} to {box_y[1]:g}")
+    if over_x <= 0.0 or over_y <= 0.0:
+        raise SupportSlabMissesTheWorkspace(
+            f"{said}: the slab covers none of it, so the planner holds a bench where no part stands and none under "
+            "the parts. Move center_mm and extent_mm under the workspace box, clear of the robot's base, e.g. centre "
+            f"({(box_x[0] + box_x[1]) / 2.0:g}, {(box_y[0] + box_y[1]) / 2.0:g}) with extent "
+            f"{box_x[1] - box_x[0] + 80.0:g} x {box_y[1] - box_y[0] + 70.0:g}")
+    if over_x < box_x[1] - box_x[0] or over_y < box_y[1] - box_y[0]:
+        logger.warning("%s: the slab covers only part of it; what lies beyond the slab stands on what the camera world "
+                       "finds", said)
+
+
 def _live_planner_world(robot_cfg: "RobotConfig", views: Sequence[CameraView]) -> LivePlannerWorld:
     """The world source over ``views``, tuned by the cell's `safety.planning_world`.
 
-    The plan has already checked that the block is on.
+    The plan has already checked that the block is on. A declared bench slab that covers none of the workspace box is
+    refused here, before any world is built (:class:`SupportSlabMissesTheWorkspace`).
     """
     world_cfg = robot_cfg.safety.planning_world
     perceived = world_cfg.perceived
     limits = planner_world_limits(robot_cfg)
     if limits is None:
         raise ValueError("safety.planning_world declares no support_plane, so no perceived world can be built")
+    _slab_over_the_workspace(robot_cfg)
     if float(perceived.voxel_field_mm) > 0.0:
         # Pay the distance-transform import here, where a cell is being built and a tenth of a second
         # costs nothing. Measured against the real planner: the first field a cell builds took 139.6 ms
@@ -304,6 +345,8 @@ def _live_planner_world(robot_cfg: "RobotConfig", views: Sequence[CameraView]) -
             max_boxes=int(perceived.max_boxes),
             voxel_field_mm=float(perceived.voxel_field_mm),
             floor_to_plane=bool(perceived.floor_to_plane),
+            support_surfaces=bool(perceived.support_surfaces),
+            support_allowance_mm=float(perceived.support_allowance_mm),
         ),
         max_age_ms=float(perceived.max_age_ms),
         fresh_frame_attempts=int(perceived.fresh_frame_attempts),
