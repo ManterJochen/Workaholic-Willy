@@ -121,6 +121,11 @@ bewegt". It stays as the thumbnail of its part's card.
 - **The transcript lands in the box**, editable, marked as spoken until it is edited. **Enter only reads the
   sentence**: the VLM fills the **Understood card** (Greifen, Ablegen, Umfang: Einmal or Bis leer, Danach, and
   the Advanced drawer), and nothing moves.
+- **"Kritische Teile"** in the Advanced drawer is the cell's `recovery.critical_parts` for this run, ticked
+  where the cell says so. Ticked, nothing is pushed: a blocker is gripped and set aside, the push distance
+  field goes, and the summary says "kritische Teile: nur wegräumen". Unticked, a boxed-in part is pushed
+  first and the push may rearrange the scene; a push distance left untouched lets the cell go longer, up to
+  its ceiling, where its own frees no direction (2026-10-03).
 - **Start is the confirmation.** One click, no second dialog, and its label names the first motion: "Start –
   der Roboter fährt zu Blick 1" (configured looks), "nach Home und schaut" (a wrist camera with no looks) or
   "zum ersten Griff" (a fixed camera). A due 3 s countdown ("zuerst 3 s Countdown „Hände weg“") and a camera

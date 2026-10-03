@@ -8,7 +8,7 @@ import math
 import re
 import threading
 from contextlib import AbstractContextManager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
 
@@ -2531,7 +2531,8 @@ class URRobotArm(RobotArm):
             "runs"))
 
     def carried_line_refusal(self, pose: Pose, *, grip_width_mm: float,
-                             camera_world: Maybe[CameraWorldDecline] = UNSET) -> MotionResult | None:
+                             camera_world: Maybe[CameraWorldDecline] = UNSET,
+                             start: "tuple[Pose, Sequence[float]] | None" = None) -> MotionResult | None:
         """The refusal ``move(pose, linear=True, camera_world=camera_world)`` would meet from where the arm stands if its
         jaws held a part about ``grip_width_mm`` across; ``None`` where that line would run. Nothing moves and nothing
         goes to the controller.
@@ -2546,6 +2547,9 @@ class URRobotArm(RobotArm):
         where the last commanded target left it. An arm that holds no part is handed one for the judgement
         (:meth:`attach_payload`, a cell that models none included) and forgets it after (:meth:`detach_payload`); one
         that already holds a part is judged as it stands and keeps it.
+
+        ``start`` judges the line as if the arm stood elsewhere, the TCP pose and the joints it would stand at there
+        (:meth:`grasp_refusal_ahead`): the line from that pose, its first sample solved seeded on those joints.
         """
         if pose.frame is not Frame.BASE:
             return MotionResult.failed(
@@ -2563,7 +2567,7 @@ class URRobotArm(RobotArm):
         try:
             if not holds:
                 self.attach_payload(float(grip_width_mm))
-            judged = self._judge_linear_move(pose, command=MotionCommand.MOVE_TO, commanded=False)
+            judged = self._judge_linear_move(pose, command=MotionCommand.MOVE_TO, commanded=False, start=start)
         finally:
             if not holds and not self.detach_payload():
                 self.logger.warning(
@@ -2574,6 +2578,83 @@ class URRobotArm(RobotArm):
                          pose.label or "<unlabeled>", float(grip_width_mm),
                          "it would run" if judged is None else f"it would be refused: {judged.message}")
         return judged
+
+    def grasp_refusal_ahead(self, *, standoff: Pose, grasp: Pose, lift: Pose, grip_width_mm: float) -> str:
+        """Why a grasp would be refused before its jaws close, judged now from where the arm stands; ``""`` where every
+        judgement passes, and on a cell that judges nothing ahead (no cuRobo, no guard, no connection). Nothing moves.
+
+        :class:`~src.robot.core.arm_capabilities.JudgesGraspsAhead`. In the order the pick runs them, each from where the
+        one before ends, each in the world the motion itself would refresh: the planned move to ``standoff``, the very
+        route :meth:`move` would run (:meth:`_route_to_the_nearest_goal`); the line down to ``grasp`` from the
+        configuration that route ends on; and the lift to ``lift`` from the grasp's configuration, solved by the
+        controller seeded on that end, as if the jaws held a part ``grip_width_mm`` across, the camera's boxes not set
+        aside (:meth:`carried_line_refusal`). A blocker's pick asks it of each grasp it may take (the owner, 2026-10-03).
+        """
+        if self._motion_planner != "curobo" or self._preflight is None or not self._conn.is_connected:
+            return ""
+        for name, asked in (("standoff", standoff), ("grasp", grasp), ("lift", lift)):
+            if asked.frame is not Frame.BASE:
+                return f"the {name} is not in Frame.BASE ({asked.frame!r}), so the grasp is not judged ahead"
+        planner = self._curobo_ur_planner()
+        try:
+            route = self._route_to_the_nearest_goal(planner, self._pose_to_flange(standoff), standoff,
+                                                    velocity=float(self.config.motion_limits.max_velocity))
+        except CuroboUnavailableError as exc:
+            return f"the move to the standoff could not be judged: cuRobo planner unavailable: {exc}"
+        if isinstance(route, MotionResult):
+            return f"the move to the standoff would be refused ({route.status.value}: {route.message})"
+        at_standoff = [float(v) for v in route.waypoints[-1]]
+        refused = self._judge_linear_move(grasp, command=MotionCommand.MOVE_TO, commanded=False,
+                                          start=(standoff, at_standoff))
+        if refused is not None:
+            return f"the line down to the grasp would be refused ({refused.status.value}: {refused.message})"
+        try:
+            at_grasp = [float(v) for v in self.ik(grasp, seed=JointPositions(at_standoff)).tolist()]
+        except (RobotKinematicsError, RobotConnectionError) as exc:
+            return f"the grasp has no inverse kinematics solution from the standoff: {exc}"
+        carried = self.carried_line_refusal(lift, grip_width_mm=float(grip_width_mm), start=(grasp, at_grasp))
+        if carried is not None:
+            return (f"the lift, as if the jaws held a part {float(grip_width_mm):g} mm across, would be refused "
+                    f"({carried.status.value}: {carried.message})")
+        return ""
+
+    def lines_refusal_ahead(self, *, approach: Pose, lines: Sequence[Pose]) -> str:
+        """Why the planned move to ``approach``, or one of the straight ``lines`` after it, would be refused, judged now
+        from where the arm stands; ``""`` where every judgement passes, and on a cell that judges nothing ahead (no
+        cuRobo, no guard, no connection). Nothing moves.
+
+        :class:`~src.robot.core.arm_capabilities.JudgesLinesAhead`. The move to ``approach`` as :meth:`move` would route
+        it (:meth:`_route_to_the_nearest_goal`), then each line from where the one before ends, the configuration there
+        solved by the controller seeded on that end, each in the world the motion itself would refresh. A push asks it of
+        its P0 and its four contact legs before it leaves the look (URSim, 2026-10-03).
+        """
+        if self._motion_planner != "curobo" or self._preflight is None or not self._conn.is_connected:
+            return ""
+        for asked in (approach, *lines):
+            if asked.frame is not Frame.BASE:
+                return f"{asked.label or 'a station'} is not in Frame.BASE ({asked.frame!r}), so it is not judged ahead"
+        planner = self._curobo_ur_planner()
+        name = approach.label or "the approach"
+        try:
+            route = self._route_to_the_nearest_goal(planner, self._pose_to_flange(approach), approach,
+                                                    velocity=float(self.config.motion_limits.max_velocity))
+        except CuroboUnavailableError as exc:
+            return f"the move to {name} could not be judged: cuRobo planner unavailable: {exc}"
+        if isinstance(route, MotionResult):
+            return f"the move to {name} would be refused ({route.status.value}: {route.message})"
+        here_pose, here = approach, [float(v) for v in route.waypoints[-1]]
+        for pose in lines:
+            refused = self._judge_linear_move(pose, command=MotionCommand.MOVE_TO, commanded=False,
+                                              start=(here_pose, here))
+            if refused is not None:
+                return (f"the line to {pose.label or 'the next station'} would be refused ({refused.status.value}: "
+                        f"{refused.message})")
+            try:
+                here = [float(v) for v in self.ik(pose, seed=JointPositions(here)).tolist()]
+            except (RobotKinematicsError, RobotConnectionError) as exc:
+                return f"{pose.label or 'a station'} has no inverse kinematics solution on the way: {exc}"
+            here_pose = pose
+        return ""
 
     def detach_payload(self) -> bool:
         """Forget the carried part. Safe to call when nothing was ever attached.
@@ -3641,7 +3722,8 @@ class URRobotArm(RobotArm):
     _WILLY_LINE_MAX_TURN_DEG = 0.5
 
     def _judge_linear_move(
-        self, pose: Pose, *, command: MotionCommand, commanded: bool = True
+        self, pose: Pose, *, command: MotionCommand, commanded: bool = True,
+        start: "tuple[Pose, Sequence[float]] | None" = None,
     ) -> "MotionResult | None":
         """Judge the straight line the controller will run to ``pose``; ``None`` means it may run.
 
@@ -3661,9 +3743,14 @@ class URRobotArm(RobotArm):
         It is not free: one RTDE round trip per sample, and the samples are as dense as the
         collision margin asks for. A line is the one motion in this stack that nothing plans,
         so the alternative to paying for it is executing it unexamined.
+
+        ``start`` is a TCP pose and the joints the arm would stand at there: the line is judged from that pose, its
+        first sample seeded on those joints, as if the arm stood there (a grasp judged ahead). Never with ``commanded``.
         """
         if self._preflight is None:
             return None
+        if start is not None and commanded:
+            raise ValueError("a line judged from elsewhere than where the arm stands is never the line commanded")
         if self._motion_planner != "curobo":
             return self._gate_pose(pose, command, commanded=commanded)
         if not self._conn.is_connected:
@@ -3682,7 +3769,7 @@ class URRobotArm(RobotArm):
             )
 
         owns_tool = self.config.gripper.tool_frame.source == "willy"
-        start_tcp = self.get_tcp_pose()
+        start_tcp = self.get_tcp_pose() if start is None else start[0]
         if owns_tool:
             turn_deg = float(
                 np.degrees(angle_between(start_tcp.quaternion_xyzw, pose.quaternion_xyzw))
@@ -3713,6 +3800,7 @@ class URRobotArm(RobotArm):
             )
         return self._judge_line_samples(
             samples, pose=pose, owns_tool=owns_tool, radii=radii, command=command,
+            seed_joints=None if start is None else start[1],
         )
 
     def _line_step_refusal(
@@ -3781,15 +3869,18 @@ class URRobotArm(RobotArm):
         owns_tool: bool,
         radii: "tuple[float, ...]",
         command: MotionCommand,
+        seed_joints: "Sequence[float] | None" = None,
     ) -> "MotionResult | None":
-        """Solve every sample of a line and hand the configurations to both authorities."""
+        """Solve every sample of a line and hand the configurations to both authorities; ``seed_joints`` stands for the
+        joints the arm stands at where the line is judged from elsewhere (:meth:`_judge_linear_move`'s ``start``)."""
         assert self._preflight is not None  # noqa: S101 (the caller checked)
         configs: list[tuple[float, ...]] = []
         # The line starts at the joints the arm stands at. moveL starts there whatever an
         # unseeded solution of the start pose says, so sample 0 is solved seeded on them and
         # judged against them like every later sample: a start on another branch is refused
         # rather than judged as if the arm were in it.
-        seed: JointPositions = JointPositions([float(v) for v in self._conn.get_joint_positions()])
+        seed: JointPositions = JointPositions([float(v) for v in (
+            self._conn.get_joint_positions() if seed_joints is None else seed_joints)])
         bound = samples.step_bound_mm if samples.step_bound_mm > 0.0 else float(self._preflight.path_step_mm or 0.0)
         for index, sample in enumerate(samples.poses):
             tcp = self._pose_from_flange(sample) if owns_tool else sample

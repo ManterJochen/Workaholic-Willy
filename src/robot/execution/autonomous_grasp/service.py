@@ -1675,15 +1675,13 @@ class AutonomousGraspService:
         """
         from src.robot.grasping.recovery.push_planner import (  # noqa: PLC0415
             DEFAULT_PUSH_DISTANCE_MM,
-            PUSH_DISTANCE_CAP_MM,
             PushRefusal,
             resolve_push_distance,
         )
 
         recovery = getattr(self.effective_config, "recovery_orchestrator", None)
-        fixture = getattr(recovery, "fixture", None)
         default = float(getattr(recovery, "push_distance_mm", DEFAULT_PUSH_DISTANCE_MM))
-        ceiling = float(fixture[2]) if fixture is not None else PUSH_DISTANCE_CAP_MM
+        ceiling = self.push_ceiling()
         if chosen(push_mm):
             try:
                 requested: Optional[float] = float(push_mm)
@@ -1696,15 +1694,30 @@ class AutonomousGraspService:
             raise ValueError(resolved.sentence)
         return float(resolved)
 
-    def start_campaign(self, *, push_mm: "Maybe[float]" = UNSET) -> "PushCampaign":
+    def push_ceiling(self) -> float:
+        """The longest push the cell allows, in mm: ``recovery.fixture.max_nudge_mm``, or the owner's hard cap of 50 mm
+        where no fixture is declared."""
+        from src.robot.grasping.recovery.push_planner import PUSH_DISTANCE_CAP_MM  # noqa: PLC0415
+
+        recovery = getattr(self.effective_config, "recovery_orchestrator", None)
+        fixture = getattr(recovery, "fixture", None)
+        return min(float(fixture[2]), PUSH_DISTANCE_CAP_MM) if fixture is not None else PUSH_DISTANCE_CAP_MM
+
+    def start_campaign(self, *, push_mm: "Maybe[float]" = UNSET,
+                       critical_parts: "Maybe[bool | None]" = UNSET) -> "PushCampaign":
         """Start a campaign of picks: fresh push budgets (1 per part, 2 per pick, 5 per campaign), no part skipped, and
         the push distance ``push_mm`` settles to (:meth:`push_distance`, whose ``ValueError`` it raises before
-        anything changes). ``PickRun`` and a console run each start one; a pick no caller started one for starts it.
-        Starting one is a person's decision too: after a recovery that stopped where the arm stands
-        (:attr:`stopped_where_the_arm_stands`), picks may start again."""
+        anything changes). Where nobody asked for a distance, a push that opens too little room may go as far as the
+        cell allows (:meth:`push_ceiling`); one asked for is taken as asked. ``critical_parts`` is the run's word on the
+        owner's switch (``recovery.critical_parts``); unset or ``None``, the cell's stands. ``PickRun`` and a console run
+        each start one; a pick no caller started one for starts it. Starting one is a person's decision too: after a
+        recovery that stopped where the arm stands (:attr:`stopped_where_the_arm_stands`), picks may start again."""
         from src.robot.grasping.recovery.push_gate import PushCampaign  # noqa: PLC0415
 
-        self._campaign = PushCampaign(distance_mm=self.push_distance(push_mm))
+        critical = critical_parts if chosen(critical_parts) and critical_parts is not None else None
+        self._campaign = PushCampaign(distance_mm=self.push_distance(push_mm),
+                                      longest_mm=None if chosen(push_mm) else self.push_ceiling(),
+                                      critical_parts=None if critical is None else bool(critical))
         self.acknowledge_needs_person()
         return self._campaign
 
@@ -1717,7 +1730,7 @@ class AutonomousGraspService:
             from src.robot.grasping.recovery.push_gate import PushCampaign  # noqa: PLC0415
 
             try:
-                self._campaign = PushCampaign(distance_mm=self.push_distance())
+                self._campaign = PushCampaign(distance_mm=self.push_distance(), longest_mm=self.push_ceiling())
             except ValueError as refused:
                 self._say_once("distance", "no part is pushed: %s", refused)
                 self._campaign = PushCampaign(distance_mm=None)
@@ -2110,9 +2123,14 @@ class AutonomousGraspService:
             self._say_once("fixture", "nudge_target is allowed and no part is pushed: %s", operator_box)
             return None
         cfg = self.effective_config
+        critical = campaign.critical_parts
+        if critical is None:
+            critical = bool(getattr(cfg.recovery_orchestrator, "critical_parts", False)) if cfg is not None else False
         return PushGate(
             budgets=campaign.budgets, distance_mm=campaign.distance_mm, cell=cell, operator_box=operator_box,
             on_approach_blocked=bool(getattr(cfg, "approach_validation_enabled", False)),
+            blocker_grasp_tries=int(cfg.recovery_orchestrator.blocker_grasp_tries) if cfg is not None else 3,
+            critical_parts=critical, longest_mm=campaign.longest_mm,
         )
 
     @staticmethod

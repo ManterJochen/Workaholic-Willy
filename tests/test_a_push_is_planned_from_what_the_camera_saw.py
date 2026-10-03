@@ -21,17 +21,20 @@ The owner's rules pinned here (2026-09-29):
 * A part under 15 mm is not pushed.
 * Every TCP point stays 20 mm above z_min.
 * The landing plus 15 mm stays inside the push box. That box is the workspace intersected with the seen table,
-  shrunk by (push distance + 30 mm), or else a declared container.
+  shrunk by 30 mm, or else a declared container. The shrink no longer grows with the push (the owner, 2026-10-03):
+  how far a part travelled does not move the edge it keeps away from.
 * A push above 50 mm is refused.
 
 The findings of the first review are pinned here too:
 
 * The table the camera saw is kept cell by cell, not as the box around it. A landing past a diagonal table edge,
-  into a hole or a shadow, or across a gap between two seen patches is refused, and so is a hand coming down
-  where no table was seen. The part and its neighbours stand on the table and hide it, so their own footprints
-  count as seen.
-* A part must rest on the support: its lowest points lie within 10 mm of it. A part on something unsegmented,
-  or seen only from above, is not pushed. The 15 mm rule applies to the part's own height.
+  into a hole, or across a gap between two seen patches is refused, and so is a hand coming down where no table
+  was seen. The part and its neighbours stand on the table and hide it, so their own footprints count as seen. A
+  shadow among seen table is ground for a landing (the owner, 2026-10-03: no drop-off); the fingers still come
+  down only where the camera saw table.
+* A part must rest on the support: its lowest points lie within 10 mm of it, or, where no look saw its foot, the
+  support round it says it stands there (``test_a_push_may_rearrange_the_scene.py``). A part on something
+  unsegmented is not pushed. The 15 mm rule applies to the part's own height.
 * A part that reaches the palm's underside is not pushed: only the finger may touch it. The Hand-E housing is
   75 mm along the closing axis, wider than the open fingers, and the planner keeps it clear of tall neighbours.
 * The push distance is resolved against the config: ``push_distance_mm`` (30 mm) when nobody asks, a request up to
@@ -90,7 +93,7 @@ HAND_E = PushHand(
 HALF_OUTER = 49.99 / 2 + 10.80
 
 WORKSPACE = AxisBox(min_mm=(-800.0, -800.0, -100.0), max_mm=(800.0, 800.0, 600.0))
-SHRINK = DEFAULT_PUSH_DISTANCE_MM + AUTO_BOX_EXTRA_SHRINK_MM
+SHRINK = AUTO_BOX_EXTRA_SHRINK_MM
 X_ONLY = ((1.0, 0.0),)
 
 
@@ -340,7 +343,7 @@ class WhenThePlannerRefuses(unittest.TestCase):
         _refused(self, _plan(table_points_mm=_table(x=(-10.0, 10.0), y=(-10.0, 10.0), step=10.0)), "no_table_seen")
 
     def test_a_table_region_smaller_than_the_shrink_leaves_no_box(self) -> None:
-        _refused(self, _plan(table_points_mm=_table(x=(-50.0, 50.0), y=(-50.0, 50.0))), "push_box_empty")
+        _refused(self, _plan(table_points_mm=_table(x=(-28.0, 28.0), y=(-28.0, 28.0), step=2.5)), "push_box_empty")
 
     def test_a_tilted_support_is_not_pushed_on(self) -> None:
         tilt = math.radians(8.0)
@@ -370,9 +373,9 @@ class WhenThePlannerRefuses(unittest.TestCase):
 
 
 class ThePushBox(unittest.TestCase):
-    def test_the_automatic_box_is_workspace_and_seen_table_shrunk_by_the_push_plus_thirty(self) -> None:
+    def test_the_automatic_box_is_workspace_and_seen_table_shrunk_by_thirty(self) -> None:
         # The table was seen from x = -400 to +300, the workspace reaches +500. So the box ends near
-        # 300 - (30 + 30) = 240. The seen region is trimmed by half a percent of its points on each side,
+        # 300 - 30 = 270. The seen region is trimmed by half a percent of its points on each side,
         # which removes a stray point and nothing from a table seen evenly.
         table = _table(x=(-400.0, 300.0))
         plan = _planned(self, _plan(table_points_mm=table, push_axes_xy=X_ONLY,
@@ -384,10 +387,11 @@ class ThePushBox(unittest.TestCase):
         self.assertAlmostEqual(hi_y, 400.0 - SHRINK, delta=6.0)
         self.assertAlmostEqual(lo_y, -400.0 + SHRINK, delta=6.0)
 
-    def test_the_shrink_grows_with_the_push_distance(self) -> None:
+    def test_the_shrink_does_not_grow_with_the_push_distance(self) -> None:
+        # The owner, 2026-10-03: how far the part travels does not move the edge it keeps away from.
         near = _planned(self, _plan(push_axes_xy=X_ONLY, push_distance_mm=20.0))
         far = _planned(self, _plan(push_axes_xy=X_ONLY, push_distance_mm=40.0))
-        self.assertAlmostEqual(near.landing_box_xy_mm[1][0] - far.landing_box_xy_mm[1][0], 20.0, places=6)
+        self.assertEqual(near.landing_box_xy_mm, far.landing_box_xy_mm)
 
     def test_the_workspace_limits_the_box_where_it_is_tighter_than_the_table(self) -> None:
         plan = _planned(self, _plan(push_axes_xy=X_ONLY,
@@ -586,13 +590,18 @@ class TheSeenTableIsTheCellsTheCameraSaw(unittest.TestCase):
                            "no_free_direction")
         self.assertEqual(_verdict(refusal, (1.0, 0.0)), "landing_over_unseen_table")
 
-    def test_a_shadow_behind_the_part_is_not_table(self) -> None:
-        # The 45 deg wrist camera cannot see the table right behind a 30 mm part. Whatever lies there, the
-        # part is not pushed into it: another view that sees it has to add its points first.
+    def test_a_shadow_behind_the_part_among_seen_table_is_ground(self) -> None:
+        # The 45 deg wrist camera cannot see the table right behind a 30 mm part. Among seen table that shadow is no
+        # drop-off, and the part lands in it (the owner, 2026-10-03: "Allgemein Schieben erlauben, sofern nicht ein
+        # Abgrund oder so da ist").
         shadow = (TABLE[:, 0] > 15.0) & (TABLE[:, 0] < 45.0) & (np.abs(TABLE[:, 1]) < 15.0)
+        _planned(self, _plan(table_points_mm=TABLE[~shadow], push_axes_xy=X_ONLY))
+
+    def test_a_shadow_that_runs_to_the_edge_of_what_was_seen_is_not(self) -> None:
+        # The same shadow, joined to where the camera saw nothing at all: the support may end anywhere along it.
+        shadow = (TABLE[:, 0] > 15.0) & (np.abs(TABLE[:, 1]) < 15.0)
         refusal = _refused(self, _plan(table_points_mm=TABLE[~shadow], push_axes_xy=X_ONLY), "no_free_direction")
         self.assertEqual(_verdict(refusal, (1.0, 0.0)), "landing_over_unseen_table")
-        _planned(self, _plan(table_points_mm=np.vstack([TABLE[~shadow], TABLE[shadow]]), push_axes_xy=X_ONLY))
 
     def test_a_landing_across_a_gap_between_two_seen_patches_is_refused(self) -> None:
         table = np.vstack([_table(x=(-400.0, 0.0)), _table(x=(200.0, 400.0))])
@@ -642,12 +651,14 @@ class ThePartMustRestOnTheSupport(unittest.TestCase):
         washer = _block(height=4.0, z0=25.0, step=1.0)
         _refused(self, _plan(target_points_mm=washer, push_axes_xy=X_ONLY), "part_not_on_support")
 
-    def test_a_part_seen_only_from_above_is_not_pushed(self) -> None:
-        # Where it rests cannot be told from its top face alone, so it fails closed. Another view that sees a
-        # side lets it through.
+    def test_a_part_seen_only_from_above_over_a_table_seen_under_it_is_not_pushed(self) -> None:
+        # Its top face alone, and the camera saw the table under it: it stands over the table on something, and the
+        # finger could pass under it. Another view that sees a side lets it through. Seen from above alone over a
+        # table that hides under it, its foot is inferred (test_a_push_may_rearrange_the_scene.py).
         block = _block()
         top_only = block[block[:, 2] >= 29.9]
-        _refused(self, _plan(target_points_mm=top_only, push_axes_xy=X_ONLY), "part_not_on_support")
+        refusal = _refused(self, _plan(target_points_mm=top_only, push_axes_xy=X_ONLY), "part_not_on_support")
+        self.assertIn("table under it", refusal.sentence)
         _planned(self, _plan(target_points_mm=block, push_axes_xy=X_ONLY))
 
     def test_the_fifteen_millimetre_rule_is_the_parts_own_height(self) -> None:

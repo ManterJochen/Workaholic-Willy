@@ -549,11 +549,19 @@ grasp mode is the outer gate, and `recovery.allowed_actions` has to name an acti
   meets one of them the pick says "every grasp meets a neighbour" (`all_collided`), the one failure a
   blocker or a push answers. A part too short for the hand says so instead (about 28 mm for the Hand-E,
   `all_table_conflict`), and is never pushed.
-* **Clear the blocker first** (the owner, 2026-10-02: "entweder das Objekt verschieben oder ein anderes
-  Objekt nehmen, was im Weg liegt und dann das eigentliche Objekt aufheben"). Where the push may run (the
-  same gate, below), the pick first takes away a neighbour that stands in the way: a separate object on
-  what the part stands on, narrower than the hand opens, whose removal the calculator says frees a grasp
-  of the part or spares one of its refusals, and which reaches no further past the fingertips than the
+* **Every grasp is judged before the arm leaves for it**, on the owner's cuRobo UR: the move to its
+  standoff, its line in and its lift as if carrying. A grasp refused there moves nothing, and the next
+  follows; a part whose every grasp was refused that way counts as boxed in.
+* **Push, or clear a blocker: the owner's switch** (`recovery.critical_parts`, 2026-10-03, and
+  *Kritische Teile* in the console's Advanced drawer for one run). Off, the default: a boxed-in part is
+  pushed first, and the push may rearrange the scene; a blocker is cleared where no push plans. On:
+  nothing is pushed, and a blocker is cleared instead.
+* **Clear the blocker** (the owner, 2026-10-02: "entweder das Objekt verschieben oder ein anderes Objekt
+  nehmen, was im Weg liegt und dann das eigentliche Objekt aufheben"). Where the push may run (the same
+  gate, below), the pick takes away a neighbour that stands in the way: a separate object on what the
+  part stands on (where no look saw its foot, the support seen round it says so), narrower than the hand
+  opens, whose removal the calculator says frees a grasp of the part or spares one of its refusals, and
+  which reaches no further past the fingertips than the
   planner models a carried part (`payload.length_mm`, where the arm models one). It is gripped like any
   part, with the part back in the camera world, set down on a free spot the camera saw (150 mm from the
   part, nothing seen within the hand's reach plus 20 mm, inside the workspace) or at a place a program
@@ -565,25 +573,29 @@ grasp mode is the outer gate, and `recovery.allowed_actions` has to name an acti
   stood over the blocker, the jaws known open and empty, sends the arm back to its look on a judged move,
   the blocker still held out of the world as on the way down, and that blocker is not tried again; any
   other stop once something moved leaves the arm where it stands, the blocker maybe in the hand: a person
-  decides (After a stop). Only then the push.
-* **The push** frees a boxed-in part that no blocker could be cleared for: no candidate survived and at
-  least one collided, or, where approach validation runs, every approach was blocked, and in both cases a
-  neighbour was seen within 25 mm of the part. It runs on a wrist camera's pick in `dense_clutter` only,
-  with either grasp calculator, inside the pick attempt, after the looks were judged; a fixed-camera cell
-  never pushes. It never follows no candidate or no valid grasp: nothing there says a neighbour is in the
-  way. A cell with `grasping.decision.enabled: true` ends a pick with no grasp before any of this: leave
-  it off where a part may be boxed in.
+  decides (After a stop). Its grasps are tried best first, at most `recovery.blocker_grasp_tries` (3),
+  each judged before the arm leaves. Where no one removal frees a grasp but all of them together would,
+  the nearest goes first. The hand needs room: a neighbour within about 20 mm of the part leaves no room
+  to grip it, and a part boxed in that tightly stays boxed.
+* **The push** frees a boxed-in part that is not critical: no candidate survived and at least one
+  collided, every grasp was refused ahead, or, where approach validation runs, every approach was
+  blocked, and in each case a neighbour was seen within 25 mm of the part. It runs on a wrist camera's
+  pick in `dense_clutter` only, with either grasp calculator, inside the pick attempt, after the looks
+  were judged; a fixed-camera cell never pushes. It never follows no candidate or no valid grasp: nothing
+  there says a neighbour is in the way. A cell with `grasping.decision.enabled: true` ends a pick with no
+  grasp before any of this: leave it off where a part may be boxed in.
 
 | The push | |
 |---|---|
 | **Pusher** | The jaws stay **open**, and the outer face of the leading finger pushes along the closing axis. The push never changes the hand's output: a toggle's count is the same after it, and nobody is asked. |
 | **Jaw count** | A count that says closed means no push. One that cannot say when the push reads it, once its plan and budgets passed (DO0 switched at the pendant while the pick looked, or its output unreadable), **ends the pick as a gripper fault**: nothing pushed or moved, and the campaign stops. A Robotiq over its socket, or any hand that measures its width, found not connected there, or whose width read fails (a socket that stopped answering), ends it the same way. Look at the jaws, then connect again: a toggle's connect asks where they stand, and a width gripper is reconnected. A push refused before that read falls through, and `next_target` reads the count before it drives the looks again: one nobody can vouch for ends the pick as a gripper fault before any look. |
 | **During the push** | The count, the controller and the pick's stop check are read again before each contact leg and once the arm is up. DO0 switched while the push drives, or a stop asked for (halt now in the console), **stops the push where the arm stands**, the fingers possibly down beside the part: nothing more moves, not even back to the look, and a person decides (After a stop). |
-| **Where to** | An automatic **push box**: the extent of the surface the part stands on where the camera world found one ([04](../guide/04-robot-and-safety.md), 5.5), else the workspace box intersected with the table the camera saw, shrunk by the push plus 30 mm. The landing plus 15 mm stays inside it, and the hand comes down over seen table only, read on the surface's own local plane. `recovery.fixture` only narrows it; a declared container is its interior. Expect sideways pushes: pushing a part straight away from a neighbour needs room for the open hand between them. |
-| **Beside the part** | The open hand keeps **10 mm** from a neighbour point inside the box the push keeps out of the camera world round the part and its path (the owner, 2026-10-02), where the guard cannot see it while the push runs; every other neighbour point keeps the camera world's margin plus the line clearance, **25 mm** shipped, so no push is planned that the guard would refuse once a leg runs. |
-| **How far** | 30 mm (`recovery.fixture.push_distance_mm`), never more than `recovery.fixture.max_nudge_mm` (50 mm, the hard cap). `PickRun.from_cell(..., push_mm=...)` or the console's request asks another distance: up to the ceiling as asked, above it refused, never shortened, under 10 mm refused (the console answers `422 push_distance_refused`). A cell config with `max_nudge_mm` under 10 or under `push_distance_mm` does not load: delete the old line to take 50 mm, or write 10 to 50 mm with a `push_distance_mm` no longer than it. **Ask for 50 mm**: on 91 measured one-neighbour scenes that trigger the push (2026-10-02), 30 mm planned none and 50 mm planned 7, a part beside a small cube 5 to 12 mm off; a neighbour that can be gripped is cleared before that. |
-| **How low** | Fingertips at half the part's height over the support, held to 10 to 20 mm, and never under the **finger floor**: over a surface the camera world holds as a solid, its top plus the guard's distance plus 1 mm. A push whose finger would pass over the part is refused (`refused_finger_floor_over_the_part`). No push for a part under 15 mm tall, or one not resting on the support. Every TCP point stays 20 mm inside the workspace box, 20 mm above `z_min` included. |
-| **Motion** | To 80 mm above the contact start like a grasp approach: the straight joint line first, cuRobo only when it is blocked. Then four judged straight lines: down at 50 mm/s, the push at 25 mm/s (0.1 m/s²), back 5 mm and up 80 mm at 50 mm/s. The wrist takes the way round nearer `robot.natural_closing_axis` where the cell names one, else nearer where it stands. Then back to the look (to a view the pick generated, on the straight joint line alone), look again, fused with the pick's frames, and judge again. |
+| **Critical parts** | `recovery.critical_parts: true`, or *Kritische Teile* for one console run: never pushed, a blocked approach included; a blocker is cleared instead. |
+| **Where to** | An automatic **push box**: the extent of the surface the part stands on where the camera world found one ([04](../guide/04-robot-and-safety.md), 5.5), else the workspace box intersected with the table the camera saw, shrunk by 30 mm. The landing plus 15 mm stays inside it, and so does every neighbour the push shoves. **Nothing is pushed over an edge**: every landing keeps 45 mm of table the camera saw round it, a shadow or a dip among it counted as ground, the edge of what was seen never. The fingers come down over seen table only, read on the surface's own local plane. `recovery.fixture` only narrows it; a declared container is its interior. Expect sideways pushes: pushing a part straight away from a neighbour needs room for the open hand between them. |
+| **Beside the part** | **The push may rearrange the scene** (the owner, 2026-10-03). The fingers come down **10 mm** from every neighbour. The part may shove a lower neighbour ahead of it, and the fingers may brush one beside their stroke; each neighbour the push may touch is held out of the camera world whole while it runs. The housing keeps the camera world's margin plus the line clearance, **25 mm** shipped, from every neighbour tall enough to reach it, and such a neighbour stays in the guard's world, the fingers keeping the same from it. A push that only drives a neighbour along in front of the part opens no room and is refused; one that touches nothing but the part comes first. |
+| **How far** | 30 mm (`recovery.fixture.push_distance_mm`), never more than `recovery.fixture.max_nudge_mm` (50 mm, the hard cap). Where nobody asked and 30 mm frees no direction, the planner tries 40, then 50 mm by itself. `PickRun.from_cell(..., push_mm=...)` or the console's request asks another distance: up to the ceiling as asked and never lengthened, above it refused, never shortened, under 10 mm refused (the console answers `422 push_distance_refused`). A cell config with `max_nudge_mm` under 10 or under `push_distance_mm` does not load: delete the old line to take 50 mm, or write 10 to 50 mm with a `push_distance_mm` no longer than it. On 160 measured scenes (2026-10-03) the rearranging push planned 39, most often a round part beside one neighbour; the push of 2026-10-02 planned none of them. |
+| **How low** | Fingertips at half the part's height over the support, held to 10 to 20 mm, and never under the **finger floor**: over a surface the camera world holds as a solid, its top plus the guard's distance plus 1 mm. A push whose finger would pass over the part is refused (`refused_finger_floor_over_the_part`). No push for a part under 15 mm tall, or one not resting on the support: where no look saw its foot, it rests there where no edge of what was seen lies within 15 mm of it, a quarter of that ring is the table itself, and no table was seen under it. Every TCP point stays 20 mm inside the workspace box, 20 mm above `z_min` included. |
+| **Motion** | First the whole push is judged from where the arm stands: the move to P0 and every line, each from where the one before ends; a refusal there moves nothing (`refused_ahead`). Then to 80 mm above the contact start like a grasp approach: the straight joint line first, cuRobo only when it is blocked. Then four judged straight lines: down at 50 mm/s, the push at 25 mm/s (0.1 m/s²), back 5 mm and up 80 mm at 50 mm/s. The wrist takes the way round nearer `robot.natural_closing_axis` where the cell names one, else nearer where it stands. Then back to the look (to a view the pick generated, on the straight joint line alone), look again, fused with the pick's frames, and judge again. |
 | **How often** | 1 push per part, 2 per pick, 5 per campaign. Spent means no more pushes, and the campaign goes on. |
 | **Falls through** | A refusal that sent nothing and touched nothing goes on to the next recovery action: the approach refused before it was sent, or the down leg refused before it was sent, the arm still in the air above the part. There the arm goes back to its look first, and the round trip counts against the budgets (the lead's ruling, pending the owner). |
 | **Ends the pick** | Two refusals before the push end the pick with nothing commanded: a controller found stopped or unreadable (`controller_not_operational`), and a hand nobody can vouch for when the push reads it, a toggle's count or a width-measuring hand not connected or unreadable (a gripper fault, Jaw count row). |
@@ -593,17 +605,19 @@ grasp mode is the outer gate, and `recovery.allowed_actions` has to name an acti
 
 Two facts decide whether a push is possible at all:
 
-* **The table has to be seen around the part.** From one 45 degree wrist look the shadow behind the
-  part usually refuses the push (`landing_over_unseen_table`): give the pick looks from more than one
-  side. A part whose lower side no look saw is refused as well (`part_not_on_support`).
+* **The table has to be seen around the part.** A shadow or a dip among seen table counts as ground; the
+  edge of what was seen never does (`landing_over_unseen_table`): give the pick looks that see past the
+  part. A part whose lower side no look saw is pushed only where the table round it says it rests there
+  (`part_not_on_support` otherwise).
 * **`z_min` has to allow it.** Every TCP point of a push stays 20 mm above
   `robot.workspace_limits.z_min`, while the fingertips come down to 10 to 20 mm over the table. A
   `z_min` meant as table clearance, as the base tree's 100 mm is, refuses the push (`below_z_min`):
   safe, and nothing is pushed. Check it against the table's height in BASE before the trial.
 
 While the part moves, its swept path is held out of the camera world, and with it the neighbour points
-closest to that path. The push planner keeps the open hand 10 mm from those (Beside the part); the
-camera and its bracket are not in that model, so watch them on the first trials.
+closest to that path and every neighbour the push may touch, whole. The push planner keeps the fingers
+10 mm from those where they come down (Beside the part); the camera and its bracket are not in that
+model, so watch them on the first trials.
 
 **The first push is a supervised trial.** In this order:
 
@@ -618,6 +632,7 @@ camera and its bracket are not in that model, so watch them on the first trials.
        recovery:
          enabled: true
          allowed_actions: [rescan, next_target, nudge_target]   # nudge_target arms the blocker and the push
+         critical_parts: false                 # true: never push, clear a blocker instead
          fixture:                              # optional, BASE mm, yours: it only narrows the push box
            center_mm: [400.0, 0.0, 60.0]
            half_extents_mm: [150.0, 150.0, 60.0]
@@ -659,7 +674,20 @@ back, the open jaws inside its box. The move back now keeps it held out, as on t
 arm back to its look in two of three, the push considered next; in the third the filled box stood round
 the finger at the standoff, so no move from there could be judged, and the arm stopped for a person. Once
 the stand-in camera, low over a blocker, read no depth, and the pick stopped where the arm stood, as any
-pick does. It has not run in Isaac or on a cell yet.
+pick does.
+
+**On 2026-10-03 it ran again**, on the owner's Monday tree (`within_half_turn_of_home: true`), with a
+stand-in camera that casts the whole bench, the mat's sides and the floor, and reads no depth nearer than
+200 mm, where the owner's D415 read none on about half its pixels at the pre-grasp (2026-10-01). Every item
+held. **The push:** a 40 mm cylinder beside a 60 mm block, not critical, was pushed 40 mm (30 mm freed no
+direction), its clearance from 8.6 to 22.6 mm, the block beside its stroke held out of the world whole; the
+whole push judged ahead, every leg's least distance 11 mm, DO0 untouched, then back to the look, a fresh
+look and the cylinder gripped.
+**The clearing:** for critical parts, an L of two 30 mm blocks 28 mm from a 30 mm block: one block gripped
+and set down 153 mm away on the mat, then the part gripped, DO0 closed, open, closed, and nothing pushed.
+**A stop and a protective stop** during the push leg each left the arm where it stood, nothing more
+commanded, and the next pick was refused until a person decided. It has not run in Isaac or on a cell
+yet.
 
 ### 10. Where can a bin stand beside the base?
 

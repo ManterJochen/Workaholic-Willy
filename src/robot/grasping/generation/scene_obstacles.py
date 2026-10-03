@@ -51,11 +51,13 @@ __all__ = [
     "EnvelopeVerdict",
     "SceneObstacleRules",
     "SceneObstacles",
+    "SeenEnvelope",
     "corridor_seen_in",
     "envelope_verdicts",
     "least_part_height_mm",
     "no_grasp_said",
     "scene_obstacle_points",
+    "seen_boxes",
     "why_no_grasp",
 ]
 
@@ -110,6 +112,12 @@ class SceneObstacleRules:
     min_points: int = 12
     #: The voxel the points are counted in, millimetres (``perceived.cluster_voxel_mm``).
     cluster_voxel_mm: float = 25.0
+    #: What the camera world grows every box of a neighbour by, millimetres (``perceived.margin_mm``).
+    margin_mm: float = 15.0
+    #: The height step a box of a neighbour's height map holds, millimetres (``perceived.voxel_size_mm``).
+    voxel_size_mm: float = 10.0
+    #: Whether the camera world carries a neighbour's boxes down to the bench (``perceived.floor_to_plane``).
+    floor_to_plane: bool = True
     #: Every how many pixels the frame is read along each axis (``perceived.pixel_stride``), as the world reads it.
     pixel_stride: int = 2
     reach_mm: float = REACH_MM
@@ -159,6 +167,9 @@ class SceneObstacleRules:
             declared_band_mm=float(DECLARED_SURFACE_MM),
             min_points=int(getattr(perceived, "min_points", 12)),
             cluster_voxel_mm=float(getattr(perceived, "cluster_voxel_mm", 25.0)),
+            margin_mm=float(getattr(perceived, "margin_mm", 15.0)),
+            voxel_size_mm=float(getattr(perceived, "voxel_size_mm", 10.0)),
+            floor_to_plane=bool(getattr(perceived, "floor_to_plane", True)),
             pixel_stride=int(getattr(perceived, "pixel_stride", 2)),
             support_distance_mm=float(guard.perceived_min_distance_mm),
             declared_boxes=boxes,
@@ -184,6 +195,9 @@ class SceneObstacles:
     counts: Mapping[str, int]
     #: The pixels the part's mask was grown by.
     grown_px: int = 0
+    #: The boxes the camera world builds of :attr:`world_rule_base_mm` (``perceived.SeenBox``, its margin in them):
+    #: what the guard holds for these neighbours and keeps ``support_distance_mm`` from (:class:`SeenEnvelope`).
+    boxes: tuple[Any, ...] = ()
 
     @classmethod
     def none(cls) -> "SceneObstacles":
@@ -292,9 +306,10 @@ def scene_obstacle_points(
     take = around[rows, cols]
     rows, cols = rows[take], cols[take]
     z = depth[rows, cols]
-    points = np.column_stack(((cols - cx) * z / fx, (rows - cy) * z / fy, z)) @ turn.T + shift
+    camera = np.column_stack(((cols - cx) * z / fx, (rows - cy) * z / fy, z))
+    points = camera @ turn.T + shift
     near = np.hypot(points[:, 0] - centre[0], points[:, 1] - centre[1]) < float(rules.reach_mm)
-    points, trimmed = points[near], behind[rows[near], cols[near]]
+    points, trimmed, camera = points[near], behind[rows[near], cols[near]], camera[near]
     counts: dict[str, int] = {"read": int(points.shape[0])}
 
     # The support rule (contract 7): a surface the model holds decides over its own pixels, the bench and the part's
@@ -326,13 +341,109 @@ def scene_obstacle_points(
     counts["declared"] = int((declared & ~surface & ~below).sum())
 
     world_rule = points[~surface & ~below_bench & ~declared]
+    # The boxes of the neighbours: what stands over the support the part stands on and over what its solids erase, the
+    # pixels behind a depth step left out as the obstacles leave them (a mixed pixel at the part's own rim is no
+    # neighbour), thinned to one point a voxel
+    # as the world thins what it reads before it builds a box (``perceived._base_points``): the first pixel read in
+    # each cell of the camera's own frame.
+    beside = ~surface & ~below & ~declared & ~trimmed
+    if support_model is not None and hasattr(support_model, "erased_by_support") and points.shape[0]:
+        # What a support's solid holds up to its erasure top leaves the world as that support's, its noise with it.
+        beside &= ~np.asarray(support_model.erased_by_support(points), dtype=bool).reshape(-1)
+    thinned = points[beside][_first_in_each_voxel(camera[beside], float(rules.voxel_size_mm))]
     candidates = points[~surface & ~below & ~declared & ~trimmed]
     keep, groups = _voxel_groups(candidates, float(rules.cluster_voxel_mm), int(rules.min_points))
     kept = candidates[keep]
     counts["speck"] = int(candidates.shape[0] - kept.shape[0])
     counts["kept"] = int(kept.shape[0])
     return SceneObstacles(points_base_mm=kept, world_rule_base_mm=world_rule, clusters=groups, counts=counts,
-                          grown_px=grow)
+                          grown_px=grow, boxes=seen_boxes(thinned, rules))
+
+
+def _first_in_each_voxel(camera_mm: np.ndarray, voxel_mm: float) -> np.ndarray:
+    """The indices of the first point in each ``voxel_mm`` cell of the camera's frame, in the order they were read,
+    as ``perceived._base_points`` thins a frame: cells whole multiples of the voxel, so the same pixels stand for the
+    same cells here and there."""
+    if camera_mm.shape[0] == 0:
+        return np.zeros(0, dtype=np.int64)
+    cells = np.floor(camera_mm / float(voxel_mm)).astype(np.int64)
+    cells -= cells.min(axis=0)
+    span = cells.max(axis=0) + 1
+    keys = (cells[:, 0] * span[1] + cells[:, 1]) * span[2] + cells[:, 2]
+    _, first = np.unique(keys, return_index=True)
+    return np.sort(first)
+
+
+def seen_boxes(points_base_mm: np.ndarray, rules: SceneObstacleRules) -> tuple[Any, ...]:
+    """The boxes the camera world builds of the neighbours' points by ``rules`` (``perceived.seen_part_boxes``): each
+    cluster of at least ``min_points`` points a height map of columns, grown by ``margin_mm``, carried down to the bench
+    where the world carries its boxes down. The calculator keeps the guard's distance from them, so it offers no grasp
+    the guard refuses beside a neighbour once the arm has moved (the owner, 2026-10-03)."""
+    from src.robot.safety.planning.perceived import seen_part_boxes  # noqa: PLC0415
+
+    floor = rules.bench_top_mm if rules.floor_to_plane else None
+    return seen_part_boxes(points_base_mm, margin_mm=float(rules.margin_mm),
+                           cluster_voxel_mm=float(rules.cluster_voxel_mm), voxel_size_mm=float(rules.voxel_size_mm),
+                           floor_mm=None if floor is None else float(floor), min_points=int(rules.min_points))
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class SeenEnvelope:
+    """The open hand against the boxes the camera world holds for the neighbours one frame shows.
+
+    The guard keeps ``distance_mm`` (``perceived_min_distance_mm``) from every camera box. A grasp whose open hand comes
+    nearer to one of these boxes, at the grasp or anywhere on its way in along the approach (``way_in_mm`` back from
+    it), would be refused there once the arm has moved: the calculator does not offer it. The hand is
+    ``gripper_model.collision_boxes(open_width_mm)``, which holds the hand's meshes, as :func:`envelope_verdicts` places
+    it: the rotation's columns are the closing axis, the binormal and the approach.
+    """
+
+    boxes: tuple[Any, ...]
+    hand_centres: np.ndarray
+    hand_halves: np.ndarray
+    distance_mm: float
+    way_in_mm: tuple[float, ...] = (0.0, 40.0, 80.0)
+
+    @classmethod
+    def of(cls, boxes: Sequence[Any], *, gripper_model: Any, open_width_mm: float, distance_mm: float,
+           way_in_mm: Sequence[float] = (0.0, 40.0, 80.0)) -> "SeenEnvelope | None":
+        """The envelope over ``boxes``, or ``None`` where there is none to keep off."""
+        if not boxes:
+            return None
+        hand = gripper_model.collision_boxes(float(open_width_mm))
+        centres = np.array([(np.asarray(b.min_corner_mm) + np.asarray(b.max_corner_mm)) / 2.0 for b in hand])
+        halves = np.array([(np.asarray(b.max_corner_mm) - np.asarray(b.min_corner_mm)) / 2.0 for b in hand])
+        return cls(boxes=tuple(boxes), hand_centres=centres, hand_halves=halves, distance_mm=float(distance_mm),
+                   way_in_mm=tuple(float(v) for v in way_in_mm))
+
+    def least_mm(self, position: np.ndarray, rotation: np.ndarray) -> float:
+        """The open hand's least distance to the boxes, at ``position`` and back along the approach, millimetres."""
+        turn = np.asarray(rotation, dtype=np.float64).reshape(3, 3)
+        at = np.asarray(position, dtype=np.float64).reshape(3)
+        approach = turn[:, 2]
+        centres_b = np.array([b.centre_mm for b in self.boxes], dtype=np.float64)
+        turns_b = np.array([b.rotation for b in self.boxes], dtype=np.float64)
+        halves_b = np.array([b.half_extents_mm for b in self.boxes], dtype=np.float64)
+        reach_hand = float(np.max(np.linalg.norm(self.hand_centres, axis=1) + np.linalg.norm(self.hand_halves, axis=1)))
+        reach_b = np.linalg.norm(halves_b, axis=1)
+        least = math.inf
+        for back in self.way_in_mm:
+            anchor = at - back * approach
+            near = np.linalg.norm(centres_b - anchor, axis=1) <= reach_hand + reach_b + self.distance_mm + 1.0
+            if not near.any():
+                continue
+            hand_c = anchor + self.hand_centres @ turn.T
+            n_hand, n_box = hand_c.shape[0], int(near.sum())
+            distances = box_distances_mm(
+                np.repeat(hand_c, n_box, axis=0), np.repeat(turn[None, :, :], n_hand * n_box, axis=0),
+                np.repeat(self.hand_halves, n_box, axis=0), np.tile(centres_b[near], (n_hand, 1)),
+                np.tile(turns_b[near], (n_hand, 1, 1)), np.tile(halves_b[near], (n_hand, 1)))
+            least = min(least, float(distances.min()))
+        return least
+
+    def refuses(self, position: np.ndarray, rotation: np.ndarray) -> bool:
+        """Whether the open hand comes nearer the boxes than the guard keeps, at the grasp or on the way in."""
+        return self.least_mm(position, rotation) < self.distance_mm
 
 
 def corridor_seen_in(
@@ -466,14 +577,17 @@ def envelope_verdicts(
     support_distance_mm: float = 5.0,
     declared_boxes: Sequence[DeclaredBox] = (),
     declared_distance_mm: float = 10.0,
+    seen_boxes: Sequence[Any] = (),
+    seen_distance_mm: float = 5.0,
 ) -> list[EnvelopeVerdict]:
     """For each BASE grasp ``(position, rotation)``, whether the open hand there keeps the guard's distances.
 
     The hand is ``gripper_model.collision_boxes(open_width_mm)`` at the pose (the rotation's columns are the closing
     axis, the binormal and the approach, as a ``GraspPose`` holds them): it arrives open. A support's solid
     (``SupportSolid``: ``centre_mm``, ``rotation``, ``half_extents_mm``, the allowance included) is a camera box the
-    guard keeps ``support_distance_mm`` from; a declared box keeps ``declared_distance_mm``. Mirrors the guard over the
-    hand's box envelope, which holds the hand's meshes: it refuses at least what the guard would refuse at the hand.
+    guard keeps ``support_distance_mm`` from; a declared box keeps ``declared_distance_mm``; a box the camera world
+    builds of a neighbour (``perceived.SeenBox``, :func:`seen_boxes`) keeps ``seen_distance_mm``. Mirrors the guard over
+    the hand's box envelope, which holds the hand's meshes: it refuses at least what the guard would refuse at the hand.
     """
     boxes = gripper_model.collision_boxes(float(open_width_mm))
     local_centres = np.array([(np.asarray(b.min_corner_mm) + np.asarray(b.max_corner_mm)) / 2.0 for b in boxes])
@@ -486,6 +600,10 @@ def envelope_verdicts(
     for box in declared_boxes:
         held.append(("declared", box.name, np.asarray(box.centre_mm, dtype=np.float64), np.eye(3),
                      np.asarray(box.half_extents_mm, dtype=np.float64), float(declared_distance_mm)))
+    for number, box in enumerate(seen_boxes):
+        held.append(("seen", f"neighbour box {number}", np.asarray(box.centre_mm, dtype=np.float64),
+                     np.asarray(box.rotation, dtype=np.float64).reshape(3, 3),
+                     np.asarray(box.half_extents_mm, dtype=np.float64), float(seen_distance_mm)))
     out: list[EnvelopeVerdict] = []
     if not held:
         return [EnvelopeVerdict("", "", math.inf) for _ in poses]
@@ -505,9 +623,10 @@ def envelope_verdicts(
         nearest = int(np.argmin(distances - limits))
         refused = ""
         if short.any():
-            # A declared box outranks a camera's solid: it was measured, and its refusal says what to move.
+            # A declared box outranks a camera's solid: it was measured, and its refusal says what to move. The support
+            # outranks a neighbour: taking a neighbour away frees no grasp the support refuses.
             kinds = [held[i][0] for i in np.nonzero(short)[0]]
-            refused = "declared" if "declared" in kinds else "support"
+            refused = "declared" if "declared" in kinds else "support" if "support" in kinds else "seen"
             nearest = int(np.nonzero(short)[0][np.argmin((distances - limits)[short])])
         out.append(EnvelopeVerdict(refused, held[nearest][1], float(distances[nearest])))
     return out

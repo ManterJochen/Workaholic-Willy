@@ -96,6 +96,7 @@ __all__ = [
     "PerceivedWorld",
     "PerceptionGeometryError",
     "ReachSphere",
+    "SeenBox",
     "SelfBody",
     "SelfEnvelope",
     "VoxelField",
@@ -104,6 +105,7 @@ __all__ = [
     "build_perceived_boxes",
     "build_voxel_field",
     "has_depth",
+    "seen_part_boxes",
     "target_keep_out_box",
     "voxel_grid_extent",
 ]
@@ -2174,6 +2176,56 @@ def _cut_around(
             parts.append((index, floor, fitted_yaw))
     parts.sort(key=lambda part: int(part[0].min()))
     return parts
+
+
+@dataclass(frozen=True, slots=True)
+class SeenBox:
+    """A box the camera world holds for what a camera saw: its centre, its axes and its half extents, BASE millimetres,
+    the margin already in them. ``rotation``'s columns are its axes in BASE; it turns about z alone."""
+
+    centre_mm: tuple[float, float, float]
+    rotation: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
+    half_extents_mm: tuple[float, float, float]
+
+
+def seen_part_boxes(
+    points_base_mm: np.ndarray,
+    *,
+    margin_mm: float,
+    cluster_voxel_mm: float,
+    voxel_size_mm: float,
+    floor_mm: float | None,
+    min_points: int = 1,
+) -> tuple[SeenBox, ...]:
+    """The boxes :func:`build_perceived_boxes` holds for ``points_base_mm``, built as it builds them: clustered on
+    ``cluster_voxel_mm``, each cluster a height map of columns in its own turn (:func:`height_map_columns`), grown by
+    ``margin_mm`` and carried down to ``floor_mm``; a cluster of fewer than ``min_points`` points is dropped, as the world
+    drops it.
+
+    Without what the world adds only from a whole scene and a robot: the cuts around keep-out boxes, the cells the
+    robot's body hides, and the merging past the slot budget, which only ever makes a box bigger. So whatever keeps a
+    distance from these boxes keeps at least that distance from what the world builds of the same points alone.
+    """
+    points = np.asarray(points_base_mm, dtype=np.float64).reshape(-1, 3)
+    points = points[np.isfinite(points).all(axis=1)]
+    if points.shape[0] == 0:
+        return ()
+    labels = _cluster(points, float(cluster_voxel_mm))
+    out: list[SeenBox] = []
+    for cluster_id in np.unique(labels):
+        member = points[labels == cluster_id]
+        if member.shape[0] < int(min_points):
+            continue
+        for part, part_floor, part_yaw in _cut_around(member, (), floor_mm, set()):
+            cos, sin = math.cos(part_yaw), math.sin(part_yaw)
+            rotation = ((cos, -sin, 0.0), (sin, cos, 0.0), (0.0, 0.0, 1.0))
+            for column in height_map_columns(member[part], yaw_rad=part_yaw, floor_mm=part_floor,
+                                             margin_mm=float(margin_mm), cell_mm=float(cluster_voxel_mm),
+                                             step_mm=float(voxel_size_mm)):
+                centre, size = column.placed(part_yaw)
+                out.append(SeenBox(centre_mm=centre, rotation=rotation,
+                                   half_extents_mm=(size[0] / 2.0, size[1] / 2.0, size[2] / 2.0)))
+    return tuple(out)
 
 
 @dataclass(frozen=True, slots=True, eq=False)

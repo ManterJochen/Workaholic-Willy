@@ -251,7 +251,9 @@ class TaskOptions:
 
     ``multi_view`` the looks as configured, ``False`` the first look only and no generated view (Q11); ``both_faces``
     both jaw contact faces seen before a grip; ``closing_axis`` only grasps that close along it (a name
-    ``Pose.tool_down`` takes); ``push_mm`` how far a push of a failed part moves it; ``record_views`` each pick's looks
+    ``Pose.tool_down`` takes); ``push_mm`` how far a push of a failed part moves it (``None``: the cell's, which may go
+    longer where it opens too little room); ``critical_parts`` the owner's switch for this task (``None``: the cell's
+    ``recovery.critical_parts``; true clears a blocker and pushes nothing); ``record_views`` each pick's looks
     kept for training; ``overlay`` the grasp overlay rendered during the task; ``pick_anything`` the operator's word
     that an empty object means anything the camera sees, bin walls included (Q7 A+).
     """
@@ -260,6 +262,7 @@ class TaskOptions:
     both_faces: bool = False
     closing_axis: str | None = None
     push_mm: float | None = None
+    critical_parts: bool | None = None
     record_views: bool = False
     overlay: bool = True
     pick_anything: bool = False
@@ -744,11 +747,13 @@ class _Task:
 
     def _set_up(self, undo: ExitStack) -> None:
         options = self.plan.options
+        started: dict[str, Any] = {}
+        if options.push_mm is not None:
+            started["push_mm"] = options.push_mm
+        if options.critical_parts is not None:
+            started["critical_parts"] = bool(options.critical_parts)
         try:
-            if options.push_mm is not None:
-                self.service.start_campaign(push_mm=options.push_mm)
-            else:
-                self.service.start_campaign()
+            self.service.start_campaign(**started)
         except ValueError as exc:
             raise TaskRefused("push_distance_refused", str(exc)) from None
         zones = self.service.campaign.zones

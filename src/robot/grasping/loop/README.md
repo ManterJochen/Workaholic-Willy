@@ -191,6 +191,13 @@ best. A stop asked for and the controller are read before each, a wrist pick tha
 look on a judged move first, and a toggle is never switched between tries. Every try is a row of
 `PickAttempt.tries` (rank, outcome, motion status and message, sent, reached the part).
 
+**Every grasp is judged from the look before the arm leaves for it**, where the policy can
+(`refusal_ahead`: the move to the standoff, the line in and the lift with the part in the jaws, on the
+owner's cuRobo UR). On URSim (2026-10-03) a grasp that lifted wrist 1 out of the cable window was refused
+only once the hand stood at the part. Judged ahead, it moves nothing: it is a try with the message
+`judged ahead: ...`, and the next grasp follows. Where every try was refused that way, the scene is changed
+as for a part every grasp of which collided (the trigger `grasps_refused_ahead`, below).
+
 Two recovery actions reach into the loop, and only where the service arms them
 ([recovery/](../recovery/README.md)):
 
@@ -199,13 +206,21 @@ Two recovery actions reach into the loop, and only where the service arms them
   and says so. On a wrist camera the new part gets the look sequence again: the early stop, at most one
   generated view. Before it drives the looks again, the service reads a toggle's count, and one nobody
   can vouch for ends the pick as a gripper fault before any look is driven.
-- **Clear the blocker** (the owner, 2026-10-02) runs where the push may, first: a part that failed
-  `ALL_COLLIDED` has a neighbour taken away where one can be (`_clear_the_blockers`, the rules in
-  [recovery/blocker.py](../recovery/blocker.py)): a separate object among Track A's obstacle points, on what
-  the part stands on, narrower than the hand opens, whose removal the calculator, asked again with its pixels
+- **The owner's switch** (2026-10-03, `PushGate.critical_parts`, from `recovery.critical_parts` or the
+  run): parts that are not critical are **pushed first**, and the push may rearrange the scene; where no
+  push plans, a blocker is cleared. **Critical parts are never pushed**, and a blocker is cleared instead.
+  Both run on a part that failed `ALL_COLLIDED` and on one whose every grasp was refused ahead
+  (`grasps_refused_ahead`).
+- **Clear the blocker** (the owner, 2026-10-02) has a neighbour taken away where one can be
+  (`_clear_the_blockers`, the rules in [recovery/blocker.py](../recovery/blocker.py)): a separate object
+  among Track A's obstacle points, on what the part stands on (where no look saw its foot, the support seen
+  round it says so), narrower than the hand opens, whose removal the calculator, asked again with its pixels
   blanked, says frees a grasp of the part or spares one of its refusals, and on an arm that models a carried
-  part no longer past the fingertips than that model. It is gripped by the policy with the part back in the
-  planner world and the blocker held out of it, set down by the place verb on a free spot the camera saw or at
+  part no longer past the fingertips than that model. Where no one removal frees a grasp, the calculator is
+  asked once with every candidate blanked, and where that frees one, the nearest goes first. Its grasps are
+  tried best first, each judged from the look before the arm leaves for it, at most
+  `recovery.blocker_grasp_tries` (3). It is gripped by the policy with the part back in the planner world and
+  the blocker held out of it, set down by the place verb on a free spot the camera saw or at
   `blocker_place`, and the arm goes back to its look and looks again. No budget: each removal has to spare
   some of the part's refusals, a blocker set down is never taken again, and the clearing stops with a typed
   `BlockerRecord` (`orchestrator.blockers`). A blocker's grasp refused once the arm stood over it, the hand
@@ -216,11 +231,13 @@ Two recovery actions reach into the loop, and only where the service arms them
   `ATTEMPT_FINISHED` with action `clear_blocker` and `blocker` (`set_aside` or the stop's code),
   `blocker_at_mm`, `set_down`, `looked_again` or `blocker_reason` in `extra`.
 - **The push** (`nudge_target`, `dense_clutter` only) runs on a wrist camera's pick, after its looks judged
-  the part, where no blocker could be cleared; a fixed camera never pushes. It is due when no candidate
-  survived and at least one collided (`ALL_COLLIDED`), or, where approach validation runs, when every approach
-  was blocked; in both cases a neighbour was seen within 25 mm of the part. The loop plans the push from the
-  table and the neighbours every look saw, drives it, goes back to the look like a grasp approach (to the view
-  it generated on the straight joint line alone), looks again and judges again. Never on `NO_VALID_GRASP` or
+  the part, and never for critical parts; a fixed camera never pushes. It is due when no candidate survived
+  and at least one collided (`ALL_COLLIDED`), when every grasp was refused ahead, or, where approach
+  validation runs, when every approach was blocked; in each case a neighbour was seen within 25 mm of the
+  part. The loop plans the rearranging push from the table and the neighbours every look saw (`may_shove`,
+  with longer pushes up to the cell's ceiling where nobody asked for a distance), drives it with every
+  neighbour it may touch held out of the world whole, goes back to the look like a grasp approach (to the
+  view it generated on the straight joint line alone), looks again and judges again. Never on `NO_VALID_GRASP` or
   `NO_CANDIDATES_GENERATED`: nothing there says a neighbour is in the way, and a part the closing axis refused
   carries only `NO_VALID_GRASP`, so it is never pushed, while a boxed-in neighbour of it still is. The push
   reads the frame's failing part as the closing axis and the natural turn left it, and closes the way round

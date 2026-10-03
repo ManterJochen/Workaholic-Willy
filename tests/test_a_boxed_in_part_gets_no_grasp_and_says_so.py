@@ -208,8 +208,10 @@ class ABoxedInPartGetsNoGraspTests(unittest.TestCase):
         self.assertTrue(np.all(np.hypot(kept[:, 0], kept[:, 1] + 650.0) < 250.0))
 
     def test_a_wider_gap_lets_the_bar_be_gripped_again(self) -> None:
-        """The control: the same pillars 40 mm off, and the scene leaves the bar its grasps."""
-        roomy = compute(calculator(scene=True), boxed_in_bar(gap_mm=40.0))
+        """The control: the same pillars 50 mm off, and the scene leaves the bar its grasps. At 40 mm the open hand
+        stood inside the boxes the camera world grows the pillars by, and the guard would have refused every grasp the
+        calculator offered there (``test_the_calculator_keeps_the_guards_distance_from_a_neighbour.py``)."""
+        roomy = compute(calculator(scene=True), boxed_in_bar(gap_mm=50.0))
         self.assertGreater(len(roomy.candidates), 0)
 
 

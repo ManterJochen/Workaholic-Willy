@@ -386,6 +386,8 @@ def build_effective_config(
                 )
                 else ()
             ),
+            blocker_grasp_tries=int(grasping_cfg.recovery.blocker_grasp_tries),
+            critical_parts=bool(grasping_cfg.recovery.critical_parts),
             # Emitted unconditionally, even when the mode gate above zeroes the actions: it is the
             # operator's declared bound, and a bound is not dropped because a gate is closed. The
             # consumer builds an envelope from it whenever recovery is on: container_agitate needs

@@ -2341,6 +2341,11 @@ export interface components {
             default_mm?: number | null;
             /** Ceiling Mm */
             ceiling_mm?: number | null;
+            /**
+             * Critical Parts
+             * @default false
+             */
+            critical_parts: boolean;
         };
         /**
          * ReachabilityOut
@@ -2745,6 +2750,8 @@ export interface components {
             closing_axis?: string | null;
             /** Push Mm */
             push_mm?: number | null;
+            /** Critical Parts */
+            critical_parts?: boolean | null;
             /**
              * Record Views
              * @default false
@@ -2782,6 +2789,13 @@ export interface components {
             closing_axis?: ("x" | "-x" | "y" | "-y" | "radial" | "-radial" | "tangential" | "-tangential") | null;
             /** Push Mm */
             push_mm?: number | null;
+            /**
+             * Push Asked
+             * @default false
+             */
+            push_asked: boolean;
+            /** Critical Parts */
+            critical_parts?: boolean | null;
             /**
              * Record Views
              * @default false

@@ -614,6 +614,12 @@ purpose: 5 mm allowed no push a finger fits, and a ceiling under 30 mm now sits 
 `push_distance_mm`. Delete the line to take 50 mm, or write 10 to 50 mm with a `push_distance_mm` no
 longer than it.
 
+**Whether a push may change the scene** is one key, `recovery.critical_parts` (the owner, 2026-10-03).
+`false`, the default: a boxed-in part is pushed first, and the push may shove and brush its neighbours; a
+blocker is set aside where no push plans. `true`: nothing is pushed, and a blocker is set aside instead.
+A console run can set it for itself (*Kritische Teile*). `recovery.blocker_grasp_tries` (3, from 1 to 6)
+is how many of a blocker's grasps the clearing tries, best first.
+
 Several blocks can fire only in some grasp modes, and several ship their operative weight at `0.0`,
 so `enabled: true` alone does nothing. Read
 [`docs/grasping-config-reference.md`](../grasping-config-reference.md) before you enable or measure

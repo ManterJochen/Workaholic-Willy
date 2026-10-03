@@ -37,20 +37,27 @@ from tests.test_a_side_grasp_never_goes_through_unseen_space import Box, Cylinde
 
 #: Byte identity with the calculator of before (HEAD 1d91e3a with the cell fixes' stage 1, before Track A), recorded
 #: there by this file's own scenes: sha256 over each candidate's position, approach, axis, width and score, and the
-#: telemetry keys. A calculator built with ``scene_obstacles=None`` must reproduce them.
+#: telemetry keys. A calculator built with ``scene_obstacles=None`` must reproduce them. Re-pinned on 2026-10-03 with a
+#: rounded zero's sign dropped (see ``digest``), from a tree that still gave the digests of before.
 BEFORE_TRACK_A = {
-    "isolated": "148e3891bce8bcf4a4b8dfdb3e010d8d3348098756b9ec3988018806f188c2ef",
-    "photo_layout": "148e3891bce8bcf4a4b8dfdb3e010d8d3348098756b9ec3988018806f188c2ef",
-    "boxed_in_bar": "025ce781afbadd9d5dc49d2660340c2049e76d3c2dea1b1dca7204ccae009327",
+    "isolated": "51671e6a3e1b0513bc476c84906431793ce7c33136e30b6e6368c2dbef03f5c3",
+    "photo_layout": "51671e6a3e1b0513bc476c84906431793ce7c33136e30b6e6368c2dbef03f5c3",
+    "boxed_in_bar": "46930ccc6ab892153105b0000c978dca7681bf8b60f462ceefd2c5eb978f95e4",
 }
 
 
 def digest(result: Any) -> str:
+    """The candidates rounded, with the sign of a rounded zero dropped.
+
+    OpenBLAS picks its kernels by CPU: the owner's AVX-512 machine runs SkylakeX's, CI's runner Haswell's or Zen's. Their
+    last bits differ (1e-13 mm, 5e-17 in an axis), and a coordinate that is zero lands on either side of it; rounding
+    keeps that sign, ``repr`` writes ``-0.0``, and the digest of the very same grasps was another one on CI.
+    """
     h = hashlib.sha256()
     for g in result.candidates:
         for v in (*np.round(g.position, 6), *np.round(g.approach, 9), *np.round(g.axis, 9),
                   round(float(g.grip_width_mm), 6), round(float(g.score), 9)):
-            h.update(repr(float(v)).encode())
+            h.update(repr(float(v) + 0.0).encode())
     h.update(repr(sorted(result.telemetry)).encode())
     h.update(repr([r.value for r in result.reasons]).encode())
     return h.hexdigest()
@@ -60,12 +67,15 @@ def isolated() -> Frame_:
     return Frame_((BENCH, MAT), PART)
 
 
+#: E3's photo layout: the part between cubes 40 to 70 mm off it.
+PHOTO_NEIGHBOURS = (Box(lo=(60.0, -670.0, MAT_MM), hi=(100.0, -630.0, MAT_MM + 40.0)),        # 40 mm off on +x
+                    Box(lo=(-130.0, -680.0, MAT_MM), hi=(-90.0, -640.0, MAT_MM + 40.0)),      # 70 mm off on -x
+                    Cylinder((0.0, -740.0), 20.0, MAT_MM, MAT_MM + 60.0))                     # 50 mm off on -y
+
+
 def photo_layout() -> Frame_:
     """E3's photo layout: the part between cubes 40 to 70 mm off it."""
-    cubes = (Box(lo=(60.0, -670.0, MAT_MM), hi=(100.0, -630.0, MAT_MM + 40.0)),        # 40 mm off on +x
-             Box(lo=(-130.0, -680.0, MAT_MM), hi=(-90.0, -640.0, MAT_MM + 40.0)),      # 70 mm off on -x
-             Cylinder((0.0, -740.0), 20.0, MAT_MM, MAT_MM + 60.0))                     # 50 mm off on -y
-    return Frame_((BENCH, MAT, *cubes), PART)
+    return Frame_((BENCH, MAT, *PHOTO_NEIGHBOURS), PART)
 
 
 def scene_off_calculator() -> Any:
@@ -97,11 +107,24 @@ class NoFalseRefusalWhereThereIsRoomTests(unittest.TestCase):
         self.assertTrue(same_grasps(off, on))
         self.assertEqual(0, on.telemetry["scene_obstacle_points"])
 
-    def test_cubes_40_to_70_mm_off_take_no_grasp_away(self) -> None:
+    def test_cubes_40_to_70_mm_off_take_away_only_what_the_guard_refuses(self) -> None:
+        """The cubes are seen, and of the grasps the calculator offers without them it keeps exactly those whose open
+        hand keeps the guard's 5 mm from the boxes the camera world builds of them: a tilted approach toward the cube
+        40 mm off, and a vertical one closing toward it, came within 3 mm of its box (the owner, 2026-10-03)."""
+        from tests.test_the_calculator_keeps_the_guards_distance_from_a_neighbour import GUARD_MM, least_mm, world_boxes
+
         frame = photo_layout()
         off, on = compute(calculator(scene=False), frame), compute(calculator(scene=True), frame)
-        self.assertGreater(on.telemetry["scene_obstacle_points"], 0)        # the cubes are seen ...
-        self.assertTrue(same_grasps(off, on))                               # ... and refuse nothing
+        self.assertGreater(on.telemetry["scene_obstacle_points"], 0)
+        boxes = world_boxes(PHOTO_NEIGHBOURS, frame)
+        admitted = [g for g in off.candidates if least_mm(g, boxes) >= GUARD_MM]
+        refused = [g for g in off.candidates if least_mm(g, boxes) < GUARD_MM]
+        self.assertTrue(admitted and refused, (len(admitted), len(refused)))
+        key = lambda g: tuple(np.round(np.concatenate([g.position, g.axis, g.approach]), 2))  # noqa: E731
+        offered = set(map(key, on.candidates))
+        self.assertTrue(set(map(key, admitted)) <= offered, "a grasp the guard admits beside the cubes was taken away")
+        self.assertFalse(set(map(key, refused)) & offered, "a grasp the guard refuses beside the cubes is offered")
+        self.assertTrue(all(least_mm(g, boxes) >= GUARD_MM for g in on.candidates))
 
     def test_a_mask_cut_short_at_its_rim_is_still_the_part(self) -> None:
         """Track A test 5: the 5 mm the mask is grown by holds a rim the segmenter left out (2 px here, 2 mm)."""

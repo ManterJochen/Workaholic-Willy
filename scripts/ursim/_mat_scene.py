@@ -17,6 +17,9 @@ world read one depth, placed by the arm's own TCP and the rig's own calibration:
   nothing closer than :data:`MIN_Z_MM`, whole millimetres. :class:`StandInBackend` grounds the prompt on the part the
   scene names as the target, with the mask the same render cut, so the detector and the segmenter are the only
   models replaced.
+* With ``StaticScene.whole_bench`` (2026-10-03), the mat, its four sides, the bench and the floor round it are ray cast
+  from wherever the camera stands, the mat's top on the plane P1 reads, so a look from any pose sees the whole table
+  and not only what P1 saw; the recorded look is kept for the yellow bin alone (:data:`RECORDED_FROM_X_MM` on).
 """
 
 from __future__ import annotations
@@ -30,9 +33,12 @@ from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
-#: A D415 reads no depth closer than this at 1280x720 (Intel's Min-Z at the maximum resolution, about 45 cm): what a
-#: wrist camera sees of the mat at P0 or a standoff is mostly holes, as on the cell.
-MIN_Z_MM = 450.0
+#: The stand-in reads no depth closer than this. Intel gives a D415 at 1280x720 about 45 cm; the owner's own D415 at that
+#: resolution read depth on about half the frame with the tool 10 mm over a grasp 40 mm over the mat (robot.log of
+#: 2026-10-01, "no depth on 50 %" before the line down to the grasp), where 45 cm leaves this render nothing at all for
+#: half the wrist's turns and 30 cm 1 to 30 %. 20 cm reads 40 to 60 % there, as the cell did (2026-10-03): what a wrist
+#: camera sees at a standoff is still largely holes, and never nothing.
+MIN_Z_MM = 200.0
 #: Nothing farther than this is read either; the cell's frames hold nothing beyond it.
 MAX_Z_MM = 3000.0
 #: Depth noise of a rendered part, one sigma, millimetres (a D415 at about 0.75 m). The recorded mat keeps its own.
@@ -43,6 +49,18 @@ PILE_XY = (-290.0, -25.0, -830.0, -595.0)
 MAT_XY = (-420.0, 60.0, -880.0, -540.0)
 #: Grid spacing of the mat filled in under the pile, millimetres.
 FILL_STEP_MM = 1.5
+#: The owner's mat as P1 shows it, BASE millimetres (x0, x1, y0, y1): what the whole bench casts, its top on the plane P1
+#: reads, its sides down to the bench. E3's x from -411.3; its far end hides under the yellow bin, whose wall stands at
+#: x 117 in P1 (the mat reads 55 mm up to there, the bin's wall and floor beyond), so the cast mat ends there too.
+MAT_OUTLINE = (-411.3, 117.0, -865.0, -511.0)
+#: The bench under it, at z = 0, as far as P1 read it.
+BENCH_OUTLINE = (-430.0, 615.0, -935.0, -190.0)
+#: The room's floor under and round the bench, BASE z millimetres: what a camera reads past the bench's edge.
+FLOOR_Z_MM = -750.0
+#: From this x on the whole bench keeps the recorded look: the yellow bin, from its wall on.
+RECORDED_FROM_X_MM = 117.0
+#: Depth noise of the cast mat and bench, one sigma, millimetres.
+BENCH_NOISE_MM = 1.0
 
 
 def _unit(v: Any) -> np.ndarray:
@@ -178,6 +196,9 @@ class StaticScene:
     shape: tuple[int, int]
     source: str = ""
     pile_points_cut: int = 0
+    #: Cast the mat, its sides and the bench from wherever the camera stands (:meth:`cast`), the recorded look kept
+    #: for the bin alone; ``False`` projects the recorded look, as before.
+    whole_bench: bool = False
 
     @classmethod
     def from_crop(cls, path: "str | Path", *, pile_xy: tuple[float, float, float, float] = PILE_XY,
@@ -230,12 +251,58 @@ class StaticScene:
 
     def support_at(self, xy: Sequence[float]) -> tuple[float, np.ndarray]:
         """What a part set down at ``xy`` stands on: the mat's plane where the mat is read, else the recorded surface."""
-        mx0, mx1, my0, my1 = MAT_XY
+        mx0, mx1, my0, my1 = MAT_OUTLINE if self.whole_bench else MAT_XY
         if mx0 < xy[0] < mx1 and my0 < xy[1] < my1:
             return self.mat_at(xy), self.mat_normal
+        if self.whole_bench:
+            return 0.0, np.array([0.0, 0.0, 1.0])
         near = np.hypot(self.points[:, 0] - xy[0], self.points[:, 1] - xy[1]) < 20.0
         z = float(np.percentile(self.points[near, 2], 30.0)) if near.any() else 0.0
         return z, np.array([0.0, 0.0, 1.0])
+
+
+    def cast(self, cam_to_base: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+        """The whole bench's depth from ``cam_to_base``, CAMERA z millimetres per pixel (``inf`` where nothing is hit): the
+        mat's top on its plane and its four sides down to the bench within :data:`MAT_OUTLINE`, the bench at z = 0
+        within :data:`BENCH_OUTLINE`, the floor at :data:`FLOOR_Z_MM` round it, each with :data:`BENCH_NOISE_MM` of
+        noise, and the recorded look from :data:`RECORDED_FROM_X_MM` on."""
+        h, w = self.shape
+        k = self.intrinsics
+        r, origin = cam_to_base[:3, :3], cam_to_base[:3, 3]
+        vv, uu = np.mgrid[0:h, 0:w]
+        rays = np.stack([(uu - k[0, 2]) / k[0, 0], (vv - k[1, 2]) / k[1, 1], np.ones((h, w))], axis=-1).reshape(-1, 3)
+        d = rays @ r.T  # BASE directions, the camera's z component 1: the ray parameter is the camera depth
+        ox, oy, oz = (float(v) for v in origin)
+        a, b, c = (float(v) for v in self.mat_plane)
+        best = np.full(d.shape[0], np.inf)
+        mx0, mx1, my0, my1 = MAT_OUTLINE
+        bx0, bx1, by0, by1 = BENCH_OUTLINE
+        with np.errstate(divide="ignore", invalid="ignore"):
+            s = (FLOOR_Z_MM - oz) / d[:, 2]
+            x, y = ox + s * d[:, 0], oy + s * d[:, 1]
+            hit = (s > 0) & ~((x > bx0) & (x < bx1) & (y > by0) & (y < by1))
+            best = np.where(hit, np.minimum(best, s), best)
+            s = (0.0 - oz) / d[:, 2]
+            x, y = ox + s * d[:, 0], oy + s * d[:, 1]
+            hit = (s > 0) & (x > bx0) & (x < bx1) & (y > by0) & (y < by1) & ~((x > mx0) & (x < mx1) & (y > my0)
+                                                                               & (y < my1))
+            best = np.where(hit, np.minimum(best, s), best)
+            s = (a + b * ox + c * oy - oz) / (d[:, 2] - b * d[:, 0] - c * d[:, 1])
+            x, y = ox + s * d[:, 0], oy + s * d[:, 1]
+            hit = (s > 0) & (x > mx0) & (x < mx1) & (y > my0) & (y < my1)
+            best = np.where(hit, np.minimum(best, s), best)
+            for axis, at in ((0, mx0), (0, mx1), (1, my0), (1, my1)):
+                s = (at - (ox, oy)[axis]) / d[:, axis]
+                x, y, z = ox + s * d[:, 0], oy + s * d[:, 1], oz + s * d[:, 2]
+                along = y if axis == 0 else x
+                low, high = (my0, my1) if axis == 0 else (mx0, mx1)
+                hit = (s > 0) & (along > low) & (along < high) & (z > 0.0) & (z < a + b * x + c * y)
+                best = np.where(hit, np.minimum(best, s), best)
+        best = best.reshape(h, w)
+        seen = np.isfinite(best)
+        best[seen] += rng.normal(0.0, BENCH_NOISE_MM, int(seen.sum()))
+        recorded = self.points[self.points[:, 0] >= RECORDED_FROM_X_MM]
+        return np.minimum(best, _project_static(recorded, cam_to_base, k, (h, w)))
 
 
 def _project_static(points: np.ndarray, cam_to_base: np.ndarray, k: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
@@ -288,9 +355,9 @@ class Scene:
         return np.array([float(xy[0]), float(xy[1]), z]), normal
 
     def mat_points(self, step_mm: float = 2.5) -> np.ndarray:
-        """The mat's reading on a grid over :data:`MAT_XY`, less where a part stands: the table cameras all round would
-        see, BASE millimetres."""
-        x0, x1, y0, y1 = MAT_XY
+        """The mat's reading on a grid over :data:`MAT_XY` (:data:`MAT_OUTLINE` on the whole bench), less where a part
+        stands: the table cameras all round would see, BASE millimetres."""
+        x0, x1, y0, y1 = MAT_OUTLINE if self.static.whole_bench else MAT_XY
         gx, gy = np.meshgrid(np.arange(x0, x1, step_mm), np.arange(y0, y1, step_mm))
         gx, gy = gx.ravel(), gy.ravel()
         plane = self.static.mat_plane
@@ -371,7 +438,7 @@ class Scene:
         started = time.perf_counter()
         st = self.static
         k, (h, w) = st.intrinsics, st.shape
-        depth = _project_static(st.points, cam_to_base, k, (h, w))
+        depth = st.cast(cam_to_base, self._rng) if st.whole_bench else _project_static(st.points, cam_to_base, k, (h, w))
         r, t = cam_to_base[:3, :3], cam_to_base[:3, 3]
         masks: dict[str, np.ndarray] = {}
         hits: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}

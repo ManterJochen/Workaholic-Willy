@@ -217,6 +217,8 @@ only the actions both the mode's profile (section 2) and `allowed_actions` name.
 | `allowed_actions` | `()` | the actions it may plan, inside the profile: `rescan`, `next_target`, `nudge_target`, `container_agitate` |
 | `max_recovery_actions` | `2` | how many actions one pick may run |
 | `per_action_budget` | `()` | `(action, count)` caps; a count of `0` switches that action off |
+| `critical_parts` | `false` | whether the cell's parts are critical: `false`, a boxed-in part is pushed first and the push may rearrange the scene, a blocker cleared where no push plans; `true`, nothing is pushed and a blocker is cleared. A console run can set it for itself (*Kritische Teile*) |
+| `blocker_grasp_tries` | `3` | how many of a blocker's grasps the clearing tries, best first, each judged from the look before the arm leaves for it; 1 to 6 |
 | `fixture` | unset | the operator's box (`center_mm`, `half_extents_mm`): required for `container_agitate`, **optional** for the push, whose push box it only narrows |
 | `fixture.push_distance_mm` | `30` | how far a push moves the part when nobody asks; `30` without a fixture. Changing it or `max_nudge_mm` means declaring the box too, which then also narrows the push box |
 | `fixture.max_nudge_mm` | `50` | the longest push the cell allows; `50` without a fixture |
@@ -245,9 +247,10 @@ and the console run stop on it.
 camera's pick attempt, after the looks judged the grasp: **a fixed-camera cell never pushes.** It needs
 every one of these, none of which asks a person:
 
-- the attempt failed `all_collided`, or its approach was blocked where `approach_validation` is on, and a
-  neighbour stands within 25 mm of the part in the fused clouds of the looks; never on `no_valid_grasp` or
-  `no_candidates_generated`;
+- the parts are not critical (`critical_parts: false`, or the run says so);
+- the attempt failed `all_collided`, every grasp of the part was judged from the look and refused there,
+  or its approach was blocked where `approach_validation` is on, and a neighbour stands within 25 mm of
+  the part in the fused clouds of the looks; never on `no_valid_grasp` or `no_candidates_generated`;
 - `nudge_target` in `allowed_actions` and a budget left: one push per part, two per pick, five per
   campaign; a spent budget means no more pushes, never a stop; and an attempt left to pick the part from
   afterwards, so `max_attempts: 1` never pushes. **No `fixture` needed**: a declared one only narrows the
@@ -263,14 +266,29 @@ every one of these, none of which asks a person:
 - a controller that can move: one found stopped, or unreadable, ends the pick
   `controller_not_operational` with nothing commanded;
 - a planned direction: the landing plus 15 mm inside an **automatic push box**, the workspace box
-  intersected with the table the camera saw, shrunk by the push plus 30 mm, or a declared container's
-  interior; the `fixture` box can only narrow it;
-- a part at least 15 mm tall, resting on the support, and not reaching up to the palm.
+  intersected with the table the camera saw, shrunk by 30 mm, or a declared container's interior; the
+  `fixture` box can only narrow it;
+- a part at least 15 mm tall, resting on the support, and not reaching up to the palm. Where no look saw
+  its foot, the table seen round it says whether it stands there.
+
+**The push may rearrange the scene** (the owner, 2026-10-03). The part may shove a lower neighbour ahead
+of it, and the fingers may brush one beside their stroke; the fingers come down 10 mm from every
+neighbour on table the camera saw, the housing keeps 25 mm from every neighbour tall enough to reach it,
+and whatever is shoved lands, like the part, on seen table 45 mm from its edge. Nothing is pushed over an
+edge. Every neighbour the push may touch is held out of the camera world whole while it runs, and the
+whole push is judged from where the arm stands before it leaves for P0.
+
+**Critical parts** (`critical_parts: true`) are never pushed. Where every grasp of the part collided, or
+was refused ahead, a neighbour in its way is gripped, set down on a free spot the camera saw or at a place
+a person taught (`orchestrator.blocker_place`), and the part is picked after it. Its grasps are tried
+best first, at most `blocker_grasp_tries`. The hand needs room for that: a neighbour within about 20 mm
+of the part leaves the hand no room to grip it, and a part boxed in that tightly stays boxed.
 
 **The distance.** A push moves the part `push_distance_mm`, 30 by default. `push_mm` on `PickRun` or the
 API request asks for another distance up to `max_nudge_mm`; longer, or under 10 mm, is refused with a
 sentence, never shortened (`422 push_distance_refused` on the console). To let a request reach 50 mm with
-a 30 mm default, leave `max_nudge_mm` at its 50.
+a 30 mm default, leave `max_nudge_mm` at its 50. Where nobody asked and 30 mm frees no direction, the
+planner tries 40, then 50 mm, up to `max_nudge_mm`; a distance a person asked for is never lengthened.
 
 **After a stop.** A down leg refused before it was sent is a fall-through, the arm back at the look
 first (the lead's ruling, pending the owner); one refused with a status not known as "nothing sent"
@@ -279,9 +297,10 @@ first (the lead's ruling, pending the owner); one refused with a status not know
 **Check `z_min` on the cell.** Every TCP point of a push stays 20 mm above the workspace's `z_min` and 20
 mm inside its other faces, so the base tree's `z_min: 100` refuses every push on a table level with the
 robot's base. **And give it more than one view.** A push needs table the camera saw wherever the part may
-land and wherever the open hand comes down: from one 45-degree wrist view the shadow behind a part
-usually refuses it, the fused looks of a wrist pick pass it, and a declared container answers it
-outright. A part whose lower side no view saw fails closed.
+land and wherever the fingers come down. A shadow or a dip among seen table counts as ground, the edge of
+what was seen never does; the fused looks of a wrist pick see past the part, and a declared container
+answers it outright. A part whose lower side no view saw is pushed only where the table round it says it
+stands there.
 
 **`container_agitate`** is refused at load unless `support.container` declares its interior box (6.2).
 

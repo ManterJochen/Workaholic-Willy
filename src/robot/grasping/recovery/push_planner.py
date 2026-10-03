@@ -4,74 +4,110 @@ Pure numpy and no robot import. The pick attempt passes in BASE-frame points it 
 :class:`PushPlan` (where the hand goes, how far the part travels, where it is predicted to land) or a
 :class:`PushRefusal` (a reason code and one sentence). Nothing here moves the arm, asks a person or reads config.
 
-The owner's rules (2026-09-29), each one a named constant below:
+The owner's rules (2026-09-29, and 2026-10-03 where it says so), each one a named constant below:
 
 * **The pusher.** The jaws stay open and the outer face of the leading finger pushes the part along the closing
   axis. The tool closes along the push direction, and either finger can lead. No DO0 change is needed for that;
   the caller checks the jaw count. Only the finger touches the part: a part that reaches up to the palm's
   underside (less :data:`PALM_PART_CLEARANCE_MM`) is not pushed, since the housing would push it too.
+* **Two pushes.** :func:`plan_push` plans a push that touches nothing but the part, unless it is asked for the
+  rearranging push (``may_shove``, the owner, 2026-10-03: "Er darf die Szene ruhig dolle verändern"). That one may
+  change the scene: the part shoves what stands in its way, and the fingers may brush what stands beside their
+  stroke. The pick asks for the rearranging push, and only where its parts are not critical
+  (``recovery.critical_parts: false``, the default); it clears a blocker where no push plans. Critical parts are
+  never pushed, and a blocker is cleared instead (``blocker.py``). Both push at 25 mm/s and at most 50 mm.
 * **The direction.** The push goes toward free space and away from the neighbours that blocked the grasp. Each
-  direction the caller offers (:data:`DEFAULT_PUSH_AXES_XY`, each axis both ways) must pass these tests, and the
-  planner keeps the one that gains the most clearance:
+  direction the caller offers (:data:`DEFAULT_PUSH_AXES_XY`, each axis both ways) must pass these tests. The
+  planner keeps the one that gains the most clearance; on a rearranging push, one that touches nothing but the part
+  comes first.
 
-  1. The open hand, swept from where it comes down to where it stops, keeps the caller's hand clearance
-     (``hand_clearance_mm``, never under :data:`HAND_NEIGHBOUR_CLEARANCE_MM`) from every neighbour point. The
-     pick passes the camera world's ``margin_mm`` plus the arm's ``line_clearance_mm`` (25 mm on the shipped
-     cell): the box the world grows around a neighbour, and the distance every judged line keeps from it, so
-     the planner does not plan a push the arm's line judge would predictably refuse. The fingers are checked
-     at every height, the palm only above its own underside. Along the push the palm reaches the larger of the
-     fingers' outer faces and half the housing's thickness (``PushHand.palm_thickness_mm``, 75 mm on the
-     Hand-E). Beside the pushed part the owner's 10 mm stands instead (2026-10-02, ``beside_part_clearance_mm``):
-     a neighbour point inside the box the push keeps out of the camera world round the part and its path (the
-     smallest rectangle about them, as the world boxes a target, grown by ``beside_part_mm``) is one the guard
-     does not see while the push runs, and the open hand keeps that clearance from it; a point outside keeps
-     ``hand_clearance_mm``, the guard's own view of it.
-  2. The part's own path keeps :data:`PATH_NEIGHBOUR_CLEARANCE_MM` from every neighbour point that is not
-     behind it.
-  3. The part's minimum clearance to its neighbours grows by at least :data:`MIN_CLEARANCE_GAIN_MM`.
-  4. The landing and the hand stay inside the push box (below), over table the camera saw.
+  1. The hand. On a push that touches nothing but the part, the open hand, swept from where it comes down to where
+     it stops, keeps the caller's hand clearance (``hand_clearance_mm``, never under
+     :data:`HAND_NEIGHBOUR_CLEARANCE_MM`) from every neighbour point. The pick passes the camera world's
+     ``margin_mm`` plus the arm's ``line_clearance_mm`` (25 mm on the shipped cell): the box the world grows round a
+     neighbour, and the distance every judged line keeps from it, so the planner does not plan a push the arm's line
+     judge would predictably refuse. The fingers are checked at every height, the palm only above its own underside.
+     Along the push the palm reaches the larger of the fingers' outer faces and half the housing's thickness
+     (``PushHand.palm_thickness_mm``, 75 mm on the Hand-E). Beside the pushed part the owner's 10 mm stands instead
+     (2026-10-02, ``beside_part_clearance_mm``): a neighbour point inside the box the push keeps out of the camera
+     world round the part and its path (the smallest rectangle about them, as the world boxes a target, grown by
+     ``beside_part_mm``) is one the guard does not see while the push runs, and the open hand keeps that clearance
+     from it; a point outside keeps ``hand_clearance_mm``, the guard's own view of it. On a rearranging push, the
+     rules under **The rearranging push** below stand instead.
+  2. On a push that touches nothing but the part, the part's own path keeps :data:`PATH_NEIGHBOUR_CLEARANCE_MM`
+     from every neighbour point that is not behind it.
+  3. The part's minimum clearance to its neighbours grows by at least :data:`MIN_CLEARANCE_GAIN_MM`. A neighbour
+     the push shoves counts where it ends, so a push that only drives a neighbour along in front of the part opens
+     no room and is refused.
+  4. The landing of the part, and of every neighbour it shoves, and the fingers stay inside the push box (below),
+     over table the camera saw.
   5. Every TCP point of the push stays inside the workspace by :data:`WORKSPACE_MARGIN_MM`.
 
   The finger comes down on the side facing away from the push direction. So a neighbour within 25 mm can
   seldom be pushed straight away from: the hand would have to fit into the gap the grasp could not use.
   The planner then slides the part sideways out of that neighbour's reach, or it refuses.
+* **The rearranging push** (``may_shove``). The fingers come down where no neighbour stands within
+  ``beside_part_clearance_mm`` of them (the owner's 10 mm; ``hand_clearance_mm`` where none is given), on table the
+  camera saw. The housing keeps ``hand_clearance_mm`` from every neighbour tall enough to reach its underside, all
+  along the stroke. Such a neighbour stays in the guard's world, and the fingers keep the hand's clearance from it
+  too. Contact is allowed with what stands lower: a neighbour in the stroke's corridor (the part's width or the
+  finger's, whichever is wider, :data:`SHOVE_TOLERANCE_MM` more) is shoved ahead to where the part's front ends,
+  and one within the hand's clearance of the fingers' stroke may be brushed. Every neighbour the push may touch is
+  held out of the camera world whole while the push runs, joined as the world joins it
+  (:data:`NEIGHBOUR_CLUSTER_MM`), as a box of its own beside the part's (:attr:`PushPlan.kept_out_neighbours_mm`).
+  A box round the stroke alone left the rest of a 60 mm block for the world to box again, and the guard refused
+  the push leg at 4.5 mm (URSim, 2026-10-03). What it shoves must land, like the part, on table the camera saw,
+  away from its edge. Nothing is pushed over an edge.
 * **The height.** The part must rest on the support: the low end of its heights (:data:`PART_BASE_PERCENTILE`,
-  depth noise within the support band kept) lies at most :data:`PART_BASE_MAX_MM` above it. A part resting on
-  something nobody segmented, or seen only from above, is not pushed: the finger could pass under it. The
-  part's own height is its top less that base. The fingertip rides at support + clamp(own height / 2,
-  :data:`FINGER_HEIGHT_MIN_MM`, :data:`FINGER_HEIGHT_MAX_MM`). No push is planned for a part whose own height is
-  under :data:`MIN_PUSHABLE_PART_HEIGHT_MM`. Every TCP point stays :data:`WORKSPACE_MARGIN_MM` above the
-  workspace ``z_min``, and the same distance inside every other face.
+  depth noise within the support band kept) lies at most :data:`PART_BASE_MAX_MM` above it. Where it lies higher,
+  no look saw the part's foot (seen from above alone, or past a neighbour that hides it), and the foot is inferred
+  (the owner, 2026-10-03: "Allgemein Schieben erlauben, sofern nicht ein Abgrund oder so da ist"). The part stands
+  on the support where the ring within :data:`FOOT_RING_MM` round its footprint holds no edge of what was seen, at
+  least :data:`FOOT_RING_MIN_TABLE_SHARE` of that ring is the support itself (neighbours side by side can pass for
+  the ground), and the camera saw no table under the part (it would then stand over the table on something, and
+  the finger could pass under it). Inside a declared container no foot is inferred. :attr:`PushPlan.foot_inferred`
+  says when it was. The part's own height is its top less that base. The fingertip rides at support +
+  clamp(own height / 2, :data:`FINGER_HEIGHT_MIN_MM`, :data:`FINGER_HEIGHT_MAX_MM`). No push is planned for a part
+  whose own height is under :data:`MIN_PUSHABLE_PART_HEIGHT_MM`. Every TCP point stays :data:`WORKSPACE_MARGIN_MM`
+  above the workspace ``z_min``, and the same distance inside every other face.
 * **The push box.** Without a container, the box is the workspace box intersected with the table region the
-  camera saw, shrunk by (push distance + :data:`AUTO_BOX_EXTRA_SHRINK_MM`). With a declared container, the box
-  is the container's interior. The predicted landing plus :data:`LANDING_MARGIN_MM` must stay inside the box.
-  The hand comes down only inside the unshrunk region: over table the camera saw, or inside the container.
+  camera saw, shrunk by :data:`AUTO_BOX_EXTRA_SHRINK_MM`. It no longer grows with the push (the owner,
+  2026-10-03): how far a part travels does not move the edge it must keep away from. With a declared container,
+  the box is the container's interior. The predicted landing plus :data:`LANDING_MARGIN_MM` must stay inside the
+  box. The fingers come down only inside the unshrunk region: over table the camera saw, or inside the container.
 
   The table the camera saw is kept cell by cell (:data:`TABLE_CELL_MM` cells in BASE XY), not as the box around
   its points. A cell is seen when a table point falls in it, or when the part or a segmented neighbour stands
-  on it: they hide the table they stand on. So the shrunk box is tested around every landing point: every
-  cell within (push distance + :data:`AUTO_BOX_EXTRA_SHRINK_MM` + :data:`LANDING_MARGIN_MM`) of it must be
-  seen, and so must every cell under the hand's swept footprint. A table edge that is not parallel to BASE X
-  or Y, a hole, a shadow behind a tall object, or a gap between two surfaces refuses the direction. From one
-  45 deg wrist view, the shadow behind a part usually lies inside that window, so the fused table points of
-  several views are what let a push through.
+  on it: they hide the table they stand on. An unseen patch that seen cells enclose is ground too: beside
+  something standing it is its shadow, whatever its size, and elsewhere it is ground where it spans at most
+  :data:`HIDDEN_PATCH_MAX_MM` each way (a dip of the mat, a spot the camera read nothing in). A larger one may be
+  a hole. An unseen patch that reaches the edge of what was seen is that edge, where the support may drop away.
+  Every cell within :data:`AUTO_BOX_EXTRA_SHRINK_MM` + :data:`LANDING_MARGIN_MM` (45 mm) of every landing point
+  must be seen or ground, and every cell under the fingers must be seen: their whole stroke on a push that touches
+  nothing but the part, where they come down on a rearranging one. The housing rides at least the finger's length
+  higher and needs no table under it. A table edge that is not parallel to BASE X or Y, a hole, or a gap between
+  two surfaces refuses the direction.
 * **The distance.** The default is :data:`DEFAULT_PUSH_DISTANCE_MM`. Above :data:`PUSH_DISTANCE_CAP_MM` the
   push is refused, never clamped, and so is a push shorter than :data:`MIN_CLEARANCE_GAIN_MM`, which could not
   open that much room. :func:`resolve_push_distance` settles a request against the config:
   ``recovery.fixture.push_distance_mm`` when nobody asks, and never more than ``recovery.fixture.max_nudge_mm``,
-  the longest push the cell allows. A cell that declares no fixture takes the defaults, 30 and 50 mm.
+  the longest push the cell allows. A cell that declares no fixture takes the defaults, 30 and 50 mm. Where nobody
+  asked for a distance and none of the directions frees the part at the config's, longer pushes are tried in
+  steps of :data:`PUSH_DISTANCE_STEP_MM` up to that longest (``longest_push_mm``: 30, 40, then 50 mm on the
+  defaults), the shortest that works first. A distance a person asked for is never lengthened.
 * **The legs.** :attr:`PushPlan.legs` carries each judged line's speed and acceleration in m/s and m/s^2, the
   units ``arm.move(linear=True, vel=..., acc=...)`` takes, and nothing in mm/s.
 
 The planner cannot see what lies behind the part, below the camera's view. Unsegmented clutter is not in the
-neighbour points either. Both are left to the motion layer: every leg is judged against the live camera world
-when it runs. The landing is a prediction, not a guard. A pushed part may rotate, tip or roll.
+neighbour points either. Both are left to the motion layer: before the arm leaves for P0, the move there and every
+leg are judged from where it stands, and every leg again against the live camera world when it runs. The landing is
+a prediction, not a guard. A pushed part may rotate, tip or roll, and so may a neighbour it shoves.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Optional, Sequence, Union
 
 import numpy as np
@@ -100,6 +136,9 @@ __all__ = [
     "DIRECTION_TCP_OUTSIDE_WORKSPACE",
     "FINGER_HEIGHT_MAX_MM",
     "FINGER_HEIGHT_MIN_MM",
+    "FOOT_RING_MIN_TABLE_SHARE",
+    "FOOT_RING_MM",
+    "HIDDEN_PATCH_MAX_MM",
     "HAND_NEIGHBOUR_CLEARANCE_MM",
     "LANDING_MARGIN_MM",
     "LEG_ACCEL_M_S2",
@@ -116,6 +155,7 @@ __all__ = [
     "PUSH_ACCEL_M_S2",
     "PUSH_APPROACH_RISE_MM",
     "PUSH_DISTANCE_CAP_MM",
+    "PUSH_DISTANCE_STEP_MM",
     "PUSH_SPEED_MM_S",
     "REFUSED_ABOVE_Z_MAX",
     "REFUSED_BELOW_Z_MIN",
@@ -169,8 +209,10 @@ WORKSPACE_MARGIN_MM = 20.0
 #: A push is planned only when a neighbour point lies this close to the part (in the support plane): the
 #: evidence that a neighbour, and not the part itself, left the fingers no room.
 NEIGHBOUR_EVIDENCE_RADIUS_MM = 25.0
-#: The automatic push box is shrunk by the push distance plus this, so a part pushed from the edge of the seen
-#: table still lands well inside it.
+#: The automatic push box is the seen table shrunk by this, and every landing keeps this plus
+#: :data:`LANDING_MARGIN_MM` of seen table round it: the margin to the edge of what the camera saw, where the support
+#: may drop away. It no longer grows with the push (the owner, 2026-10-03): how far a part travelled does not move the
+#: edge it must keep away from.
 AUTO_BOX_EXTRA_SHRINK_MM = 30.0
 #: The predicted landing footprint grown by this must stay inside the push box.
 LANDING_MARGIN_MM = 15.0
@@ -217,6 +259,30 @@ PART_BASE_PERCENTILE = 2.0
 PART_BASE_MAX_MM = FINGER_HEIGHT_MIN_MM
 #: The part's top stays this far below the palm's underside, so the finger, and not the housing, touches it.
 PALM_PART_CLEARANCE_MM = 5.0
+#: A part whose lowest points seen stand higher than :data:`PART_BASE_MAX_MM` was seen from above alone, or past a
+#: neighbour that hides its foot. Its foot is inferred (the owner, 2026-10-03: "Allgemein Schieben erlauben, sofern
+#: nicht ein Abgrund oder so da ist"): it stands on the support where every cell within this ring round its footprint
+#: is the support the camera saw, a neighbour standing on it, or a patch hidden among them (a shadow, a dip of the
+#: mat), none is the edge of what was seen, where the support may drop away, and the camera saw no table under it.
+FOOT_RING_MM = 15.0
+#: Of that ring, at least this share must be the support itself: neighbours alone round a part say nothing of what it
+#: stands on (the owner: parts lying side by side can pass for the ground).
+FOOT_RING_MIN_TABLE_SHARE = 0.25
+#: Where nobody asked for a push distance and the config's opens too little room, longer pushes are tried in steps of
+#: this, up to the cell's longest (``recovery.fixture.max_nudge_mm``), the shortest that works first.
+PUSH_DISTANCE_STEP_MM = 10.0
+#: An unseen patch among seen table that touches nothing standing is ground where it spans at most this each way: a
+#: dip of the mat its band leaves out, a spot the camera read nothing in. A larger one may be a hole, and a part does not
+#: land over it. A patch beside something standing is its shadow, ground whatever its size (the owner, 2026-10-03).
+HIDDEN_PATCH_MAX_MM = 50.0
+#: A neighbour within this of the stroke's corridor is in it: the part or a finger shoves it (:func:`plan_push`'s
+#: ``may_shove``).
+SHOVE_TOLERANCE_MM = 2.0
+#: The neighbours a rearranging push may touch are kept out of the camera world whole, each as the world clusters what
+#: it sees: points joined on a grid of this many millimetres (``perceived.cluster_voxel_mm``, 25 mm on every shipped
+#: cell). A box round the stroke alone left the rest of a neighbour for the world to box again, grown by its margin,
+#: and the guard refused the push leg at 4.5 mm (URSim, 2026-10-03).
+NEIGHBOUR_CLUSTER_MM = 25.0
 #: The seen table region is the box of the table points between this percentile and its complement on each
 #: axis. That box is slightly smaller than all the points, so one stray point cannot widen it. The cells below
 #: decide what inside it was seen.
@@ -455,6 +521,16 @@ class PushPlan:
     clearance_before_mm: float
     clearance_after_mm: float
     candidates: tuple[DirectionVerdict, ...] = ()
+    #: Whether the part's foot was inferred: no look saw its lower sides, and the support round it says it stands there
+    #: (:data:`FOOT_RING_MM`). ``part_base_mm`` is then 0.
+    foot_inferred: bool = False
+    #: Whether the push moves what stands in its way (the owner's rearranging push, 2026-10-03): the part shoves the
+    #: neighbours ahead of it, the fingers brush the ones beside their stroke.
+    shoves: bool = False
+    #: The neighbours the arm's camera world keeps out while the push runs, each whole, as BASE points: every neighbour
+    #: lower than the housing reaches that the push may touch, and where what it shoves goes. Each is held as a box of
+    #: its own beside the part's. Empty for a push that touches nothing but the part.
+    kept_out_neighbours_mm: tuple[np.ndarray, ...] = field(default=(), compare=False, repr=False)
 
     @property
     def clearance_gain_mm(self) -> float:
@@ -495,6 +571,9 @@ class PushPlan:
             "clearance_before_mm": round(self.clearance_before_mm, 2),
             "clearance_after_mm": round(self.clearance_after_mm, 2),
             "candidates": [c.to_dict() for c in self.candidates],
+            "foot": "inferred" if self.foot_inferred else "seen",
+            "shoves": bool(self.shoves),
+            "kept_out_neighbours": len(self.kept_out_neighbours_mm),
         }
 
 
@@ -583,16 +662,31 @@ class _SeenTable:
     A cell is seen when a table point falls in it, or when the part or a neighbour stands on it. ``integral``
     is the summed-area table of the seen cells, so any rectangle of cells is tested in constant time. Cells
     outside the grid count as unseen.
+
+    ``integral_filled`` adds the unseen patches among seen ground that are no drop-off (the owner, 2026-10-03): a patch
+    no path of unseen cells (eight round each) joins to the grid's edge, beside something standing (its shadow), or
+    spanning at most :data:`HIDDEN_PATCH_MAX_MM` each way (a dip of the mat its band leaves out, a spot the camera read
+    nothing in). The edge of what was seen, where the support may end, stays unseen, and so does a larger patch that
+    touches nothing standing, which may be a hole. Where a part lands asks the filled cells, where a finger comes down
+    the seen ones.
     """
 
     origin_xy: Vec2
     shape: tuple[int, int]
     integral: np.ndarray
     table_cells: int
+    integral_filled: np.ndarray
+    #: The cells a table point fell in, the cells the part's own points fell in, and the seen cells with the hidden
+    #: patches among them.
+    table_grid: np.ndarray
+    target_grid: np.ndarray
+    filled_grid: np.ndarray
 
     @classmethod
     def build(cls, *, table_xy: np.ndarray, standing_xy: Sequence[np.ndarray], around_xy: np.ndarray,
               reach_mm: float) -> "_SeenTable":
+        """``standing_xy`` holds the part's points first, then its neighbours'."""
+
         cell = TABLE_CELL_MM
         low = np.floor((around_xy.min(axis=0) - reach_mm) / cell) * cell
         high = around_xy.max(axis=0) + reach_mm
@@ -601,12 +695,17 @@ class _SeenTable:
         origin: Vec2 = (float(low[0]), float(low[1]))
         grid = np.zeros((nx, ny), dtype=bool)
         cls._mark(grid, table_xy, origin)
-        table_cells = int(grid.sum())
-        for points in standing_xy:
+        table_grid = grid.copy()
+        target_grid = np.zeros((nx, ny), dtype=bool)
+        for index, points in enumerate(standing_xy):
             cls._mark(grid, points, origin)
-        integral = np.zeros((nx + 1, ny + 1), dtype=np.int64)
-        integral[1:, 1:] = grid.astype(np.int64).cumsum(axis=0).cumsum(axis=1)
-        return cls(origin_xy=origin, shape=(nx, ny), integral=integral, table_cells=table_cells)
+            if index == 0:
+                cls._mark(target_grid, points, origin)
+        standing = grid & ~table_grid
+        filled = grid | _hidden(grid, standing | target_grid)
+        return cls(origin_xy=origin, shape=(nx, ny), integral=_summed(grid), table_cells=int(table_grid.sum()),
+                   integral_filled=_summed(filled), table_grid=table_grid, target_grid=target_grid,
+                   filled_grid=filled)
 
     @staticmethod
     def _mark(grid: np.ndarray, points_xy: np.ndarray, origin: Vec2) -> None:
@@ -617,9 +716,9 @@ class _SeenTable:
         inside = (ix >= 0) & (ix < grid.shape[0]) & (iy >= 0) & (iy < grid.shape[1])
         grid[ix[inside], iy[inside]] = True
 
-    def windows_seen(self, points_xy: np.ndarray, half_mm: float) -> bool:
-        """Whether every cell within ``half_mm`` (a square window) of every point is seen. ``half_mm = 0``
-        asks about the cell each point lies in."""
+    def windows_seen(self, points_xy: np.ndarray, half_mm: float, *, filled: bool = False) -> bool:
+        """Whether every cell within ``half_mm`` (a square window) of every point is seen, or, ``filled``, seen or
+        hidden among seen cells. ``half_mm = 0`` asks about the cell each point lies in."""
 
         if len(points_xy) == 0:
             return True
@@ -632,9 +731,103 @@ class _SeenTable:
         nx, ny = self.shape
         if bool(np.any(ix0 < 0) or np.any(iy0 < 0) or np.any(ix1 >= nx) or np.any(iy1 >= ny)):
             return False
-        s = self.integral
+        s = self.integral_filled if filled else self.integral
         seen = s[ix1 + 1, iy1 + 1] - s[ix0, iy1 + 1] - s[ix1 + 1, iy0] + s[ix0, iy0]
         return bool(np.all(seen == (ix1 - ix0 + 1) * (iy1 - iy0 + 1)))
+
+    def foot_refusal(self) -> str:
+        """Why the part's foot cannot be inferred, or ``""`` where it stands on the support (:data:`FOOT_RING_MM`)."""
+
+        target = self.target_grid
+        interior = ~_grown(~target, 1)
+        under = int((interior & self.table_grid).sum())
+        if under > max(2, int(0.1 * int(interior.sum()))):
+            return (f"the camera saw the table under it ({under} cells of {TABLE_CELL_MM:g} mm), so it stands over the "
+                    "table on something, not on it")
+        ring = _grown(target, int(math.ceil(FOOT_RING_MM / TABLE_CELL_MM))) & ~target
+        edge = int((ring & ~self.filled_grid).sum())
+        if edge:
+            return (f"{edge} of the {int(ring.sum())} cells within {FOOT_RING_MM:g} mm of its footprint are the edge of "
+                    "what the camera saw, where the support may drop away")
+        share = float((ring & self.table_grid).sum()) / float(max(1, int(ring.sum())))
+        if share < FOOT_RING_MIN_TABLE_SHARE:
+            return (f"the support itself was seen in only {share:.0%} of the ring within {FOOT_RING_MM:g} mm of its "
+                    f"footprint, under {FOOT_RING_MIN_TABLE_SHARE:.0%}: neighbours alone round a part say nothing of "
+                    "what it stands on")
+        return ""
+
+
+def _summed(grid: np.ndarray) -> np.ndarray:
+    """The summed-area table of a boolean grid, one row and column of zeros before it."""
+
+    integral = np.zeros((grid.shape[0] + 1, grid.shape[1] + 1), dtype=np.int64)
+    integral[1:, 1:] = grid.astype(np.int64).cumsum(axis=0).cumsum(axis=1)
+    return integral
+
+
+def _grown(grid: np.ndarray, cells: int = 1) -> np.ndarray:
+    """``grid`` grown by ``cells`` cells, the eight round each."""
+
+    out = grid.copy()
+    for _ in range(int(cells)):
+        step = out.copy()
+        step[1:, :] |= out[:-1, :]
+        step[:-1, :] |= out[1:, :]
+        step[:, 1:] |= out[:, :-1]
+        step[:, :-1] |= out[:, 1:]
+        step[1:, 1:] |= out[:-1, :-1]
+        step[:-1, :-1] |= out[1:, 1:]
+        step[1:, :-1] |= out[:-1, 1:]
+        step[:-1, 1:] |= out[1:, :-1]
+        out = step
+    return out
+
+
+def _flood(seed: np.ndarray, within: np.ndarray) -> np.ndarray:
+    """The cells of ``within`` joined to ``seed`` by paths of ``within`` cells, the eight round each."""
+
+    out = seed & within
+    while True:
+        grown = _grown(out) & within
+        if np.array_equal(grown, out):
+            return out
+        out = grown
+
+
+def _hidden(seen: np.ndarray, standing: np.ndarray) -> np.ndarray:
+    """The unseen patches among ``seen`` cells that are no drop-off: enclosed (:func:`_enclosed`), and beside a
+    ``standing`` cell or no wider than :data:`HIDDEN_PATCH_MAX_MM` each way."""
+
+    remaining = _enclosed(~seen)
+    out = np.zeros_like(remaining)
+    beside = _grown(standing)
+    limit = int(math.ceil(HIDDEN_PATCH_MAX_MM / TABLE_CELL_MM))
+    while remaining.any():
+        seed = np.zeros_like(remaining)
+        first = np.argwhere(remaining)[0]
+        seed[first[0], first[1]] = True
+        patch = _flood(seed, remaining)
+        remaining &= ~patch
+        rows, cols = np.nonzero(patch)
+        small = int(rows.max() - rows.min()) + 1 <= limit and int(cols.max() - cols.min()) + 1 <= limit
+        if small or bool((patch & beside).any()):
+            out |= patch
+    return out
+
+
+def _enclosed(unseen: np.ndarray) -> np.ndarray:
+    """The cells of ``unseen`` that no path of unseen cells, the eight round each, joins to the grid's edge."""
+
+    outside = np.zeros_like(unseen)
+    outside[0, :] = unseen[0, :]
+    outside[-1, :] = unseen[-1, :]
+    outside[:, 0] = unseen[:, 0]
+    outside[:, -1] = unseen[:, -1]
+    while True:
+        grown = _grown(outside) & unseen
+        if np.array_equal(grown, outside):
+            return unseen & ~outside
+        outside = grown
 
 
 # --- small numpy helpers -------------------------------------------------------------------------------------
@@ -648,6 +841,22 @@ def _points(value: ArrayLike, name: str) -> np.ndarray:
     if points.ndim != 2 or points.shape[1] != 3:
         raise ValueError(f"{name} must be shaped (N, 3), got {points.shape}")
     return points[np.all(np.isfinite(points), axis=1)]
+
+
+def _clusters(points: np.ndarray, plane_xy: np.ndarray, heights: np.ndarray
+              ) -> tuple[np.ndarray, np.ndarray, dict[int, float]]:
+    """The neighbours as the camera world joins them (:data:`NEIGHBOUR_CLUSTER_MM`): the cluster of each point, of each
+    :data:`PLANNER_GRID_MM` cell in :func:`_cells`' order, and each cluster's top above the support."""
+
+    from src.robot.safety.planning.perceived import _cluster  # noqa: PLC0415 (the world's own join)
+
+    if len(points) == 0:
+        return np.zeros(0, dtype=np.int64), np.zeros(0, dtype=np.int64), {}
+    labels = np.asarray(_cluster(np.asarray(points, dtype=np.float64), NEIGHBOUR_CLUSTER_MM), dtype=np.int64)
+    keys = np.floor(plane_xy / PLANNER_GRID_MM).astype(np.int64)
+    _, first = np.unique(keys, axis=0, return_index=True)
+    tops = {int(label): float(heights[labels == label].max()) for label in np.unique(labels)}
+    return labels, labels[first], tops
 
 
 def _cells(plane_xy: np.ndarray, heights: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -708,6 +917,30 @@ def _min_swept_distance(target_uv: np.ndarray, points_uv: np.ndarray, distance: 
     return math.sqrt(best)
 
 
+def _swept_ab(target_ab: np.ndarray, direction_ab: np.ndarray, distance: float) -> np.ndarray:
+    """The part's plane points swept ``distance`` along ``direction_ab``, as ``swept_target_points_mm`` offers them."""
+
+    steps = max(1, int(math.ceil(float(distance) / SWEEP_STEP_MM)))
+    return np.vstack([target_ab + t * direction_ab[None, :] for t in np.linspace(0.0, float(distance), steps + 1)])
+
+
+def _inside_the_box(points_ab: np.ndarray, held_ab: np.ndarray, margin: float) -> np.ndarray:
+    """Which of ``points_ab`` lie in the box the camera world keeps out round ``held_ab``, in the support plane: the
+    smallest rectangle about them (``height_map.turn_of``, the world's ``_oriented_box``), grown by ``margin``."""
+
+    from src.robot.safety.planning.height_map import turn_of  # noqa: PLC0415 (the world's own fit)
+
+    if len(points_ab) == 0 or len(held_ab) == 0:
+        return np.zeros(len(points_ab), dtype=bool)
+    yaw = turn_of(held_ab)
+    cos_yaw, sin_yaw = math.cos(-yaw), math.sin(-yaw)
+    turn = np.array([[cos_yaw, -sin_yaw], [sin_yaw, cos_yaw]], dtype=np.float64)
+    local = held_ab @ turn.T
+    low, high = local.min(axis=0) - float(margin), local.max(axis=0) + float(margin)
+    points = points_ab @ turn.T
+    return np.asarray(np.all((points >= low - _EPS_MM) & (points <= high + _EPS_MM), axis=1), dtype=bool)
+
+
 def _inside_the_keep_out(points_ab: np.ndarray, target_ab: np.ndarray, direction_ab: np.ndarray, distance: float,
                          margin: float) -> np.ndarray:
     """Which of ``points_ab`` lie in the box the push keeps out of the camera world round the part and its path, in the
@@ -715,19 +948,9 @@ def _inside_the_keep_out(points_ab: np.ndarray, target_ab: np.ndarray, direction
     them), boxed as the world boxes a target (the smallest rectangle about them, ``height_map.turn_of``, the world's
     ``_oriented_box``) and grown by ``margin``. Inside it the guard does not see a neighbour while the push runs."""
 
-    from src.robot.safety.planning.height_map import turn_of  # noqa: PLC0415 (the world's own fit)
-
     if len(points_ab) == 0 or len(target_ab) == 0:
         return np.zeros(len(points_ab), dtype=bool)
-    steps = max(1, int(math.ceil(float(distance) / SWEEP_STEP_MM)))
-    swept = np.vstack([target_ab + t * direction_ab[None, :] for t in np.linspace(0.0, float(distance), steps + 1)])
-    yaw = turn_of(swept)
-    cos_yaw, sin_yaw = math.cos(-yaw), math.sin(-yaw)
-    turn = np.array([[cos_yaw, -sin_yaw], [sin_yaw, cos_yaw]], dtype=np.float64)
-    local = swept @ turn.T
-    low, high = local.min(axis=0) - float(margin), local.max(axis=0) + float(margin)
-    points = points_ab @ turn.T
-    return np.asarray(np.all((points >= low - _EPS_MM) & (points <= high + _EPS_MM), axis=1), dtype=bool)
+    return _inside_the_box(points_ab, _swept_ab(target_ab, direction_ab, distance), margin)
 
 
 def _inside_xy(points_xy: np.ndarray, box: tuple[Vec2, Vec2], margin: float = 0.0) -> bool:
@@ -910,6 +1133,18 @@ class _Scene:
     # by ``beside_mm``), never under HAND_NEIGHBOUR_CLEARANCE_MM; None keeps ``hand_clearance`` for every point.
     beside_clearance: Optional[float] = None
     beside_mm: float = 0.0
+    # The owner's rearranging push (2026-10-03, ``may_shove``): the part shoves what stands ahead of it, the fingers
+    # brush what stands beside their stroke, and they come down ``descent_clearance`` from every neighbour.
+    may_shove: bool = False
+    descent_clearance: float = HAND_NEIGHBOUR_CLEARANCE_MM
+    # The neighbours' own BASE points within the window, above the band, the cluster each belongs to as the camera world
+    # joins them (NEIGHBOUR_CLUSTER_MM), and the cluster of each neighbour cell: what a rearranging push keeps out whole.
+    neighbour_raw: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    neighbour_raw_labels: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    neighbour_labels: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    # Each cluster's top above the support, by label.
+    cluster_tops: dict[int, float] = field(default_factory=dict)
+    foot_inferred: bool = False
 
 
 def _refuse(code: str, sentence: str, candidates: tuple[DirectionVerdict, ...] = ()) -> PushRefusal:
@@ -933,6 +1168,8 @@ def plan_push(
     finger_floor_mm: float = FINGER_HEIGHT_MIN_MM,
     beside_part_clearance_mm: Optional[float] = None,
     beside_part_mm: float = 0.0,
+    may_shove: bool = False,
+    longest_push_mm: Optional[float] = None,
 ) -> Union[PushPlan, PushRefusal]:
     """Plan one push of the failed part, or refuse with a reason.
 
@@ -957,6 +1194,15 @@ def plan_push(
     ``hand_clearance_mm``. A value under :data:`HAND_NEIGHBOUR_CLEARANCE_MM` is raised to it, and one
     that is not a finite number of mm, or a ``beside_part_mm`` that is not, raises ``ValueError``. ``None``, the default,
     keeps ``hand_clearance_mm`` for every point, as before.
+
+    ``may_shove`` is the owner's rearranging push (2026-10-03): the push may change the scene. The part shoves the
+    neighbours standing in its way ahead of it, and the fingers may brush the ones beside their stroke; the fingers come
+    down only on seen table, ``beside_part_clearance_mm`` (``hand_clearance_mm`` where that is ``None``) from every
+    neighbour, the housing keeps ``hand_clearance_mm`` from every neighbour tall enough to reach it, and whatever the push
+    shoves lands, like the part, on table the camera saw, away from its edge. Where it may choose, it chooses a push
+    that touches nothing but the part. ``longest_push_mm``, where given, is how far a push may go where nobody asked for
+    its distance: where none of the directions frees the part at ``push_distance_mm``, longer pushes are tried in steps
+    of :data:`PUSH_DISTANCE_STEP_MM` up to it (never past :data:`PUSH_DISTANCE_CAP_MM`), the shortest that works first.
     """
 
     clearance = float(hand_clearance_mm)
@@ -977,6 +1223,11 @@ def plan_push(
     if not math.isfinite(floor_mm):
         raise ValueError(f"finger_floor_mm must be a number of mm, got {finger_floor_mm!r}")
     floor_mm = max(floor_mm, FINGER_HEIGHT_MIN_MM)
+    longest: Optional[float] = None
+    if longest_push_mm is not None:
+        longest = float(longest_push_mm)
+        if not math.isfinite(longest) or longest <= 0.0:
+            raise ValueError(f"longest_push_mm must be a positive number of mm, got {longest_push_mm!r}")
     distance = float(push_distance_mm)
     if not math.isfinite(distance) or distance <= 0.0:
         return _refuse(REFUSED_PUSH_DISTANCE_INVALID,
@@ -1005,11 +1256,18 @@ def plan_push(
                        f"The part has {len(target)} points more than {SUPPORT_BAND_MM:g} mm above the support, "
                        "so there is nothing to push.")
     part_base = float(np.percentile(raw_h[raw_h >= -SUPPORT_BAND_MM], PART_BASE_PERCENTILE))
-    if part_base > PART_BASE_MAX_MM + _EPS_MM:
+    # No look saw the part's lower sides (from above alone, or past a neighbour that hides its foot): its foot is
+    # inferred from the table round it once that table is known (the owner, 2026-10-03), never inside a container,
+    # where no table round the part is asked.
+    foot_unseen = part_base > PART_BASE_MAX_MM + _EPS_MM
+    unseen_sentence = (f"The part's lowest points seen are {part_base:.0f} mm above the support, more than the "
+                       f"{PART_BASE_MAX_MM:g} mm the finger rides at its lowest")
+    if foot_unseen and container_interior is not None:
         return _refuse(REFUSED_PART_NOT_ON_SUPPORT,
-                       f"The part's lowest points seen are {part_base:.0f} mm above the support, more than the "
-                       f"{PART_BASE_MAX_MM:g} mm the finger rides at its lowest: it rests on something, or only "
-                       "its top was seen, and the finger could pass under it, so it is not pushed.")
+                       f"{unseen_sentence}: it rests on something, or only its top was seen, and inside a declared "
+                       "container no table round it says where it stands, so it is not pushed.")
+    if foot_unseen:
+        part_base = 0.0
     part_top = float(np.percentile(target_h, PART_HEIGHT_PERCENTILE))
     part_height = part_top - max(part_base, 0.0)
     if part_height < MIN_PUSHABLE_PART_HEIGHT_MM:
@@ -1028,6 +1286,7 @@ def plan_push(
     hi_ab = target_ab.max(axis=0) + NEIGHBOUR_WINDOW_MM
     near = np.all((neighbour_ab >= lo_ab) & (neighbour_ab <= hi_ab), axis=1) if len(neighbour_ab) else keep[:0]
     neighbour_cells, neighbour_tops = _cells(neighbour_ab[near], neighbour_h[near])
+    raw_labels, cell_labels, cluster_tops = _clusters(neighbours[near], neighbour_ab[near], neighbour_h[near])
     gap = _min_distance(target_cells, neighbour_cells)
     if not gap <= NEIGHBOUR_EVIDENCE_RADIUS_MM:
         said = "no neighbour was seen" if math.isinf(gap) else f"the nearest is {gap:.0f} mm away"
@@ -1035,12 +1294,18 @@ def plan_push(
                        f"No neighbour stands within {NEIGHBOUR_EVIDENCE_RADIUS_MM:g} mm of the part ({said}), "
                        "so nothing blocked the fingers and a push would not help.")
 
-    boxes = _push_boxes(workspace=workspace, frame=frame, table_points_mm=table_points_mm, distance=distance,
+    boxes = _push_boxes(workspace=workspace, frame=frame, table_points_mm=table_points_mm,
                         container_interior=container_interior, operator_box=operator_box,
                         target_xy=target[:, :2], neighbour_xy=neighbours[near][:, :2])
     if isinstance(boxes, PushRefusal):
         return boxes
     landing_box, hand_region, seen = boxes
+    if foot_unseen and seen is not None:
+        why = seen.foot_refusal()
+        if why:
+            return _refuse(REFUSED_PART_NOT_ON_SUPPORT,
+                           f"{unseen_sentence}, so no look saw its foot, and it is not taken to stand on the support: "
+                           f"{why}. The finger could pass under it, so it is not pushed.")
 
     # Half the part's height within the owner's range, and never under the floor: over a support the camera world holds
     # as a solid, the solid's top and the guard's distance to it.
@@ -1070,32 +1335,63 @@ def plan_push(
     if not directions:
         return _refuse(REFUSED_NO_PUSH_AXIS, "No push axis was offered, so no push is planned.")
 
-    scene = _Scene(frame=frame, target=target, target_ab=target_ab, target_cells=target_cells,
-                   neighbour_cells=neighbour_cells, neighbour_tops=neighbour_tops, centre_ab=centre_ab,
-                   part_height=part_height, part_base=part_base, finger_height=finger_height,
-                   tcp_height=tcp_height, distance=distance, clearance_before=gap, landing_box=landing_box,
-                   hand_region=hand_region, seen=seen, workspace=workspace, hand=hand, hand_clearance=clearance,
-                   beside_clearance=beside, beside_mm=beside_mm)
-    verdicts: list[DirectionVerdict] = []
-    best: Optional[tuple[float, np.ndarray, float]] = None
-    for direction_ab in directions:
-        verdict, after = _judge(scene, direction_ab)
-        verdicts.append(verdict)
-        if verdict.verdict == DIRECTION_OK and after is not None:
-            gain = after - gap
-            if best is None or gain > best[0] + _EPS_MM:
-                best = (gain, direction_ab, after)
-    candidates = tuple(verdicts)
-    if best is None:
-        counts: dict[str, int] = {}
-        for v in candidates:
-            counts[v.verdict] = counts.get(v.verdict, 0) + 1
-        summary = ", ".join(f"{n} {name}" for name, n in counts.items())
-        return _refuse(REFUSED_NO_FREE_DIRECTION,
-                       f"None of the {len(candidates)} push directions is free ({summary}), so the part is not "
-                       "pushed.", candidates)
-    _, direction_ab, after = best
-    return _plan(scene, direction_ab, after, candidates)
+    descent = beside if beside is not None else clearance
+    candidates: tuple[DirectionVerdict, ...] = ()
+    tried = _distances(distance, longest)
+    for travel in tried:
+        scene = _Scene(frame=frame, target=target, target_ab=target_ab, target_cells=target_cells,
+                       neighbour_cells=neighbour_cells, neighbour_tops=neighbour_tops, centre_ab=centre_ab,
+                       part_height=part_height, part_base=part_base, finger_height=finger_height,
+                       tcp_height=tcp_height, distance=travel, clearance_before=gap, landing_box=landing_box,
+                       hand_region=hand_region, seen=seen, workspace=workspace, hand=hand, hand_clearance=clearance,
+                       beside_clearance=beside, beside_mm=beside_mm, may_shove=bool(may_shove),
+                       descent_clearance=descent, neighbour_raw=neighbours[near], neighbour_raw_labels=raw_labels,
+                       neighbour_labels=cell_labels, cluster_tops=cluster_tops, foot_inferred=foot_unseen)
+        verdicts: list[DirectionVerdict] = []
+        best: Optional[tuple[tuple[bool, float], np.ndarray, float, bool]] = None
+        for direction_ab in directions:
+            verdict, after, touches = _judge(scene, direction_ab)
+            verdicts.append(verdict)
+            if verdict.verdict == DIRECTION_OK and after is not None:
+                # A push that touches nothing but the part comes first; among the rest, the one that gains the most.
+                key = (not touches, after - gap)
+                if best is None or key[0] > best[0][0] or (key[0] == best[0][0] and key[1] > best[0][1] + _EPS_MM):
+                    best = (key, direction_ab, after, touches)
+        candidates = tuple(verdicts)
+        if best is not None:
+            _, direction_ab, after, touches = best
+            return _plan(scene, direction_ab, after, candidates, touches=touches)
+    counts: dict[str, int] = {}
+    for v in candidates:
+        counts[v.verdict] = counts.get(v.verdict, 0) + 1
+    summary = ", ".join(f"{n} {name}" for name, n in counts.items())
+    at = "" if len(tried) == 1 else f" at {_said_distances(tried)} mm"
+    last = "" if len(tried) == 1 else f"at {tried[-1]:g} mm: "
+    return _refuse(REFUSED_NO_FREE_DIRECTION,
+                   f"None of the {len(candidates)} push directions is free{at} ({last}{summary}), so the part is not "
+                   "pushed.", candidates)
+
+
+def _distances(distance: float, longest: Optional[float]) -> list[float]:
+    """The push distances to try, the asked or the config's first, then longer ones in steps of
+    :data:`PUSH_DISTANCE_STEP_MM` up to ``longest`` (never past :data:`PUSH_DISTANCE_CAP_MM`)."""
+
+    out = [float(distance)]
+    if longest is None:
+        return out
+    top = min(float(longest), PUSH_DISTANCE_CAP_MM)
+    step = float(distance) + PUSH_DISTANCE_STEP_MM
+    while step < top - _EPS_MM:
+        out.append(step)
+        step += PUSH_DISTANCE_STEP_MM
+    if top > float(distance) + _EPS_MM:
+        out.append(top)
+    return out
+
+
+def _said_distances(distances: Sequence[float]) -> str:
+    words = [f"{d:g}" for d in distances]
+    return words[0] if len(words) == 1 else ", ".join(words[:-1]) + f" or {words[-1]}"
 
 
 def _push_boxes(
@@ -1103,7 +1399,6 @@ def _push_boxes(
     workspace: AxisBox,
     frame: _SupportFrame,
     table_points_mm: Optional[ArrayLike],
-    distance: float,
     container_interior: Optional[AxisBox],
     operator_box: Optional[AxisBox],
     target_xy: np.ndarray,
@@ -1136,7 +1431,7 @@ def _push_boxes(
     region = _intersect(box, workspace.xy)
     if operator_box is not None:
         region = _intersect(region, operator_box.xy)
-    shrink = distance + AUTO_BOX_EXTRA_SHRINK_MM
+    shrink = AUTO_BOX_EXTRA_SHRINK_MM
     landing = _shrink(region, shrink)
     if _empty(region) or _empty(landing):
         return _refuse(REFUSED_PUSH_BOX_EMPTY,
@@ -1212,11 +1507,16 @@ def _stations(scene: _Scene, direction_ab: np.ndarray) -> _Stations:
                      palm_u_low=u_start - palm_half, palm_u_high=u_end + palm_half)
 
 
-def _hand_footprint_xy(scene: _Scene, direction_ab: np.ndarray, st: _Stations, band: float) -> np.ndarray:
-    """BASE XY samples, half a seen-table cell apart, over the rectangle the hand sweeps at finger height."""
+def _finger_footprint_xy(scene: _Scene, direction_ab: np.ndarray, st: _Stations, *, descent_only: bool) -> np.ndarray:
+    """BASE XY samples, half a seen-table cell apart, over the fingers at finger height: where they come down
+    (``descent_only``), or their whole stroke. The housing rides at least the finger's length higher and needs no
+    table under it; the guard and :func:`_judge` keep it from what stands tall enough to reach it."""
 
     step = 0.5 * TABLE_CELL_MM
-    uu, vv = np.meshgrid(_span(st.palm_u_low, st.palm_u_high, step), _span(-band, band, step), indexing="ij")
+    half = 0.5 * scene.hand.finger_width_mm
+    outer = scene.hand.half_outer_mm
+    low, high = (st.u_start - outer, st.u_start + outer) if descent_only else (st.hand_u_low, st.hand_u_high)
+    uu, vv = np.meshgrid(_span(low, high, step), _span(-half, half, step), indexing="ij")
     u = uu.reshape(-1)
     v = st.v_line + vv.reshape(-1)
     da, db = float(direction_ab[0]), float(direction_ab[1])
@@ -1224,8 +1524,72 @@ def _hand_footprint_xy(scene: _Scene, direction_ab: np.ndarray, st: _Stations, b
     return base[:, :2]
 
 
-def _judge(scene: _Scene, direction_ab: np.ndarray) -> tuple[DirectionVerdict, Optional[float]]:
-    """One direction against every test; the clearance after the push when it passes them all."""
+@dataclass(frozen=True, slots=True)
+class _Reach:
+    """What a rearranging push meets along one direction (:func:`_shove_reach`)."""
+
+    blocked: bool
+    #: Every neighbour cell, the shoved ones where they end.
+    moved_cells: np.ndarray
+    #: BASE XY of where the shoved cells end.
+    shoved_xy: np.ndarray
+    #: Whether it touches a neighbour at all: one it shoves, or one within the hand's clearance of the fingers' stroke.
+    touches: bool
+    #: The clusters it may touch, kept out of the camera world whole (:attr:`PushPlan.kept_out_neighbours_mm`), and how
+    #: far each is shoved at most.
+    touched: dict[int, float] = field(default_factory=dict)
+
+
+def _shove_reach(scene: _Scene, direction_ab: np.ndarray, st: _Stations, target_uv: np.ndarray, n_uv: np.ndarray,
+                 lateral: np.ndarray) -> _Reach:
+    """The owner's rearranging push (2026-10-03) along one direction.
+
+    The fingers come down where no neighbour stands within ``scene.descent_clearance`` of either (and on seen table,
+    which :func:`_judge` asks), and the housing keeps the hand's clearance from every neighbour tall enough to reach it,
+    all along the stroke. In between, contact is allowed with what stands lower than that: a neighbour in the stroke's
+    corridor (the part's width or the finger's, whichever is wider, :data:`SHOVE_TOLERANCE_MM` more) is shoved ahead to
+    where the part's front ends, and one within the hand's clearance of the fingers' stroke may be brushed. Each such
+    neighbour is kept out of the camera world whole, as the world joins it (:data:`NEIGHBOUR_CLUSTER_MM`), so the guard
+    does not judge the fingers against what is left of it. A neighbour tall enough to reach the housing stays in the
+    guard's world, and the fingers keep the hand's clearance from it, as on any push."""
+
+    hand = scene.hand
+    hc = scene.hand_clearance
+    c = scene.descent_clearance
+    half_finger = 0.5 * hand.finger_width_mm
+    outer = hand.half_outer_mm
+    none = np.zeros((0, 2))
+    descent = ((n_uv[:, 0] >= st.u_start - outer - c) & (n_uv[:, 0] <= st.u_start + outer + c)
+               & (lateral <= half_finger + c))
+    palm_underside = scene.finger_height + hand.palm_underside_above_tip_mm
+    palm = ((n_uv[:, 0] >= st.palm_u_low - hc) & (n_uv[:, 0] <= st.palm_u_high + hc)
+            & (lateral <= 0.5 * hand.palm_width_mm + hc) & (scene.neighbour_tops >= palm_underside - hc))
+    if bool(np.any(descent | palm)):
+        return _Reach(True, scene.neighbour_cells, none, False)
+    corridor = max(half_finger, float(np.abs(target_uv[:, 1] - st.v_line).max())) + SHOVE_TOLERANCE_MM
+    front = float(target_uv[:, 0].max()) + scene.distance
+    shoved = ((lateral <= corridor) & (n_uv[:, 0] >= st.u_start + outer)
+              & (n_uv[:, 0] <= front + SHOVE_TOLERANCE_MM))
+    stroke = ((n_uv[:, 0] >= st.hand_u_low - hc) & (n_uv[:, 0] <= st.hand_u_high + hc)
+              & (lateral <= half_finger + hc))
+    labels = scene.neighbour_labels
+    low = np.array([scene.cluster_tops.get(int(label), np.inf) < palm_underside - hc for label in labels], dtype=bool)
+    reach = stroke | shoved
+    if bool(np.any(reach & ~low)):
+        return _Reach(True, scene.neighbour_cells, none, False)
+    travel = np.clip(front - n_uv[shoved, 0], 0.0, scene.distance)
+    moved = scene.neighbour_cells.copy()
+    moved[shoved] = moved[shoved] + travel[:, None] * direction_ab[None, :]
+    touched: dict[int, float] = {int(label): 0.0 for label in np.unique(labels[reach])}
+    for label, far in zip(labels[shoved], travel):
+        touched[int(label)] = max(touched[int(label)], float(far))
+    shoved_xy = (scene.frame.to_base_many(moved[shoved, 0], moved[shoved, 1], 0.0)[:, :2] if shoved.any() else none)
+    return _Reach(False, moved, shoved_xy, bool(touched), touched)
+
+
+def _judge(scene: _Scene, direction_ab: np.ndarray) -> tuple[DirectionVerdict, Optional[float], bool]:
+    """One direction against every test: its verdict, the clearance after the push when it passes them all, and
+    whether it moves or brushes a neighbour (a rearranging push, :func:`_shove_reach`)."""
 
     d3 = _direction_xyz(scene, direction_ab)
     xy = np.array([d3[0], d3[1]])
@@ -1235,59 +1599,73 @@ def _judge(scene: _Scene, direction_ab: np.ndarray) -> tuple[DirectionVerdict, O
     hand = scene.hand
 
     n_uv = _uv(scene.neighbour_cells, direction_ab)
-    clear: Union[float, np.ndarray] = scene.hand_clearance
-    if scene.beside_clearance is not None:
-        # The owner's clearance beside the pushed part (2026-10-02): a point inside the box the push keeps out round the
-        # part and its path is the guard's blind spot while the push runs, and keeps the clearance beside the part;
-        # every other point keeps the clearance the guard's own view asks.
-        beside = _inside_the_keep_out(scene.neighbour_cells, scene.target_ab, direction_ab, scene.distance,
-                                      scene.beside_mm)
-        clear = np.where(beside, scene.beside_clearance, scene.hand_clearance)
     lateral = np.abs(n_uv[:, 1] - st.v_line)
-    finger_u = (n_uv[:, 0] >= st.hand_u_low - clear) & (n_uv[:, 0] <= st.hand_u_high + clear)
-    palm_u = (n_uv[:, 0] >= st.palm_u_low - clear) & (n_uv[:, 0] <= st.palm_u_high + clear)
-    fingers = finger_u & (lateral <= 0.5 * hand.finger_width_mm + clear)
-    palm_underside = scene.finger_height + hand.palm_underside_above_tip_mm
-    palm = palm_u & (lateral <= 0.5 * hand.palm_width_mm + clear) & (scene.neighbour_tops >= palm_underside - clear)
-    if bool(np.any(fingers | palm)):
-        return DirectionVerdict(label, DIRECTION_HAND_BLOCKED), None
-
     target_uv = _uv(scene.target_cells, direction_ab)
-    ahead = n_uv[n_uv[:, 0] >= st.u_trail - _EPS_MM]
-    if _min_swept_distance(target_uv, ahead, scene.distance) < PATH_NEIGHBOUR_CLEARANCE_MM:
-        return DirectionVerdict(label, DIRECTION_PATH_BLOCKED), None
+    moved = scene.neighbour_cells
+    shoved_xy = np.zeros((0, 2))
+    touches = False
+    if scene.may_shove:
+        reach = _shove_reach(scene, direction_ab, st, target_uv, n_uv, lateral)
+        if reach.blocked:
+            return DirectionVerdict(label, DIRECTION_HAND_BLOCKED), None, False
+        moved, shoved_xy, touches = reach.moved_cells, reach.shoved_xy, reach.touches
+    else:
+        clear: Union[float, np.ndarray] = scene.hand_clearance
+        if scene.beside_clearance is not None:
+            # The owner's clearance beside the pushed part (2026-10-02): a point inside the box the push keeps out round
+            # the part and its path is the guard's blind spot while the push runs, and keeps the clearance beside the
+            # part; every other point keeps the clearance the guard's own view asks.
+            beside = _inside_the_keep_out(scene.neighbour_cells, scene.target_ab, direction_ab, scene.distance,
+                                          scene.beside_mm)
+            clear = np.where(beside, scene.beside_clearance, scene.hand_clearance)
+        finger_u = (n_uv[:, 0] >= st.hand_u_low - clear) & (n_uv[:, 0] <= st.hand_u_high + clear)
+        palm_u = (n_uv[:, 0] >= st.palm_u_low - clear) & (n_uv[:, 0] <= st.palm_u_high + clear)
+        fingers = finger_u & (lateral <= 0.5 * hand.finger_width_mm + clear)
+        palm_underside = scene.finger_height + hand.palm_underside_above_tip_mm
+        palm = palm_u & (lateral <= 0.5 * hand.palm_width_mm + clear) & (scene.neighbour_tops >= palm_underside - clear)
+        if bool(np.any(fingers | palm)):
+            return DirectionVerdict(label, DIRECTION_HAND_BLOCKED), None, False
+
+        ahead = n_uv[n_uv[:, 0] >= st.u_trail - _EPS_MM]
+        if _min_swept_distance(target_uv, ahead, scene.distance) < PATH_NEIGHBOUR_CLEARANCE_MM:
+            return DirectionVerdict(label, DIRECTION_PATH_BLOCKED), None, False
 
     shift_ab = direction_ab * scene.distance
-    after = _min_distance(scene.target_cells + shift_ab[None, :], scene.neighbour_cells)
+    after = _min_distance(scene.target_cells + shift_ab[None, :], moved)
     gain = after - scene.clearance_before
     if gain < MIN_CLEARANCE_GAIN_MM:
-        return DirectionVerdict(label, DIRECTION_NO_CLEARANCE_GAIN, gain), None
+        return DirectionVerdict(label, DIRECTION_NO_CLEARANCE_GAIN, gain), None, touches
 
-    landing_xy = (scene.target + scene.distance * d3[None, :])[:, :2]
+    # Whatever moves lands on the table: the part, and every neighbour a rearranging push shoves.
+    landing_xy = np.vstack([(scene.target + scene.distance * d3[None, :])[:, :2], shoved_xy])
     if not _inside_xy(landing_xy, scene.landing_box, LANDING_MARGIN_MM):
-        return DirectionVerdict(label, DIRECTION_LANDING_OUTSIDE_BOX, gain), None
+        return DirectionVerdict(label, DIRECTION_LANDING_OUTSIDE_BOX, gain), None, touches
 
-    band = 0.5 * max(hand.finger_width_mm, hand.palm_width_mm)
+    half_finger = 0.5 * hand.finger_width_mm
     corners = np.array([
         scene.frame.to_base(*_ab(u, st.v_line + v, direction_ab), scene.finger_height)[:2]
-        for u in (st.palm_u_low, st.palm_u_high) for v in (-band, band)
+        for u in (st.hand_u_low, st.hand_u_high) for v in (-half_finger, half_finger)
     ])
     if not _inside_xy(corners, scene.hand_region):
-        return DirectionVerdict(label, DIRECTION_HAND_OUTSIDE_REGION, gain), None
+        return DirectionVerdict(label, DIRECTION_HAND_OUTSIDE_REGION, gain), None, touches
 
     if scene.seen is not None:
-        window = scene.distance + AUTO_BOX_EXTRA_SHRINK_MM + LANDING_MARGIN_MM
-        if not scene.seen.windows_seen(landing_xy, window):
-            return DirectionVerdict(label, DIRECTION_LANDING_OVER_UNSEEN_TABLE, gain), None
-        if not scene.seen.windows_seen(_hand_footprint_xy(scene, direction_ab, st, band), 0.0):
-            return DirectionVerdict(label, DIRECTION_HAND_OVER_UNSEEN_TABLE, gain), None
+        # The edge of what was seen keeps its margin from every landing; a shadow or a dip among seen ground is ground
+        # (the owner, 2026-10-03). The fingers come down on table the camera saw: all their stroke on a push that
+        # touches nothing but the part, where they come down on a rearranging one.
+        window = AUTO_BOX_EXTRA_SHRINK_MM + LANDING_MARGIN_MM
+        if not scene.seen.windows_seen(landing_xy, window, filled=True):
+            return DirectionVerdict(label, DIRECTION_LANDING_OVER_UNSEEN_TABLE, gain), None, touches
+        footprint = _finger_footprint_xy(scene, direction_ab, st, descent_only=scene.may_shove)
+        if not scene.seen.windows_seen(footprint, 0.0):
+            return DirectionVerdict(label, DIRECTION_HAND_OVER_UNSEEN_TABLE, gain), None, touches
 
     tcp = _tcp_points(scene, direction_ab, st)
     low = np.asarray(scene.workspace.min_mm) + WORKSPACE_MARGIN_MM - _EPS_MM
     high = np.asarray(scene.workspace.max_mm) - WORKSPACE_MARGIN_MM + _EPS_MM
     if not bool(np.all((tcp >= low) & (tcp <= high))):
-        return DirectionVerdict(label, DIRECTION_TCP_OUTSIDE_WORKSPACE, gain), None
-    return DirectionVerdict(label, DIRECTION_OK, gain), after
+        return DirectionVerdict(label, DIRECTION_TCP_OUTSIDE_WORKSPACE, gain), None, touches
+    return DirectionVerdict(label, DIRECTION_OK, gain), after, touches
 
 
 def _tcp_points(scene: _Scene, direction_ab: np.ndarray, st: _Stations) -> np.ndarray:
@@ -1300,7 +1678,7 @@ def _tcp_points(scene: _Scene, direction_ab: np.ndarray, st: _Stations) -> np.nd
 
 
 def _plan(scene: _Scene, direction_ab: np.ndarray, after: float,
-          candidates: tuple[DirectionVerdict, ...]) -> PushPlan:
+          candidates: tuple[DirectionVerdict, ...], *, touches: bool = False) -> PushPlan:
     st = _stations(scene, direction_ab)
     p0, start, end, back, lift = _tcp_points(scene, direction_ab, st)
     d3 = _direction_xyz(scene, direction_ab)
@@ -1324,4 +1702,24 @@ def _plan(scene: _Scene, direction_ab: np.ndarray, after: float,
         clearance_before_mm=float(scene.clearance_before),
         clearance_after_mm=float(after),
         candidates=candidates,
+        foot_inferred=bool(scene.foot_inferred),
+        shoves=bool(scene.may_shove and touches),
+        kept_out_neighbours_mm=_kept_out(scene, direction_ab, st) if scene.may_shove else (),
     )
+
+
+def _kept_out(scene: _Scene, direction_ab: np.ndarray, st: _Stations) -> tuple[np.ndarray, ...]:
+    """The neighbours a rearranging push may touch, each whole as BASE points (:func:`_shove_reach`), what it shoves
+    swept as far as it goes: each is held out of the camera world as a box of its own while the push runs."""
+
+    n_uv = _uv(scene.neighbour_cells, direction_ab)
+    reach = _shove_reach(scene, direction_ab, st, _uv(scene.target_cells, direction_ab), n_uv,
+                         np.abs(n_uv[:, 1] - st.v_line))
+    d3 = _direction_xyz(scene, direction_ab)
+    out = []
+    for label, far in sorted(reach.touched.items()):
+        points = scene.neighbour_raw[scene.neighbour_raw_labels == label]
+        if not len(points):
+            continue
+        out.append(np.vstack([points, swept_target_points_mm(points, tuple(d3), far)]) if far > 0.0 else points)
+    return tuple(out)

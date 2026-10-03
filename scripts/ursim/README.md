@@ -134,20 +134,34 @@ URSim has no camera and moves no part, so two things stand in, and nothing else:
 
 - **The camera.** [`_mat_scene.py`](_mat_scene.py) holds one recorded look of the owner's mat (the depth crop of
   the first Zollstock pick of 2026-10-01, `tests/data/cell_2026_10_01`) as points, the pile cut out and the mat
-  filled in under it. Every grab renders that and the scene's parts from where the camera stands now: the TCP the
-  controller reports, composed with the rig's own CAMERA to TOOL. The pick perception and the live planner world
-  read the same frame. Nothing nearer than 450 mm reads a depth, as on a D415 at 1280x720.
+  filled in under it. Every grab casts the bench round it (the bench top, the mat's top and its four sides, the
+  floor), keeps the recorded look for the yellow bin alone, and adds the scene's parts, from where the camera stands
+  now: the TCP the controller reports, composed with the rig's own CAMERA to TOOL. A look from beside the mat then sees
+  its sides and the floor past them, as the owner's camera does, where the recorded look alone ended at its own crop.
+  `--recorded-bench` keeps that recorded look alone, as before 2026-10-03. The pick perception and the live planner
+  world read the same frame. Nothing nearer than 200 mm reads a depth: on 2026-10-01 the owner's D415 read no depth on
+  about half its pixels at the pre-grasp, and 200 mm reads 40 to 60 % there.
 - **The parts.** A part the jaws close on is carried with the TCP and set down where they open. After a push the
   part stands where the plan put it. The detector and the segmenter ground the prompt on the render's target mask.
 
 Step 0 renders the push scene from each look, finds the supports and asks `plan_push` as the pick would; it reports
-and does not gate. Then the scenarios, each a whole pick: `refusal` (no motion toward the part, nothing switched),
-`blocker` (a neighbour gripped, set down on a free spot, the part gripped), `push`, `cancel` (a stop asked for during
-the push leg) and `pstop` (a protective stop during the push leg). `--scene NAME=NEIGHBOURS@GAP@X,Y` places a
-scenario's cylinder and its neighbours, `NAME#n` runs a scenario again on another scene, and `--looks first` hands
-every pick LOOK[0] alone. The tool output is read on a second RTDE connection and every change of it is counted.
-The result is `<work>/p_result.json`; exit 0 means every item held, 1 names each that did not, 2 means refused before
-anything connected.
+and does not gate. Then the scenarios, each a whole pick, the owner's switch set as each needs it (2026-10-03):
+
+| Scenario | The scene | Held where |
+| --- | --- | --- |
+| `blocker` | critical parts: a 30 mm block, an L of two 30 mm blocks 28 mm off its -x and +y sides | a block gripped and set down on a free spot, then the part gripped; DO0 closed, open, closed; nothing pushed |
+| `push` | not critical: the 40 mm cylinder, a 60 mm block 20 mm off its -x side, shifted 20 mm toward +y | the push comes first and may brush the block; every leg judged; DO0 untouched through it; back to the look, a fresh look, the cylinder gripped |
+| `cancel` | the push scene | a stop asked for during the push leg: nothing more commanded, a person decides |
+| `pstop` | the push scene | a protective stop during the push leg: the same |
+| `refusal` | a 40 mm cube beside the cylinder; asked for alone | no motion toward the part, nothing switched |
+
+`--scene NAME=NEIGHBOURS@GAP@X,Y[@TARGET]` places a scenario's part and its neighbours, each
+`name[:side[:gap[:along]]]` (`block60:-x::20` is the push scene's block), `NAME#n` runs a scenario again on another
+scene, and `--looks first` hands every pick LOOK[0] alone. `--push-mm` asks for a distance; unset, the cell's own
+runs, longer where it frees no direction, as a console run without one does. The tool output is read on a second RTDE
+connection and every change of it is counted. The result is `<work>/p_result.json`; exit 0 means every item held, 1
+names each that did not, 2 means refused before anything connected. Before each run, put the arm back at the cell's
+home and clear a protective stop the last run left (`pstop` leaves one).
 
 `--push-stand-in` is the plan's stand-in for the push scenarios, and the result says where it was used: the
 calculator answers the part `ALL_COLLIDED` until a push ran, and `plan_push`, where it refuses on the pick's own

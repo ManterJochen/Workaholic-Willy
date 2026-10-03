@@ -971,6 +971,18 @@
           "title": "Apply Modes",
           "type": "array"
         },
+        "blocker_grasp_tries": {
+          "default": 3,
+          "maximum": 6,
+          "minimum": 1,
+          "title": "Blocker Grasp Tries",
+          "type": "integer"
+        },
+        "critical_parts": {
+          "default": false,
+          "title": "Critical Parts",
+          "type": "boolean"
+        },
         "enabled": {
           "default": false,
           "title": "Enabled",

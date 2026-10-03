@@ -286,6 +286,17 @@ class GraspingRecoveryConfig(StrictModel):
     max_recovery_actions: int = Field(default=2, ge=0, le=20)
     allowed_actions: tuple[str, ...] = Field(default=())
     per_action_budget: tuple[tuple[str, int], ...] = Field(default=())
+    #: How many of a blocker's grasps the clearing tries, best first, each judged from the look before the arm leaves
+    #: for it (the owner, 2026-10-03: "maximal 2-3 oder das ganze einstellbar machen"). Read where ``nudge_target`` is
+    #: allowed, which arms the clearing.
+    blocker_grasp_tries: int = Field(default=3, ge=1, le=6)
+    #: Whether the parts are critical (the owner, 2026-10-03). False, the default: a boxed-in part is pushed first, and
+    #: the push may rearrange the scene (it shoves the neighbours in its way, the fingers brush the ones beside their
+    #: stroke; they come down only on free table seen by the camera, the housing keeps the guard's distance, and nothing
+    #: is pushed over an edge); where no push plans, a blocker is cleared. True: nothing is pushed, a blocker is cleared
+    #: (gripped and set aside) instead. A console run may say otherwise for itself. Read where ``nudge_target`` is
+    #: allowed, which arms both.
+    critical_parts: bool = False
     apply_modes: tuple[str, ...] = Field(
         default=("auto", "dense_clutter")
     )

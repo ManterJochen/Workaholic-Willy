@@ -1712,6 +1712,39 @@ describe('the Advanced drawer and the numbers', () => {
     expect(sent(calls, 'POST /v1/task')[0].body).toMatchObject({ options: { push_mm: 10 } })
   })
 
+  it('says critical parts are cleared, not pushed, and sends the switch only where it was touched', async () => {
+    // The owner's switch (2026-10-03): the cell's own word stands until the operator turns it.
+    const calls = server()
+    cockpit()
+    await command('Räum alle grünen Würfel auf die Ablage links')
+    const card = await screen.findByRole('region', { name: 'Verstanden' })
+    fireEvent.click(within(card).getByText('Erweitert'))
+    const critical = within(card).getByRole('checkbox', { name: /Kritische Teile/ }) as HTMLInputElement
+    expect(critical.checked).toBe(false)
+    expect(within(card).getByRole('spinbutton', { name: /Schieben/ })).toBeTruthy()
+    fireEvent.click(critical)
+    await waitFor(() => expect(critical.checked).toBe(true))
+    expect(within(card).queryByRole('spinbutton', { name: /Schieben/ })).toBeNull()
+    expect(within(card).getByText(/kritische Teile: nur wegräumen/)).toBeTruthy()
+    const start = within(card).getByRole('button', { name: /^Start/ })
+    await waitFor(() => expect(start.hasAttribute('disabled')).toBe(false))
+    fireEvent.click(start)
+    await waitFor(() => expect(sent(calls, 'POST /v1/task')).toHaveLength(1))
+    expect(sent(calls, 'POST /v1/task')[0].body).toMatchObject({ options: { critical_parts: true, push_mm: null } })
+  })
+
+  it("leaves the cell's switch to the cell where nobody touched it", async () => {
+    const calls = server()
+    cockpit()
+    await command('Räum alle grünen Würfel auf die Ablage links')
+    const card = await screen.findByRole('region', { name: 'Verstanden' })
+    const start = within(card).getByRole('button', { name: /^Start/ })
+    await waitFor(() => expect(start.hasAttribute('disabled')).toBe(false))
+    fireEvent.click(start)
+    await waitFor(() => expect(sent(calls, 'POST /v1/task')).toHaveLength(1))
+    expect(sent(calls, 'POST /v1/task')[0].body).toMatchObject({ options: { critical_parts: null } })
+  })
+
   it('brings Start back into the chat\'s view when Advanced opens above it', async () => {
     const shown: Element[] = []
     const scroll = vi.fn(function (this: Element) {

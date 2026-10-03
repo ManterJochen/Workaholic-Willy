@@ -781,6 +781,22 @@ class ABlockedApproachTriggersThePushWhereApproachValidationRunsTests(unittest.T
         self.assertEqual([], cell.arm.pushes)
         self.assertIn("approach_path_blocked", str(run.last.telemetry["low_level_outcome"]).lower())
 
+    def test_a_blocked_approach_never_pushes_a_critical_part(self) -> None:
+        # The owner's switch (2026-10-03): critical parts are never pushed, a blocked approach no more than a collision.
+        cell = _PushCell(self, approach_validation=True, uncertain_on=(0, 1), freed_on=(2,))
+        config = cell.service.effective_config
+        cell.service.effective_config = replace(
+            config, recovery_orchestrator=replace(config.recovery_orchestrator, critical_parts=True))
+        answers = self._blocked_once(cell)
+
+        run = cell.campaign()
+
+        self.assertEqual(["blocked"], answers)
+        self.assertEqual([], cell.arm.pushes, "a critical part was pushed")
+        self.assertEqual((), cell.orchestrator.pushes)
+        self.assertIn("approach_path_blocked", str(run.last.telemetry["low_level_outcome"]).lower())
+        cell.assert_the_jaws_untouched(self)
+
 
 class WhatNeverPushesTests(unittest.TestCase):
     def test_auto_never_pushes(self) -> None:
@@ -868,10 +884,12 @@ class WhatNeverPushesTests(unittest.TestCase):
 
 class ARefusalBeforeMotionFallsThroughTests(unittest.TestCase):
     def test_a_refusal_before_anything_moved_falls_through_to_rescan_with_no_motion(self) -> None:
-        """A pick handed no look rescans where it stands. From its one 45 degree view the part's shadow hides the
-        table where it would land, so the planner refuses (the fail-closed reading of the owner's rule), nothing moves,
-        and the pick goes on to that rescan: a fresh frame from where the arm stands, and the same refusal."""
-        cell = _PushCell(self, allowed=("rescan", "nudge_target"))
+        """A pick handed no look rescans where it stands. The fixture box the cell declares round the part leaves it no
+        room to land (150 mm across, shrunk by 30 mm), so the planner refuses, nothing moves, and the pick goes on to
+        that rescan: a fresh frame from where the arm stands, and the same refusal. (Before 2026-10-03 the part's own
+        shadow refused the landing here; a shadow among seen table is ground now, the owner's rule.)"""
+        cell = _PushCell(self, allowed=("rescan", "nudge_target"), fixture=((0.0, -700.0, 100.0), (75.0, 75.0, 300.0),
+                                                                            50.0))
         cell.arm.move_to_joints(LOOK_PLUS_X)  # where the arm stands; the pick is handed no look
         cell.arm.motions.clear()
         where = cell.arm.get_tcp_pose()
@@ -885,7 +903,7 @@ class ARefusalBeforeMotionFallsThroughTests(unittest.TestCase):
         self.assertEqual(["rescan", "rescan", "rescan"], actions, "the pick did not rescan where it stood")
         pushes = cell.service.runtime.orchestrator.pushes
         self.assertEqual("no_free_direction", pushes[0].code)
-        self.assertIn("landing_over_unseen_table", pushes[0].sentence)
+        self.assertIn("landing_outside_box", pushes[0].sentence)
         self.assertTrue(all(not push.motion_started for push in pushes))
         self.assertFalse(report.needs_person)
         self.assertEqual([], cell.policy.executed)

@@ -246,6 +246,12 @@ class EffectiveRecoveryOrchestratorConfig:
     )
     allowed_actions: tuple[str, ...] = ()
     per_action_budget: tuple[tuple[str, int], ...] = ()
+    #: How many of a blocker's grasps the clearing tries (``recovery.blocker_grasp_tries``). Not in
+    #: :meth:`EffectiveGraspingConfig.to_dict`, like the fixture.
+    blocker_grasp_tries: int = 3
+    #: Whether the parts are critical (``recovery.critical_parts``): a blocker is cleared and nothing is pushed. Not in
+    #: :meth:`EffectiveGraspingConfig.to_dict`, like the fixture.
+    critical_parts: bool = False
     #: The operator-declared BASE-frame box a physical recovery action may act inside, as
     #: ``(centre_xyz_mm, half_extents_xyz_mm, max_nudge_mm)``. ``None`` when the config declares no
     #: fixture, which the schema permits unless ``container_agitate`` is allowed.

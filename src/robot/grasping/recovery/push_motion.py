@@ -32,12 +32,18 @@ with a ``refused_*`` outcome and zero motion, so the recovery loop falls through
 
 **The motion**, all of it inside :func:`~src.robot.core.keep_out.keeping_out` with the part's points plus its
 swept travel (:func:`~src.robot.grasping.recovery.push_planner.swept_target_points_mm`, as far as the push leg
-drives), so the part is no obstacle anywhere along its push. A world that does not take that offer is a refusal:
+drives), so the part is no obstacle anywhere along its push, and, on the owner's rearranging push (2026-10-03), with
+every neighbour the push may touch held out whole, a box of its own (:func:`neighbours_kept_out`). A world that does
+not take those offers is a refusal:
 
-1. P0, in the air above the contact start, like a grasp approach: the arm's plain ``move``. On the owner's cuRobo
+1. The move to P0 and the four contact legs are judged from where the arm stands, each from where the one before
+   ends, on an arm that can (:class:`~src.robot.core.arm_capabilities.JudgesLinesAhead`, the UR driver). A refusal
+   there is ``refused_ahead``: nothing was commanded. The URSim run of 2026-10-03 met a push leg the guard refused
+   only once the hand stood beside the part; judged ahead, it costs no motion.
+2. P0, in the air above the contact start, like a grasp approach: the arm's plain ``move``. On the owner's cuRobo
    UR that is the nearest configuration inside the cable window, the straight joint line first, a capped cuRobo
    detour only where the line is blocked, the camera world refreshed before the gate.
-2. The four contact legs of :attr:`PushPlan.legs` (down, push, back 5 mm, up), each
+3. The four contact legs of :attr:`PushPlan.legs` (down, push, back 5 mm, up), each
    ``arm.move(pose, linear=True, vel=..., acc=...)``: a judged straight line at the plan's explicit speed. Before
    each, the controller is read again, a toggle's count is read again (the owner, 2026-09-30), and the arm waited on
    to rest where the cell asks for that.
@@ -84,7 +90,14 @@ from src.geometry.closing_axis import ClosingAxis
 from src.geometry.exceptions import GeometryError
 from src.geometry.quaternion import from_rotation_matrix, to_rotation_matrix
 from src.robot.core import NO_PLAN_FAIL_SAFE_MESSAGE, MotionResult, MotionStatus, SupportsRobotStatus
-from src.robot.core.arm_capabilities import LineMotion, LineReading, halt_state_of, halted_refusal, line_motion_of
+from src.robot.core.arm_capabilities import (
+    JudgesLinesAhead,
+    LineMotion,
+    LineReading,
+    halt_state_of,
+    halted_refusal,
+    line_motion_of,
+)
 from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.core.gripper import toggle_without_sensor_of, why_toggle_count_unknown, width_is_measured_of
 from src.robot.core.keep_out import SegmentationOffer, keeping_out
@@ -229,6 +242,9 @@ class PushOutcomeCode(StrEnum):
     #: planner): the arm stands in the air at P0, where it moved, and nothing touched the part. The caller moves it
     #: back to the look like a grasp approach, and then falls through as on any refusal before motion.
     REFUSED_DOWN_NOT_SENT = "refused_down_not_sent"
+    #: Judged from where the arm stands before P0, the move to P0 or one of the contact legs would be refused
+    #: (``JudgesLinesAhead``): nothing was commanded, and the arm stands where it stood.
+    REFUSED_AHEAD = "refused_ahead"
 
 
 _STOPPED = frozenset({PushOutcomeCode.UNSAFE_RECOVERY_REFUSED, PushOutcomeCode.CONTROLLER_NOT_OPERATIONAL})
@@ -383,8 +399,9 @@ def execute_push(
     natural_closing_axis: Optional[ClosingAxis] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
 ) -> PushOutcome:
-    """Drive one push: P0 like a grasp approach, then the four judged contact lines, all while the part and its
-    swept travel are kept out of the arm's live camera world. See the module docstring for every rule.
+    """Drive one push: the whole push judged ahead, then P0 like a grasp approach and the four judged contact lines,
+    all while the part and its swept travel, and every neighbour a rearranging push may touch, are kept out of the
+    arm's live camera world. See the module docstring for every rule.
 
     ``arm`` is the cell's :class:`~src.robot.core.RobotArm`. ``plan`` is what
     :func:`~src.robot.grasping.recovery.push_planner.plan_push` answered; its refusal is answered with a refusal here.
@@ -411,13 +428,49 @@ def execute_push(
     with contextlib.ExitStack() as scope:
         try:
             scope.enter_context(keeping_out(arm, held))
+            for offered in neighbours_kept_out(push_plan, held):
+                scope.enter_context(keeping_out(arm, offered))
         except CameraWorldUnavailable:
             raise
         except Exception as exc:  # noqa: BLE001 (a world that refuses the offer refuses the push, nothing moved)
             return _refused(PushOutcomeCode.REFUSED_KEEP_OUT_NOT_TAKEN,
                             f"The arm's camera world did not take the part and its push path to keep out "
                             f"({type(exc).__name__}: {exc}), so nothing was commanded.", plan=push_plan)
+        ahead = _refusal_ahead(arm, poses)
+        if ahead:
+            return _refused(PushOutcomeCode.REFUSED_AHEAD,
+                            f"The push was judged from where the arm stands before P0, and {ahead}: nothing was "
+                            "commanded, and the arm stands where it stood.", plan=push_plan)
         return _drive_push(arm, push_plan, poses, steady_s, gripper=gripper, should_cancel=should_cancel)
+
+
+def neighbours_kept_out(plan: Any, offer: SegmentationOffer) -> tuple[SegmentationOffer, ...]:
+    """The offers that hold a rearranging push's neighbours out of the camera world, each whole and as a box of its own
+    beside the part's (``PushPlan.kept_out_neighbours_mm``, the owner's push of 2026-10-03); none for a push that
+    touches nothing but the part. Each is stamped with the part's frame, and names no camera: a box in BASE."""
+
+    out = []
+    for index, points in enumerate(getattr(plan, "kept_out_neighbours_mm", ()) or ()):
+        cloud = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        if len(cloud):
+            out.append(SegmentationOffer(captured_at_s=offer.captured_at_s, target_points_base_mm=cloud,
+                                         target_label=f"push_neighbour_{index}"))
+    return tuple(out)
+
+
+def _refusal_ahead(arm: Any, poses: tuple[Pose, ...]) -> str:
+    """Why P0 or one of the four contact legs would be refused, judged from where the arm stands
+    (``JudgesLinesAhead``); ``""`` where every one passes or the arm cannot judge them ahead. A judgement that raises
+    is a refusal said (``CameraWorldUnavailable`` excepted, which raises as on every motion)."""
+
+    if not isinstance(arm, JudgesLinesAhead):
+        return ""
+    try:
+        return str(arm.lines_refusal_ahead(approach=poses[0], lines=poses[1:]) or "")
+    except CameraWorldUnavailable:
+        raise
+    except Exception as exc:  # noqa: BLE001 (a judgement that raised is no admission)
+        return f"the push could not be judged ahead ({type(exc).__name__}: {exc})"
 
 
 def _drive_push(arm: Any, plan: PushPlan, poses: tuple[Pose, ...], steady_s: Optional[float], *,

@@ -2,9 +2,10 @@
  * The Advanced drawer of the Understood card (OD 12; build plan 4.2): per task, never written to the cell's config,
  * collapsed by default with its settings in one summary line.
  *
- * Multi-view (on), both jaw faces (off), the closing axis (any), the push distance (the cell's, hidden where the cell
- * cannot push), recordings (off), and, for a target the camera finds, the air over its rim (20 mm, 10-50). The tech
- * view adds the overlay switch, as the measuring aid it is. Each setting says in one line what it does.
+ * Multi-view (on), both jaw faces (off), the closing axis (any), critical parts and the push distance (the cell's,
+ * hidden where the cell cannot push), recordings (off), and, for a target the camera finds, the air over its rim
+ * (20 mm, 10-50). The tech view adds the overlay switch, as the measuring aid it is. Each setting says in one line what
+ * it does.
  */
 
 import type { CellFactsOut } from '../api/client'
@@ -32,6 +33,7 @@ export default function AdvancedDrawer({ draft, facts, tech, change, opened }: A
   const canPush = facts?.push?.can_push !== false
   const pushShown = o.pushMm ?? facts?.push?.default_mm ?? PUSH_MM
   const pushMax = Math.max(PUSH_MIN_MM, facts?.push?.ceiling_mm ?? 50)
+  const critical = o.criticalParts ?? facts?.push?.critical_parts ?? false
   const rimShown = o.rimAirMm ?? RIM_AIR_MM
   const onOff = (on: boolean) => t(on ? 'ck.adv.on' : 'ck.adv.off')
 
@@ -39,7 +41,7 @@ export default function AdvancedDrawer({ draft, facts, tech, change, opened }: A
     t('ck.adv.summary.multiView', { state: onOff(o.multiView) }),
     t('ck.adv.summary.bothFaces', { state: onOff(o.bothFaces) }),
     ...(o.closingAxis ? [t('ck.adv.summary.axis', { axis: o.closingAxis })] : []),
-    ...(canPush ? [t('ck.adv.summary.push', { mm: pushShown })] : []),
+    ...(canPush ? [critical ? t('ck.adv.summary.critical') : t('ck.adv.summary.push', { mm: pushShown })] : []),
     t('ck.adv.summary.record', { state: onOff(o.recordViews) }),
     ...(camera ? [t('ck.adv.summary.rim', { mm: rimShown })] : []),
   ].join(' · ')
@@ -77,6 +79,13 @@ export default function AdvancedDrawer({ draft, facts, tech, change, opened }: A
           <span className="ck-help">{t('ck.adv.axisHelp')}</span>
         </label>
         {canPush && (
+          <label className="ck-switch">
+            <input type="checkbox" checked={critical} onChange={(e) => change({ criticalParts: e.target.checked })} />
+            <span className="ck-switch-name">{t('ck.adv.critical')}</span>
+            <span className="ck-help">{t('ck.adv.criticalHelp')}</span>
+          </label>
+        )}
+        {canPush && !critical && (
           <label className="ck-field">
             <span className="ck-switch-name">{t('ck.adv.push')}</span>
             <span className="ck-number">

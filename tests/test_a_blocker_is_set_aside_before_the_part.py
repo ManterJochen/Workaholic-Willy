@@ -178,6 +178,9 @@ class _Boxed:
         self.seen = seen
         self.calls: list[str] = []
         self.camera_matrix = K.copy()
+        #: How many grasps the blocker is offered, best first: the first closes along x, the next along y, then
+        #: diagonally, all at the post's centre.
+        self.blocker_grasps = 1
 
     def compute_result(self, seg: Any, depth: Any, *_args: Any, **kwargs: Any) -> GraspResult:
         label = str(getattr(seg, "label", ""))
@@ -185,8 +188,11 @@ class _Boxed:
         if label == "blocker":
             if not self.graspable:
                 return GraspResult(reasons=(GraspFailureReason.NO_VALID_GRASP, GraspFailureReason.RESCAN_RECOMMENDED))
-            grasp = _top_down(self.scene.centre("post"), width_mm=28.0, label="blocker")
-            return GraspResult(candidates=(grasp,), top_score=0.9)
+            axes = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.7071068, 0.7071068, 0.0))[:max(1, self.blocker_grasps)]
+            grasps = tuple(replace(_top_down(self.scene.centre("post"), width_mm=28.0, label="blocker"),
+                                   axis=np.array(axis), score=0.9 - 0.1 * number)
+                           for number, axis in enumerate(axes))
+            return GraspResult(candidates=grasps, top_score=0.9)
         if label != "part":
             return GraspResult(reasons=(GraspFailureReason.NO_CANDIDATES_GENERATED,))
         handed = np.asarray(depth, dtype=np.float64)
@@ -472,8 +478,8 @@ def _refusing_the_line_down_to(cell: "_Cell", label: str, *, status: MotionStatu
 class ABlockerGraspRefusedInTheAirGoesBackToTheLookTests(unittest.TestCase):
     """The URSim gate of 2026-10-02 met it three times in eight: the line in to the blocker refused once the arm stood at
     its standoff, or its carried lift refused before the close. The hand never closed, so the arm goes back to its look
-    on a judged move, the blocker is not tried again, and the push is considered, as after a blocker refused before
-    anything was sent; no person is needed for a hand known empty and open. The hand here measures its width
+    on a judged move, the blocker is not tried again, and the pick goes on to its next action, as after a blocker
+    refused before anything was sent; no person is needed for a hand known empty and open. The hand here measures its width
     (``core.gripper.why_not_known_open`` reads it open at 50 mm, closed at 0), as the owner's toggle counts its own."""
 
     @staticmethod
@@ -550,6 +556,95 @@ class ABlockerGraspRefusedInTheAirGoesBackToTheLookTests(unittest.TestCase):
 
         self.assertGreaterEqual(closes["n"], 1)
         self.assertEqual("stopped_where_the_arm_stands", cell.orchestrator.blockers[-1].code)
+
+
+class ABlockerIsTriedOnItsNextGraspTests(unittest.TestCase):
+    """``recovery.blocker_grasp_tries`` (the owner, 2026-10-03): a blocker's grasps are tried best first, each judged
+    from the look before the arm leaves for it (``GraspExecutionPolicy.refusal_ahead``). A grasp refused there costs no
+    motion; one refused once the arm stood over the blocker sends the arm back to the look first; the next grasp is
+    tried, the count the gate allows at most."""
+
+    @staticmethod
+    def _executed(cell: "_Cell") -> list[tuple[float, ...]]:
+        """Records the closing axis of every grasp the policy drives to, in order."""
+        executed: list[tuple[float, ...]] = []
+        real = cell.policy.execute
+
+        def execute(grasp: Any) -> Any:
+            executed.append(tuple(round(float(v), 3) for v in grasp.axis))
+            return real(grasp)
+
+        cell.policy.execute = execute  # type: ignore[method-assign]
+        return executed
+
+    @staticmethod
+    def _judged(cell: "_Cell", refuse: Any) -> list[tuple[float, ...]]:
+        """The policy's judgement ahead answers ``refuse(number)`` for the n-th grasp asked; the asked axes, in order."""
+        asked: list[tuple[float, ...]] = []
+
+        def ahead(grasp: Any) -> str:
+            asked.append(tuple(round(float(v), 3) for v in grasp.axis))
+            return refuse(len(asked))
+
+        cell.policy.refusal_ahead = ahead  # type: ignore[attr-defined]
+        return asked
+
+    def test_a_grasp_judged_ahead_as_refused_moves_nothing_and_the_next_is_taken(self) -> None:
+        cell = _Cell()
+        cell.calculator.blocker_grasps = 3
+        asked = self._judged(cell, lambda n: "the move to the standoff would be refused (test)" if n == 1 else "")
+        executed = self._executed(cell)
+
+        cell.run()
+
+        self.assertEqual("set_aside", cell.orchestrator.blockers[0].code, cell.orchestrator.blockers[0].sentence)
+        self.assertEqual([(1.0, 0.0, 0.0), (0.0, 1.0, 0.0)], asked[:2])
+        self.assertEqual((0.0, 1.0, 0.0), executed[0], "the grasp refused ahead was driven to")
+
+    def test_the_tries_end_at_the_count_the_gate_allows(self) -> None:
+        cell = _Cell()
+        cell.calculator.blocker_grasps = 3
+        assert cell.orchestrator.push_gate is not None
+        cell.orchestrator.push_gate = replace(cell.orchestrator.push_gate, blocker_grasp_tries=2)
+        asked = self._judged(cell, lambda n: f"the lift would be refused (test {n})")
+        executed = self._executed(cell)
+
+        cell.run()
+
+        record = cell.orchestrator.blockers[0]
+        self.assertEqual("blocker_not_reached", record.code, record.sentence)
+        self.assertEqual(2, len(asked))
+        self.assertIn("None of the blocker's 2 grasp(s)", record.sentence)
+        self.assertFalse(record.moved)
+        self.assertEqual([], executed, "a blocker grasp refused ahead was driven to")
+        self.assertEqual([], cell.hand.commands, "the hand was commanded for a blocker nothing was driven to")
+
+    def test_a_grasp_refused_in_the_air_goes_back_to_the_look_and_the_next_is_taken(self) -> None:
+        cell = ABlockerGraspRefusedInTheAirGoesBackToTheLookTests._measuring(_Cell())
+        cell.calculator.blocker_grasps = 2
+        real = cell.arm.move
+        refused: list[Any] = []
+
+        def move(pose: Any, **keywords: Any) -> MotionResult:
+            at = np.asarray(pose.position_mm, dtype=np.float64)
+            centre = cell.scene.centre("post")
+            if (keywords.get("linear") and not refused and float(np.hypot(*(at[:2] - centre[:2]))) < 1.0
+                    and at[2] <= centre[2] + 1.0):
+                refused.append(pose)
+                return MotionResult.failed(MotionStatus.SELF_COLLISION_REJECTED, MotionCommand.MOVE_TO,
+                                           target_pose=pose, message="the guard refused the first line in")
+            return real(pose, **keywords)
+
+        cell.arm.move = move  # type: ignore[method-assign]
+        executed = self._executed(cell)
+
+        cell.run()
+
+        self.assertEqual(1, len(refused))
+        self.assertEqual([(1.0, 0.0, 0.0), (0.0, 1.0, 0.0)], executed[:2])
+        self.assertEqual("set_aside", cell.orchestrator.blockers[0].code, cell.orchestrator.blockers[0].sentence)
+        joints = [key for kind, key in cell.arm.motions if kind == "joints"]
+        self.assertIn(joints[0], joints[1:], "the arm did not go back to the look between the two grasps")
 
 
 if __name__ == "__main__":

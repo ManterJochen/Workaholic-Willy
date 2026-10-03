@@ -49,6 +49,7 @@ __all__ = [
     "REFUSED_STOP_REQUESTED",
     "TRIGGER_ALL_COLLIDED",
     "TRIGGER_APPROACH_BLOCKED",
+    "TRIGGER_GRASPS_REFUSED_AHEAD",
     "FailedPart",
     "PickPush",
     "PushCampaign",
@@ -61,6 +62,9 @@ __all__ = [
 TRIGGER_ALL_COLLIDED = "all_collided"
 #: A push is considered because every ranked candidate's approach sweep was blocked (approach validation on).
 TRIGGER_APPROACH_BLOCKED = "approach_path_blocked"
+#: The scene is changed because every grasp of the part was judged from the look and refused there, nothing moved (the
+#: joint window, the planner): a part no grasp can reach, as a part every grasp of which collided (2026-10-03).
+TRIGGER_GRASPS_REFUSED_AHEAD = "grasps_refused_ahead"
 #: The cell's push inputs could not be read from its config.
 REFUSED_PUSH_CELL_UNKNOWN = "push_cell_unknown"
 #: A stop was asked for (the console's Stop, ``should_cancel``) after the pick's looks and before the push began:
@@ -168,15 +172,24 @@ class PushCampaign:
 
     ``distance_mm`` is the push every pick of the campaign makes (``push_mm`` of a ``PickRun`` or a console run,
     settled against the config by ``resolve_push_distance``); ``None`` for a campaign that pushes nothing, whose
-    distance the config refused. One campaign is driven from one thread.
+    distance the config refused. ``longest_mm`` is how far a push may go where that distance opens too little room: the
+    cell's ``recovery.fixture.max_nudge_mm`` where nobody asked for a distance, ``None`` where someone did, whose push
+    is taken as asked. ``critical_parts`` is what the run said of its parts (the owner's switch, 2026-10-03), ``None``
+    where it said nothing and the cell's ``recovery.critical_parts`` stands. One campaign is driven from one thread.
     """
 
     def __init__(self, *, distance_mm: Optional[float], budgets: Optional[PushBudgets] = None,
-                 zones: Optional[ExclusionZones] = None) -> None:
+                 zones: Optional[ExclusionZones] = None, longest_mm: Optional[float] = None,
+                 critical_parts: Optional[bool] = None) -> None:
         distance = None if distance_mm is None else float(distance_mm)
         if distance is not None and (not math.isfinite(distance) or distance <= 0.0):
             raise ValueError(f"a campaign's push distance is a positive number of mm, got {distance_mm!r}")
+        longest = None if longest_mm is None else float(longest_mm)
+        if longest is not None and (not math.isfinite(longest) or longest <= 0.0):
+            raise ValueError(f"a campaign's longest push is a positive number of mm, got {longest_mm!r}")
         self.distance_mm = distance
+        self.longest_mm = longest
+        self.critical_parts = None if critical_parts is None else bool(critical_parts)
         self.budgets = budgets if budgets is not None else PushBudgets()
         self.zones = zones if zones is not None else ExclusionZones()
 
@@ -195,6 +208,11 @@ class PushGate:
     declared fixture box (``recovery.fixture``), which only narrows the push box; ``None`` where no fixture is
     declared, and the automatic push box alone bounds the push. ``on_approach_blocked`` is whether a
     pick whose every approach sweep was blocked is a trigger too, which it is where approach validation runs.
+    ``blocker_grasp_tries`` is how many of a blocker's grasps clearing it tries (``recovery.blocker_grasp_tries``).
+    ``critical_parts`` is the owner's switch (2026-10-03): ``False``, a boxed-in part is pushed first, and the push may
+    rearrange the scene, with a blocker cleared where no push plans; ``True``, nothing is pushed, and a blocker is
+    cleared instead. ``longest_mm`` is how far a push may go where the campaign's distance opens too little room
+    (``PushCampaign.longest_mm``).
     """
 
     budgets: PushBudgets
@@ -202,13 +220,17 @@ class PushGate:
     cell: PushCell
     operator_box: Optional[AxisBox] = None
     on_approach_blocked: bool = False
+    blocker_grasp_tries: int = 3
+    critical_parts: bool = False
+    longest_mm: Optional[float] = None
 
 
 @dataclass(frozen=True, slots=True)
 class PickPush:
     """What one push a pick considered came to.
 
-    ``trigger`` is why it was considered (:data:`TRIGGER_ALL_COLLIDED`, :data:`TRIGGER_APPROACH_BLOCKED`). ``code``
+    ``trigger`` is why it was considered (:data:`TRIGGER_ALL_COLLIDED`, :data:`TRIGGER_APPROACH_BLOCKED`,
+    :data:`TRIGGER_GRASPS_REFUSED_AHEAD`). ``code``
     is what it came to: a ``PushOutcomeCode`` value where the push was driven or refused by
     :func:`~src.robot.grasping.recovery.push_motion.execute_push`; the planner's or the budgets' code, or a
     ``refused_*`` of the pick's own, where it was refused before that. ``sentence`` says it in words.

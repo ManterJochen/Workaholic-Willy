@@ -85,6 +85,7 @@ def support_footprint_breakdowns(
     floor_margin_mm: float | None = None,
     side_approaches: bool = False,
     corridor_seen: CorridorSeen | None = None,
+    seen_envelope: Any = None,
 ) -> tuple[list[GraspScoreBreakdown], dict]:
     """Run SFE and return camera-frame breakdowns plus its telemetry.
 
@@ -97,6 +98,9 @@ def support_footprint_breakdowns(
     ``side_approaches`` and ``corridor_seen`` are SFE's own (``generate_support_footprint_grasps``). The
     library default stays off, so a direct caller is unchanged; a cell turns them on from
     ``robot.grasping.side_approaches`` with ``corridor_seen`` built from the frame.
+
+    ``seen_envelope`` (``scene_obstacles.SeenEnvelope``) holds the boxes the camera world builds of the neighbours: a
+    build whose open hand comes nearer to one than the guard keeps is refused under ``seen_fingers``.
     """
     refused: dict[str, int] = {}
     candidates = generate_support_footprint_grasps(
@@ -113,6 +117,7 @@ def support_footprint_breakdowns(
         refusals=refused,
         side_approaches=side_approaches,
         corridor_seen=corridor_seen,
+        seen_envelope=seen_envelope,
     )
     breakdowns: list[GraspScoreBreakdown] = []
     for candidate in candidates:

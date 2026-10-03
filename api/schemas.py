@@ -507,8 +507,13 @@ class TaskOptionsIn(BaseModel):
     #: Keep only grasps that close along this direction (one of :data:`ClosingAxisName`, a leading ``+`` allowed);
     #: one the library cannot read is refused ``422 closing_axis_refused``.
     closing_axis: str | None = Field(default=None, max_length=16)
-    #: How far a push of a failed part moves it, in mm; refused as ``POST /v1/pick`` refuses it.
+    #: How far a push of a failed part moves it, in mm; refused as ``POST /v1/pick`` refuses it. Null: the cell's, and a
+    #: push that opens too little room there may go as far as the cell allows.
     push_mm: float | None = None
+    #: The owner's switch for this task (2026-10-03): true, the parts are critical, nothing is pushed and a blocker is
+    #: cleared instead; false, a push may rearrange the scene, and a blocker is cleared where none plans. Null: the
+    #: cell's ``robot.grasping.recovery.critical_parts``.
+    critical_parts: bool | None = None
     #: Keep each pick's looks on disk.
     record_views: bool = False
     #: A camera place only: the air over the rim when the jaws open, 10-50 mm; null means 20.
@@ -566,6 +571,10 @@ class TaskOptionsOut(BaseModel):
     both_faces: bool = False
     closing_axis: ClosingAxisName | None = None
     push_mm: float | None = None
+    #: Whether the operator set ``push_mm``: a distance asked for is taken as asked, the cell's may go longer.
+    push_asked: bool = False
+    #: As asked (``TaskOptionsIn.critical_parts``); null, the cell's.
+    critical_parts: bool | None = None
     record_views: bool = False
     rim_air_mm: float | None = None
     pick_anything: bool = False
@@ -907,6 +916,8 @@ class PushFactsOut(BaseModel):
     why_not: str = ""
     default_mm: float | None = None
     ceiling_mm: float | None = None
+    #: The cell's ``robot.grasping.recovery.critical_parts``: true, nothing is pushed and a blocker is cleared instead.
+    critical_parts: bool = False
 
 
 class DetectorFactsOut(BaseModel):

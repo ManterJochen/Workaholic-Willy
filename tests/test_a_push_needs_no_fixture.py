@@ -3,7 +3,8 @@
 Until then four places refused or disarmed ``nudge_target`` without a declared ``robot.grasping.recovery.fixture``: the
 load, ``SceneRecoveryPolicy``, the gate the service hands a pick (``push_permitted``) and the recovery loop. The push
 never needed that box to know where a part may land: the **automatic push box** bounds it, the workspace box
-intersected with the table the looks saw, shrunk by the push plus 30 mm, or a declared container's interior. A declared
+intersected with the table the looks saw, shrunk by 30 mm (by the push plus 30 mm until the owner's rule of
+2026-10-03), or a declared container's interior. A declared
 fixture box only narrows it. ``container_agitate`` keeps both of its needs: a fixture, the box every waypoint of the
 agitation stays inside, and a declared container's interior.
 
@@ -24,6 +25,7 @@ gate with no operator box.
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from typing import Any
 from unittest import mock
 
@@ -46,7 +48,7 @@ from src.robot.grasping.recovery import push_planner
 from src.robot.grasping.recovery.policy import SceneRecoveryAction as A
 from src.robot.grasping.recovery.policy import SceneRecoveryPolicy, push_permitted
 from src.robot.grasping.recovery.push_gate import PushCell, PushGate
-from src.robot.grasping.recovery.push_planner import AUTO_BOX_EXTRA_SHRINK_MM, LANDING_MARGIN_MM, PushPlan
+from src.robot.grasping.recovery.push_planner import AUTO_BOX_EXTRA_SHRINK_MM, LANDING_MARGIN_MM, AxisBox, PushPlan
 from tests._wrist_views import CUBE, Box, mount
 from tests.test_a_boxed_in_part_is_pushed_inside_the_pick import (
     CONTAINER,
@@ -249,9 +251,10 @@ class ABoxedInPartIsPushedWithoutAFixtureTests(unittest.TestCase):
         self.assertIsInstance(plan, PushPlan)
         assert isinstance(plan, PushPlan)
         self.assertEqual(30.0, plan.push_distance_mm)
-        # The automatic box: the workspace box intersected with the table the looks saw, shrunk by the push plus
-        # 30 mm. The looks saw the table past the workspace's -y face, so that face bounds the box there.
-        shrink = plan.push_distance_mm + AUTO_BOX_EXTRA_SHRINK_MM
+        # The automatic box: the workspace box intersected with the table the looks saw, shrunk by 30 mm, however far
+        # the push goes (the owner, 2026-10-03). The looks saw the table past the workspace's -y face, so that face
+        # bounds the box there.
+        shrink = AUTO_BOX_EXTRA_SHRINK_MM
         (low, high) = plan.landing_box_xy_mm
         self.assertAlmostEqual(WORKSPACE.min_mm[1] + shrink, low[1], places=6)
         self.assertTrue(_inside(low, ((WORKSPACE.min_mm[0], WORKSPACE.min_mm[1]),
@@ -287,7 +290,7 @@ class ABoxedInPartIsPushedWithoutAFixtureTests(unittest.TestCase):
         operator = handed["operator_box"]
         self.assertEqual(((cx - hx, cy - hy), (cx + hx, cy + hy)),
                          ((operator.min_mm[0], operator.min_mm[1]), (operator.max_mm[0], operator.max_mm[1])))
-        shrink = boxed_plan.push_distance_mm + AUTO_BOX_EXTRA_SHRINK_MM
+        shrink = AUTO_BOX_EXTRA_SHRINK_MM
         fixture_xy = ((cx - hx, cy - hy), (cx + hx, cy + hy))
         (low, high) = boxed_plan.landing_box_xy_mm
         self.assertTrue(_inside(low, fixture_xy, shrink) and _inside(high, fixture_xy, shrink),
@@ -300,7 +303,7 @@ class ABoxedInPartIsPushedWithoutAFixtureTests(unittest.TestCase):
         self.assertFalse(_inside(free_high, fixture_xy, shrink), "the fixture box did not narrow anything here")
 
     def test_a_fixture_box_that_leaves_no_room_still_refuses_the_push(self) -> None:
-        cell = _PushCell(self, fixture=((0.0, -700.0, 100.0), (40.0, 40.0, 300.0), 50.0),
+        cell = _PushCell(self, fixture=((0.0, -700.0, 100.0), (25.0, 25.0, 300.0), 50.0),
                          allowed=("rescan", "nudge_target"))
 
         report = cell.service.pick(look=list(LOOKS))
@@ -510,10 +513,14 @@ class NothingElseOfThePushMovedTests(unittest.TestCase):
                 cell.assert_the_jaws_untouched(self)
 
     def test_a_landing_over_table_no_look_saw_is_refused_before_anything_moves(self) -> None:
-        """With no fixture the automatic push box is all that bounds the landing. A pick handed no look rescans where
-        it stands; from its one 45 degree view the part's shadow hides the table where it would land, so the planner
-        refuses, nothing moves, and the pick goes on to that rescan, with the same refusal."""
+        """With no fixture the automatic push box is all that bounds the landing: the workspace box intersected with the
+        table the looks saw, shrunk by 30 mm. A pick handed no look rescans where it stands; a workspace 120 mm across
+        round the part leaves it no room to land, so the planner refuses, nothing moves, and the pick goes on to that
+        rescan, with the same refusal. (Before 2026-10-03 the part's own shadow refused it here; a shadow among seen
+        table is ground now, the owner's rule.)"""
         cell = _PushCell(self, allowed=("rescan", "nudge_target"), fixture=None)
+        cell.service.push_cell = replace(cell.service.push_cell, workspace=AxisBox((-60.0, -760.0, -100.0),
+                                                                                   (60.0, -640.0, 600.0)))
         cell.arm.move_to_joints(LOOK_PLUS_X)  # where the arm stands; the pick is handed no look
         cell.arm.motions.clear()
         where = cell.arm.get_tcp_pose()
@@ -532,7 +539,7 @@ class NothingElseOfThePushMovedTests(unittest.TestCase):
         self.assertEqual(["rescan", "rescan", "rescan"], [attempt.action for attempt in report.pick_report.attempts])
         pushes = cell.orchestrator.pushes
         self.assertEqual("no_free_direction", pushes[0].code)
-        self.assertIn("landing_over_unseen_table", pushes[0].sentence)
+        self.assertIn("landing_outside_box", pushes[0].sentence)
         self.assertTrue(all(not push.motion_started for push in pushes))
         self.assertFalse(report.needs_person)
         self.assertEqual([], cell.policy.executed)

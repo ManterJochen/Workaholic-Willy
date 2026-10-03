@@ -423,8 +423,9 @@ class TaskService:
     def stopped_where_the_arm_stands(self) -> str:
         return self._needs_person
 
-    def start_campaign(self, *, push_mm: Any = UNSET) -> Any:
-        self.campaigns.append({"push_mm": push_mm if chosen(push_mm) else None})
+    def start_campaign(self, *, push_mm: Any = UNSET, critical_parts: Any = UNSET) -> Any:
+        self.campaigns.append({"push_mm": push_mm if chosen(push_mm) else None,
+                               **({"critical_parts": critical_parts} if chosen(critical_parts) else {})})
         self._campaign = SimpleNamespace(zones=ExclusionZones(), distance_mm=push_mm if chosen(push_mm) else 30.0)
         self._needs_person = ""
         self.log.append(("campaign",))

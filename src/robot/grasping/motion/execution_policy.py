@@ -96,6 +96,7 @@ from src.robot.core import (
 )
 from src.robot.core.arm_capabilities import (
     JudgesCarriedLines,
+    JudgesGraspsAhead,
     LineMotion,
     halt_state_of,
     halted_refusal,
@@ -604,6 +605,31 @@ class GraspExecutionPolicy:
     # ------------------------------------------------------------------
     # The retreat judged before the jaws close
     # ------------------------------------------------------------------
+
+    def refusal_ahead(self, grasp: GraspPoint) -> str:
+        """Why ``grasp`` would be refused before its jaws close, judged now from where the arm stands with nothing moved:
+        the planned move to its standoff, the line down to it and the lift as if the jaws held the part, the very poses
+        :meth:`execute` drives (:class:`JudgesGraspsAhead`). ``""`` where every judgement passes, and where nothing is
+        judged ahead: an arm that does not judge grasps ahead or keeps no line, a camera-frame grasp :meth:`execute`
+        refuses itself. A camera that cannot vouch for the cell leaves the pick, as on every motion of it; a judgement
+        that raised otherwise is said and counts as a refusal. Nothing moves and nothing is commanded."""
+        if not isinstance(self.arm, JudgesGraspsAhead):
+            return ""
+        if grasp.frame is not GraspFrame.BASE:
+            return ""
+        reading = line_motion_of(self.arm)
+        if reading is None or reading.motion is LineMotion.NOT_KEPT:
+            return ""
+        waypoints = self._build_waypoints(grasp)
+        approach = waypoints[:-self.retreat_steps]
+        try:
+            said = self.arm.grasp_refusal_ahead(standoff=approach[0], grasp=approach[-1], lift=waypoints[-1],
+                                                grip_width_mm=self._judged_width(grasp))
+        except CameraWorldUnavailable:
+            raise
+        except Exception as exc:  # noqa: BLE001 (a grasp nobody could judge ahead is not driven to)
+            return f"the grasp could not be judged ahead ({type(exc).__name__}: {exc})"
+        return str(said or "")
 
     def _carried_retreat_refusal(
         self, grasp: GraspPoint, top: Pose, reading: object

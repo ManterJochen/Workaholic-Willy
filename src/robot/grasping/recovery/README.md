@@ -1,9 +1,9 @@
 # Recovery (`src.robot.grasping.recovery`)
 
 What to do after a pick failed: **look again**, **skip the part** for another of the same label, or, on
-a wrist camera's pick in `dense_clutter`, **push the part aside** and look again. It plans; every motion
-it asks for still goes through the same `RobotArm.move` and safety preflight as everything else, and
-nothing here asks a person anything.
+a wrist camera's pick in `dense_clutter`, **push the part aside** or **set a blocker aside**, and look
+again. It plans; every motion it asks for still goes through the same `RobotArm.move` and safety preflight
+as everything else, and nothing here asks a person anything.
 
 It ships off. You reach it through your cell's config, and the pick service wraps each attempt in the
 recovery loop when it is on:
@@ -38,7 +38,7 @@ print(dispatcher.actions_for(GraspFailureReason.MOTION_PLAN_REFUSED))   # (NEXT_
 | a plan | the orchestrator | `execute_recovery_motion(arm=..., plan=..., policy=...)` | `SceneRecoveryReport` |
 | a failed pick | the pick service | `run_recovery_loop(...)` | the final report and the recovery trail |
 | a push | `plan_push(...)`, then `execute_push(arm, plan, gripper=, offer=)` inside the pick attempt | read | `PushPlan` or `PushRefusal`; then a `PushOutcome` |
-| `PushCampaign` | the pick service, one per `PickRun` or console run (`start_campaign(push_mm=)`) | `start_pick` | its `PushBudgets` (how many pushes are left), its `ExclusionZones` (which parts to skip) and its push distance |
+| `PushCampaign` | the pick service, one per `PickRun` or console run (`start_campaign(push_mm=, critical_parts=)`) | `start_pick` | its `PushBudgets` (how many pushes are left), its `ExclusionZones` (which parts to skip), its push distance and whether its parts are critical |
 | `PushGate` | the pick service, for one pick the policy lets push | handed to the pick loop (`push_gate`) | nothing: without it nothing pushes |
 | what a push came to | the pick loop (`pushes`) | read | `PickPush`: its code, its sentence, whether the arm left the look and whether it stopped |
 
@@ -136,29 +136,47 @@ finger** moves the failed part along the closing axis, away from the neighbours 
 Then the pick looks again. Nobody is asked anything on the way, and DO0 is never written. The push runs
 **on a wrist camera's pick only**, after its looks judged the part: a fixed-camera cell never pushes.
 
+**The push may rearrange the scene** (the owner, 2026-10-03: "Er darf die Szene ruhig dolle verändern"):
+the part may shove what stands in its way, and the fingers may brush what stands beside their stroke. Only
+**critical parts** are spared that. One switch says which parts a cell handles, `recovery.critical_parts`,
+and a console run can set it for itself (*Kritische Teile* in the Advanced drawer):
+
+| `critical_parts` | A part every grasp of which collided, or every grasp of which was refused ahead |
+| --- | --- |
+| `false`, the default | pushed first, and the push may rearrange the scene; where no push plans, a blocker is cleared |
+| `true` | never pushed; a blocker is cleared ([`blocker.py`](blocker.py), run by [`loop/`](../loop/README.md)) |
+
 ```mermaid
 flowchart LR
-    T["ALL_COLLIDED or the approach blocked,<br/>and a neighbour within 25 mm"] --> G{"push allowed?"}
-    G -->|no| R["no push: the loop takes<br/>its next action"]
-    G -->|yes| P["plan_push"]
-    P -->|refused| R
-    P --> E["execute_push:<br/>P0, down, push, back, up"]
-    E -->|"refused before motion"| R
+    T["ALL_COLLIDED, or every grasp<br/>refused ahead, and a<br/>neighbour within 25 mm"] --> G{"push allowed?"}
+    G -->|no| R["the loop takes<br/>its next action"]
+    G -->|yes| K{"critical parts?"}
+    K -->|no| P["plan_push"]
+    K -->|yes| C["clear a blocker"]
+    P -->|refused| C
+    P --> E["execute_push: judged ahead,<br/>then P0, down, push, back, up"]
+    E -->|"refused before motion"| C
+    C -->|"none cleared"| R
+    C -->|"set aside"| L
     E -->|"controller stopped,<br/>or a hand nobody vouches for"| F["the pick ends:<br/>nothing moved"]
     E -->|pushed| L["back to the look,<br/>look again, judge again"]
     E -->|"stopped after contact"| S["the arm stays:<br/>a person decides"]
 ```
 
-**When.** No candidate survived and at least one collided (`ALL_COLLIDED`), or, where approach
-validation runs, every ranked candidate's approach was blocked. In both cases a neighbour was seen
-within 25 mm of the part (`neighbour_evidence`, on the neighbour clouds of every look). Never on
+**When.** No candidate survived and at least one collided (`ALL_COLLIDED`); or every grasp of the part
+was judged from the look and refused there, so nothing moved (`grasps_refused_ahead`: the joint window,
+the planner, URSim 2026-10-03); or, where approach validation runs, every ranked candidate's approach was
+blocked. In each case a neighbour was seen within 25 mm of the part (`neighbour_evidence`, on the
+neighbour clouds of every look). A blocked approach pushes only, and never a critical part. Never on
 `NO_VALID_GRASP` or `NO_CANDIDATES_GENERATED`: nothing there says a neighbour is in the way. The
 geometric and the deep calculator both trigger it.
 
 **Allowed.** `push_permitted(profile, policy)`: recovery on and the mode in `apply_modes`; `dense_clutter`,
 the one profile that lists `nudge_target`; `recovery.allowed_actions` names it; neither
-`max_recovery_actions` nor its `per_action_budget` is zero. **No fixture needed**: without one the push
-runs 30 mm, at most 50, and the automatic push box alone bounds it. The service then hands the pick a
+`max_recovery_actions` nor its `per_action_budget` is zero. The same gate lets the pick clear a blocker,
+and it pushes only where the parts are not critical (the run's `critical_parts`, else
+`recovery.critical_parts`). **No fixture needed**: without one the push runs 30 mm, at most 50, and the
+automatic push box alone bounds it. The service then hands the pick a
 **`PushGate`** where it could read the cell's push inputs (`PushCell`: the registry hand, the workspace, the
 hand's clearance, a declared container) and the campaign has a distance; a WARNING says once why a
 permitted cell cannot push. The **budgets** come on top: 1 push per part, 2 per pick, 5 per campaign (`PushBudgets`).
@@ -177,23 +195,45 @@ and on the console's pick request). `recovery.fixture.max_nudge_mm` is the longe
 taken as asked; above it, or under 10 mm, it is refused with a sentence, never shortened
 (`resolve_push_distance`): `PickRun` refuses above 50 or under 10 mm as it is built and the cell's ceiling
 as its campaign starts, before any pick; the console answers `422 push_distance_refused` and starts no run.
+Where nobody asked and no direction frees the part at the config's distance, the planner tries longer
+pushes in 10 mm steps up to the ceiling, the shortest that works first: 30, 40, then 50 mm on the
+defaults. A distance a person asked for is never lengthened.
 
 **The plan** (`plan_push`, pure numpy in BASE millimetres):
 
 - **The hand** comes from the gripper registry (`push_hand.py`): the fingers of the cell's jaw and the
   housing's thickness, `palm_thickness_mm`, 75 mm on the Hand-E. A cell that names no hand, or carries no
   parallel jaw, plans no push.
-- **The direction.** Each offered axis is tried both ways, at 0, 45, 90 and 135 deg. The swept open hand
-  keeps the camera world's margin plus its line clearance from every neighbour point (25 mm with the shipped
-  values), so the planner plans no push the line judge's clearance check would refuse; the judge can still
-  refuse a line for other reasons (*A stop*, below). **Beside the pushed part it keeps 10 mm**
-  (`BESIDE_THE_PART_CLEARANCE_MM`, the owner's decision of 2026-10-02): a neighbour point inside the box the
-  push keeps out of the camera world round the part and its path (the smallest rectangle about them, as the
-  world boxes a target, grown by the world's margin) is one the guard does not see while the push runs. The
-  part's own path keeps 5 mm from every neighbour point not behind it, and its clearance to its neighbours
-  grows by at least 10 mm. The largest gain wins.
+- **The direction.** Each offered axis is tried both ways, at 0, 45, 90 and 135 deg. The part's
+  clearance to its neighbours must grow by at least 10 mm, a neighbour it shoves counted where it ends, so
+  a push that only drives a neighbour along in front of the part is refused. A push that touches nothing
+  but the part comes first; among the rest, the largest gain wins.
+- **The rearranging push** (`may_shove`, the pick's push wherever it pushes). The fingers come down 10 mm
+  from every neighbour (`BESIDE_THE_PART_CLEARANCE_MM`), on table the camera saw. The housing keeps the
+  camera world's margin plus its line clearance (25 mm with the shipped values) from every neighbour tall
+  enough to reach its underside, all along the stroke, and such a neighbour stays in the guard's world:
+  the fingers keep the same clearance from it. Contact is allowed with what stands lower: a neighbour in
+  the stroke's corridor is shoved ahead to where the part's front ends, one beside the fingers' stroke may
+  be brushed. Every neighbour the push may touch is held out of the camera world **whole**, a box of its
+  own beside the part's (`PushPlan.kept_out_neighbours_mm`), as the world joins it on its 25 mm grid: a box
+  round the stroke alone left the rest of a 60 mm block for the world to box again, and the guard refused
+  the push leg at 4.5 mm (URSim, 2026-10-03). What it shoves must land, like the part, on table the camera
+  saw, away from its edge. Nothing is pushed over an edge.
+- **The careful push** (`plan_push`'s default, for a caller that plans one itself). The swept open hand
+  keeps the camera world's margin plus its line clearance from every neighbour point, so the planner plans
+  no push the line judge's clearance check would refuse; the judge can still refuse a line for other
+  reasons (*A stop*, below). Beside the pushed part it keeps 10 mm (the owner's decision of 2026-10-02): a
+  neighbour point inside the box the push keeps out of the camera world round the part and its path (the
+  smallest rectangle about them, as the world boxes a target, grown by the world's margin) is one the
+  guard does not see while the push runs. The part's own path keeps 5 mm from every neighbour point not
+  behind it.
 - **The height.** The part must rest on the support: its base, the 2nd percentile of its heights, at most
-  10 mm above it (`part_not_on_support`: a part on something nobody segmented, or seen only from above).
+  10 mm above it. Where it lies higher, no look saw the part's foot (from above alone, or past a neighbour
+  that hides it), and the foot is **inferred** (the owner, 2026-10-03: "Allgemein Schieben erlauben,
+  sofern nicht ein Abgrund oder so da ist"): the part stands on the support where the ring within 15 mm
+  round its footprint holds no edge of what the camera saw, at least a quarter of that ring is the support
+  itself (parts side by side can pass for the ground), and the camera saw no table under the part. Else
+  `part_not_on_support`; inside a declared container no foot is inferred. The plan says `foot: inferred`.
   No push for a part under 15 mm of its own height, none for one that reaches within 5 mm of the palm's
   underside (`part_reaches_the_palm`), and none on a support tilted more than 5 deg. The fingertip rides
   at support + clamp(own height / 2, 10, 20) mm, and never under the **finger floor**: over a surface the
@@ -206,15 +246,19 @@ as its campaign starts, before any pick; the console answers `422 push_distance_
   above the table refuses every push: the base tree's 100 mm does, for a table at base Z 0. Check it on
   the cell.
 - **The push box.** With no container, the extent of the surface the part stands on where the camera world
-  found one, else the workspace box intersected with the table the camera saw,
-  shrunk by the push plus 30 mm; with a declared container, its interior. A declared fixture box only
-  narrows it; without one, this box alone bounds the push. The predicted landing plus 15 mm stays inside.
-  The seen table is kept as 5 mm cells in BASE XY: every cell within the push plus 45 mm of each landing
-  point, and every cell under the hand's swept footprint, must be seen (a table point in it, or the part
-  or a segmented neighbour standing on it). A shadow, a hole, a gap or a diagonal table edge refuses that
-  direction, and fewer than 100 seen cells near the part refuses the push (`no_table_seen`). From one
-  45 deg wrist view the shadow behind a part usually falls in that window: the table points fused over
-  every look are what let a push through.
+  found one, else the workspace box intersected with the table the camera saw, shrunk by 30 mm (no longer
+  by the push as well: how far a part travels does not move the edge it must keep away from); with a
+  declared container, its interior. A declared fixture box only narrows it; without one, this box alone
+  bounds the push. The predicted landing plus 15 mm stays inside. The seen table is kept as 5 mm cells in
+  BASE XY: a cell is seen where a table point falls in it, or the part or a segmented neighbour stands on
+  it. An unseen patch that seen cells enclose is ground as well: beside something standing it is its
+  shadow, whatever its size, and elsewhere where it spans at most 50 mm each way (a dip of the mat). A
+  larger one may be a hole, and an unseen patch that reaches the edge of what was seen is that edge. Every
+  cell within 45 mm of each landing point, the part's and every shoved neighbour's, must be seen or ground,
+  and every cell under the fingers must be seen: their whole stroke on the careful push, where they come
+  down on the rearranging one. The housing rides at least the finger's length higher and needs no table
+  under it. A hole, a gap or a diagonal table edge refuses that direction, and fewer than 100 seen cells
+  near the part refuses the push (`no_table_seen`).
 
 **Before anything moves** (`execute_push`), each of these is read, and none asks anybody. The first that
 fails is a `refused_*` outcome with zero motion, and the pick falls through: the recovery loop takes its
@@ -228,6 +272,7 @@ ends a pick anywhere), and a hand nobody can vouch for (below).
 | the shape of a push, whoever built it: 10 to 50 mm, at most 5 deg off straight down, P0 80 mm above the contact start, a 10 mm contact gap, 5 mm back, 80 mm up, each station within 1 mm | `refused_push_too_short`, `refused_push_too_long`, `refused_plan_malformed` |
 | an arm with the typed `move` that judges every straight line (`LineMotion.CHECKED`), and its live camera world | `refused_no_typed_move`, `refused_lines_not_judged`, `refused_no_live_world` |
 | the part's points on the offer, and the plan's part inside their footprint plus 5 mm | `refused_no_target_points`, `refused_offer_not_the_part` |
+| on an arm that judges lines ahead (`JudgesLinesAhead`, the UR driver): the move to P0 and every leg, judged from where the arm stands, each from where the one before ends, with the part and every neighbour the push may touch held out of the world | `refused_ahead` |
 | a controller that can move | `refused_controller_stopped` |
 | a connected hand whose jaws stand open: a toggle's count says open (`jaws_closed` false, `why_jaws_unknown()` empty), a hand that measures its width reads within 2 mm of fully open | `refused_no_gripper`, `refused_jaws_closed`, `refused_jaws_unknown` |
 | the arm at rest, where `safety.dwell` asks for it | `refused_arm_not_steady` |
@@ -243,8 +288,10 @@ read that fails. Nobody is asked either way: `jaws_open_for_a_pick`, which can a
 called. A connected width that reads short of open is no push, and a gripper that neither counts nor measures never says its jaws stand open: both are
 plain refusals.
 
-**The motion.** Inside `keeping_out`, with the part and its swept travel held out of the world
-(`refused_keep_out_not_taken` where the world does not take them): P0 in the air above the contact start,
+**The motion.** Inside `keeping_out`, with the part and its swept travel held out of the world, and every
+neighbour a rearranging push may touch as a box of its own (`refused_keep_out_not_taken` where the world
+does not take them), the whole push is judged ahead first (`refused_ahead`, nothing sent). Then P0 in the
+air above the contact start,
 like a grasp approach (the arm's plain `move`: the straight joint line first, a capped cuRobo detour only
 where the line is blocked); then down, push, back 5 mm and up, each a judged straight line
 (`move(pose, linear=True, vel=, acc=)`) at the plan's speed, the controller read, a toggle's count read
@@ -350,9 +397,15 @@ class you list. Three entries are rules rather than tuning:
   still names `closed_loop` or `dense_autonomous` (removed 2026-09-29) is refused at load.
 - The shipped `dense_clutter` preset allows `rescan` alone: a push needs `nudge_target` in
   `allowed_actions`. A `recovery.fixture` is optional and only narrows where the part may land.
-- A push needs the table seen around the part. From one 45 deg wrist view the shadow behind the part
-  usually refuses it (`landing_over_unseen_table`): give the pick looks, or declare a container. A part
-  whose lower side is hidden fails closed (`part_not_on_support`).
+- A push needs the table seen around the part, 45 mm round each landing. A shadow or a dip among seen
+  table counts as ground, the edge of what was seen never does: give the pick looks that see past the part,
+  or declare a container. A part whose lower side is hidden is taken to stand where the table round it says
+  so, and fails closed where it does not (`part_not_on_support`).
+- `critical_parts: true` means no push at all, a blocked approach included. The clearing it leaves has a
+  window: a neighbour within about 31 mm leaves the Hand-E's part no grasp, and one within about 20 mm
+  leaves the hand no room to grip that neighbour either, so a part boxed in that tightly stays boxed
+  (URSim, 2026-10-03: an L of two 30 mm blocks 8 mm from a 30 mm block was cleared by nothing; 28 mm
+  away, one block was set aside and the part picked).
 - A local config that still writes `max_nudge_mm: 5`, or a `max_nudge_mm` under 30 with no
   `push_distance_mm`, no longer loads, on purpose: 5 mm allowed no push a finger fits, and a ceiling
   under 30 mm now sits below the 30 mm default `push_distance_mm`. Delete the line to take 50 mm, or
@@ -363,8 +416,10 @@ class you list. Three entries are rules rather than tuning:
   before the approach (`PickRun` asks, a console run stops). Keep hands off the pendant's tool outputs
   while a pick runs.
 - During the push the keep-out takes neighbour points out of the world well beyond the part's path: up
-  to about 21 mm for a push along a BASE axis, about 36 mm for a diagonal 50 mm push. The planner's hand
-  clearance guards the hand there, and its hand model carries neither the wrist camera nor the coupling.
+  to about 21 mm for a push along a BASE axis, about 36 mm for a diagonal 50 mm push, and every neighbour
+  a rearranging push may touch, whole. The planner's clearances guard the hand there, and its hand model
+  carries neither the wrist camera nor the coupling: what is held out of the world is judged by the
+  planner alone.
 
 ## Status
 
@@ -372,7 +427,7 @@ class you list. Three entries are rules rather than tuning:
 | --- | --- |
 | The recovery loop and container agitation | measured in simulation: `run_dense_pick` drives the service's loop with `--recovery`, and agitation with `--g6` through a strategy it builds itself |
 | The push planner, the budgets and the exclusion zones | pinned by tests on synthetic scenes; never touched hardware |
-| The push motion | pinned by tests: a fake arm and a fake live world record every call, and the owner's toggle Hand-E runs as a real `JawIOGripper` on fake I/O; ran on URSim CB3 on 2026-10-02 with the owner's tree and a recorded look as the camera ([`probe_push_on_the_mat.py`](../../../../scripts/ursim/probe_push_on_the_mat.py)), not yet in Isaac; never touched hardware |
+| The push motion | pinned by tests: a fake arm and a fake live world record every call, and the owner's toggle Hand-E runs as a real `JawIOGripper` on fake I/O; ran on URSim CB3 on 2026-10-02 and 2026-10-03 with the owner's Monday tree and a stand-in camera that casts the bench and the recorded look ([`probe_push_on_the_mat.py`](../../../../scripts/ursim/probe_push_on_the_mat.py)): a rearranging push of a cylinder beside a 60 mm block, a blocker of an L cleared for a critical part, a stop and a protective stop mid-push; not yet in Isaac; never touched hardware |
 
 ## Files
 
@@ -382,11 +437,11 @@ class you list. Three entries are rules rather than tuning:
 | `orchestrator.py` | `RecoveryDispatcher`, `RecoveryOrchestrator`, `run_recovery_loop`, `terminal_outcome_for_trail`, `RecoveryHistoryEntry` and the trail |
 | `push_planner.py` | `plan_push`, `PushPlan`, `PushRefusal`, `PushHand`, `resolve_push_distance`, `neighbour_evidence`, `table_points_from_cloud`, and the owner's numbers as named constants |
 | `push_hand.py` | the push's hand: the cell's jaw and the registry's `palm_thickness_mm` |
-| `push_motion.py` | `execute_push`, `PushOutcome`, `PushOutcomeCode`, `push_tool_quaternion` |
+| `push_motion.py` | `execute_push`, `PushOutcome`, `PushOutcomeCode`, `push_tool_quaternion`, `neighbours_kept_out` |
 | `push_gate.py` | `PushGate`, `PushCell`, `PushCampaign`, `PickPush`, `FailedPart`, `support_points_of_views`: what the service hands a pick, what a campaign keeps, what a push came to |
 | `push_budgets.py` | `PushBudgets`: 1 push per part, 2 per pick, 5 per campaign |
 | `exclusion_zones.py` | `ExclusionZones`: the failed parts `next_target` skips, and the `ExclusionRegion`s a task keeps out for its whole length |
-| `blocker.py` | clear the blocker: `clusters_of`, `not_a_blocker`, `mask_of`, `free_spot`, `release_pose`, `taught_place`, `BlockerRecord` and its codes ([`loop/`](../loop/README.md) runs it, before the push) |
+| `blocker.py` | clear the blocker: `clusters_of`, `not_a_blocker`, `support_seen_round`, `mask_of`, `free_spot`, `release_pose`, `taught_place`, `BlockerRecord` and its codes ([`loop/`](../loop/README.md) runs it: for critical parts in place of the push, for the others where no push plans) |
 | `trail_serialize.py` | `recovery_actions_from_trail`, the trail as the record's `recovery_actions` block |
 
 ## Details
@@ -410,4 +465,7 @@ class you list. Three entries are rules rather than tuning:
   `tests/test_a_jaw_count_nobody_vouches_for_moves_nothing_more.py` (the re-pick, the contact legs and the
   lift point, a width gripper not connected or unreadable) and
   `tests/test_a_part_the_axis_refused_is_never_pushed.py` (the closing axis and the natural orientation
-  beside the push).
+  beside the push). The owner's rules of 2026-10-03: `tests/test_a_push_may_rearrange_the_scene.py` (the
+  inferred foot, the ground, the longer push, the rearranging push, the whole neighbours held out, every
+  line judged ahead, the switch), `tests/test_clearing_reaches_what_a_look_from_above_hides.py` and
+  `tests/test_api_a_task_says_its_parts_are_critical.py`.

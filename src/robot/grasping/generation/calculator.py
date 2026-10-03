@@ -39,6 +39,7 @@ from src.robot.grasping.generation.scene_obstacles import (
     NO_GRASP_SAID,
     SceneObstacleRules,
     SceneObstacles,
+    SeenEnvelope,
     corridor_seen_in,
     envelope_verdicts,
     least_part_height_mm,
@@ -1104,6 +1105,7 @@ class GraspCalculator:
         # What the camera saw beside the part, by the planner world's rules (fix plan Track A). It joins the scene
         # points the way the neighbours' masks do above, so SFE's grid and the post-hoc filter both see it.
         scene: SceneObstacles | None = None
+        seen_envelope: SeenEnvelope | None = None
         scene_support_mm: float | None = None
         if self._scene_obstacles is not None:
             telemetry["candidates_final_source"] = "prompt_only"
@@ -1118,6 +1120,12 @@ class GraspCalculator:
                 telemetry["scene_obstacle_world_rule_points"] = int(scene.world_rule_base_mm.shape[0])
                 telemetry["candidates_final_source"] = "scene"
                 self.logger.info("scene obstacles: %s", scene.render())
+                # The boxes the camera world will hold for these neighbours: the open hand keeps the guard's distance
+                # from them, or the guard refuses the grasp once the arm stood over it (the owner, 2026-10-03).
+                telemetry["scene_seen_boxes"] = len(scene.boxes)
+                seen_envelope = SeenEnvelope.of(
+                    scene.boxes, gripper_model=gripper_model if gripper_model is not None else ParallelJawGripperModel(),
+                    open_width_mm=self.max_grip_mm, distance_mm=self._scene_obstacles.support_distance_mm)
                 if scene.points_base_mm.shape[0]:
                     _to_cam = np.linalg.inv(np.asarray(transform, dtype=np.float64))
                     _scene_cam = scene.points_base_mm @ _to_cam[:3, :3].T + _to_cam[:3, 3]
@@ -1242,6 +1250,7 @@ class GraspCalculator:
                     palm_aware=self._support_footprint_palm_aware,
                     score_weights=self._support_footprint_score_weights,
                     floor_margin_mm=self._support_footprint_floor_margin_mm,
+                    seen_envelope=seen_envelope,
                     **sfe_side,
                 )
                 telemetry.update(sfe_telemetry)
@@ -1303,6 +1312,7 @@ class GraspCalculator:
             telemetry=telemetry,
             held_solids=(tuple(getattr(support_model, "solids", ()) or ())
                          if self._scene_obstacles is not None and support_model is not None else ()),
+            seen_boxes=scene.boxes if scene is not None else (),
         )
         self.last_telemetry = telemetry
         if rgb_image is not None:
@@ -1520,6 +1530,7 @@ class GraspCalculator:
         other_object_masks: list[np.ndarray] | tuple[np.ndarray, ...] | None,
         telemetry: dict,
         held_solids: Sequence[Any] = (),
+        seen_boxes: Sequence[Any] = (),
     ) -> list[GraspPoint]:
         """The post-ranking stage of :meth:`compute`: collision/table/workspace + IK filtering, the
         :class:`GraspPoint` build, the per-candidate corridor-risk stamp, the optional base-frame transform,
@@ -1541,7 +1552,7 @@ class GraspCalculator:
         if self._scene_obstacles is not None and transform is not None:
             ranked_all = self._keep_off_what_the_guard_holds(
                 ranked_all, held_solids=held_solids, gripper_model=gripper_model, transform=transform,
-                telemetry=telemetry)
+                telemetry=telemetry, seen_boxes=seen_boxes)
 
         telemetry.setdefault("rejected_ik", 0)
         kept_quality: list[IKQualityMetrics | None] = []
@@ -2000,13 +2011,18 @@ class GraspCalculator:
         gripper_model: GripperGeometryStrategy | None,
         transform: np.ndarray,
         telemetry: dict,
+        seen_boxes: Sequence[Any] = (),
     ) -> list[GraspScoreBreakdown]:
-        """Drop the candidates whose open hand stands nearer a support's solid or a declared box than the guard keeps.
+        """Drop the candidates whose open hand stands nearer a support's solid, a declared box or a neighbour's box than
+        the guard keeps.
 
         The guard holds a support's solid as a camera box and keeps ``perceived_min_distance_mm`` from it, and keeps
         ``min_distance_mm`` from a declared box. A candidate whose envelope comes nearer would be refused there, and a
         try spent on it is a try not spent on one the guard admits. Counted as ``rejected_support`` and
-        ``rejected_declared``; the nearest held solid and its distance are stamped for the sentence.
+        ``rejected_declared``; the nearest held solid and its distance are stamped for the sentence. A neighbour's box
+        (``seen_boxes``, the boxes the camera world builds of what it saw beside the part) keeps
+        ``perceived_min_distance_mm`` too, counted as ``rejected_collision``: a neighbour the camera saw, which a
+        blocker cleared or a push may free.
         """
         rules = self._scene_obstacles
         assert rules is not None  # noqa: S101 (the caller checks)
@@ -2014,7 +2030,7 @@ class GraspCalculator:
         telemetry["rejected_declared"] = 0
         telemetry["scene_support_distance_mm"] = float(rules.support_distance_mm)
         telemetry["scene_declared_distance_mm"] = float(rules.declared_distance_mm)
-        if not ranked or (not held_solids and not rules.declared_boxes):
+        if not ranked or (not held_solids and not rules.declared_boxes and not seen_boxes):
             return list(ranked)
         rotation_cb, translation_cb = transform[:3, :3], transform[:3, 3]
         poses = [(rotation_cb @ np.asarray(score.pose.position_mm, dtype=np.float64) + translation_cb,
@@ -2022,7 +2038,8 @@ class GraspCalculator:
         verdicts = envelope_verdicts(
             poses, gripper_model=gripper_model if gripper_model is not None else ParallelJawGripperModel(),
             open_width_mm=self.max_grip_mm, solids=held_solids, support_distance_mm=rules.support_distance_mm,
-            declared_boxes=rules.declared_boxes, declared_distance_mm=rules.declared_distance_mm)
+            declared_boxes=rules.declared_boxes, declared_distance_mm=rules.declared_distance_mm,
+            seen_boxes=seen_boxes, seen_distance_mm=rules.support_distance_mm)
         kept: list[GraspScoreBreakdown] = []
         for score, verdict in zip(ranked, verdicts):
             if verdict.refused == "declared":
@@ -2031,6 +2048,9 @@ class GraspCalculator:
             elif verdict.refused == "support":
                 telemetry["rejected_support"] += 1
                 telemetry["scene_support_nearest"] = verdict.nearest
+            elif verdict.refused == "seen":
+                telemetry["rejected_collision"] = int(telemetry.get("rejected_collision", 0) or 0) + 1
+                telemetry["scene_seen_nearest"] = verdict.nearest
             else:
                 kept.append(score)
         finite = [v.distance_mm for v in verdicts if math.isfinite(v.distance_mm)]

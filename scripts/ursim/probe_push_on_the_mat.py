@@ -22,13 +22,19 @@ pick asks it. It reports and does not gate. Then the scenarios, on URSim, each a
 
 * ``refusal`` (P-2): the cylinder beside a 40 mm cube: no motion toward the part, ``ALL_COLLIDED`` and the push's
   refusal in the record, no change of the tool output.
-* ``blocker`` (R): a neighbour gripped, set down on a free spot the camera saw, then the cylinder gripped.
+* ``blocker`` (R, the owner's critical parts): a 30 mm block between two 30 mm blocks in an L. The parts are critical
+  (``critical_parts``): nothing is pushed, each blocker is gripped and set down on a free spot the camera saw, then
+  the block gripped.
 * ``push`` (P-1, items 1-4, 7, 8), ``cancel`` (item 5: a stop asked for while the push leg runs) and ``pstop`` (item 6:
-  a protective stop while the push leg runs): the cylinder beside a 25 mm cube, which nothing can grip.
+  a protective stop while the push leg runs): the cylinder beside a 60 mm block the hand cannot grip. The parts are not
+  critical: the push comes first, and it may rearrange the scene.
 
-``--scene NAME=NEIGHBOURS@GAP@X,Y`` places a scenario's cylinder and its neighbours (``name[:side[:gap]],...``);
-``NAME#n`` runs a scenario again on a scene of its own. ``--looks first`` hands every pick LOOK[0] alone, ``all`` (the
-default) the tree's looks, as example 12 does.
+``--scene NAME=NEIGHBOURS@GAP@X,Y[@TARGET]`` places a scenario's target (``cylinder`` or ``block30``) and its neighbours
+(``name[:side[:gap]],...``); ``NAME#n`` runs a scenario again on a scene of its own. ``--looks first`` hands every pick
+LOOK[0] alone, ``all`` (the default) the tree's looks, as example 12 does. The stand-in camera casts the whole bench
+from wherever it stands (``--recorded-bench`` projects P1's recorded look instead, as before 2026-10-03). Each campaign
+starts with the cell's own push distance, which may go longer where it opens too little room, unless ``--push-mm`` asks
+for one.
 
 ``--push-stand-in`` is the plan's stand-in for P-1, said in the result wherever it was used: in ``push``, ``cancel`` and
 ``pstop`` the calculator answers the part ``ALL_COLLIDED`` until a push ran, handing on its own metadata (Track A's
@@ -102,12 +108,25 @@ DEFAULT_CROP = Path(_REPO_ROOT) / "tests" / "data" / "cell_2026_10_01" / "p1_pic
 CYLINDER_XY = (-150.0, -760.0)
 CYLINDER_MM = (20.0, 50.0)
 PROMPT = "green cylinder"
+#: The target's name in the scene, whatever its shape (``TARGET_SHAPES``).
 TARGET = "cylinder"
 #: The neighbours of the scenarios: a cube nothing can grip (under the Hand-E's least height), one it can, a block
 #: wider than the hand opens.
-NEIGHBOURS = {"cube25": (25.0, 25.0, 25.0), "cube40": (40.0, 40.0, 40.0), "block60": (60.0, 60.0, 40.0)}
-SCENARIO_NEIGHBOUR = {"refusal": "cube40", "blocker": "cube40", "push": "cube25", "cancel": "cube25", "pstop": "cube25"}
-DEFAULT_SCENARIOS = ("refusal", "blocker", "push", "cancel", "pstop")
+NEIGHBOURS = {"cube25": (25.0, 25.0, 25.0), "block30": (30.0, 30.0, 30.0), "cube40": (40.0, 40.0, 40.0),
+              "block60": (60.0, 60.0, 40.0)}
+#: The targets a scene stands: the 40 mm cylinder, or a 30 mm block (sizes x, y, z).
+TARGET_SHAPES = {"cylinder": ("cylinder", CYLINDER_MM), "block30": ("box", (30.0, 30.0, 30.0))}
+#: The blocker scene's L stands 28 mm off the block: it leaves the block no grasp (its fingers need 31 mm, the guard's
+#: 20 mm and a finger), and each blocker one along its other axis, 20 to 30 mm from the block (2026-10-03). The push scenes'
+#: 60 mm block stands 20 mm toward +y of the cylinder: a push of 50 mm at most (the owner's cap) takes
+#: the cylinder past its end, where a block centred on it would leave less room than a finger needs.
+SCENARIO_NEIGHBOUR = {"refusal": "cube40", "blocker": "block30:-x:28,block30:+y:28", "push": "block60:-x::20",
+                      "cancel": "block60:-x::20", "pstop": "block60:-x::20"}
+SCENARIO_TARGET = {"refusal": "cylinder", "blocker": "block30", "push": "cylinder", "cancel": "cylinder",
+                   "pstop": "cylinder"}
+#: The owner's switch per scenario (2026-10-03): the blocker scene's parts are critical, cleared and never pushed.
+SCENARIO_CRITICAL = {"refusal": False, "blocker": True, "push": False, "cancel": False, "pstop": False}
+DEFAULT_SCENARIOS = ("blocker", "push", "cancel", "pstop")
 #: The yellow bin in P1 (BASE x, y): its walls stand from x 90 on.
 BIN_X_MIN_MM = 90.0
 #: The push leg runs at 25 mm/s (push_motion's cap); a moveL at this speed is the push leg.
@@ -218,43 +237,50 @@ def _primary_calibration(tree: Any) -> Any:
 SIDES = ("-x", "+x", "-y", "+y")
 
 
-def neighbours_of(spec: str) -> list[tuple[str, str, Optional[float]]]:
-    """``name[:side[:gap]],...`` as (name, side, gap) triples: where the neighbour stands off the cylinder (-x unless
-    said) and its own gap in mm (the scene's unless said). ``ValueError`` names what is not a known neighbour, side or
-    number."""
+def neighbours_of(spec: str) -> list[tuple[str, str, Optional[float], float]]:
+    """``name[:side[:gap[:along]]],...`` as (name, side, gap, along) rows: where the neighbour stands off the target (-x
+    unless said), its own gap in mm (the scene's unless said), and how far it is shifted along the face it stands at
+    (0 unless said, +y or +x). ``ValueError`` names what is not a known neighbour, side or number."""
     out = []
     for item in spec.split(","):
         fields = item.strip().split(":")
         name = fields[0]
         side = fields[1] if len(fields) > 1 and fields[1] else "-x"
         gap = fields[2] if len(fields) > 2 else ""
-        if name not in NEIGHBOURS or side not in SIDES or len(fields) > 3:
+        along = fields[3] if len(fields) > 3 else ""
+        if name not in NEIGHBOURS or side not in SIDES or len(fields) > 4:
             raise ValueError(f"{item!r}: neighbours are {sorted(NEIGHBOURS)}, sides {list(SIDES)}")
-        out.append((name, side, float(gap) if gap else None))
+        out.append((name, side, float(gap) if gap else None, float(along) if along else 0.0))
     return out
 
 
-def place_scene(scene: ms.Scene, neighbour: str, gap_mm: float, *, at_xy: Sequence[float] = CYLINDER_XY
-                ) -> dict[str, Any]:
-    """The cylinder at ``at_xy`` on the mat's reading, each neighbour of ``neighbour`` (``name[:side],...``)
-    ``gap_mm`` off the side it names (its -x side unless said)."""
-    radius, height = CYLINDER_MM
+def place_scene(scene: ms.Scene, neighbour: str, gap_mm: float, *, at_xy: Sequence[float] = CYLINDER_XY,
+                target: str = "cylinder") -> dict[str, Any]:
+    """The target (``TARGET_SHAPES``: the 40 mm cylinder unless said) at ``at_xy`` on the mat's reading, each neighbour
+    of ``neighbour`` (``name[:side],...``) ``gap_mm`` off the side it names (its -x side unless said)."""
+    shape, dims = TARGET_SHAPES[target]
     foot, normal = scene.foot_on_mat(at_xy)
-    parts = [ms.cylinder(TARGET, foot, normal, radius_mm=radius, height_mm=height)]
+    if shape == "cylinder":
+        radius, height = dims
+        parts = [ms.cylinder(TARGET, foot, normal, radius_mm=radius, height_mm=height)]
+        half = (radius, radius)
+    else:
+        parts = [ms.box(TARGET, foot, normal, size_mm=dims)]
+        half = (dims[0] / 2.0, dims[1] / 2.0)
     feet = []
-    for index, (name, side, own_gap) in enumerate(neighbours_of(neighbour)):
+    for index, (name, side, own_gap, along) in enumerate(neighbours_of(neighbour)):
         gap = gap_mm if own_gap is None else own_gap
         sx, sy, sz = NEIGHBOURS[name]
         sign = -1.0 if side[0] == "-" else 1.0
         if side[1] == "x":
-            centre = (float(at_xy[0]) + sign * (radius + gap + sx / 2.0), float(at_xy[1]))
+            centre = (float(at_xy[0]) + sign * (half[0] + gap + sx / 2.0), float(at_xy[1]) + along)
         else:
-            centre = (float(at_xy[0]), float(at_xy[1]) + sign * (radius + gap + sy / 2.0))
+            centre = (float(at_xy[0]) + along, float(at_xy[1]) + sign * (half[1] + gap + sy / 2.0))
         nfoot, nnormal = scene.foot_on_mat(centre)
         parts.append(ms.box(name if index == 0 else f"{name}_{index}", nfoot, nnormal, size_mm=(sx, sy, sz)))
         feet.append([round(float(v), 1) for v in nfoot])
     scene.set_parts(parts, target=TARGET)
-    return {"target": TARGET, "target_foot_mm": [round(float(v), 1) for v in foot], "neighbour": neighbour,
+    return {"target": target, "target_foot_mm": [round(float(v), 1) for v in foot], "neighbour": neighbour,
             "neighbour_feet_mm": feet, "gap_mm": gap_mm, "mat_tilt_deg": round(scene.static.mat_tilt_deg, 2)}
 
 
@@ -276,8 +302,8 @@ def _looks_deg(robot: Any, which: str) -> list[tuple[float, ...]]:
     return looks if which == "all" else looks[:1]
 
 
-def offline_step(tree: Any, crop: Path, *, push_mm: float, gaps: Sequence[float], at_xy: Sequence[float],
-                 looks: str = "all") -> dict[str, Any]:
+def offline_step(tree: Any, crop: Path, *, push_mm: Optional[float], gaps: Sequence[float], at_xy: Sequence[float],
+                 looks: str = "all", whole_bench: bool = True, neighbour: str = "block60:-x::20") -> dict[str, Any]:
     """Render the push scene from each look the pick visits as the cell's camera stands there (the bundled DH chain, the
     declared tool frame, the rig's calibration), find the supports over all of them, and ask ``plan_push`` with the
     cell's push inputs and the table every look saw, gap by gap until one plans. Nothing connects."""
@@ -295,6 +321,7 @@ def offline_step(tree: Any, crop: Path, *, push_mm: float, gaps: Sequence[float]
 
     robot = tree.robot
     static = ms.StaticScene.from_crop(crop)
+    static.whole_bench = bool(whole_bench)
     calibration = _primary_calibration(tree)
     cam_to_tool = np.asarray(calibration.camera_to_tool().to_matrix(), dtype=np.float64)
     poses = [(look, _nominal_tcp(robot, look)) for look in _looks_deg(robot, looks)]
@@ -307,6 +334,9 @@ def offline_step(tree: Any, crop: Path, *, push_mm: float, gaps: Sequence[float]
     if isinstance(operator_box, str):
         return {"planned": False, "refused": f"the fixture box: {operator_box}"}
     k = static.intrinsics
+    # The cell's own 30 mm where nobody asks, which may go as far as 50 mm (the owner, 2026-10-03).
+    distance = float(push_mm) if push_mm is not None else 30.0
+    longest = None if push_mm is not None else 50.0
     out: dict[str, Any] = {"looks": [list(look) for look, _ in poses],
                            "cameras_mm": [[round(float(v), 1) for v in (tcp @ cam_to_tool)[:3, 3]] for _, tcp in poses],
                            "mat_plane": [round(float(v), 5) for v in static.mat_plane],
@@ -315,7 +345,7 @@ def offline_step(tree: Any, crop: Path, *, push_mm: float, gaps: Sequence[float]
                            "gaps": []}
     for gap in gaps:
         scene = ms.Scene(static)
-        placed = place_scene(scene, "cube25", gap, at_xy=at_xy)
+        placed = place_scene(scene, neighbour, gap, at_xy=at_xy)
         views, targets, neighbours = [], [], []
         for index, (_, tcp) in enumerate(poses):
             cam = tcp @ cam_to_tool
@@ -323,9 +353,10 @@ def offline_step(tree: Any, crop: Path, *, push_mm: float, gaps: Sequence[float]
             depth = rendered.depth_mm.astype(np.float64)
             none = np.zeros(depth.shape, dtype=bool)
             targets.append(to_base_mm(rendered.masks.get(TARGET, none), depth, k, cam))
-            neighbours.append(to_base_mm(rendered.masks.get("cube25", none), depth, k, cam))
+            neighbours.append(np.vstack([to_base_mm(mask, depth, k, cam) for name, mask in rendered.masks.items()
+                                         if name != TARGET] or [np.zeros((0, 3))]))
             views.append(DepthView(surface_depth_mm=depth, intrinsics=k, camera_to_base=cam, name=f"look{index}"))
-        target, neighbour = np.vstack(targets), np.vstack(neighbours)
+        target, others = np.vstack(targets), np.vstack(neighbours)
         low, high = target.min(axis=0), target.max(axis=0)
         place = np.eye(4)
         place[:3, 3] = (low + high) / 2.0
@@ -334,7 +365,7 @@ def offline_step(tree: Any, crop: Path, *, push_mm: float, gaps: Sequence[float]
                               base=ROBOT_BASES.get(str(robot.ur.model).lower()), keep_out=keep_out)
         surface = model.surface_under(target[:, :2])
         row: dict[str, Any] = {**placed, "target_points": int(target.shape[0]),
-                               "neighbour_points": int(neighbour.shape[0]),
+                               "neighbour_points": int(others.shape[0]),
                                "points_per_look": [int(t.shape[0]) for t in targets],
                                "supports": [s.render() for s in model.surfaces]}
         if surface is None or surface.offset_mm is None:
@@ -344,17 +375,17 @@ def offline_step(tree: Any, crop: Path, *, push_mm: float, gaps: Sequence[float]
         normal = np.asarray(surface.normal, dtype=np.float64)
         offset = float(surface.offset_mm)
         table = model.table_points(views, target[:, :2])
-        gate = SimpleNamespace(cell=cell, distance_mm=push_mm, operator_box=operator_box)
+        gate = SimpleNamespace(cell=cell, distance_mm=distance, operator_box=operator_box)
         floor = BinPickingOrchestrator._finger_floor_mm(model, target, normal, offset, gate)  # type: ignore[arg-type]
-        evidence = neighbour_evidence(target_points_mm=target, neighbour_points_mm=neighbour,
+        evidence = neighbour_evidence(target_points_mm=target, neighbour_points_mm=others,
                                       support_normal=normal, support_offset_mm=offset)
         floor_kwargs: dict[str, Any] = {} if floor is None else {"finger_floor_mm": floor}
-        plan = plan_push(target_points_mm=target, neighbour_points_mm=neighbour, support_normal=normal,
+        plan = plan_push(target_points_mm=target, neighbour_points_mm=others, support_normal=normal,
                          support_offset_mm=offset, workspace=cell.workspace, hand=cell.hand, table_points_mm=table,
-                         push_distance_mm=push_mm, container_interior=cell.container_interior,
+                         push_distance_mm=distance, container_interior=cell.container_interior,
                          operator_box=operator_box, hand_clearance_mm=cell.hand_clearance_mm,
                          beside_part_clearance_mm=cell.beside_part_clearance_mm, beside_part_mm=cell.beside_part_mm,
-                         **floor_kwargs)
+                         may_shove=True, longest_push_mm=longest, **floor_kwargs)
         row.update({"surface": surface.render(), "surface_tilt_deg": round(float(surface.tilt_deg), 2),
                     "support_offset_mm": round(offset, 2), "table_points": int(np.asarray(table).shape[0]),
                     "finger_floor_mm": None if floor is None else round(float(floor), 2),
@@ -566,11 +597,11 @@ class Bed:
     camera: Any
     backend: Any
     work: Path
-    push_mm: float
+    push_mm: Optional[float]
     gap_mm: float
     look: Any
     at_xy: tuple[float, float] = CYLINDER_XY
-    scenes: dict[str, tuple[str, float, tuple[float, float]]] = field(default_factory=dict)
+    scenes: dict[str, tuple[str, float, tuple[float, float], str]] = field(default_factory=dict)
     cancel: dict[str, Any] = field(default_factory=lambda: {"asked_at": None})
     #: The stand-ins of ``--push-stand-in``, each off until a scenario that is allowed them turns it on: the trigger
     #: forced (the plan's calculator stand-in) and the push planned on what cameras all round would see.
@@ -579,10 +610,17 @@ class Bed:
     #: The scenario running, ``NAME`` or ``NAME#n``.
     current: str = ""
 
-    def scene_of(self, scenario: str) -> tuple[str, float, tuple[float, float]]:
-        """The neighbours, their gap and where the cylinder stands for ``scenario`` (``NAME`` or ``NAME#n``):
+    def scene_of(self, scenario: str) -> tuple[str, float, tuple[float, float], str]:
+        """The neighbours, their gap, where the target stands and what it is for ``scenario`` (``NAME`` or ``NAME#n``):
         ``--scene``, else the defaults."""
-        return self.scenes.get(scenario, (SCENARIO_NEIGHBOUR[_base(scenario)], self.gap_mm, self.at_xy))
+        base = _base(scenario)
+        return self.scenes.get(scenario, (SCENARIO_NEIGHBOUR[base], self.gap_mm, self.at_xy, SCENARIO_TARGET[base]))
+
+    def start_campaign(self, scenario: str) -> None:
+        """A new campaign for ``scenario``: the cell's own push distance unless ``--push-mm`` asked for one, and the
+        owner's switch as the scenario sets it (:data:`SCENARIO_CRITICAL`)."""
+        asked = {} if self.push_mm is None else {"push_mm": self.push_mm}
+        self.service.start_campaign(critical_parts=SCENARIO_CRITICAL[_base(scenario)], **asked)
 
     @property
     def orchestrator(self) -> Any:
@@ -711,10 +749,10 @@ def _person_answer(bed_holder: dict[str, Any]) -> Callable[[str], str]:
     return answer
 
 
-def run_on_ursim(tree: Any, copied: Path, work: Path, crop: Path, *, scenarios: Sequence[str], push_mm: float,
-                 gap_mm: float, at_xy: tuple[float, float], looks: str,
-                 scenes: Optional[dict[str, tuple[str, float, tuple[float, float]]]] = None,
-                 push_stand_in: bool = False) -> dict[str, Any]:
+def run_on_ursim(tree: Any, copied: Path, work: Path, crop: Path, *, scenarios: Sequence[str],
+                 push_mm: Optional[float], gap_mm: float, at_xy: tuple[float, float], looks: str,
+                 scenes: Optional[dict[str, tuple[str, float, tuple[float, float], str]]] = None,
+                 push_stand_in: bool = False, whole_bench: bool = True) -> dict[str, Any]:
     """Build the cell from the copied tree with the stand-in camera and backend, connect it to URSim, and run each
     scenario as a whole pick of the cell's service."""
     from src.camera.orchestration import camera as camera_module  # noqa: PLC0415
@@ -729,6 +767,7 @@ def run_on_ursim(tree: Any, copied: Path, work: Path, crop: Path, *, scenarios: 
 
     robot = tree.robot
     static = ms.StaticScene.from_crop(crop)
+    static.whole_bench = bool(whole_bench)
     scene = ms.Scene(static)
     rec = Recorder()
     holder: dict[str, Any] = {"rec": rec}
@@ -910,7 +949,7 @@ def _base(scenario: str) -> str:
 
 
 def _start(bed: Bed, scenario: str) -> dict[str, Any]:
-    neighbour, gap, at_xy = bed.scene_of(scenario)
+    neighbour, gap, at_xy, target = bed.scene_of(scenario)
     bed.cancel["asked_at"] = None
     stand_in = bool(bed.force.get("allowed")) and _base(scenario) in ("push", "cancel", "pstop")
     bed.force.update({"trigger": stand_in, "perception": stand_in, "pushed": False})
@@ -918,8 +957,9 @@ def _start(bed: Bed, scenario: str) -> dict[str, Any]:
     if bed.output.closed:
         bed.cell.gripper.set_closed(False)  # the last pick's part let go, before this scenario counts
         time.sleep(0.5)
-    placed = place_scene(bed.scene, neighbour, gap, at_xy=at_xy)
-    bed.service.start_campaign(push_mm=bed.push_mm)
+    placed = place_scene(bed.scene, neighbour, gap, at_xy=at_xy, target=target)
+    bed.start_campaign(scenario)
+    placed["critical_parts"] = SCENARIO_CRITICAL[_base(scenario)]
     return placed
 
 
@@ -979,8 +1019,9 @@ def scenario_refusal(bed: Bed) -> dict[str, Any]:
 
 
 def scenario_blocker(bed: Bed) -> dict[str, Any]:
-    """R: the cylinder beside a 40 mm cube. The cube is gripped, set down on a free spot the camera saw, and the cylinder
-    gripped; one change of the tool output per command."""
+    """R, the owner's critical parts: a 30 mm block between two 30 mm blocks in an L. Nothing is pushed; each blocker is
+    gripped and set down on a free spot the camera saw, and the block gripped; one change of the tool output per
+    command."""
     placed = _start(bed, bed.current or "blocker")
     events_before = len(bed.scene.events)
     report, t0, t1 = _pick(bed)
@@ -995,21 +1036,24 @@ def scenario_blocker(bed: Bed) -> dict[str, Any]:
     downs = [e for e in events if e["event"] == "set_down"]
     order = [e.get("part") for e in gripped]
     blocker_names = {name for name in bed.scene.parts if name != TARGET}
-    _check(checks, "a_neighbour_gripped_then_the_cylinder",
-           len(order) >= 2 and order[0] in blocker_names and order[-1] == TARGET, order)
-    cube_down = next((e for e in downs if e.get("part") in blocker_names), None)
-    spot_ok = False
-    if cube_down is not None:
-        at = np.asarray(cube_down["at_mm"], dtype=np.float64)
+    _check(checks, "neighbours_gripped_then_the_target",
+           len(order) >= 2 and all(name in blocker_names for name in order[:-1]) and order[-1] == TARGET, order)
+    critical = bool(placed.get("critical_parts"))
+    _check(checks, "critical_parts_never_pushed", not critical or not _pushes(orch), _pushes(orch))
+    downs_of_blockers = [e for e in downs if e.get("part") in blocker_names]
+    spots = []
+    mx0, mx1, my0, my1 = ms.MAT_OUTLINE if bed.scene.static.whole_bench else ms.MAT_XY
+    for down in downs_of_blockers:
+        at = np.asarray(down["at_mm"], dtype=np.float64)
         from_part = float(np.hypot(at[0] - placed["target_foot_mm"][0], at[1] - placed["target_foot_mm"][1]))
-        mx0, mx1, my0, my1 = ms.MAT_XY
         on_mat = mx0 < at[0] < mx1 and my0 < at[1] < my1
-        spot_ok = from_part >= 150.0 and on_mat and at[0] < BIN_X_MIN_MM
-        cube_down = {**cube_down, "from_the_part_mm": round(from_part, 1), "on_the_mat": on_mat}
-    _check(checks, "set_down_on_a_free_spot_150mm_from_the_part", spot_ok, cube_down)
+        spots.append({**down, "from_the_part_mm": round(from_part, 1), "on_the_mat": on_mat,
+                      "ok": from_part >= 150.0 and on_mat and at[0] < BIN_X_MIN_MM})
+    _check(checks, "set_down_on_a_free_spot_150mm_from_the_part", bool(spots) and all(s["ok"] for s in spots), spots)
     changes = bed.output.changes_since(t0, t1)
     jaws = [c["jaws"] for c in changes]
-    _check(checks, "do0_one_change_per_command", jaws == ["closed", "open", "closed"], changes)
+    cleared = len(downs_of_blockers)
+    _check(checks, "do0_one_change_per_command", jaws == ["closed", "open"] * cleared + ["closed"], changes)
     _check(checks, "target_gripped_at_the_end", rep["outcome"] == "succeeded" and bool(order) and order[-1] == TARGET,
            {"outcome": rep["outcome"], "pick": rep["pick_outcome"]})
     rows = [a for a in rep["attempts"] if a["action"] == "clear_blocker"]
@@ -1036,7 +1080,7 @@ def _push_checks(bed: Bed, t0: float, t1: float, checks: dict[str, Any]) -> dict
     tilt = math.degrees(math.acos(abs(float(normal[2])) / float(np.linalg.norm(normal))))
     table = row["table_points"]
     landing = np.asarray(plan.landing_box_xy_mm, dtype=np.float64)
-    mx0, mx1, my0, my1 = ms.MAT_XY
+    mx0, mx1, my0, my1 = ms.MAT_OUTLINE if bed.scene.static.whole_bench else ms.MAT_XY
     inside = bool(landing[0][0] >= mx0 and landing[1][0] <= mx1 and landing[0][1] >= my0 and landing[1][1] <= my1)
     clear_of_bin = bool(landing[1][0] < BIN_X_MIN_MM)
     table_on_mat = None
@@ -1164,8 +1208,8 @@ def _robot_log(bed: Bed) -> str:
 
 
 def scenario_push(bed: Bed) -> dict[str, Any]:
-    """P-1, items 1-4, 7 and 8: the cylinder beside a 25 mm cube nothing can grip. The push, a judged move back to the
-    look, a fresh look, and the pick goes on."""
+    """P-1, items 1-4, 7 and 8: the cylinder beside a 60 mm block the hand cannot grip, parts not critical. The push
+    first, a judged move back to the look, a fresh look, and the pick goes on."""
     placed = _start(bed, bed.current or "push")
     events_before = len(bed.scene.events)
     grabs_before = len(bed.backend.calls) if bed.backend is not None else 0
@@ -1174,10 +1218,9 @@ def scenario_push(bed: Bed) -> dict[str, Any]:
     rep = _report_dict(report)
     checks: dict[str, Any] = {}
     blockers = _blockers(orch)
-    _check(checks, "blocker_first_none_graspable",
-           bool(blockers) and all(isinstance(b, dict) and b.get("code") in ("no_graspable_blocker",
-                                                                             "no_blocker_frees_a_grasp")
-                                  for b in blockers), blockers)
+    pushed_at = [p["t"] for p in bed.rec.pushes if t0 <= p["t"] <= t1]
+    _check(checks, "the_push_comes_first", bool(pushed_at) and not [
+        b for b in blockers if isinstance(b, dict) and b.get("code") == "set_aside"], {"blockers": blockers})
     detail = _push_checks(bed, t0, t1, checks)
     pushes = _pushes(orch)
     moved = [p for p in pushes if p.get("motion_started")]
@@ -1259,7 +1302,7 @@ def _stop_during_the_push_leg(bed: Bed, how: str) -> dict[str, Any]:
              and (bed.camera is None or bed.camera.grabs == grabs_before))
     _check(checks, "next_pick_refused_until_a_new_run", refused and quiet,
            {"outcome": again_rep["outcome"], "nothing_commanded_or_perceived": quiet})
-    bed.service.start_campaign(push_mm=bed.push_mm)
+    bed.start_campaign(bed.current or how)
     person["new_run_clears"] = not bool(bed.service.stopped_where_the_arm_stands)
     pushes = _pushes(orch)
     return {"held": all(c["held"] for c in checks.values()), "checks": checks, "scene": placed, "report": rep,
@@ -1309,19 +1352,23 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--calibration", default=None, help="the primary rig's artifact on this box (a camera layer)")
     ap.add_argument("--crop", default=str(DEFAULT_CROP), help="Track K's recorded look the scene is rendered into")
     ap.add_argument("--scenarios", default=",".join(DEFAULT_SCENARIOS))
-    ap.add_argument("--push-mm", type=float, default=50.0, help="the push distance (example 12 passes 50)")
+    ap.add_argument("--push-mm", type=float, default=None,
+                    help="a push distance to ask for; unset, the cell's own, which may go longer (the owner, 2026-10-03)")
     ap.add_argument("--gaps-mm", default="8,5,10,12", help="the cube's gaps step 0 tries, in order")
     ap.add_argument("--at", default=f"{CYLINDER_XY[0]:g},{CYLINDER_XY[1]:g}",
                     help="where the cylinder stands, BASE x,y mm")
     ap.add_argument("--looks", choices=("all", "first"), default="all",
                     help="the tree's looks each pick visits (example 12: all three), or LOOK[0] alone")
     ap.add_argument("--scene", action="append", default=[],
-                    help="a scenario's own scene, NAME=NEIGHBOURS@GAP@X,Y, NEIGHBOURS name[:side[:gap]],... (for "
-                         "example blocker=cube40@8@-150,-760 or blocker=cube40:-x,block60:+y:14@8@-150,-760)")
+                    help="a scenario's own scene, NAME=NEIGHBOURS@GAP@X,Y[@TARGET], NEIGHBOURS "
+                         "name[:side[:gap[:along]]],... "
+                         "(for example blocker=cube40@8@-150,-760 or blocker=block30:-x,block30:+y@8@-150,-700@block30)")
     ap.add_argument("--push-stand-in", action="store_true",
                     help="push, cancel and pstop force the trigger (the plan's calculator stand-in) and hand plan_push "
                          "the part's whole surface and the mat round it; said in the result")
     ap.add_argument("--offline", action="store_true", help="step 0 only: nothing connects")
+    ap.add_argument("--recorded-bench", action="store_true",
+                    help="the stand-in camera projects P1's recorded look, as before 2026-10-03, not the whole bench")
     args = ap.parse_args(argv)
 
     chain = str(args.profile)
@@ -1335,16 +1382,20 @@ def main(argv: Optional[list[str]] = None) -> int:
               "Nothing was copied or connected.")
         return _REFUSED
     scenarios = [s for s in _layers(args.scenarios)]
-    scenes: dict[str, tuple[str, float, tuple[float, float]]] = {}
+    scenes: dict[str, tuple[str, float, tuple[float, float], str]] = {}
     for text in args.scene:
         try:
             name, rest = text.split("=", 1)
-            neighbour, gap, where = rest.split("@")
+            fields = rest.split("@")
+            neighbour, gap, where = fields[:3]
+            target = fields[3] if len(fields) > 3 else SCENARIO_TARGET.get(_base(name), "cylinder")
+            if len(fields) > 4 or target not in TARGET_SHAPES:
+                raise ValueError(text)
             x, y = (float(v) for v in where.split(","))
             neighbours_of(neighbour)
             if _base(name) not in SCENARIOS:
                 raise ValueError(text)
-            scenes[name] = (neighbour, float(gap), (x, y))
+            scenes[name] = (neighbour, float(gap), (x, y), target)
         except ValueError:
             print(f"REFUSED: --scene {text!r} is not NAME=NEIGHBOURS@GAP@X,Y with a known scenario, neighbours and sides "
                   f"({sorted(SCENARIOS)}; {sorted(NEIGHBOURS)}; {list(SIDES)})")
@@ -1371,8 +1422,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     gaps = [float(g) for g in _layers(args.gaps_mm)]
     print("step 0: the push scene offline, S's model and plan_push as the pick asks it", flush=True)
     at_xy = tuple(float(v) for v in _layers(args.at))
-    step0 = offline_step(tree, Path(args.crop), push_mm=float(args.push_mm), gaps=gaps, at_xy=at_xy,
-                         looks=args.looks)
+    step0 = offline_step(tree, Path(args.crop), push_mm=args.push_mm, gaps=gaps, at_xy=at_xy, looks=args.looks,
+                         whole_bench=not args.recorded_bench)
     result["step0"] = step0
     for row in step0.get("gaps", []):
         print(f"  gap {row['gap_mm']:g} mm: planned={row.get('planned')} tilt={row.get('surface_tilt_deg')} "
@@ -1392,9 +1443,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         return _REFUSED
     try:
         result["ursim"] = run_on_ursim(tree, copied, work, Path(args.crop), scenarios=scenarios,
-                                       push_mm=float(args.push_mm), gap_mm=float(step0.get("gap_mm", gaps[0])),
+                                       push_mm=args.push_mm, gap_mm=float(step0.get("gap_mm", gaps[0])),
                                        at_xy=(at_xy[0], at_xy[1]), looks=args.looks, scenes=scenes,
-                                       push_stand_in=bool(args.push_stand_in))
+                                       push_stand_in=bool(args.push_stand_in), whole_bench=not args.recorded_bench)
     except Exception as exc:  # noqa: BLE001 (a bed that did not come up is a failed gate, said with its traceback)
         result["ursim"] = {"raised": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()[-4000:]}
     runs = (result.get("ursim") or {}).get("scenarios") or {}

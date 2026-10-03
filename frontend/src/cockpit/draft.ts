@@ -29,6 +29,9 @@ export interface DraftOptions {
   readonly bothFaces: boolean
   readonly closingAxis: ClosingAxis | null
   readonly pushMm: number | null
+  /** The owner's switch (2026-10-03): critical parts are never pushed, a blocker is cleared instead. `null` is the
+   *  cell's own. */
+  readonly criticalParts: boolean | null
   readonly recordViews: boolean
   readonly rimAirMm: number | null
   readonly overlay: boolean
@@ -39,6 +42,7 @@ export const DEFAULT_OPTIONS: DraftOptions = {
   bothFaces: false,
   closingAxis: null,
   pushMm: null,
+  criticalParts: null,
   recordViews: false,
   rimAirMm: null,
   overlay: true,
@@ -199,6 +203,7 @@ export function draftFromPlan(plan: TaskPlanOut): Draft {
       bothFaces: options?.both_faces ?? false,
       closingAxis: (options?.closing_axis as ClosingAxis | null | undefined) ?? null,
       pushMm: null,
+      criticalParts: options?.critical_parts ?? null,
       recordViews: options?.record_views ?? false,
       rimAirMm: null,
       overlay: options?.overlay ?? true,
@@ -234,6 +239,7 @@ export function taskOf(draft: Draft): TaskIn {
       both_faces: draft.options.bothFaces,
       closing_axis: draft.options.closingAxis,
       push_mm: draft.options.pushMm,
+      critical_parts: draft.options.criticalParts,
       record_views: draft.options.recordViews,
       // A pose place has no rim: the library refuses air for one (`PlaceAt` in src/robot/execution/place_target.py).
       rim_air_mm: camera ? draft.options.rimAirMm : null,

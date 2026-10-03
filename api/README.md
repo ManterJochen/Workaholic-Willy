@@ -274,11 +274,12 @@ The blockers are `run_active`, `cell_not_cleared`, `restart_required`, `needs_pe
 whose own fields say it can move lets anything go: a status that does not say refuses as surely as a stopped one.
 
 **The cell's facts** are `GET /v1/cell/facts`, read once after a build and once after a connect: the cameras with
-their mounting and the looks, the natural closing axis, the push (`can_push`, `default_mm`, and `ceiling_mm`, the
-50 mm hard cap where the cell declares no fixture), the detector (`backend`, the router, the VLM's id, and its
-`precision`: `fp32 weights, fp16 autocast` where `optim.torch_dtype` is unset, the configured dtype otherwise,
-`auto (the checkpoint's own)` for the VLM, both for a routed stack), the brake (`latches`, `brakes_in_motion`),
-the carried part (`modelled`, why not, `length_mm`) and the motion route (`planned`, `unplanned` or `refused`).
+their mounting and the looks, the natural closing axis, the push (`can_push`, `default_mm`, `ceiling_mm`, the
+50 mm hard cap where the cell declares no fixture, and `critical_parts`, the cell's switch), the detector
+(`backend`, the router, the VLM's id, and its `precision`: `fp32 weights, fp16 autocast` where
+`optim.torch_dtype` is unset, the configured dtype otherwise, `auto (the checkpoint's own)` for the VLM, both
+for a routed stack), the brake (`latches`, `brakes_in_motion`), the carried part (`modelled`, why not,
+`length_mm`) and the motion route (`planned`, `unplanned` or `refused`).
 
 **Disconnect, and the server's shutdown, take the cell down in one order:** a jaws question waiting is
 cancelled, before anything takes the session lock its connect holds; a teach is held at once and joined (at
@@ -302,7 +303,7 @@ nothing else starts a task, and a parse never does.
 | `place` | `{"kind": "pose", "pose": <name or null>}`, where `null` is `robot.default_place_pose`; or `{"kind": "camera", "phrase": "blue bin", "said": ...}`, a target the camera finds |
 | `return_to` | `home`, or a taught pose's name |
 | `scope` | `once`, or `until_empty` |
-| `options` | `multi_view` (on: the configured looks; off: the first look, no generated view), `both_faces`, `closing_axis`, `push_mm`, `record_views`, `rim_air_mm` (10 to 50, the cell's 20 when unset; a camera place only), `pick_anything`, `overlay` |
+| `options` | `multi_view` (on: the configured looks; off: the first look, no generated view), `both_faces`, `closing_axis`, `push_mm`, `critical_parts` (true: nothing is pushed, and a blocker is cleared instead; unset: the cell's `recovery.critical_parts`), `record_views`, `rim_air_mm` (10 to 50, the cell's 20 when unset; a camera place only), `pick_anything`, `overlay` |
 | `command` | `{text, source, language, parsed, edited}`: the sentence it came from, for the record only |
 
 **Refused before anything moves, in this order.** The cell's state first: `not_connected`, `run_active`,
@@ -316,7 +317,10 @@ still refuses it.
 
 **The plan is resolved and echoed.** `RunOut.plan` (`TaskPlanOut`) carries the place pose's label and joints,
 the return pose's, the resolved push distance and rim air, `first_motion` (`look` for a new task, `return`
-for a Restart) and `countdown`. A Restart runs exactly this plan again.
+for a Restart) and `countdown`. Its options say whether the operator asked for the push distance
+(`push_asked`: an asked distance is taken as asked, the cell's may go longer, to 40 and 50 mm, where 30
+frees no direction) and the parts' switch as asked (`critical_parts`, null for the cell's). A Restart runs
+exactly this plan again.
 
 **What a task does.** It screens every taught pose it will use before any motion (`task.pose_screened`; an
 `ERROR` ends `pose_refused`), finds a camera place's bin first (`task.survey_started`, `task.target_found`),
@@ -625,9 +629,11 @@ browser pins an overlay over the stage for 5 s and never draws it over the movin
   taken as asked up to the cell's `recovery.fixture.max_nudge_mm` (50 mm on a cell that declares no
   fixture, which the push does not need), refused above it or under 10 mm
   (`422 push_distance_refused`, no run started), never shortened. Without it a push is the cell's
-  `push_distance_mm`, 30 mm unless the cell says otherwise. A run is one campaign: its push budgets and
-  the parts `next_target` skips are its own, and `run_started` carries `push_mm` where the run asked for
-  one.
+  `push_distance_mm`, 30 mm unless the cell says otherwise, and longer, 40 then 50 mm up to the ceiling,
+  where that frees no direction. The push may rearrange the scene, and runs only where the cell's parts
+  are not critical (`recovery.critical_parts`); critical parts are never pushed, and a blocker is cleared
+  instead. A run is one campaign: its push budgets and the parts `next_target` skips are its own, and
+  `run_started` carries `push_mm` where the run asked for one.
 - Nobody is asked anything during a run, where nobody watching the console would see the question. A toggle
   hand whose jaws the program believes closed, or cannot place, ends the run before its next pick, and a
   question inside a pick is a refusal: the hand needs a person. So is a hand nobody can vouch for, at a push

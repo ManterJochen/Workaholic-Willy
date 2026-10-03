@@ -813,6 +813,8 @@
         "max_recovery_actions": 2,
         "allowed_actions": [],
         "per_action_budget": [],
+        "blocker_grasp_tries": 3,
+        "critical_parts": false,
         "apply_modes": [
           "auto",
           "dense_clutter"

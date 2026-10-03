@@ -188,8 +188,9 @@ def _plan(cell: Console, body: TaskIn) -> dict[str, Any]:
         "return_joints_deg": return_joints,
         "scope": body.scope,
         "options": {"multi_view": options.multi_view, "both_faces": options.both_faces, "closing_axis": axis,
-                    "push_mm": push_mm, "record_views": options.record_views, "rim_air_mm": rim_air,
-                    "pick_anything": options.pick_anything, "overlay": options.overlay},
+                    "push_mm": push_mm, "push_asked": options.push_mm is not None,
+                    "critical_parts": options.critical_parts, "record_views": options.record_views,
+                    "rim_air_mm": rim_air, "pick_anything": options.pick_anything, "overlay": options.overlay},
         "command": body.command.model_dump() if body.command is not None else None,
         "first_motion": "look",
         "countdown": cell.countdown_due(),
@@ -214,7 +215,7 @@ def _refuse_what_the_plan_asks_that_this_cell_cannot(cell: Console, plan: dict[s
     _refuse_unroutable_prompt(cell, resolved.object)
     if resolved.place.kind == "camera":
         _refuse_unroutable_prompt(cell, str(resolved.place.phrase or ""), code="target_not_routable")
-    if options.push_mm is not None:
+    if options.push_mm is not None and options.push_asked:
         _resolved_push(cell, options.push_mm)
     _closing_axis(cell, options.closing_axis)
     _refuse_both_faces_the_cell_turns_away(cell, options.both_faces)

@@ -41,6 +41,8 @@ from src.geometry import Frame
 from .errors import RobotMotionRejected
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from collections.abc import Sequence
+
     from src.contracts import Maybe
     from src.geometry import Pose
 
@@ -58,6 +60,8 @@ __all__ = [
     "HaltState",
     "HomesTyped",
     "JudgesCarriedLines",
+    "JudgesGraspsAhead",
+    "JudgesLinesAhead",
     "KeepsLines",
     "LineMotion",
     "LineReading",
@@ -593,6 +597,47 @@ class JudgesCarriedLines(Protocol):
                              camera_world: "Maybe[CameraWorldDecline]" = UNSET) -> "MotionResult | None":
         """The refusal ``move(pose, linear=True, camera_world=camera_world)`` would meet from where the arm stands with a
         part about ``grip_width_mm`` across in its jaws, judged now; ``None`` where that line would run. Nothing moves."""
+        ...
+
+
+@runtime_checkable
+class JudgesGraspsAhead(Protocol):
+    """Capability extension: the arm judges a whole grasp from where it stands, before it leaves for it.
+
+    A grasp is a planned move to its standoff, a line down to the part and a lift, and each is judged as it runs: a
+    grasp the guard or the planner refuses at the part has taken the arm there first. Asked ahead, the three are judged
+    in the order the pick runs them, each from where the one before ends: the move to the standoff from where the arm
+    stands, the line down from the configuration that move ends on, and the lift from the grasp as if the jaws held the
+    part (:class:`JudgesCarriedLines`). A pick asks it of each grasp it may take, a blocker's (the owner, 2026-10-03)
+    and the part's (URSim, 2026-10-03: a lift the cable window refused once the hand stood at the part), and drives to
+    the first every judgement admits. Asking moves nothing and commands nothing.
+
+    It is not a member of :class:`~src.robot.core.RobotArm`, for the reason :class:`HomesTyped` gives. An arm that
+    does not implement it has its grasps judged as they run, as before.
+    """
+
+    def grasp_refusal_ahead(self, *, standoff: "Pose", grasp: "Pose", lift: "Pose", grip_width_mm: float) -> str:
+        """Why the grasp would be refused before its jaws close, judged now from where the arm stands; ``""`` where every
+        judgement passes, and where this arm cannot judge it ahead. Nothing moves."""
+        ...
+
+
+@runtime_checkable
+class JudgesLinesAhead(Protocol):
+    """Capability extension: the arm judges a planned move and the straight lines after it from where it stands.
+
+    A push is a planned move to P0 above the part and four judged straight lines (down, push, back, up), each judged as
+    it runs: a push leg the guard refuses once the arm came down beside the part leaves the arm standing there, a person
+    to decide. Asked ahead, the move to ``approach`` is judged as :meth:`move` would route it, and each line from where
+    the one before ends, every one in the world it would run in (URSim, 2026-10-03). Asking moves nothing.
+
+    It is not a member of :class:`~src.robot.core.RobotArm`, for the reason :class:`HomesTyped` gives. An arm that
+    does not implement it has its lines judged as they run, as before.
+    """
+
+    def lines_refusal_ahead(self, *, approach: "Pose", lines: "Sequence[Pose]") -> str:
+        """Why the move to ``approach`` or one of ``lines`` after it would be refused, judged now from where the arm
+        stands; ``""`` where every judgement passes, and where this arm cannot judge them ahead. Nothing moves."""
         ...
 
 

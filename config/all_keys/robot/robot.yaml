@@ -1387,6 +1387,22 @@ robot:
       # [default: []]
       per_action_budget: []
 
+      # How many of a blocker's grasps clearing the blocker tries, best first. Each is judged from the look before
+      # the arm leaves for it: the move to its standoff, the line down and the lift as if carrying. A grasp refused
+      # there costs no motion; one refused once the arm stood over the blocker sends the arm back to the look first.
+      # Read where allowed_actions names nudge_target, which arms the clearing. [1 to 6]
+      # [default: 3]
+      blocker_grasp_tries: 3
+
+      # Whether the parts are critical. false: a boxed-in part is pushed first, and the push may rearrange the
+      # scene: it shoves the neighbours in its way and the fingers brush the ones beside their stroke. The fingers
+      # come down only on free table the camera saw, the housing keeps the guard's distance, and nothing is pushed
+      # over an edge. Where no push plans, a blocker is cleared. true: nothing is pushed; a blocker is cleared
+      # (gripped and set aside) instead. The console's Advanced drawer can say otherwise for one run. Read where
+      # allowed_actions names nudge_target.
+      # [default: false]
+      critical_parts: false
+
       # Which grasp modes the recovery orchestrator wraps.
       # [default: [auto, dense_clutter]]
       apply_modes: [auto, dense_clutter]

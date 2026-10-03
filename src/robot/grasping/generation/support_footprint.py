@@ -854,6 +854,7 @@ def _build(prism: SupportPrism, anchor: np.ndarray, axis: np.ndarray, approach: 
            support_height_mm: float, *, palm_aware: bool = False,
            score_weights: tuple[float, float, float, float, float] | None = None,
            refusals: dict[str, int] | None = None, side: _Side | None = None, tilt_deg: float = 0.0,
+           seen: Any = None,
            ) -> SupportFootprintCandidate | None:
     binormal = np.cross(approach, axis)
     binormal /= max(float(np.linalg.norm(binormal)), _EPS)
@@ -908,6 +909,11 @@ def _build(prism: SupportPrism, anchor: np.ndarray, axis: np.ndarray, approach: 
         return None
     if obstacles.refuse(closed, refusals, _FINGER_CAUSES):
         return None
+    # The boxes the camera world builds of the neighbours, as the guard holds them (``scene_obstacles.SeenEnvelope``):
+    # the open hand keeps the guard's distance from them at the grasp and on its way in, or the guard would refuse the
+    # grasp once the arm stood over it (the owner, 2026-10-03).
+    if seen is not None and seen.refuses(anchor, np.column_stack([axis, binormal, approach])):
+        return _refused(refusals, "seen_fingers")
     if prism.contains(closed, margin_mm=-1.0 - prism.inflate).any():
         return _refused(refusals, "prism")
     if prism.contains(swept, margin_mm=-1.0 - prism.inflate).any():
@@ -976,6 +982,7 @@ def generate_support_footprint_grasps(
     refusals: dict[str, int] | None = None,
     side_approaches: bool = False,
     corridor_seen: CorridorSeen | None = None,
+    seen_envelope: Any = None,
 ) -> list[SupportFootprintCandidate]:
     """Ranked candidates in BASE, from a masked target cloud and the rest of the scene as obstacles.
 
@@ -1079,7 +1086,7 @@ def generate_support_footprint_grasps(
                         candidate = _build(prism, anchor, axis, approach, jaw, obstacles,
                                            support_height_mm, palm_aware=palm_aware,
                                            score_weights=score_weights, refusals=refusals,
-                                           side=side, tilt_deg=tilt)
+                                           side=side, tilt_deg=tilt, seen=seen_envelope)
                         if candidate is not None:
                             found.append(candidate)
                             hit = True

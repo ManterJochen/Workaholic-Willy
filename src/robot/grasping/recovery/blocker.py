@@ -2,16 +2,22 @@
 
 The owner's recovery of 2026-10-02: "das ganze Ding soll die Szene so verändern, dass er diesen greifen kann. Also
 entweder das Objekt verschieben oder ein anderes Objekt nehmen, was im Weg liegt und dann das eigentliche Objekt
-aufheben." Where every grasp of a part meets a neighbour (``ALL_COLLIDED``), the pick loop first takes a neighbour that
-stands in the way and sets it aside, and pushes the part only where no neighbour can be taken
+aufheben." Where every grasp of a part meets a neighbour (``ALL_COLLIDED``), or every grasp of it was judged from the
+look and refused there, the pick loop takes a neighbour that stands in the way and sets it aside: for critical parts in
+place of the push, for the others where no push plans (the owner's switch of 2026-10-03, ``recovery.critical_parts``)
 (:meth:`~src.robot.grasping.loop.pick_loop.BinPickingOrchestrator._clear_the_blockers`). This module is what that reads,
 and nothing else:
 
 * :func:`clusters_of`: the points the calculator saw beside the part (Track A's obstacle points), grouped into separate
   objects where they stand at least :data:`CLUSTER_VOXEL_MM` apart; a group under :data:`MIN_CLUSTER_POINTS` is a speck.
 * :func:`not_a_blocker`: why a group may not be gripped as a blocker, ``""`` where it may. A blocker stands on what the
-  part stands on (its foot within :data:`STANDS_ON_THE_SUPPORT_MM` of the support's reading under it), apart from the
-  part (not its own unmasked rest), away from the robot's base, and no wider across its narrow side than the hand opens.
+  part stands on (its foot within :data:`STANDS_ON_THE_SUPPORT_MM` of the support's reading under it, or, where no look
+  saw its foot, the support seen round it), apart from the part (not its own unmasked rest), away from the robot's base,
+  and no wider across its narrow side than the hand opens.
+* :func:`support_seen_round`: whether a group whose foot no look saw stands on the support. A look from almost straight
+  above sees a block's sides at a grazing angle and leaves them out (URSim, 2026-10-03). It stands there where the
+  support's own pixels fill at least :data:`FOOT_RING_MIN_TABLE_SHARE` of the ring within :data:`FOOT_RING_MM` round its
+  footprint; where the camera saw the support under it, it floats (a finger, a cable) and is never gripped.
 * :func:`mask_of`: a group's pixels in the frame it was seen in, the blocker's mask for the calculator (the camera
   world's cluster, as the owner allowed).
 * :func:`free_spot`: a spot on table the camera saw with nothing seen within the hand's reach and the guard's clearance
@@ -49,6 +55,8 @@ __all__ = [
     "SPOT_CLEARANCE_MM",
     "SPOT_FROM_THE_PART_MM",
     "STANDS_ON_THE_SUPPORT_MM",
+    "FOOT_RING_MM",
+    "FOOT_RING_MIN_TABLE_SHARE",
     "STOPPED_WHERE_THE_ARM_STANDS",
     "TOO_LONG_TO_CARRY",
     "BlockerRecord",
@@ -58,6 +66,7 @@ __all__ = [
     "free_spot",
     "mask_of",
     "not_a_blocker",
+    "support_seen_round",
     "release_pose",
     "taught_place",
 ]
@@ -70,6 +79,13 @@ MIN_CLUSTER_POINTS: Final[int] = 20
 #: A blocker's foot stands at most this far over the support's reading under it, millimetres: what the part stands on.
 #: Further up it rests on something, or is no part at all (a cable, a finger in view).
 STANDS_ON_THE_SUPPORT_MM: Final[float] = 15.0
+#: A neighbour whose foot no look saw (a look from straight above sees its sides at a grazing angle, and they are left
+#: out) stands on the support where the support's own pixels fill at least :data:`FOOT_RING_MIN_TABLE_SHARE` of the
+#: cells within this ring round it (the owner, 2026-10-03: "Allgemein ... sofern nicht ein Abgrund"), the push's rule.
+FOOT_RING_MM: Final[float] = 15.0
+FOOT_RING_MIN_TABLE_SHARE: Final[float] = 0.25
+#: The cells the ring is counted in, millimetres.
+_RING_CELL_MM: Final[float] = 5.0
 #: A group whose points lie within this of the part's own points, millimetres, by this share of them, is the part's own
 #: rest the mask missed, never a blocker.
 PART_OVERLAP_MM: Final[float] = 4.0
@@ -234,6 +250,29 @@ def clusters_of(
     return tuple(Cluster(points_base_mm=group) for group in kept)
 
 
+def support_seen_round(footprint_xy: Any, table_xy: Any, *, ring_mm: float = FOOT_RING_MM,
+                       min_share: float = FOOT_RING_MIN_TABLE_SHARE) -> bool:
+    """Whether the support's own pixels (``table_xy``, BASE x and y) fill at least ``min_share`` of the
+    :data:`_RING_CELL_MM` cells within ``ring_mm`` round a neighbour's footprint (``footprint_xy``), the footprint's own
+    cells left out, and none of the cells inside its footprint: where its foot was not seen, it stands on the support,
+    unless the camera saw the support under it, where it stands over the support on something, or floats (a finger, a
+    cable)."""
+    foot = np.asarray(footprint_xy, dtype=np.float64).reshape(-1, 2)
+    table = np.asarray(table_xy, dtype=np.float64).reshape(-1, 2)
+    if not len(foot) or not len(table):
+        return False
+    cells = {tuple(c) for c in np.floor(foot / _RING_CELL_MM).astype(np.int64)}
+    seen = {tuple(c) for c in np.floor(table / _RING_CELL_MM).astype(np.int64)}
+    inside = {(i, j) for i, j in cells
+              if all((i + di, j + dj) in cells for di in (-1, 0, 1) for dj in (-1, 0, 1))}
+    if len(inside & seen) > max(2, int(0.1 * len(inside))):
+        return False
+    steps = int(np.ceil(float(ring_mm) / _RING_CELL_MM))
+    ring = {(i + di, j + dj) for i, j in cells for di in range(-steps, steps + 1) for dj in range(-steps, steps + 1)}
+    ring -= cells
+    return bool(ring) and len(ring & seen) / len(ring) >= float(min_share)
+
+
 def not_a_blocker(
     cluster: Cluster,
     *,
@@ -241,17 +280,19 @@ def not_a_blocker(
     target_points_mm: Any,
     base_radius_mm: Optional[float],
     open_width_mm: float,
+    foot_seen_round: bool = False,
 ) -> str:
     """Why ``cluster`` may not be gripped as a blocker, in words, or ``""`` where it may.
 
     ``support_mm`` is the support's reading under it (BASE z), ``None`` where none was read; ``target_points_mm`` the
     part's own points; ``base_radius_mm`` how far from the BASE axis the robot's base and its padding reach, ``None``
-    where its shape is not known; ``open_width_mm`` how far the hand opens.
+    where its shape is not known; ``open_width_mm`` how far the hand opens. ``foot_seen_round`` says the support was
+    seen round it (:func:`support_seen_round`): a foot no look saw is then taken to stand on it.
     """
     if support_mm is None:
         return "no support was read under it, so nothing says it stands on what the part stands on"
     over = cluster.low_mm - float(support_mm)
-    if over > STANDS_ON_THE_SUPPORT_MM:
+    if over > STANDS_ON_THE_SUPPORT_MM and not foot_seen_round:
         return (f"its foot stands {over:.0f} mm over the support under it, more than {STANDS_ON_THE_SUPPORT_MM:g} mm: it "
                 "does not stand on what the part stands on (it rests on something, or is no part)")
     centre = cluster.centre_mm

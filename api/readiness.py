@@ -651,11 +651,13 @@ def _push_facts(service: Any) -> PushFactsOut:
     elif callable(distance):
         # The service's own rule (``push_distance``): a cell that declares no fixture is held to the hard cap alone.
         ceiling = float(PUSH_DISTANCE_CAP_MM)
+    critical = bool(getattr(getattr(getattr(service, "effective_config", None), "recovery_orchestrator", None),
+                            "critical_parts", False) is True)
     if isinstance(cell, PushCell):
-        return PushFactsOut(can_push=True, default_mm=default, ceiling_mm=ceiling)
+        return PushFactsOut(can_push=True, default_mm=default, ceiling_mm=ceiling, critical_parts=critical)
     why = str(getattr(cell, "sentence", "") or "") if cell is not None else (
         "this cell's recovery pushes no part (grasping.recovery.allowed_actions names no nudge_target)")
-    return PushFactsOut(can_push=False, why_not=why, default_mm=default, ceiling_mm=ceiling)
+    return PushFactsOut(can_push=False, why_not=why, default_mm=default, ceiling_mm=ceiling, critical_parts=critical)
 
 
 #: What a phrase grounder's weights and arithmetic are where its config leaves ``optim.torch_dtype`` unset: the HF

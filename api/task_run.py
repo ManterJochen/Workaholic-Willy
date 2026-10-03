@@ -338,7 +338,10 @@ def library_plan(plan: Mapping[str, Any]) -> "tuple[TaskPlan, dict[str, JointPos
     library = TaskPlan(
         object=resolved.object, place=place_at, return_to=resolved.return_to, scope=resolved.scope,
         options=TaskOptions(multi_view=options.multi_view, both_faces=options.both_faces,
-                            closing_axis=options.closing_axis, push_mm=options.push_mm,
+                            closing_axis=options.closing_axis,
+                            # A distance nobody asked for is the cell's, which may go longer where it opens too little.
+                            push_mm=options.push_mm if options.push_asked else None,
+                            critical_parts=options.critical_parts,
                             record_views=options.record_views, overlay=options.overlay,
                             pick_anything=options.pick_anything),
         first_motion=resolved.first_motion,

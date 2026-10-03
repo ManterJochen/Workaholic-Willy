@@ -57,11 +57,14 @@ judge it, nothing moved, `RobotKinematicsError` where none is admissible), `Driv
 (`move_to_joints_on_the_line(joints)`: the straight joint line from where the arm stands, judged as
 `move_to_joints` judges a clear line, refused with nothing sent where it is not clear, never planned
 around), `JudgesCarriedLines` (`carried_line_refusal(pose, grip_width_mm=)`: the line `move(pose,
-linear=True)` would run, judged as if the jaws held a part, before they close on one, nothing moved) and
-`SupportsHalt` (the latch "halt now" sets: `halt(reason)`, `clear_halt()`, `halt_state()`, a
-`HaltState` whose `brake` says what became of the move in flight, `none`, `pending`, `braked`, `unconfirmed`
-or `ran_out`; every motion refused with nothing sent and every output switch raising `ArmHalted` until it is
-cleared; `halt_state_of(arm)` and `brakes_in_motion_of(arm)` read it on any arm) on the arm;
+linear=True)` would run, judged as if the jaws held a part, before they close on one, nothing moved),
+`JudgesGraspsAhead` (`grasp_refusal_ahead(standoff=, grasp=, lift=, grip_width_mm=)`: a whole grasp judged
+from where the arm stands before it leaves for it, each move from where the one before ends),
+`JudgesLinesAhead` (`lines_refusal_ahead(approach=, lines=)`: a push's move to P0 and its four lines judged
+the same way, 2026-10-03) and `SupportsHalt` (the latch "halt now" sets: `halt(reason)`, `clear_halt()`,
+`halt_state()`, a `HaltState` whose `brake` says what became of the move in flight, `none`, `pending`,
+`braked`, `unconfirmed` or `ran_out`; every motion refused with nothing sent and every output switch raising
+`ArmHalted` until it is cleared; `halt_state_of(arm)` and `brakes_in_motion_of(arm)` read it on any arm) on the arm;
 `ObjectDetectingGripper`, `StoppableGripper`, `ReportsHoldEvidence` (`HELD`, `EMPTY` or `UNMEASURED`)
 and `MeasuresWidth` on the hand; `why_not_known_open(gripper)` says why nobody can vouch that a hand stands
 empty and open, read off it with nothing sent. A gate written against a capability no attached driver implements
@@ -130,7 +133,7 @@ and `ik` take `Frame.BASE`) are stated here and enforced by each driver.
 | --- | --- |
 | `robot_arm.py` | `RobotArm` |
 | `gripper.py` | `Gripper`, its opt-in extensions, `HoldEvidence`, `hold_evidence_of`, `width_is_measured_of`, `why_not_known_open` |
-| `arm_capabilities.py` | the arm capability Protocols and their values: `Wrench`, `RobotStatus`, `LineReading`, `PayloadModel`; `ChoosesConfigurations`, `DrivesJointLines`, `JudgesCarriedLines` |
+| `arm_capabilities.py` | the arm capability Protocols and their values: `Wrench`, `RobotStatus`, `LineReading`, `PayloadModel`; `ChoosesConfigurations`, `DrivesJointLines`, `JudgesCarriedLines`, `JudgesGraspsAhead`, `JudgesLinesAhead` |
 | `motion_result.py` | `MotionStatus`, `MotionCommand`, `MotionResult`, `NO_PLAN_FAIL_SAFE_MESSAGE` |
 | `camera_world.py` | the camera world stamp and decline, and how a driver declines, stamps and refuses |
 | `keep_out.py` | `KeepOutBox`, `SegmentationOffer`, `keeping_out(arm, offer)`, and `holding_views(arm)`, which keeps every frame of a wrist pick in the arm's live planner world until the block ends |
