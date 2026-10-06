@@ -54,6 +54,7 @@ __all__ = [
     "descriptor_refusal",
     "guard_variant_for",
     "hand_geometry_model",
+    "hand_past_the_tcp_mm",
     "planner_hand",
     "sphere_map_path",
     "unset_hand_refusal",
@@ -293,6 +294,37 @@ def cover_fit_refusal(provenance: dict, model: str) -> str | None:
                 f"every sample inside a sphere"
             )
     return None
+
+
+def hand_past_the_tcp_mm(robot_cfg: RobotConfig) -> float:
+    """How far past the declared TCP the guard holds the hand's grasp centre, along the approach, millimetres: the
+    registry's ``grasp_centre_mm`` and the coupling plates less the tool frame's offset along the approach, where that is
+    more than nothing and no more than the tool frame's ``verify_tolerance_mm``; 0.0 otherwise.
+
+    The exact guard places the hand's meshes by the registry and the plates (``_fcl_self_collision.composed_parts``), the
+    arm puts the TCP where the tool frame says, and the calculator's jaw stands its grasp centre at the TCP. On the
+    owner's cell the TCP is declared 157 mm out and the guard's grasp centre stands at 23 + 136.2 = 159.2 mm: its
+    fingertips 2.2 mm further than the calculator planned them, and grasp after grasp in a pile was refused 2.3 to 2.96 mm
+    from a neighbour against the guard's 3 (the grasp bench, 2026-10-06). The calculator plans the hand where the guard
+    holds it by this much (``builders.build_gripper_geometry``), never shorter than it was: a hand shorter than its TCP
+    is planned as before. A difference past the tolerance is a cell to measure, not one to plan around; the preflight's
+    ``grasp centre`` row says so, and nothing is moved here. No hand, an undeclared frame or a placement nobody can make:
+    0.0.
+    """
+    if str(robot_cfg.gripper.tool_frame.source) == "undeclared":
+        return 0.0
+    try:
+        hand = planner_hand(robot_cfg)
+    except Exception:  # noqa: BLE001 (a hand nobody can resolve plans as declared; its refusal is said where it is built)
+        return 0.0
+    if not chosen(hand) or not chosen(hand.placement):
+        return 0.0
+    approach = hand.placement.approach_in_tool0
+    along = sum(float(o) * float(a) for o, a in zip(robot_cfg.gripper.tool_frame.offset_mm, approach))
+    past = float(hand.jaw.grasp_centre_mm) + float(hand.coupling_mm) - along
+    if past <= 0.0 or past > float(robot_cfg.gripper.tool_frame.verify_tolerance_mm):
+        return 0.0
+    return past
 
 
 def planner_hand(robot_cfg: RobotConfig, *, data_dir: str | Path | None = None) -> Maybe[PlannerHand]:

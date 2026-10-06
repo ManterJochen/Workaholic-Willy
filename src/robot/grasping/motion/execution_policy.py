@@ -75,6 +75,8 @@ This module imports no vendor driver. It talks only to the
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from enum import Enum
 from typing import cast
@@ -95,9 +97,11 @@ from src.robot.core import (
     SupportsRobotStatus,
 )
 from src.robot.core.arm_capabilities import (
+    HoldsItsWorld,
     JudgesCarriedLines,
     JudgesGraspsAhead,
     LineMotion,
+    LineReading,
     halt_state_of,
     halted_refusal,
     line_motion_of,
@@ -454,6 +458,28 @@ class GraspExecutionPolicy:
                     )
             commanded.append(pose)
 
+        # From the part until the arm is back up, every line is judged against the world the line down was judged in
+        # (the owner, 2026-10-06: "Ja, beides"): the lift asked before the jaws close, the lift itself, and the line
+        # back up with the jaws open. A world refreshed at the part, from there, refused every way back up, and the arm
+        # stood in the bin.
+        with _the_world_held_at_the_part(self.arm, reading):
+            return self._at_the_part(grasp, waypoints, approach, reading, commanded, stamps, line_motion,
+                                     last_status, last_message)
+
+    def _at_the_part(
+        self,
+        grasp: GraspPoint,
+        waypoints: Sequence[Pose],
+        approach: Sequence[Pose],
+        reading: LineReading | None,
+        commanded: list[Pose],
+        stamps: list[CameraWorldStamp],
+        line_motion: LineMotion | None,
+        last_status: MotionStatus | None,
+        last_message: str,
+    ) -> PolicyReport:
+        """The jaws at the part and the way back up: the lift judged before they close (or the line back up with them
+        open), the close, the attach and the lift. :meth:`execute` holds the arm's world around it."""
         # Close the gripper at the grasp point.
         object_detected: bool | None = None
         if self.gripper is not None:
@@ -845,6 +871,15 @@ def _controller_refusal(arm: object) -> str:
         f"protective_stop={status.protective_stopped}, emergency_stop={status.emergency_stopped}{detail}), so "
         "nothing was commanded, the jaws included; clear the stop where the arm is visible, then run again"
     )
+
+
+def _the_world_held_at_the_part(arm: object, reading: LineReading | None) -> AbstractContextManager[object]:
+    """The block in which ``arm`` judges every line against the world the line down was judged in
+    (:class:`~src.robot.core.arm_capabilities.HoldsItsWorld`), on an arm that keeps its lines and holds its world;
+    elsewhere a block that changes nothing."""
+    if reading is None or not isinstance(arm, HoldsItsWorld):
+        return nullcontext()
+    return arm.held_world("the way back up from the part, judged against the world the line down was judged in")
 
 
 def _halt_refusal(arm: object) -> str:

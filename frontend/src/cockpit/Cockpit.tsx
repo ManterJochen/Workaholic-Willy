@@ -9,10 +9,13 @@
  * bar before a task, the run header during one, the stop after a problem. Below 1200 px it stacks: the bar, the image,
  * the run strip, the numbers, the chat.
  *
- * **Nothing here moves the arm without a person's click on a button that names the motion.** A sentence, typed or
- * spoken, is only read (`POST /v1/commands/parse`); the card it opens starts the task only on a click on Start, whose
- * label names the first motion. Home and Restart ask first. "Sofort anhalten" is one click and is not the e-stop. After
- * a stop nothing starts by itself: the stop card waits for a person.
+ * **Nothing here moves the arm without a person's click on a button that names the motion,** bar one: a greeting. A
+ * sentence, typed or spoken, is only read (`POST /v1/commands/parse`); the card it opens starts the task only on a
+ * click on Start, whose label names the first motion. Home and Restart ask first. A greeting ("Hallo Willy") opens no
+ * card, and Willy waves back as the app config says (`runtime.greeting.wave`): at once, the greeting being the person's
+ * act (`direct`, the owner's choice of 2026-10-06), after a dialog like Home's (`confirm`), or not at all (`off`); every
+ * swing is judged, and the wave is never a way back after a stop. "Sofort anhalten" is one click and is not the
+ * e-stop. After a stop nothing starts by itself: the stop card waits for a person.
  *
  * It reads the console's shared models (the one cell poll, the run on screen, the conversation, the preferences) and
  * polls nothing of the cell itself; only the live image is its own. It fills the window under the top bar and no more
@@ -46,6 +49,7 @@ import StopButtons from './StopButtons'
 import StopCard from './StopCard'
 import Timeline from './Timeline'
 import UnderstoodCard from './UnderstoodCard'
+import { useMotions } from './motions'
 import { useCommand } from './useCommand'
 import VoiceOut from './VoiceOut'
 import './cockpit.css'
@@ -65,7 +69,8 @@ export default function Cockpit() {
   const { cell, readiness, facts, stream, refresh } = useCell()
   const { view, follow } = useRun()
   const conversation = useConversation()
-  const command = useCommand({ lang, follow, refresh })
+  const motions = useMotions()
+  const command = useCommand({ lang, follow, refresh, greet: motions.wave })
   const [mountedAt] = useState(() => Date.now() / 1000)
   const [text, setText] = useState('')
   const [source, setSource] = useState<'typed' | 'spoken'>('typed')

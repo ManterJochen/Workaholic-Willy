@@ -301,6 +301,9 @@ export const api = {
   /** Start cuRobo (about a minute). Moves nothing. */
   startPlanner: () => request<RunOut>('POST', '/v1/cell/planner'),
 
+  /** THIS MOVES. Willy waves back at a greeting: two swings of the wrist, each judged; refused as a new task is. */
+  wave: () => request<RunOut>('POST', '/v1/cell/wave'),
+
   /** The hand and the jaws question waiting for its answer, if any. Takes no session lock. */
   jaws: () => request<JawsOut>('GET', '/v1/cell/jaws'),
 

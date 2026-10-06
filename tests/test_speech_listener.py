@@ -444,7 +444,7 @@ class TheUtteranceReportTests(unittest.TestCase):
         text = self._heard().render()
         self.assertTrue(text.isascii(), text)
         self.assertFalse(text.endswith("\n"))
-        self.assertIn("W\\xfcrfel", text, "the transcript is rendered inside the utterance")
+        self.assertIn("Wuerfel", text, "the transcript is rendered inside the utterance")
 
     def test_a_timed_out_listen_renders_what_it_waited_for(self) -> None:
         clock = FakeClock()

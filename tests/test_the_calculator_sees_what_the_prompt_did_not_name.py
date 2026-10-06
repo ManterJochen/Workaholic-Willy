@@ -38,11 +38,16 @@ from tests.test_a_side_grasp_never_goes_through_unseen_space import Box, Cylinde
 #: Byte identity with the calculator of before (HEAD 1d91e3a with the cell fixes' stage 1, before Track A), recorded
 #: there by this file's own scenes: sha256 over each candidate's position, approach, axis, width and score, and the
 #: telemetry keys. A calculator built with ``scene_obstacles=None`` must reproduce them. Re-pinned on 2026-10-03 with a
-#: rounded zero's sign dropped (see ``digest``), from a tree that still gave the digests of before.
+#: rounded zero's sign dropped (see ``digest``), from a tree that still gave the digests of before. Re-pinned on
+#: 2026-10-06: SFE, which this calculator runs too, stands its fingers at the anchor and no longer pays for height over
+#: the support, so its grasps sit lower on the part (the owner, 2026-10-05: "wir müssen tiefer gehen"); the 50 mm part's
+#: best grasps now stand at 80 mm, its middle, and 75. That ``scene_obstacles=None`` changes nothing is still pinned
+#: beside it.
 BEFORE_TRACK_A = {
-    "isolated": "51671e6a3e1b0513bc476c84906431793ce7c33136e30b6e6368c2dbef03f5c3",
-    "photo_layout": "51671e6a3e1b0513bc476c84906431793ce7c33136e30b6e6368c2dbef03f5c3",
-    "boxed_in_bar": "46930ccc6ab892153105b0000c978dca7681bf8b60f462ceefd2c5eb978f95e4",
+    # Since the Hand-E's fingers come to 1 mm of the support (2026-10-06).
+    "isolated": "dc24da43bae444f8dd750d17e977dd0e2396f0ee1ffd67e35d3c47b59454a7a4",
+    "photo_layout": "dc24da43bae444f8dd750d17e977dd0e2396f0ee1ffd67e35d3c47b59454a7a4",
+    "boxed_in_bar": "d295b41595cd269611520d16beb7c3f3bbeb5bd07ff4ce19fc53e6ca41bf32fe",
 }
 
 

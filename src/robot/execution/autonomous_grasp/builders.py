@@ -87,6 +87,9 @@ _OVERLAY_SLOTS: tuple[str, ...] = (
 
 def build_gripper_geometry(
     config: GraspingGripperGeometryConfig,
+    *,
+    past_the_tcp_mm: float = 0.0,
+    palm_thickness_mm: float | None = None,
 ) -> GripperGeometryStrategy:
     """Map the ``grasping.gripper_geometry`` config block onto a collision envelope for the calculator.
 
@@ -94,6 +97,13 @@ def build_gripper_geometry(
     against the real end-effector shape (parallel-jaw fingers or a suction cup). The default block
     (``kind: parallel_jaw`` with the shipped dimensions) produces the same envelope as
     ``ParallelJawGripperModel()`` built with no arguments.
+
+    ``past_the_tcp_mm`` is how far past the TCP the guard holds the jaw's grasp centre
+    (``planning.hand.hand_past_the_tcp_mm``): the whole jaw stands that much further along the approach, its fingertip
+    and pad further ahead of the TCP and its palm nearer, so the calculator plans the hand where the guard judges it.
+    0.0, the default, is the jaw as the registry describes it. ``palm_thickness_mm`` is the registry's housing along
+    the closing axis (``ParallelJawGripperModel.palm_thickness_mm``); ``None`` keeps the palm as wide as the open
+    fingers.
     """
     if config.kind == "suction":
         s = config.suction
@@ -108,17 +118,19 @@ def build_gripper_geometry(
             outer_margin_mm=config.outer_margin_mm,
         )
     j = config.parallel_jaw
+    past = max(0.0, float(past_the_tcp_mm))
     return ParallelJawGripperModel(
-        finger_length_mm=j.finger_length_mm,
+        finger_length_mm=float(j.finger_length_mm) - past,
         finger_thickness_mm=j.finger_thickness_mm,
         finger_width_mm=j.finger_width_mm,
         finger_pad_overlap_mm=j.finger_pad_overlap_mm,
-        fingertip_depth_mm=j.fingertip_depth_mm,
+        fingertip_depth_mm=float(j.fingertip_depth_mm) + past,
         pad_length_mm=j.pad_length_mm,
-        pad_ahead_mm=j.pad_ahead_mm,
+        pad_ahead_mm=float(j.pad_ahead_mm) + past,
         palm_depth_mm=j.palm_depth_mm,
         palm_width_mm=j.palm_width_mm,
         outer_margin_mm=config.outer_margin_mm,
+        palm_thickness_mm=palm_thickness_mm,
     )
 
 
@@ -388,6 +400,7 @@ def build_effective_config(
             ),
             blocker_grasp_tries=int(grasping_cfg.recovery.blocker_grasp_tries),
             critical_parts=bool(grasping_cfg.recovery.critical_parts),
+            blocker_into_the_place=bool(getattr(grasping_cfg.recovery, "blocker_into_the_place", True)),
             # Emitted unconditionally, even when the mode gate above zeroes the actions: it is the
             # operator's declared bound, and a bound is not dropped because a gate is closed. The
             # consumer builds an envelope from it whenever recovery is on: container_agitate needs
@@ -773,6 +786,11 @@ def apply_orchestrator_overlays(
     primary_camera_id: str | None = None,
     #: The camera section of the same tree, whose rigs declare each fused camera's calibration.
     camera: "Maybe[CameraConfig]" = UNSET,
+    #: How far past the TCP the guard holds the jaw (``planning.hand.hand_past_the_tcp_mm``): the calculator's jaw stands
+    #: there too (``build_gripper_geometry``).
+    hand_past_the_tcp_mm: float = 0.0,
+    #: The registry's housing along the closing axis (``build_gripper_geometry``); ``None`` where it says none.
+    palm_thickness_mm: float | None = None,
 ) -> None:
     """Apply the orchestrator overlays in place.
 
@@ -792,7 +810,12 @@ def apply_orchestrator_overlays(
     #
     # Set first, before any of the optional overlays below: a pick path that does not know its own
     # end effector or its own table is wrong regardless of which advanced block is enabled.
-    runtime.orchestrator.gripper_model = build_gripper_geometry(grasping_cfg.gripper_geometry)
+    runtime.orchestrator.gripper_model = build_gripper_geometry(grasping_cfg.gripper_geometry,
+                                                                past_the_tcp_mm=hand_past_the_tcp_mm,
+                                                                palm_thickness_mm=palm_thickness_mm)
+    if hand_past_the_tcp_mm > 0.0:
+        logger.info("the guard holds the jaw's grasp centre %.2f mm past the declared TCP: the calculator plans the hand "
+                    "there too (the preflight's grasp centre row names the difference)", float(hand_past_the_tcp_mm))
     runtime.orchestrator.support_config = grasping_cfg.support
 
     # The learned grasp ranker, in shadow. Loaded eagerly and fail-safe, exactly as the

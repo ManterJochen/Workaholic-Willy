@@ -231,9 +231,29 @@ class ThePushSeesWhatNoPromptNamedTests(unittest.TestCase):
                                  result=SimpleNamespace(metadata={"scene_obstacle_points_base_mm": seen,
                                                                   "scene_points_world_rule_base_mm": rule}))
 
-        neighbours = BinPickingOrchestrator._neighbour_points_of(judged, 0)  # type: ignore[arg-type]
+        neighbours, named = BinPickingOrchestrator._neighbour_points_of(judged, 0)  # type: ignore[arg-type]
 
         self.assertEqual(len(seen) + len(rule), len(neighbours))
+        self.assertFalse(named.any(), "nobody named what the calculator saw beside the part")
+
+    def test_the_points_on_a_named_neighbours_mask_are_named(self) -> None:
+        """What the calculator found on a named neighbour's mask comes down beside as a part the detector named (the
+        owner, 2026-10-06), the rest as before."""
+        part = _box(0.0, -700.0, 40.0, 40.0, 40.0, z0=0.0)
+        seen = _box(-50.0, -700.0, 20.0, 20.0, 30.0, z0=0.0)
+        rule = _box(50.0, -700.0, 3.0, 3.0, 30.0, z0=0.0)
+        on_seen = np.arange(len(seen)) % 2 == 0
+        judged = SimpleNamespace(look=SimpleNamespace(clouds=(part,)), fused_scene=None,
+                                 result=SimpleNamespace(metadata={"scene_obstacle_points_base_mm": seen,
+                                                                  "scene_points_world_rule_base_mm": rule,
+                                                                  "scene_obstacle_part_points": on_seen,
+                                                                  "scene_world_rule_part_points": None}))
+
+        neighbours, named = BinPickingOrchestrator._neighbour_points_of(judged, 0)  # type: ignore[arg-type]
+
+        self.assertEqual(len(neighbours), len(named))
+        np.testing.assert_array_equal(named[:len(seen)], on_seen)
+        self.assertFalse(named[len(seen):].any())
 
 
 if __name__ == "__main__":

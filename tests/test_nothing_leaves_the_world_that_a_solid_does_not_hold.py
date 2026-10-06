@@ -129,8 +129,11 @@ class EveryPixelLiesInAHeldBoxTests(unittest.TestCase):
                                                                 limits=limits, tuning=cell.owner_tuning())
                 assert target is not None
                 over = points[:, 2] > perceived.supports.erasure_top_under(points)
-                inside = ((points[:, 0] >= limits.x_mm[0] - 15.0) & (points[:, 0] <= limits.x_mm[1] + 15.0)
-                          & (points[:, 1] >= limits.y_mm[0] - 15.0) & (points[:, 1] <= limits.y_mm[1] + 15.0))
+                # The bench's solid stands over the workspace box grown by the world's margin, and a pixel past that is
+                # outside the world: asked as far out as the margin reaches, 15 mm until the owner's cell went to 8.
+                grace = float(world.tuning.margin_mm)
+                inside = ((points[:, 0] >= limits.x_mm[0] - grace) & (points[:, 0] <= limits.x_mm[1] + grace)
+                          & (points[:, 1] >= limits.y_mm[0] - grace) & (points[:, 1] <= limits.y_mm[1] + grace))
                 ask = over & inside & ~target.contains(points)
                 self.assertGreater(int(ask.sum()), 20000)
                 free = ask & ~_held(perceived.boxes, points)

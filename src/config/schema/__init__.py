@@ -52,6 +52,8 @@ from .robot import (
     WorkspaceLimitsConfig,
 )
 from .runtime import (
+    GreetingConfig,
+    GreetingWave,
     ImageEncodingConfig,
     RuntimeConfig,
 )
@@ -72,6 +74,8 @@ __all__ = [
     "HandEyeConfig",
     # Models
     # Robot
+    "GreetingConfig",
+    "GreetingWave",
     "GripperConfig",
     "ImageEncodingConfig",
     "InferenceOptimization",

@@ -310,6 +310,13 @@ def _slab_over_the_workspace(robot_cfg: "RobotConfig") -> None:
                        "finds", said)
 
 
+def _finger_floor_drop_mm(robot_cfg: "RobotConfig") -> float:
+    """``scene_obstacles.finger_floor_drop_mm``, the calculator's and the world's one rule."""
+    from src.robot.grasping.generation.scene_obstacles import finger_floor_drop_mm  # noqa: PLC0415
+
+    return finger_floor_drop_mm(robot_cfg)
+
+
 def _live_planner_world(robot_cfg: "RobotConfig", views: Sequence[CameraView]) -> LivePlannerWorld:
     """The world source over ``views``, tuned by the cell's `safety.planning_world`.
 
@@ -342,6 +349,13 @@ def _live_planner_world(robot_cfg: "RobotConfig", views: Sequence[CameraView]) -
             cluster_voxel_mm=float(perceived.cluster_voxel_mm),
             min_points=int(perceived.min_points),
             margin_mm=float(perceived.margin_mm),
+            # The fingers to a named part's measured surface, and past it by the finger contact (the owner, 2026-10-05).
+            part_soft_mm=(float(perceived.margin_mm) + float(perceived.finger_contact_mm)
+                          if bool(getattr(perceived, "fingers_touch_parts", False)) else 0.0),
+            # The fingers to a support's reading and excess, not to its solid (the owner, 2026-10-05), and to 1 mm of it
+            # (2026-10-06): the solid's top lowered for them by the guard's distance less that.
+            fingers_to_the_reading=bool(getattr(perceived, "fingers_to_the_support_reading", False)),
+            finger_floor_drop_mm=_finger_floor_drop_mm(robot_cfg),
             max_boxes=int(perceived.max_boxes),
             voxel_field_mm=float(perceived.voxel_field_mm),
             floor_to_plane=bool(perceived.floor_to_plane),

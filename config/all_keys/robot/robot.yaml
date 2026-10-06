@@ -779,7 +779,7 @@ robot:
       # declared fixture leaves the world as the fixture's, and nothing holds that band as solid. A cell that
       # declares no fixture runs at 5: the surfaces the camera world finds are held as solid.
       # [default: 10.0]
-      min_distance_mm: 10.0
+      min_distance_mm: 3.0
 
       # Clearance (mm) handed to the TRAJECTORY PLANNER so it stops proposing configurations this guard will
       # reject. Undeclared by default: a UR cell that plans with cuRobo must set it here or in its profile, or
@@ -809,7 +809,7 @@ robot:
       # than the 10 mm it was measured at, or the config is refused at load. At least 5, refused below at load:
       # where only these boxes refuse the planner's world, this guard alone decides them.
       # [default: 5.0]
-      perceived_min_distance_mm: 5.0
+      perceived_min_distance_mm: 3.0
 
       # An alternate DIRECTORY to load the pre-baked collision-mesh bundle from.
       # [default: null]
@@ -928,7 +928,7 @@ robot:
       # a declared fixture; from a box the camera saw (already grown by perceived.margin_mm) it keeps
       # perceived_min_distance_mm, 5 mm. 0 judges a line at no penetration, as a plan is.
       # [default: 10.0]
-      line_clearance_mm: 10.0
+      line_clearance_mm: 3.0
 
       # How far, in degrees, any joint of a cuRobo plan may swing beyond the span between where it starts and
       # where it ends. A plan past it is not run: the next nearest configuration is planned to, and with none
@@ -1083,7 +1083,7 @@ robot:
         # a box the planner will graze, and depth noise at an edge is one-sided. The same padding is
         # added around the robot's own body when the cameras' view of it is taken back out.
         # [default: 15.0]
-        margin_mm: 15.0
+        margin_mm: 8.0
 
         # How many perceived boxes there is room for beside the declared ones. The planner reserves a
         # fixed number of collision slots when it starts, so this is a real ceiling. Every object is a
@@ -1124,6 +1124,33 @@ robot:
         # solid.
         # [default: 2.0]
         support_allowance_mm: 2.0
+
+        # The fingers may come to the measured surface of a neighbour part the detector named (the owner,
+        # 2026-10-05: "Finger dürfen streifen"). The Hand-E's finger meshes are judged against such a part's box
+        # less margin_mm and finger_contact_mm, at 0 mm; every other link, the housing and the wrist camera among
+        # them, against the whole box. A box nobody named (a wall, a bin, a support) stays whole for every link.
+        # [default: true]
+        fingers_touch_parts: true
+
+        # How far past a named part's measured surface a finger may go, in mm (0 to 20). 3, the owner's decision
+        # of 2026-10-06, lets the descending finger shove the neighbour aside by up to 3 mm; 0 is to its surface
+        # and no further.
+        # [default: 3.0]
+        finger_contact_mm: 3.0
+
+        # The fingers keep the guard's distance from what a support surface reads (its reading and the excess),
+        # not from the solid held over it, which stands a band and the allowance higher (the owner, 2026-10-05:
+        # "wir müssen tiefer gehen"). Every other link keeps the distance from the whole solid. Off, the fingers
+        # keep it from the solid too, and stand that much higher over the mat.
+        # [default: true]
+        fingers_to_the_support_reading: true
+
+        # How near a finger comes to what a support surface reads, in mm, where fingers_to_the_support_reading is
+        # on: 1, the owner's decision of 2026-10-06 ("bis auf 1 mm, solange er sie nicht beruehrt"), for the mat
+        # and the bench alike. Every other link keeps perceived_min_distance_mm from the whole solid. A part thinner
+        # than the band the reading swallowed counts as the support, and the fingers come this near it too.
+        # [default: 1.0]
+        finger_floor_mm: 1.0
 
   # Vendor-neutral grasping-behaviour surface.
   grasping:
@@ -1402,6 +1429,14 @@ robot:
       # allowed_actions names nudge_target.
       # [default: false]
       critical_parts: false
+
+      # Where a blocker goes in a task that takes every part to one place. true: it is the part the pick takes,
+      # gripped, lifted and set down where the parts go (into the bin), and the part it blocked is picked next.
+      # false: it is set down on a free spot of the support and the part is grasped after. A task that names an
+      # object sets every blocker aside whatever this says. The console's Advanced drawer can say otherwise for one
+      # run. Read where allowed_actions names nudge_target.
+      # [default: true]
+      blocker_into_the_place: true
 
       # Which grasp modes the recovery orchestrator wraps.
       # [default: [auto, dense_clutter]]
@@ -1893,9 +1928,10 @@ robot:
         # [default: 8.0]
         wall_sample_mm: 8.0
 
-      # How far the gripper envelope must stay above the support surface
-      # [default: 5.0]
-      min_clearance_mm: 5.0
+      # How far the gripper envelope must stay above the support surface: the finger floor the exact
+      # guard holds over what a support reads (safety.planning_world.perceived.finger_floor_mm).
+      # [default: 1.0]
+      min_clearance_mm: 1.0
 
     # Which geometry stage proposes grasp candidates.
     geometry:

@@ -162,5 +162,6 @@ These are not part of the walkthrough, but the guides link into them.
 | [ext_deps/README.md](../../ext_deps/README.md) | installing the planner and collision sidecars with `scripts/ext_deps/install.ps1` |
 | [docs/safety-math.md](../safety-math.md) | the derivations behind the safety bounds |
 | [docs/grasping-math.md](../grasping-math.md) | the derivations behind the grasp itself, from prompt to point cloud to grasp pose |
+| [docs/deep-network.md](../deep-network.md) | the learned grasp network layer by layer, how it learns, and what it can and cannot add to the analytic generator |
 | [docs/grasping-config-reference.md](../grasping-config-reference.md) | every `robot.grasping` block, and which grasp mode it can fire in |
 | [src/willy_sim/README.md](../../src/willy_sim/README.md) | the simulator harness behind every simulation step in these guides |

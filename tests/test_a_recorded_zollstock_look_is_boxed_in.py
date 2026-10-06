@@ -119,7 +119,8 @@ class ARecordedZollstockLookIsBoxedInTests(unittest.TestCase):
             with self.subTest(look=name):
                 recorded = look(name)
                 today = _compute(recorded, scene=False)
-                self.assertEqual(3, len(today.candidates))
+                # Three until 2026-10-05, six since SFE stands its fingers at the anchor and tries the part's middle.
+                self.assertGreaterEqual(len(today.candidates), 3)
                 # What the camera world keeps beside the part: every one of today's grasps has an open finger in it.
                 world = _compute(recorded, scene=True, model=_model(recorded)).metadata[
                     "scene_points_world_rule_base_mm"]

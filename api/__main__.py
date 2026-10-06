@@ -31,7 +31,20 @@ _HOST = "127.0.0.1"
 _PORT_RANGE = (1, 65535)
 
 
+def _utf8_console() -> None:
+    """Write the console's output as UTF-8: a Windows terminal defaults to its code page, and a transcript said in
+    German ("Würfel") came out as "WÃ¼rfel" in the server's log lines. Errors are replaced, never raised."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_console()
     parser = argparse.ArgumentParser(
         prog="python -m api",
         description="The optional operator console. Localhost only, no authentication.",

@@ -315,6 +315,11 @@ HOME_GATES: tuple[str, ...] = (
     "not_connected", "run_active", "halted", "controller_stopped", "cell_not_cleared", "needs_person",
     "jaws_question_pending", "part_still_held", "jaws_not_confirmed", "route_refused",
 )
+#: A wave's: a task's, bar a carried part (no wave carries one): a greeting never starts the way back after a stop.
+WAVE_GATES: tuple[str, ...] = (
+    "not_connected", "run_active", "halted", "controller_stopped", "cell_not_cleared", "restart_required",
+    "needs_person", "jaws_question_pending", "part_still_held", "jaws_not_confirmed", "route_refused",
+)
 #: ``POST /v1/pick``'s (item 17), after its own ``not_connected``, in 1.3.2's order: a run holding the lock first, so a
 #: run that ends while these are read cannot slip past them unseen (the registry reads the record once more as it
 #: starts the run, under the lock).
@@ -651,13 +656,19 @@ def _push_facts(service: Any) -> PushFactsOut:
     elif callable(distance):
         # The service's own rule (``push_distance``): a cell that declares no fixture is held to the hard cap alone.
         ceiling = float(PUSH_DISTANCE_CAP_MM)
-    critical = bool(getattr(getattr(getattr(service, "effective_config", None), "recovery_orchestrator", None),
-                            "critical_parts", False) is True)
+    recovery = getattr(getattr(service, "effective_config", None), "recovery_orchestrator", None)
+    critical = bool(getattr(recovery, "critical_parts", False) is True)
+    into = bool(getattr(recovery, "blocker_into_the_place", True) is not False)
+    on = bool(getattr(recovery, "enabled", False))
+    named = tuple(str(a) for a in (getattr(recovery, "allowed_actions", ()) or ())) if on else ()
+    rescan_allowed, push_allowed = "rescan" in named, "nudge_target" in named
     if isinstance(cell, PushCell):
-        return PushFactsOut(can_push=True, default_mm=default, ceiling_mm=ceiling, critical_parts=critical)
+        return PushFactsOut(can_push=True, default_mm=default, ceiling_mm=ceiling, critical_parts=critical,
+                            blocker_into_the_place=into, rescan_allowed=rescan_allowed, push_allowed=push_allowed)
     why = str(getattr(cell, "sentence", "") or "") if cell is not None else (
         "this cell's recovery pushes no part (grasping.recovery.allowed_actions names no nudge_target)")
-    return PushFactsOut(can_push=False, why_not=why, default_mm=default, ceiling_mm=ceiling, critical_parts=critical)
+    return PushFactsOut(can_push=False, why_not=why, default_mm=default, ceiling_mm=ceiling, critical_parts=critical,
+                        blocker_into_the_place=into, rescan_allowed=rescan_allowed, push_allowed=push_allowed)
 
 
 #: What a phrase grounder's weights and arithmetic are where its config leaves ``optim.torch_dtype`` unset: the HF

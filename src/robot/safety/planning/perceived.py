@@ -73,7 +73,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Sequence
 
 import numpy as np
 
@@ -272,6 +272,17 @@ class WorldBuildTuning:
     #: Grown on every side of every box. A box that is exactly the measured hull is a box the
     #: planner will graze, and depth noise is one-sided at an edge.
     margin_mm: float = 15.0
+    #: How far into a box of a named part a finger may come (``PerceivedBox.soft_mm``): the margin and the cell's
+    #: finger contact where the fingers may touch parts (``perceived.fingers_touch_parts``), 0 where they may not.
+    part_soft_mm: float = 0.0
+    #: Whether a finger keeps the guard's distance from a support's reading and its excess rather than from the solid
+    #: held over it (``PerceivedBox.finger_top_mm``, ``perceived.fingers_to_the_support_reading``). Off for a library
+    #: caller, as before.
+    fingers_to_the_reading: bool = False
+    #: How much nearer than the guard's distance a finger may come to what a support reads, millimetres: the guard's
+    #: ``perceived_min_distance_mm`` less ``perceived.finger_floor_mm`` (the owner's 1 mm, 2026-10-06), 0 for none. A
+    #: support's solid lowers its top for the fingers by this as well (``PerceivedBox.finger_top_mm``).
+    finger_floor_drop_mm: float = 0.0
     #: Boxes the caller has slots for. Every cluster is a height map of several boxes
     #: (``height_map``), so this is room for a few bins and their parts. Past it boxes merge into
     #: the boxes that hold them first; only what still does not fit, one box per object, is left
@@ -638,6 +649,9 @@ class SelfBody:
     surfaces: "tuple[tuple[np.ndarray, DeclaredBody] | None, ...]" = ()
     #: How far from a link's surface a point is still that link, millimetres: the padding.
     surface_padding_mm: float = 0.0
+    #: Per capsule, the frame of the chain that carries it (0 the base, 6 the flange of a six-joint arm); empty where the
+    #: body was not built from a chain.
+    frames: tuple[int, ...] = ()
 
     def __post_init__(self) -> None:
         segments = np.asarray(self.segments_mm, dtype=np.float64)
@@ -723,10 +737,11 @@ class SelfBody:
             surface = capsule.surface
             refined = surface is not None and float(padding_mm) >= float(surface.spacing_mm)
             surfaces.append((np.linalg.inv(frame), surface) if refined and surface is not None else None)
+        frames = tuple(int(capsule.frame) for capsule in capsules)
         if not any(entry is not None for entry in surfaces):
-            return cls(segments_mm=segments, radii_mm=radii)
+            return cls(segments_mm=segments, radii_mm=radii, frames=frames)
         return cls(segments_mm=segments, radii_mm=radii, surfaces=tuple(surfaces),
-                   surface_padding_mm=float(padding_mm))
+                   surface_padding_mm=float(padding_mm), frames=frames)
 
     def contains(self, points_mm: np.ndarray) -> np.ndarray:
         """Which of `points_mm` lie inside the body. `(N,)` boolean.
@@ -760,6 +775,36 @@ class SelfBody:
                     near[asked] = surface.distance_mm(local) <= self.surface_padding_mm
             inside |= near
         return inside
+
+    def on_itself(self, points_mm: np.ndarray, *, within_mm: float, from_frame: int = 0) -> np.ndarray:
+        """Which of ``points_mm`` lie on the robot's own body, without the padding: within ``within_mm`` of a link's
+        surface where its capsule carries one, inside the capsule as fitted (its radius less the padding) where not, a
+        hand's or a camera's sphere. ``(N,)`` boolean. A column sampled more finely than twice ``within_mm`` meets every
+        link it passes through, the surface being closed. ``from_frame`` asks only the capsules carried from that frame
+        of the chain on (all of them where the body knows no frames)."""
+        points = np.asarray(points_mm, dtype=np.float64).reshape(-1, 3)
+        on = np.zeros(points.shape[0], dtype=bool)
+        if points.shape[0] == 0:
+            return on
+        padding = float(self.surface_padding_mm) if self.surfaces else 0.0
+        for index, ((start, end), radius) in enumerate(zip(self.segments_mm, self.radii_mm)):
+            if self.frames and int(self.frames[index]) < int(from_frame):
+                continue
+            axis = end - start
+            length_squared = float(axis @ axis)
+            travel = (np.clip(((points - start) @ axis) / length_squared, 0.0, 1.0) if length_squared > 0.0
+                      else np.zeros(points.shape[0]))
+            distance = np.linalg.norm(points - (start + travel[:, None] * axis), axis=1)
+            refined = self.surfaces[index] if self.surfaces else None
+            if refined is None:
+                on |= distance <= max(float(radius) - padding, 0.0) + float(within_mm)
+                continue
+            asked = np.nonzero(~on & (distance <= float(radius)))[0]
+            if asked.size:
+                to_link, surface = refined
+                local = points[asked] @ to_link[:3, :3].T + to_link[:3, 3]
+                on[asked] = surface.distance_mm(local) <= float(within_mm)
+        return on
 
     def surface_gap_mm(self, points_mm: np.ndarray, *, within_mm: float) -> np.ndarray:
         """How far each of ``points_mm`` lies from the nearest link surface this body carries, millimetres, where it lies
@@ -833,6 +878,15 @@ class PerceivedBox:
     kind: str = "seen"
     #: What a refusal against a solid adds: which surface it holds and how high.
     detail: str = ""
+    #: How far into this box a finger link may come, millimetres: a box of a part the detector named, no larger than a
+    #: part (:data:`PART_SIZED_MM`), holds the fingers to its measured surface (``WorldBuildTuning.part_soft_mm``, the
+    #: owner's "Finger dürfen streifen" of 2026-10-05). 0 for every other box, and for every link but the fingers.
+    soft_mm: float = 0.0
+    #: How far under its top a finger link keeps the guard's distance from, millimetres: a support's solid, its band and
+    #: its allowance, so the fingers keep the distance from the reading and its excess
+    #: (``WorldBuildTuning.fingers_to_the_reading``, the owner's "wir müssen tiefer gehen" of 2026-10-05). 0 for every
+    #: other box, and for every link but the fingers.
+    finger_top_mm: float = 0.0
 
     @property
     def rotation_matrix(self) -> np.ndarray:
@@ -1092,6 +1146,7 @@ def build_perceived_boxes(
     declared: Sequence[DeclaredBody] = (),
     cut_around: "Sequence[KeepOutBox] | None" = None,
     base: "BaseShape | None" = None,
+    named_points_base_mm: Sequence[tuple[str, np.ndarray]] = (),
 ) -> PerceivedWorld:
     """Turn what the cameras see into the obstacles a planner should route around.
 
@@ -1332,7 +1387,9 @@ def build_perceived_boxes(
             keep_out=tuple(keep_out if cut_around is None else cut_around),
         )
         supports = erasure.model
-        solids = _solid_boxes(erasure.model, reference)
+        solids = _solid_boxes(erasure.model, reference,
+                              fingers_to_the_reading=bool(getattr(tuning, "fingers_to_the_reading", False)),
+                              finger_floor_drop_mm=float(getattr(tuning, "finger_floor_drop_mm", 0.0) or 0.0))
         points_base, pixels, band_of = erasure.points_mm, erasure.pixels, erasure.band_mm
 
     if keep_out:
@@ -1424,6 +1481,7 @@ def build_perceived_boxes(
                 cell_mm=float(tuning.cluster_voxel_mm), step_mm=float(tuning.voxel_size_mm),
                 hidden=None if shadow is None else shadow.hides, reach_mm=_HIDDEN_REACH_MM,
                 taken_mm=None if shadow is None else shadow.taken_mm,
+                robot_on=None if self_body is None else _the_moving_robot(self_body),
             )))
     if shadow is not None and len(mapped) > 1:
         # What the robot hid between two parts, a bin its shadow cut in two, is in neither's height map: boxes of its own.
@@ -1431,13 +1489,17 @@ def build_perceived_boxes(
             [points[chosen_points] for chosen_points, _, _ in mapped], floor_mm=floor,
             margin_mm=float(tuning.margin_mm), cell_mm=float(tuning.cluster_voxel_mm),
             step_mm=float(tuning.voxel_size_mm), hidden=shadow.hides, reach_mm=_HIDDEN_REACH_MM,
+            robot_on=None if self_body is None else _the_moving_robot(self_body),
         )
         if bridged:
             mapped.append((np.zeros(0, dtype=np.int64), 0.0, bridged))
     # Past the slot budget the columns merge into the boxes that hold them, never into less. The solids of what the
     # parts stand on come first and are never merged: the obstacles get what is left.
     budget = max(0, int(tuning.max_boxes) - len(solids))
-    merged_to_fit = coarsen([columns for _, _, columns in mapped], budget)
+    # The boxes far from the motion's goal merge first: those the hand passes between stay as they were seen.
+    merged_to_fit = coarsen([columns for _, _, columns in mapped], budget,
+                            near_mm=None if near_point_mm is None else reference,
+                            yaws=[yaw for _, yaw, _ in mapped])
     # How far each point lies from the robot's own links, where it lies close: a box of nothing else may be the robot,
     # seen off where its model stands, which a refusal then says (``PerceivedBox.robot_gap_mm``).
     gaps = (
@@ -1445,11 +1507,15 @@ def build_perceived_boxes(
         if self_body is not None else np.full(points.shape[0], np.inf)
     )
 
+    # The parts a detector named in BASE (``named_points_base_mm``): a box no mask names is named by its own points.
+    named_trees = _named_trees(named_points_base_mm)
     candidates: list[PerceivedBox] = []
     for chosen_points, part_yaw, columns in mapped:
         for column in columns:
             held = chosen_points[column.members]
             centre, dims = column.placed(part_yaw)
+            label = (_dominant_label(lookups, kept_pixels[held], kept_view[held])
+                     or _named_by_points(named_trees, points[held]))
             candidates.append(
                 PerceivedBox(
                     name="",  # named once the survivors are known, so the numbering has no holes
@@ -1458,7 +1524,8 @@ def build_perceived_boxes(
                     yaw_rad=part_yaw,
                     points=int(held.size),
                     distance_mm=float(np.linalg.norm(np.asarray(centre) - reference)),
-                    label=_dominant_label(lookups, kept_pixels[held], kept_view[held]),
+                    label=label,
+                    soft_mm=_soft_mm(label, dims, tuning),
                     hidden_cells=int(column.hidden_cells),
                     robot_gap_mm=(float(gaps[held].max()) if held.size and bool(np.isfinite(gaps[held]).all())
                                   else None),
@@ -1481,6 +1548,7 @@ def build_perceived_boxes(
             label=box.label,
             hidden_cells=box.hidden_cells,
             robot_gap_mm=box.robot_gap_mm,
+            soft_mm=box.soft_mm,
         )
         for index, box in enumerate(survivors)
     ) + solids
@@ -1896,8 +1964,12 @@ def _support_stage(
                     banded=every_banded[read_as], free_pixels=free_count[read_as])
 
 
-def _solid_boxes(model: SupportModel, reference: np.ndarray) -> tuple[PerceivedBox, ...]:
-    """The model's solids as the boxes the planner and the guard hold, a support's tilted, the bench's upright."""
+def _solid_boxes(model: SupportModel, reference: np.ndarray, *, fingers_to_the_reading: bool = False,
+                 finger_floor_drop_mm: float = 0.0) -> tuple[PerceivedBox, ...]:
+    """The model's solids as the boxes the planner and the guard hold, a support's tilted, the bench's upright. With
+    ``fingers_to_the_reading`` each holds the fingers its band, its allowance and ``finger_floor_drop_mm`` under its
+    top (``PerceivedBox.finger_top_mm``): at the guard's distance from that, a finger keeps the finger floor from the
+    reading and its excess."""
     where = reference if reference.shape == (3,) else np.zeros(3)
     surfaces = {surface.index: surface for surface in model.surfaces}
     out = []
@@ -1911,6 +1983,8 @@ def _solid_boxes(model: SupportModel, reference: np.ndarray) -> tuple[PerceivedB
             distance_mm=float(np.linalg.norm(solid.centre_mm - where)),
             rotation=tuple(float(v) for v in rotation.reshape(-1)) if tilted else None,
             kind=solid.kind, detail=_solid_detail(solid, surfaces.get(solid.surface)),
+            finger_top_mm=(float(solid.band_mm) + float(solid.allowance_mm) + max(0.0, float(finger_floor_drop_mm))
+                           if fingers_to_the_reading else 0.0),
         ))
     return tuple(out)
 
@@ -1957,6 +2031,22 @@ def _stands_on_a_solid(points: np.ndarray, free_pixels: np.ndarray, model: Suppo
         held |= bench.erases(points)
     del free_pixels
     return bool(np.any(~held))
+
+
+#: The first frame of the chain whose capsules a fill keeps clear of (``height_map._under_the_robot``): wrist 1 on, with
+#: the hand, its camera and a carried part on the flange. What stands under the base, the shoulder and the arm keeps
+#: its fill: a rim the shoulder housing hides was the reason to fill (review of 2026-09-30).
+_MOVING_FROM_FRAME = 4
+#: How near a link's surface a sample lies and is on the link, millimetres: more than half the column's sample step.
+_ON_THE_LINK_MM = 3.0
+
+
+def _the_moving_robot(body: SelfBody) -> "Callable[[np.ndarray], np.ndarray]":
+    """Which BASE points lie on the robot's own body from the wrist on, as it stands now: the hand down in a bin, which
+    a fill must not run through (``height_map._under_the_robot``)."""
+    def on(points_mm: np.ndarray) -> np.ndarray:
+        return body.on_itself(points_mm, within_mm=_ON_THE_LINK_MM, from_frame=_MOVING_FROM_FRAME)
+    return on
 
 
 def _cluster(points_mm: np.ndarray, cell_mm: float) -> np.ndarray:
@@ -2186,6 +2276,8 @@ class SeenBox:
     centre_mm: tuple[float, float, float]
     rotation: tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]]
     half_extents_mm: tuple[float, float, float]
+    #: How far into it a finger may come: a box of a named neighbour part (``PerceivedBox.soft_mm``), 0 otherwise.
+    soft_mm: float = 0.0
 
 
 def seen_part_boxes(
@@ -2349,6 +2441,58 @@ class _RobotShadow:
             local = enclosure.local(points)
             free |= np.all(np.abs(local) <= enclosure.half + self.clearance_mm, axis=1)
         return robot & ~free
+
+
+#: The largest a box may be and hold a finger to a named part's surface, millimetres: its longer side across and its
+#: height. A bin's wall is longer or taller and stays whole whatever the detector named it.
+PART_SIZED_MM: tuple[float, float] = (250.0, 150.0)
+
+
+def _soft_mm(label: "str | None", dims_mm: Sequence[float], tuning: WorldBuildTuning) -> float:
+    """How far into a box of ``dims_mm`` a finger may come: ``tuning.part_soft_mm`` where a segmentation named it and
+    it is no larger than a part (:data:`PART_SIZED_MM`), else 0."""
+    soft = float(getattr(tuning, "part_soft_mm", 0.0) or 0.0)
+    if soft <= 0.0 or not label:
+        return 0.0
+    across, tall = PART_SIZED_MM
+    if max(float(dims_mm[0]), float(dims_mm[1])) > across or float(dims_mm[2]) > tall:
+        return 0.0
+    return soft
+
+
+#: A box's point lies on a named part's where it lies this near one of that part's points, millimetres: a little over
+#: the cloud's own voxel, so a part seen from another pose still meets its own points.
+_ON_A_NAMED_PART_MM = 12.0
+#: The share of a box's points that has to lie on one named part for the box to be that part's.
+_NAMED_SHARE = 0.5
+
+
+def _named_trees(named: Sequence[tuple[str, np.ndarray]]) -> "list[tuple[str, Any]]":
+    """A KD-tree over each named part's BASE points, with its label; parts with no point are left out."""
+    if not named:
+        return []
+    from scipy.spatial import cKDTree  # noqa: PLC0415 (only a world handed named parts pays for it)
+
+    trees: list[tuple[str, Any]] = []
+    for label, points in named:
+        cloud = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        cloud = cloud[np.all(np.isfinite(cloud), axis=1)]
+        if cloud.shape[0]:
+            trees.append((str(label), cKDTree(cloud)))
+    return trees
+
+
+def _named_by_points(trees: "Sequence[tuple[str, Any]]", points_mm: np.ndarray) -> str | None:
+    """The named part most of ``points_mm`` lie on (:data:`_ON_A_NAMED_PART_MM`, :data:`_NAMED_SHARE`), or ``None``."""
+    if not trees or points_mm.shape[0] == 0:
+        return None
+    best, share = None, 0.0
+    for label, tree in trees:
+        near, _ = tree.query(points_mm, k=1, distance_upper_bound=_ON_A_NAMED_PART_MM)
+        on = float(np.mean(np.isfinite(near)))
+        if on > share:
+            best, share = label, on
+    return best if share >= _NAMED_SHARE else None
 
 
 def _label_lookup(

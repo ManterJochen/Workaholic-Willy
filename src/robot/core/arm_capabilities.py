@@ -33,6 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from src.contracts import UNSET
@@ -58,6 +59,7 @@ __all__ = [
     "DrivesJointLines",
     "HALT_BRAKE_OUTCOMES",
     "HaltState",
+    "HoldsItsWorld",
     "HomesTyped",
     "JudgesCarriedLines",
     "JudgesGraspsAhead",
@@ -573,6 +575,26 @@ class DrivesJointLines(Protocol):
 
     def move_to_joints_on_the_line(self, joints: "JointPositions") -> "MotionResult":
         """Move to ``joints`` on the straight joint line from where the arm stands; refused, nothing sent, if not clear."""
+        ...
+
+
+@runtime_checkable
+class HoldsItsWorld(Protocol):
+    """Capability extension: the arm judges every line inside a block against the world its last refresh built, with no
+    new frame.
+
+    A grasp goes down a judged line to the part, and from there it closes and lifts, or backs out the way it came with
+    the jaws open. The camera world a line refreshes at the part, seen from there, held boxes the one the line down was
+    judged in did not, and the arm stood in a bin refused every way back up, both the lift and the line it had just come
+    down (the grasp bench, 2026-10-06). The owner's answer: the way back up from the part is judged against the world
+    that let the line down run, which is the world the last refresh built (2026-10-06: "Ja, beides"). Inside the block
+    every motion of the arm is judged against that world and stamped with the refresh that built it; an arm with no
+    world refreshed yet refreshes as ever. It is not a member of :class:`~src.robot.core.RobotArm`, for the reason
+    :class:`HomesTyped` gives.
+    """
+
+    def held_world(self, reason: str) -> "AbstractContextManager[None]":
+        """A block in which every line is judged against the world the last refresh built; ``reason`` says why."""
         ...
 
 

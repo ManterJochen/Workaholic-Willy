@@ -11,3 +11,13 @@ runtime:
     # the cell is looking at.
     # [default: 60]
     frame_quality: 60
+
+  # What the console does when someone greets Willy in the chat ("Hallo Willy", "Hi Willy", "Tschüss Willy").
+  greeting:
+
+    # direct: Willy waves at once, with no click: two swings of the wrist, each judged by the exact guard like
+    # every motion, and refused where it is not clear. confirm: the console asks first, in a dialog like Home's,
+    # and the wave starts on its confirm. off: Willy only greets back, and nothing moves. A bare `off` and `on`
+    # (which YAML reads as false and true) mean off and direct.
+    # [default: direct]
+    wave: direct

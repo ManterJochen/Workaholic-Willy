@@ -191,12 +191,20 @@ class WhatARefusalRefuses(unittest.TestCase):
             assert said is not None
             self.assertIn("did not say", said)
 
-    def test_a_guard_at_another_margin_is_refused(self) -> None:
+    def test_a_guard_keeping_more_than_was_measured_is_refused(self) -> None:
+        """Measured at 10 mm, the file proves nothing about a guard that keeps 11: it refuses more poses than it did."""
         with TemporaryDirectory() as folder:
             self._written(folder)
-            said = self._asked(folder, guard_margin_mm=8.0)
+            said = self._asked(folder, guard_margin_mm=11.0)
             assert said is not None
             self.assertIn("guard", said)
+
+    def test_a_guard_keeping_less_than_was_measured_is_proved_by_it(self) -> None:
+        """Measured at 10 mm, the file proves a guard that keeps 8 (the owner's 3 mm of 2026-10-05): a guard keeping less
+        refuses a subset of the poses, so no pose the planner clears is one it refuses."""
+        with TemporaryDirectory() as folder:
+            self._written(folder)
+            self.assertIsNone(self._asked(folder, guard_margin_mm=8.0))
 
     def test_guard_geometry_that_moved_is_refused(self) -> None:
         """A plate that became a body changes this, which is how UM8 reaches the evidence at all."""

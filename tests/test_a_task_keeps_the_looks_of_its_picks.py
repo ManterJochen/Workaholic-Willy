@@ -80,6 +80,45 @@ class KeepPickViewsTests(unittest.TestCase):
         self.assertEqual("run000", kept.call_args.kwargs["name"])
 
 
+class AFailedPicksPicturesKeepItsGraspsTests(unittest.TestCase):
+    """The debug pictures draw the judged look's grasps; where it ranked none, as after a blocker was set aside, the
+    grasps of the pick's last look that ranked any (``ranked_looked``), so a failed pick's pictures still show what it
+    tried (the owner's debug pictures, 2026-10-05; missing on failed picks, 2026-10-06)."""
+
+    def _drawn(self, tmp: str, judged: Any, ranked: Any) -> Any:
+        import cv2
+        import numpy as np
+
+        from src.robot.execution.pick_run import _keep_debug_images
+        from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
+
+        intrinsics = np.array([[500.0, 0.0, 160.0], [0.0, 500.0, 120.0], [0.0, 0.0, 1.0]])
+        frame = SimpleNamespace(rgb=np.zeros((240, 320, 3), dtype=np.uint8), intrinsics=intrinsics, segmentations=())
+        view = SimpleNamespace(frame=frame, camera_to_base=np.eye(4), name="look", label="part")
+        grasp = GraspPoint(position=np.array([0.0, 0.0, 400.0]), approach=np.array([0.0, 0.0, 1.0]),
+                           axis=np.array([1.0, 0.0, 0.0]), grip_width_mm=40.0, score=0.9, frame=GraspFrame.BASE)
+        with_grasp = SimpleNamespace(result=SimpleNamespace(candidates=(grasp,)))
+        none = SimpleNamespace(result=SimpleNamespace(candidates=()))
+        from pathlib import Path
+
+        written = Path(tmp) / "pick.npz"
+        paths = _keep_debug_images((view,), with_grasp if judged else none, written,
+                                   ranked=with_grasp if ranked else None)
+        return cv2.imread(str(paths[0]))
+
+    def test_a_look_that_ranked_none_draws_the_last_that_did(self) -> None:
+        import tempfile
+
+        import numpy as np
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bare = self._drawn(tmp, judged=False, ranked=False)
+            fallen_back = self._drawn(tmp, judged=False, ranked=True)
+            judged = self._drawn(tmp, judged=True, ranked=False)
+        self.assertTrue(np.array_equal(fallen_back, judged), "the last ranked look's grasp was not drawn")
+        self.assertFalse(np.array_equal(bare, judged), "the control: a grasp draws a rectangle")
+
+
 class TheTaskSetsAndPutsBackTests(unittest.TestCase):
     def test_the_prompt_the_axis_the_overlay_and_the_cancel_check_are_the_tasks_alone(self) -> None:
         from src.robot.execution.task import TaskOptions
@@ -88,8 +127,10 @@ class TheTaskSetsAndPutsBackTests(unittest.TestCase):
                   options=TaskOptions(closing_axis="-y", overlay=True))
 
         service = ran.service
-        self.assertEqual(["red cube", "object"], [prompt.phrase for prompt in service.prompts],
+        # Every red cube in a box of its own, each mapped onto the object the task named (2026-10-06).
+        self.assertEqual(["each separate red cube", "object"], [prompt.phrase for prompt in service.prompts],
                          "the task's prompt was not set, or the cell's own not put back")
+        self.assertEqual(("red cube", ("red cube",)), (service.prompts[0].target_label, service.prompts[0].object_labels))
         self.assertEqual([closing_axis_of("-y"), None], service.closing_axes)
         self.assertEqual([True, True, True], service.rendering_seen)
         self.assertIs(False, service.rendering, "the overlay outlived the task")
@@ -118,6 +159,37 @@ class TheTaskSetsAndPutsBackTests(unittest.TestCase):
 
         self.assertEqual([{"push_mm": 40.0}], run(["part"], options=TaskOptions(push_mm=40.0)).service.campaigns)
         self.assertEqual([{"push_mm": None}], run(["part"]).service.campaigns)
+
+    def test_a_task_that_names_no_object_grounds_every_part_in_a_box_of_its_own(self) -> None:
+        """Qwen3-VL-4B grounded one box of 20 parts for "object" and all 20 for "each separate object" (2026-10-06): a
+        task that names no object asks for the latter on a cell that grounds a phrase, every part a target and called
+        "object" where its words allow, and puts the cell's prompt back after; a cell that grounds none is asked
+        nothing."""
+        from src.robot.execution.task import EVERY_PART_PHRASE, PlaceAt, TaskOptions, TaskPlan
+
+        plan = TaskPlan(object="", place=PlaceAt(pose="drop_left"), return_to="home", scope="once",
+                        options=TaskOptions(pick_anything=True))
+        grounding = run(["part"], plan=plan, grounds=True).service
+        asked, put_back = grounding.prompts
+        self.assertEqual((EVERY_PART_PHRASE, None, ("object",)),
+                         (asked.phrase, asked.target_label, asked.object_labels))
+        self.assertEqual("object", put_back.phrase)
+        self.assertEqual([], run(["part"], plan=plan, grounds=False).service.prompts)
+
+    def test_a_task_that_takes_every_part_takes_a_blocker_as_the_pick(self) -> None:
+        """The owner, 2026-10-06: where the task takes every part into one place, a blocker goes there too (the
+        cell's ``recovery.blocker_into_the_place``, on); a task that names an object, or says otherwise, sets it aside."""
+        from src.robot.execution.task import PlaceAt, TaskOptions, TaskPlan
+
+        def plan(obj: str, **options: object) -> TaskPlan:
+            return TaskPlan(object=obj, place=PlaceAt(pose="drop_left"), return_to="home", scope="once",
+                            options=TaskOptions(pick_anything=True, **options))  # type: ignore[arg-type]
+
+        self.assertEqual([{"push_mm": None, "blocker_is_the_pick": True}],
+                         run(["part"], plan=plan("")).service.campaigns)
+        self.assertEqual([{"push_mm": None}], run(["part"], plan=plan("red cube")).service.campaigns)
+        self.assertEqual([{"push_mm": None}],
+                         run(["part"], plan=plan("", blocker_into_the_place=False)).service.campaigns)
 
 
 class ThePickIsHandedTheSwitchesTests(unittest.TestCase):

@@ -2,7 +2,7 @@
  * The stage: the live camera image, the largest thing in the cockpit (OD 2, OD 11; build plan 1.7, 4.2).
  *
  * **Live, never a measurement.** `GET /v1/camera/live` reads through `Camera.peek`, which never waits and never takes
- * a frame from a pick. It is polled at 4 Hz, 2 Hz while a pose is taught, each tick scheduled from the end of the last
+ * a frame from a pick. It is polled at 10 Hz, 4 Hz while a pose is taught, each tick scheduled from the end of the last
  * so a slow server never stacks requests. While a pick grabs a frame (`measuring`) the last image stays, and the badge
  * says "misst …"; a cell that is gone (not built, no camera) clears it, because a held image would then show another
  * cell's workspace.
@@ -35,9 +35,18 @@ import type { OverlayPin } from '../model/runModel'
 import { useNow } from './hooks'
 import { COCKPIT } from './i18n'
 
-/** 4 Hz; 2 Hz while a person guides the arm (the teach's own poll is the heartbeat, this is only the picture). */
-const POLL_MS = 250
-const TEACH_POLL_MS = 500
+/** 10 Hz; 4 Hz while a person guides the arm (the teach's own poll is the heartbeat, this is only the picture). */
+const POLL_MS = 100
+const TEACH_POLL_MS = 250
+/** A camera that answers no picture for this long is gone; a shorter gap keeps the last picture on the stage. */
+const HOLD_MS = 2000
+/** While the stream plays, the stage only asks for what the badges say (camera, age, measuring). */
+const STATUS_POLL_MS = 500
+
+/** The camera's live MJPEG stream (`GET /v1/camera/live.mjpeg`), about 30 frames a second. */
+function streamUrl(rig: string | null): string {
+  return `/v1/camera/live.mjpeg${rig ? `?rig=${encodeURIComponent(rig)}` : ''}`
+}
 /** A server that does not answer gets a long leash, not a request storm. */
 const AFTER_FAILURE_MS = 2000
 /** How long a new overlay is pinned over the stage. */
@@ -75,6 +84,14 @@ export default function Stage({ teaching, overlays, wrist, banner, pinGrasps }: 
   /** The last picture that arrived: kept through `measuring`, dropped when the cell is gone. */
   const [image, setImage] = useState<string | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastPicture = useRef(0)
+  /** The camera's MJPEG stream plays in the stage; a stream the browser could not open falls back to the polled picture. */
+  const [streamFailed, setStreamFailed] = useState(false)
+  const streaming = !streamFailed && shown.frame?.source === 'camera' && image !== null
+  const streamingRef = useRef(false)
+  useEffect(() => {
+    streamingRef.current = streaming
+  }, [streaming])
 
   useEffect(() => {
     let stopped = false
@@ -88,10 +105,34 @@ export default function Stage({ teaching, overlays, wrist, banner, pinGrasps }: 
           setRig(null)
           return
         }
-        setShown({ frame, offline: false })
-        if (frame.image_base64) setImage(`data:image/jpeg;base64,${frame.image_base64}`)
-        else if (frame.reason !== 'measuring' && frame.reason !== 'encode_failed') setImage(null)
-        timer.current = setTimeout(tick, teaching ? TEACH_POLL_MS : POLL_MS)
+        if (frame.image_base64) {
+          // Decoded before it is shown: the old picture stays until the new one can be painted, so no blank frame.
+          const src = `data:image/jpeg;base64,${frame.image_base64}`
+          const next = new Image()
+          next.src = src
+          try {
+            await next.decode()
+          } catch {
+            /* a picture that does not decode is skipped; the last one stays */
+          }
+          if (stopped) return
+          lastPicture.current = Date.now()
+          setImage(src)
+          setShown({ frame, offline: false })
+        } else {
+          // A camera that skips a peek for a moment keeps its last picture; only a lasting gap, or a cell that is not
+          // there (not built, no rig), clears it.
+          const gone = frame.reason === 'not_built' || frame.reason === 'no_rig'
+          const stale = Date.now() - lastPicture.current > HOLD_MS
+          if (gone || (stale && frame.reason !== 'measuring')) {
+            setImage(null)
+            setShown({ frame, offline: false })
+          } else {
+            // `measuring` is said on the badge; any other short gap keeps what the last picture said.
+            setShown((prev) => (frame.reason === 'measuring' || !prev.frame ? { frame, offline: false } : prev))
+          }
+        }
+        timer.current = setTimeout(tick, streamingRef.current ? STATUS_POLL_MS : teaching ? TEACH_POLL_MS : POLL_MS)
       } catch (err: unknown) {
         if (stopped) return
         // A route this server does not have, or no server at all: say so, and ask again slowly.
@@ -130,7 +171,8 @@ export default function Stage({ teaching, overlays, wrist, banner, pinGrasps }: 
       {image ? (
         <img
           className={`ck-frame${dim ? ' dim' : ''}`}
-          src={image}
+          src={streaming ? streamUrl(current) : image}
+          onError={streaming ? () => setStreamFailed(true) : undefined}
           alt={t('ck.stage.alt', { rig: current ?? (frame?.source === 'synthetic' ? t('ck.stage.probe') : '—') })}
           decoding="async"
         />

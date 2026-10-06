@@ -390,6 +390,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/cell/wave": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Wave back at a greeting (THIS MOVES)
+         * @description Willy waves: the second wrist joint swings 15 degrees either way, twice, and back, each swing a straight joint
+         *     line the exact guard judges against the camera world before it is sent (``src.robot.execution.gestures``). The
+         *     console's answer to a greeting in the chat, at once or on a click as the app config says
+         *     (``runtime.greeting.wave``), after a 3 s countdown where a person's hands were last at the arm.
+         *
+         *     Refused as a new task is, bar a carried part: during a run, on a halted or stopped controller, before the cell is
+         *     cleared after a stop and while a Restart is required (a wave is no way back), while a person is needed, while the
+         *     jaws question waits or a toggle's jaws are not confirmed, while a part is held, and on an arm whose motions are
+         *     refused.
+         */
+        post: operations["post_wave_v1_cell_wave_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/cell/planner": {
         parameters: {
             query?: never;
@@ -851,8 +879,9 @@ export interface paths {
          *     ends ``stopped_after_part``. During the countdown it ends ``cancelled`` with nothing moved.
          *
          *     A Home run is stopped too, before its one move is sent: during its countdown, or after it as long as the move has
-         *     not gone out, it ends ``cancelled`` with nothing moved; a move already under way runs to its end. Nothing is
-         *     latched, so no "the cell is clear" is owed, as after a halt.
+         *     not gone out, it ends ``cancelled`` with nothing moved; a move already under way runs to its end. A wave is stopped
+         *     the same way before its next swing, and the arm stands where the last swing left it. Nothing is latched, so no "the
+         *     cell is clear" is owed, as after a halt.
          */
         post: operations["post_task_stop_v1_task_stop_post"];
         delete?: never;
@@ -1020,6 +1049,29 @@ export interface paths {
          *     keep the last frame), ``encode_failed``. The rehearsal cell's picture is ``synthetic``, never ``camera``.
          */
         get: operations["get_live_v1_camera_live_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/camera/live.mjpeg": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The live image as a continuous MJPEG stream
+         * @description The same display frames as ``/live``, pushed as ``multipart/x-mixed-replace`` so an ``<img>`` shows them as
+         *     video. A frame is sent only when the camera has a new one; while a pick grabs (``measuring``) or the camera gives
+         *     none, the browser keeps the last picture. Read through ``Camera.peek`` as ``/live`` is: it never takes a frame from
+         *     a pick. The stream ends when the browser closes it.
+         */
+        get: operations["get_live_stream_v1_camera_live_mjpeg_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1443,9 +1495,9 @@ export interface components {
          */
         CodesOut: {
             /** Run Kinds */
-            run_kinds: ("pick" | "task" | "home" | "teach" | "planner")[];
+            run_kinds: ("pick" | "task" | "home" | "teach" | "planner" | "wave")[];
             /** Moving Kinds */
-            moving_kinds: ("pick" | "task" | "home" | "teach" | "planner")[];
+            moving_kinds: ("pick" | "task" | "home" | "teach" | "planner" | "wave")[];
             /** Stop Codes */
             stop_codes: ("finished" | "nothing_left" | "part_limit" | "taught" | "planner_ready" | "stopped_after_part" | "cancelled" | "target_not_found" | "target_lost" | "target_unreachable" | "part_does_not_fit" | "pose_refused" | "teach_refused" | "heartbeat_lost" | "teach_time_limit" | "teach_not_saved" | "planner_failed" | "halted" | "controller_stopped" | "hand_needs_person" | "recovery_needs_person" | "part_still_held" | "return_failed" | "failed_in_a_row" | "detector_failed" | "cell_fault" | "disconnected" | "software_error")[];
             /** Stop Classes */
@@ -1455,7 +1507,7 @@ export interface components {
                 [key: string]: "done" | "operator" | "ask" | "teach" | "planner" | "problem";
             };
             /** Event Types */
-            event_types: ("run_started" | "run_countdown" | "run_stop_requested" | "run_halt_requested" | "run_error" | "run_finished" | "pick.pick_started" | "pick.attempt_started" | "pick.perceived" | "pick.ranked" | "pick.no_candidate" | "pick.executing" | "pick.attempt_finished" | "pick.pick_finished" | "pick.cancelled" | "pick_result" | "task.pose_screened" | "task.survey_started" | "task.target_found" | "task.target_missing" | "task.part_started" | "task.nothing_found" | "task.carry_started" | "task.target_checked" | "task.target_lost" | "task.drop_planned" | "task.place_started" | "task.placed" | "task.place_failed" | "task.put_back" | "task.return_started" | "task.returned" | "task.return_failed" | "task.part_finished" | "home.started" | "home.arrived" | "home.refused" | "teach.free" | "teach.say" | "teach.outside" | "teach.inside" | "teach.time_warning" | "teach.holding_when_still" | "teach.holding" | "teach.screening" | "teach.saved" | "teach.refused" | "teach.not_saved" | "planner.starting" | "planner.ready" | "planner.failed" | "cell.jaws_question" | "cell.jaws_answered" | "cell.jaws_ended" | "cell.halted" | "cell.recovery" | "cell.recovery_ended" | "cell.acknowledged" | "cell.planner")[];
+            event_types: ("run_started" | "run_countdown" | "run_stop_requested" | "run_halt_requested" | "run_error" | "run_finished" | "pick.pick_started" | "pick.attempt_started" | "pick.perceived" | "pick.ranked" | "pick.no_candidate" | "pick.executing" | "pick.attempt_finished" | "pick.pick_finished" | "pick.cancelled" | "pick_result" | "task.pose_screened" | "task.survey_started" | "task.target_found" | "task.target_missing" | "task.part_started" | "task.nothing_found" | "task.carry_started" | "task.target_checked" | "task.target_lost" | "task.drop_planned" | "task.place_started" | "task.placed" | "task.place_failed" | "task.put_back" | "task.return_started" | "task.returned" | "task.return_failed" | "task.part_finished" | "home.started" | "home.arrived" | "home.refused" | "teach.free" | "teach.say" | "teach.outside" | "teach.inside" | "teach.time_warning" | "teach.holding_when_still" | "teach.holding" | "teach.screening" | "teach.saved" | "teach.refused" | "teach.not_saved" | "planner.starting" | "planner.ready" | "planner.failed" | "wave.started" | "wave.done" | "wave.refused" | "cell.jaws_question" | "cell.jaws_answered" | "cell.jaws_ended" | "cell.halted" | "cell.recovery" | "cell.recovery_ended" | "cell.acknowledged" | "cell.planner")[];
             /** Refusal Codes */
             refusal_codes: ("bad_request" | "no_robot_configured" | "no_such_run" | "not_built_yet" | "not_built" | "not_acknowledged" | "stale_token" | "cell_busy" | "no_real_gripper" | "driver_refused" | "wrong_state" | "build_refused" | "jaws_seam_missing" | "not_connected" | "run_active" | "halted" | "controller_stopped" | "cell_not_cleared" | "restart_required" | "needs_person" | "jaws_question_pending" | "part_still_held" | "jaws_not_confirmed" | "route_refused" | "carried_part_not_modelled" | "camera_target_unavailable" | "object_required" | "prompt_not_routable" | "target_not_routable" | "push_distance_refused" | "unknown_pose" | "no_place_declared" | "closing_axis_refused" | "not_a_task" | "not_a_pick" | "not_restartable" | "jaws_not_open" | "no_question" | "question_changed" | "choice_not_offered" | "planner_not_used" | "no_overlay" | "no_layer" | "no_hand_guiding" | "part_in_hand" | "planner_not_ready" | "screen_unavailable" | "payload_changed" | "name_taken" | "invalid_name" | "invalid_label" | "wrong_token" | "not_free" | "vlm_not_loaded" | "vlm_unavailable" | "vlm_model_missing" | "unknown_key" | "not_writable" | "invalid_value" | "no_target" | "cell_connected" | "empty_patch" | "empty_audio" | "audio_format_unsupported" | "audio_undecodable" | "audio_too_long" | "speech_model_missing" | "speech_unavailable" | "transcription_failed" | "listen_busy" | "talk_not_pressed" | "microphone_ended" | "nothing_recorded" | "microphone_unavailable" | "listen_failed")[];
             /** Light Ids */
@@ -1542,6 +1594,8 @@ export interface components {
              * @default
              */
             raw: string;
+            /** Greeting */
+            greeting?: ("direct" | "confirm" | "off") | null;
         };
         /**
          * CommandPhraseOut
@@ -2346,6 +2400,21 @@ export interface components {
              * @default false
              */
             critical_parts: boolean;
+            /**
+             * Blocker Into The Place
+             * @default true
+             */
+            blocker_into_the_place: boolean;
+            /**
+             * Rescan Allowed
+             * @default false
+             */
+            rescan_allowed: boolean;
+            /**
+             * Push Allowed
+             * @default false
+             */
+            push_allowed: boolean;
         };
         /**
          * ReachabilityOut
@@ -2414,7 +2483,7 @@ export interface components {
              * Kind
              * @enum {string}
              */
-            kind: "pick" | "task" | "home" | "teach" | "planner";
+            kind: "pick" | "task" | "home" | "teach" | "planner" | "wave";
             /**
              * Stop Code
              * @enum {string}
@@ -2599,7 +2668,7 @@ export interface components {
              * @default pick
              * @enum {string}
              */
-            kind: "pick" | "task" | "home" | "teach" | "planner";
+            kind: "pick" | "task" | "home" | "teach" | "planner" | "wave";
             /**
              * Stop Code
              * @default
@@ -2752,6 +2821,14 @@ export interface components {
             push_mm?: number | null;
             /** Critical Parts */
             critical_parts?: boolean | null;
+            /** Rescan */
+            rescan?: boolean | null;
+            /** Push */
+            push?: boolean | null;
+            /** Clear */
+            clear?: boolean | null;
+            /** Blocker Into The Place */
+            blocker_into_the_place?: boolean | null;
             /**
              * Record Views
              * @default false
@@ -2796,6 +2873,14 @@ export interface components {
             push_asked: boolean;
             /** Critical Parts */
             critical_parts?: boolean | null;
+            /** Rescan */
+            rescan?: boolean | null;
+            /** Push */
+            push?: boolean | null;
+            /** Clear */
+            clear?: boolean | null;
+            /** Blocker Into The Place */
+            blocker_into_the_place?: boolean | null;
             /**
              * Record Views
              * @default false
@@ -3573,6 +3658,35 @@ export interface operations {
                 "application/json": components["schemas"]["HomeIn"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    post_wave_v1_cell_wave_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             202: {
@@ -4420,6 +4534,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LiveFrameOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_live_stream_v1_camera_live_mjpeg_get: {
+        parameters: {
+            query?: {
+                rig?: string | null;
+                max_width?: number;
+                fps?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
                 };
             };
             /** @description The one failure envelope. */

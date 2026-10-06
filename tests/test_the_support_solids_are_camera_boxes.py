@@ -46,9 +46,10 @@ class TheSolidsAreCameraBoxesTests(unittest.TestCase):
             _camera_box_names([*solids, "support_plane"])
 
     def test_the_guard_judges_them_at_the_distance_it_keeps_from_what_the_camera_saw(self) -> None:
-        """A cell holding declared fixtures at 10 mm and the camera's boxes at 5 mm: 7 mm over the bench's solid is
-        admitted, 3 mm is refused at 5 mm."""
-        robot = cell.owner_robot()
+        """A cell holding declared fixtures at 10 mm and the camera's boxes at 5 mm, its fingers kept from the whole
+        solid too (``fingers_to_the_support_reading`` off): 7 mm over the bench's solid is admitted, 3 mm is refused at
+        5 mm."""
+        robot = cell.owner_robot(perceived={"fingers_to_the_support_reading": False})
         robot["safety"]["self_collision"]["min_distance_mm"] = 10.0
         owner = cell.OwnerCell(robot)
         if not owner.has_the_engine():
@@ -65,6 +66,28 @@ class TheSolidsAreCameraBoxesTests(unittest.TestCase):
         self.assertIn("_bench", refusal)
         self.assertIn("< 5.000 mm", refusal)
         self.assertTrue(math.isfinite(top_mm))
+
+    def test_the_fingers_come_to_1_mm_of_the_bench_and_no_nearer(self) -> None:
+        """The owner, 2026-10-06: "bis auf 1 mm, solange er sie nicht berührt", the bench as the mat. The same cell at
+        the shipped finger floor: the guard keeps its 5 mm from the solid's top lowered for the fingers by the band, the
+        allowance and the 4 mm the floor lies under its distance, so the fingers come to 1 mm over the bench and no
+        nearer."""
+        robot = cell.owner_robot()
+        robot["safety"]["self_collision"]["min_distance_mm"] = 10.0
+        owner = cell.OwnerCell(robot)
+        if not owner.has_the_engine():
+            self.skipTest("no exact mesh engine or UR10 bundle on this box")
+        self.assertEqual(RobotConfig.model_validate(robot).safety.planning_world.perceived.finger_floor_mm, 1.0)
+        bench = cell.level_table(cell.look("P1"), -4.0)
+        boxes = _guard_boxes(_world(owner, bench).perceived)
+        top = [box for box in boxes if box.name.endswith("_bench")][0]
+        top_mm = float(top.center_mm[2] + top.half_extents_mm[2])
+        floor_mm = top_mm - float(top.finger_top_mm) + 5.0
+        self.assertAlmostEqual(floor_mm, 1.0, places=6)
+        self.assertEqual(owner.refused(boxes, _hand_over_the_bench(floor_mm + 1.0, 0.0)), "")
+        refusal = owner.refused(boxes, _hand_over_the_bench(floor_mm - 0.5, 0.0))
+        self.assertIn("_bench", refusal)
+        self.assertIn("finger", refusal)
 
 
 if __name__ == "__main__":

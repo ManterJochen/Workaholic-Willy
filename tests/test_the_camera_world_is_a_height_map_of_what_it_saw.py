@@ -80,6 +80,18 @@ class AnOpenBinIsItsWallsTests(unittest.TestCase):
         self.assertTrue(bool((deepest(boxes, seen) > 0.0).all()), "a wall point the camera saw is in no box")
         self.assertGreaterEqual(len(boxes), 4, world.render())  # type: ignore[attr-defined]
 
+    def test_a_wall_keeps_its_own_thickness_and_its_corners_are_boxes_of_their_own(self) -> None:
+        """A corner cell holds the other wall's points, and a wall that took it was boxed a cell thick over its whole
+        length: 12 mm into the bin on the grasp bench (2026-10-05), where the fingers of a part beside the wall go."""
+        world, seen = _seen(self._BIN, (0.0, -420.0))
+        boxes = world.boxes  # type: ignore[attr-defined]
+
+        # Along the middle of the +x wall, its inner face at x 145: 5 mm past the margin is free, at every height.
+        beside = _grid((145.0 - _MARGIN - 5.0, 145.0 - _MARGIN - 5.0), (-470.0, -370.0), (5.0, 20.0, 35.0))
+        self.assertEqual(covered_by(boxes, beside), [], world.render())  # type: ignore[attr-defined]
+        # And the corners stay covered: every point the camera saw is inside a box.
+        self.assertTrue(bool((deepest(boxes, seen) > 0.0).all()), "a wall point the camera saw is in no box")
+
     def test_a_turned_open_bin_is_a_ring_of_turned_walls(self) -> None:
         turned = open_bin((0.0, -420.0), (300.0, 200.0), 40.0, yaw_deg=30.0)
         world, seen = _seen(turned, (0.0, -420.0))
@@ -304,6 +316,30 @@ class WhatTheRobotHidIsFilledFromWhatWasSeenTests(unittest.TestCase):
         self.assertFalse(self._covers(hid, (0.0, 2.5, 40.0 + 15.1)), "filled higher than what was seen beside it")
         self.assertGreater(sum(column.hidden_cells for column in hid), 0)
 
+    def test_a_stretch_is_never_filled_through_the_hand_that_hid_it(self) -> None:
+        """The hand down in a bin hid the floor beside the part, the floor was filled as high as the wall beside it,
+        and the guard held a column 212 mm tall through the hand: every way out was refused (the grasp bench,
+        2026-10-05). The hand stands in the hidden middle from 12 mm up: the fill there keeps its box a margin under it,
+        a fill clear of it by more than its box and the margin is kept, and so is a fill the hand stands over."""
+
+        def on_the_hand(points: np.ndarray) -> np.ndarray:
+            return (np.abs(points[:, 0] - 25.0) <= 5.0) & (np.abs(points[:, 1] - 2.5) <= 7.5) & (points[:, 2] >= 12.0)
+
+        def hidden(points: np.ndarray) -> np.ndarray:
+            return np.abs(points[:, 0]) < 50.0
+
+        through = self._columns(self._GAP, hidden=hidden)
+        self.assertTrue(self._covers(through, (25.0, 2.5, 30.0)), "the control: the fill stands in the hand")
+
+        kept = self._columns(self._GAP, hidden=hidden, robot_on=on_the_hand)
+
+        self.assertFalse(self._covers(kept, (25.0, 2.5, 30.0)), "the fill still runs through the hand")
+        self.assertTrue(self._covers(kept, (-40.0, 2.5, 30.0)), "a fill the hand stands clear of was dropped")
+        # A hand that stands over the fill keeps it: a rim under the shoulder housing.
+        over = self._columns(self._GAP, hidden=hidden,
+                             robot_on=lambda p: (np.abs(p[:, 0] - 25.0) <= 5.0) & (p[:, 2] > 60.0))
+        self.assertTrue(self._covers(over, (25.0, 2.5, 30.0)))
+
     def test_a_stretch_nothing_hid_is_as_it_was(self) -> None:
         plain = self._columns(self._GAP)
         unhidden = self._columns(self._GAP, hidden=lambda p: np.zeros(p.shape[0], dtype=bool), reach_mm=150.0,
@@ -392,6 +428,95 @@ class WhatTheRobotHidIsFilledFromWhatWasSeenTests(unittest.TestCase):
         self.assertEqual(bridge_columns([right], floor_mm=0.0, margin_mm=15.0, cell_mm=25.0, step_mm=10.0,
                                         hidden=hidden, reach_mm=150.0), [], "one part's own shadow was bridged")
 
+    def test_a_bridge_is_never_built_through_the_hand_that_hid_it(self) -> None:
+        """The Hand-E at a cube in a tray hid the floor between the cube and the wall from the wrist camera, the bridge
+        stood as high as the wall through the fingers, and every way out was refused (the grasp bench, 2026-10-06). The
+        hand stands in the gap from 12 mm up: the bridge there keeps its box a margin under it; a hand down to the floor
+        leaves no bridge there; the stretch the hand stands clear of is bridged as before."""
+        from src.robot.safety.planning.height_map import bridge_columns
+
+        left = np.array([[x, y, 40.0] for x in np.arange(-150.0, -59.0, 5.0) for y in (0.0, 5.0)])
+        right = np.array([[x, y, 40.0] for x in np.arange(60.0, 151.0, 5.0) for y in (0.0, 5.0)])
+
+        def hidden(p: np.ndarray) -> np.ndarray:
+            return np.abs(p[:, 0]) < 60.0
+
+        def hand_from(z_mm: float):  # noqa: ANN202
+            return lambda p: (np.abs(p[:, 0] - 25.0) <= 5.0) & (np.abs(p[:, 1] - 2.5) <= 7.5) & (p[:, 2] >= z_mm)
+
+        def bridge(robot_on: object = None) -> list:
+            return bridge_columns([left, right], floor_mm=0.0, margin_mm=15.0, cell_mm=25.0, step_mm=10.0,
+                                  hidden=hidden, reach_mm=150.0, robot_on=robot_on)  # type: ignore[arg-type]
+
+        self.assertTrue(self._covers(bridge(), (25.0, 2.5, 30.0)), "the control: the bridge stands in the hand")
+        held = bridge(hand_from(12.0))
+        self.assertFalse(self._covers(held, (25.0, 2.5, 12.0)), "the bridge still runs through the hand")
+        self.assertFalse(self._covers(held, (25.0, 2.5, 12.0 - 15.0 + 0.1)), "its box comes within a margin of it")
+        self.assertTrue(self._covers(held, (-45.0, 2.5, 30.0)), "a stretch the hand stands clear of went")
+        self.assertFalse(self._covers(bridge(hand_from(0.0)), (25.0, 2.5, 1.0)), "a bridge under the floor stands")
+        for column in held:
+            self.assertEqual(column.members.size, 0)
+            self.assertGreater(column.hidden_cells, 0)
+
+    def test_a_fill_the_hand_hangs_just_over_keeps_its_box_a_margin_under_it(self) -> None:
+        """The box over a fill reaches a margin over it, and the hand hung inside that margin: the Hand-E's housing 0.9
+        mm deep in a fill and the retreat refused (the grasp bench, 2026-10-06). The fill under a hand 10 mm over it is
+        lowered until its box keeps a margin under the hand; under a hand higher than its box and the margin it is
+        kept."""
+
+        def hidden(points: np.ndarray) -> np.ndarray:
+            return np.abs(points[:, 0]) < 50.0
+
+        def hand_from(z_mm: float):  # noqa: ANN202
+            return lambda p: (np.abs(p[:, 0] - 25.0) <= 5.0) & (np.abs(p[:, 1] - 2.5) <= 7.5) & (p[:, 2] >= z_mm)
+
+        under = self._columns(self._GAP, hidden=hidden, robot_on=hand_from(50.0))
+        self.assertFalse(self._covers(under, (25.0, 2.5, 50.0 - 15.0 + 0.1)), "its box comes within a margin of it")
+        self.assertTrue(self._covers(under, (-40.0, 2.5, 30.0)), "a fill the hand stands clear of was dropped")
+        high = self._columns(self._GAP, hidden=hidden, robot_on=hand_from(40.0 + 2 * 15.0 + 5.0))
+        self.assertTrue(self._covers(high, (25.0, 2.5, 40.0 + 14.9)), "a fill under a hand clear of its box went")
+
+    def test_a_row_never_runs_on_through_the_hand(self) -> None:
+        """A neighbour's row ran on a whole cell into the cell the fingers stood in, on one point the filter had taken
+        there, the fingers 10 mm inside its box (the grasp bench, 2026-10-06). The row runs on as before where the hand
+        stands clear of it, and keeps its box a margin under the hand where the hand stands in it."""
+        wall = np.array([[x, y, 40.0] for x in np.arange(-150.0, 1.0, 5.0) for y in (0.0, 5.0)])
+
+        def hidden(p: np.ndarray) -> np.ndarray:
+            return p[:, 0] > 0.0
+
+        took = np.array([[x, 2.5, z] for x in np.arange(5.0, 100.0, 5.0) for z in (10.0, 30.0)])
+
+        def hand_from(z_mm: float):  # noqa: ANN202
+            return lambda p: (np.abs(p[:, 0] - 25.0) <= 5.0) & (np.abs(p[:, 1] - 2.5) <= 7.5) & (p[:, 2] >= z_mm)
+
+        clear = self._columns(wall, hidden=hidden, reach_mm=150.0, taken_mm=took, robot_on=hand_from(200.0))
+        self.assertTrue(self._covers(clear, (60.0, 2.5, 30.0)), "the control: the row runs on past a hand clear of it")
+        held = self._columns(wall, hidden=hidden, reach_mm=150.0, taken_mm=took, robot_on=hand_from(12.0))
+        self.assertFalse(self._covers(held, (25.0, 2.5, 12.0)), "the row ran on through the hand")
+        self.assertFalse(self._covers(held, (25.0, 2.5, 12.0 - 15.0 + 0.1)), "its box comes within a margin of it")
+
+    def test_two_things_of_two_heights_are_no_wall_to_run_on(self) -> None:
+        """A tray's wall, 130 mm, and a small cylinder beside it, 105 mm, one cluster of two rows: the row across them
+        ran on past the cylinder as high as the wall, into the cell where the hand stood at the part, on the part's own
+        top the self filter had taken for the hand (the grasp bench, 2026-10-06). Two cells of two heights are no wall:
+        nothing runs on. Of one height they are, and it runs on as before."""
+        def cluster(second_mm: float) -> np.ndarray:
+            return np.array([[x, y, 130.0 if y < 25.0 else second_mm]
+                             for x in np.arange(0.0, 51.0, 5.0) for y in (*np.arange(0.0, 23.0, 5.0),
+                                                                          *np.arange(30.0, 51.0, 5.0))])
+
+        def hidden(p: np.ndarray) -> np.ndarray:
+            return p[:, 1] > 50.0
+
+        took = np.array([[x, y, 90.0] for x in np.arange(5.0, 50.0, 5.0) for y in np.arange(55.0, 75.0, 5.0)])
+        # Past the cylinder's own box, 15 mm round its last point at y = 50: in the cell a row runs on into.
+        past = (25.0, 72.0, 100.0)
+        two = self._columns(cluster(105.0), hidden=hidden, reach_mm=150.0, taken_mm=took)
+        self.assertFalse(self._covers(two, past), "the wall ran on past the cylinder")
+        one = self._columns(cluster(128.0), hidden=hidden, reach_mm=150.0, taken_mm=took)
+        self.assertTrue(self._covers(one, past), "the control: one wall runs on")
+
 
 class TheBudgetMergesBeforeItRefusesTests(unittest.TestCase):
     _BIN = open_bin((0.0, -420.0), (300.0, 200.0), 40.0)
@@ -421,6 +546,34 @@ class TheBudgetMergesBeforeItRefusesTests(unittest.TestCase):
         for low, high in before:
             self.assertTrue(any(bool(np.all(column.low <= low + 1e-9) and np.all(column.high >= high - 1e-9))
                                 for column in columns), "a merged box does not hold a box it replaced")
+
+    def test_with_a_goal_the_boxes_far_from_it_merge_first(self) -> None:
+        """In a pile the boxes merged wherever the least volume was, and those beside the part grew past what the
+        calculator had planned the fingers against (the grasp bench, 2026-10-06). Two rows of posts alike, one at the
+        goal and one 400 mm off: with the goal named, the far row merges and the near one stays as it was seen; merged
+        or not, every box still holds what it held."""
+        from src.robot.safety.planning.height_map import Column, coarsen
+
+        def row(x_mm: float) -> list[Column]:
+            return [Column(members=np.zeros(0, dtype=np.int64), low=np.array([x_mm - 10.0, y - 10.0, 0.0]),
+                           high=np.array([x_mm + 10.0, y + 10.0, 40.0]), hidden_cells=0)
+                    for y in np.arange(-100.0, 101.0, 40.0)]
+
+        near, far = row(0.0), row(400.0)
+        before = [(column.low.copy(), column.high.copy()) for column in near + far]
+        taken = coarsen([near, far], len(near) + 2, near_mm=np.array([0.0, 0.0, 20.0]), yaws=[0.0, 0.0])
+        self.assertEqual(taken, 4)
+        self.assertEqual(len(near), 6, "a box beside the goal was merged while far ones were left")
+        self.assertEqual(len(far), 2)
+        for low, high in before:
+            self.assertTrue(any(bool(np.all(c.low <= low + 1e-9) and np.all(c.high >= high - 1e-9))
+                                for c in near + far), "a merged box does not hold a box it replaced")
+        # A part turned half round reads the goal in its own turn: its row at 400 mm along its own axis lies at
+        # x = -400 mm in BASE, where the goal is, and stays; the unturned row at the origin merges.
+        turned, plain = row(400.0), row(0.0)
+        coarsen([turned, plain], len(turned) + 2, near_mm=np.array([-400.0, 0.0, 20.0]), yaws=[math.pi, 0.0])
+        self.assertEqual(len(turned), 6, "the goal was not read in the part's own turn")
+        self.assertEqual(len(plain), 2)
 
     def test_what_does_not_fit_as_one_box_per_object_is_refused_with_a_sentence(self) -> None:
         scene = [Solid((x, -450.0, 30.0), (25.0, 25.0, 30.0)) for x in (-150.0, 0.0, 150.0)]

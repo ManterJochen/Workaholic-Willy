@@ -1,9 +1,15 @@
 # Runtime tuning for the app-level services.
 #
-# The one block here is operator-tunable and not safety-critical: editing it cannot move the robot.
-# The file is optional and the schema defaults apply when it is absent. Validation is by
-# `RuntimeConfig` in src/config/schema/runtime.py on every load.
+# Both blocks are operator-tunable. image_encoding cannot move the robot. greeting decides whether
+# "Hallo Willy" in the chat waves at once, on a click, or not at all: the wave is two swings of the
+# wrist, each judged by the exact guard like every motion. The file is optional and the schema
+# defaults apply when it is absent. Validation is by `RuntimeConfig` in
+# src/config/schema/runtime.py on every load.
 
 runtime:
   image_encoding:
     frame_quality: 60              # JPEG quality, 1 to 100, for the console viewfinder frames
+  greeting:
+    # "Hallo Willy" in the chat: direct (Willy waves at once, no click), confirm (a dialog like
+    # Home's asks first), off (Willy only greets back). The owner, 2026-10-06: direct for now.
+    wave: direct

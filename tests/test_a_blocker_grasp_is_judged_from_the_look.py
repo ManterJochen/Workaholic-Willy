@@ -22,7 +22,7 @@ from typing import Any
 import numpy as np
 
 from src.geometry import Pose
-from src.robot.core import MotionCommand, MotionResult, MotionStatus
+from src.robot.core import MotionCommand, MotionResult, MotionStatus, RobotKinematicsError
 from src.robot.core.arm_capabilities import LineMotion, LineReading
 from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
@@ -112,6 +112,10 @@ class TheArmJudgesInTheOrderThePickRunsTests(unittest.TestCase):
             asked.append(("line", (pose, commanded, start)))
             return line
 
+        def nearest(pose: Pose) -> Any:
+            asked.append(("nearest", pose))
+            return SimpleNamespace(values=np.array([0.05] * 6))
+
         def ik(pose: Pose, *, seed: Any) -> Any:
             asked.append(("ik", (pose, list(seed.tolist()))))
             return SimpleNamespace(tolist=lambda: [0.2] * 6)
@@ -121,12 +125,17 @@ class TheArmJudgesInTheOrderThePickRunsTests(unittest.TestCase):
             return lift
 
         self.asked = asked
-        return SimpleNamespace(
+        from src.robot.drivers.ur.arm import URRobotArm
+
+        arm = SimpleNamespace(
             _motion_planner=planner, _preflight=object(), _conn=SimpleNamespace(is_connected=True),
             config=SimpleNamespace(motion_limits=SimpleNamespace(max_velocity=0.5)),
             _curobo_ur_planner=lambda: "planner", _pose_to_flange=lambda pose: pose,
             _route_to_the_nearest_goal=route_to, _judge_linear_move=judge_line, ik=ik, carried_line_refusal=carried,
+            nearest_configuration=nearest,
         )
+        arm._flange_line_refusal = lambda standoff, grasp: URRobotArm._flange_line_refusal(arm, standoff, grasp)
+        return arm
 
     def _ask(self, arm: Any) -> str:
         from src.robot.drivers.ur.arm import URRobotArm
@@ -137,13 +146,15 @@ class TheArmJudgesInTheOrderThePickRunsTests(unittest.TestCase):
     def test_each_is_judged_from_where_the_one_before_ends(self) -> None:
         self.assertEqual("", self._ask(self._arm()))
         kinds = [kind for kind, _ in self.asked]
-        self.assertEqual(["route", "line", "ik", "lift"], kinds)
-        _pose_line, commanded, start = self.asked[1][1]
+        # The line down first from the standoff's nearest configuration (``_flange_line_refusal``), then as before.
+        self.assertEqual(["nearest", "line", "route", "line", "ik", "lift"], kinds)
+        self.assertEqual([0.05] * 6, self.asked[1][1][2][1])
+        _pose_line, commanded, start = self.asked[3][1]
         self.assertFalse(commanded)
         self.assertAlmostEqual(float(start[0].position_mm[2]), 105.0)
         self.assertEqual([0.1] * 6, start[1])                      # the route's end
-        self.assertEqual([0.1] * 6, self.asked[2][1][1])           # the grasp solved seeded on it
-        lift_pose, width, lift_start = self.asked[3][1]
+        self.assertEqual([0.1] * 6, self.asked[4][1][1])           # the grasp solved seeded on it
+        lift_pose, width, lift_start = self.asked[5][1]
         self.assertAlmostEqual(float(lift_pose.position_mm[2]), 195.0)
         self.assertEqual(30.0, width)
         self.assertAlmostEqual(float(lift_start[0].position_mm[2]), 95.0)
@@ -154,16 +165,52 @@ class TheArmJudgesInTheOrderThePickRunsTests(unittest.TestCase):
         said = self._ask(self._arm(route=refused))
         self.assertIn("the move to the standoff would be refused", said)
         self.assertIn("no plan", said)
-        self.assertEqual(["route"], [kind for kind, _ in self.asked])
+        self.assertEqual(["nearest", "line", "route"], [kind for kind, _ in self.asked])
 
         line = MotionResult.failed(MotionStatus.SELF_COLLISION_REJECTED, MotionCommand.MOVE_TO, message="finger 2 mm")
         said = self._ask(self._arm(line=line))
         self.assertIn("the line down to the grasp would be refused", said)
-        self.assertEqual(["route", "line"], [kind for kind, _ in self.asked])
+        self.assertEqual(["nearest", "line", "route", "line"], [kind for kind, _ in self.asked])
 
         lift = MotionResult.failed(MotionStatus.SELF_COLLISION_REJECTED, MotionCommand.MOVE_TO, message="world")
         said = self._ask(self._arm(lift=lift))
         self.assertIn("the lift, as if the jaws held a part 30 mm across, would be refused", said)
+
+    def test_a_line_a_part_on_the_flange_refuses_ends_it_before_the_route(self) -> None:
+        """The hand, its camera and wrist 3 stand where the TCP puts them, from every configuration: refused at one of
+        them against a fixture, the line is every configuration's refusal and the route is never planned (17 s a grasp
+        in a bin's corner, the grasp bench, 2026-10-06)."""
+        for part in ("rfinger", "gripper", "wrist_3", "wrist_camera_EIH_Cam"):
+            with self.subTest(part=part):
+                line = MotionResult.failed(
+                    MotionStatus.SELF_COLLISION_REJECTED, MotionCommand.MOVE_TO,
+                    message=f"[safety:self_collision/self_collision] sample 32 of 174 of a path sampled at 2.963 mm a "
+                            f"step: {part}|fixture:seen_02: mesh distance 2.701 mm < 3.000 mm")
+                said = self._ask(self._arm(line=line))
+                self.assertIn("the line down to the grasp would be refused", said)
+                self.assertIn(f"{part}|fixture:seen_02", said)
+                self.assertEqual(["nearest", "line"], [kind for kind, _ in self.asked])
+
+    def test_a_line_an_arm_link_refuses_waits_for_the_route(self) -> None:
+        """Where an arm link refuses the line, the configuration decides: the route is planned and the line judged from
+        its end, as before."""
+        line = MotionResult.failed(
+            MotionStatus.SELF_COLLISION_REJECTED, MotionCommand.MOVE_TO,
+            message="[safety:self_collision/self_collision] sample 3 of 9 of a path sampled at 2.963 mm a step: "
+                    "wrist_1|fixture:seen_02: mesh distance -0.015 mm < 3.000 mm")
+        said = self._ask(self._arm(line=line))
+        self.assertIn("the line down to the grasp would be refused", said)
+        self.assertEqual(["nearest", "line", "route", "line"], [kind for kind, _ in self.asked])
+
+    def test_a_standoff_with_no_nearest_configuration_is_the_routes_to_judge(self) -> None:
+        arm = self._arm()
+
+        def no_configuration(pose: Pose) -> Any:
+            raise RobotKinematicsError("no configuration")
+
+        arm.nearest_configuration = no_configuration
+        self.assertEqual("", self._ask(arm))
+        self.assertEqual(["route", "line", "ik", "lift"], [kind for kind, _ in self.asked])
 
     def test_a_cell_that_cannot_judge_ahead_says_nothing_and_asks_nothing(self) -> None:
         self.assertEqual("", self._ask(self._arm(planner="ik")))

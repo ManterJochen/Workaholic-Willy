@@ -31,9 +31,14 @@ class LanguageSource(StrEnum):
     CONFIGURED = "configured"
 
 
+#: German letters spelled out, so a console line stays ASCII and still reads as said ("Wuerfel", not "W\xfcrfel").
+_SPELLED = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "Ä": "Ae", "Ö": "Oe", "Ü": "Ue", "ß": "ss"})
+
+
 def _ascii(text: str) -> str:
-    """``text`` with every non-ASCII character escaped, so a rendered line survives a cp1252 console."""
-    return text.encode("ascii", "backslashreplace").decode("ascii")
+    """``text`` as ASCII, so a rendered line survives a cp1252 console: German letters spelled out, anything else
+    escaped."""
+    return text.translate(_SPELLED).encode("ascii", "backslashreplace").decode("ascii")
 
 
 @dataclass(frozen=True, slots=True)

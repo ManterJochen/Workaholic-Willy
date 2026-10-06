@@ -186,7 +186,7 @@ flowchart LR
 **The next grasp of the same look comes first, and needs no recovery.** Where the policy's try was refused by
 a guard or the planner before anything was sent (`generated_view.REFUSED_BEFORE_SENDING`, or the planner's own
 no-plan sentence) and every pose it reached kept the open hand's jaw region out of the part's keep-out box, the
-attempt hands the policy the look's next grasp, up to `GRASPS_TRIED_PER_ATTEMPT` (4); with `both_faces` only the
+attempt hands the policy the look's next grasp, up to `GRASPS_TRIED_PER_ATTEMPT` (12); with `both_faces` only the
 best. A stop asked for and the controller are read before each, a wrist pick that sent a motion goes back to its
 look on a judged move first, and a toggle is never switched between tries. Every try is a row of
 `PickAttempt.tries` (rank, outcome, motion status and message, sent, reached the part).
@@ -229,7 +229,12 @@ Two recovery actions reach into the loop, and only where the service arms them
   something moved is kept as a stopped push of trigger `clear_the_blocker`, which needs a person. The push
   reads the pick's stop check between its legs: a stop asked for ends it where the arm stands. The events:
   `ATTEMPT_FINISHED` with action `clear_blocker` and `blocker` (`set_aside` or the stop's code),
-  `blocker_at_mm`, `set_down`, `looked_again` or `blocker_reason` in `extra`.
+  `blocker_at_mm`, `set_down`, `looked_again` or `blocker_reason` in `extra`. With `blocker_is_the_pick`
+  (a task that takes every part into one place, `recovery.blocker_into_the_place`, the owner, 2026-10-06) the
+  blocker is the part the pick takes: gripped, lifted and reported executed on its own grasp and cloud
+  (action `blocker_picked`, `blocker: taken_as_the_pick`), set down by the caller where its parts go; only a
+  part the detector named is taken so, and no free spot is asked for. Nothing in a region the task keeps out is
+  a blocker in either mode.
 - **The push** (`nudge_target`, `dense_clutter` only) runs on a wrist camera's pick, after its looks judged
   the part, and never for critical parts; a fixed camera never pushes. It is due when no candidate survived
   and at least one collided (`ALL_COLLIDED`), when every grasp was refused ahead, or, where approach

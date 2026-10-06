@@ -225,7 +225,7 @@ robot:
     # ends; a plan past it is not run, the next configuration is planned to instead, and with none left
     # the move is refused naming the joint.
     planned_motion:
-      line_clearance_mm: 10.0
+      line_clearance_mm: 3.0
       max_detour_deg: 45.0
 
     # Mass / CoG / inertia envelope of the mounted tool plus payload. ``mass_kg`` is what is
@@ -266,7 +266,7 @@ robot:
       # with either missing the guard warns once and runs the capsule proxy instead. A non-UR
       # vendor reaches it only by naming kinematics_model, as robot.sim.yaml does with ur5e.
       backend: "fcl"
-      min_distance_mm: 10.0
+      min_distance_mm: 3.0
       # planner_margin_mm is deliberately absent here, in the manner of robot.gripper.model. It is
       # the clearance the planner keeps, and how much of it an arm can absorb depends on the arm
       # and the hand: every UR plans at 4, and the UR5 finds no retract at all at 8 or 10. A UR
@@ -286,7 +286,7 @@ robot:
       # the margin, has to reach `min_distance_mm`, the step every path is sampled at, and the voxel may be
       # no coarser than the 10 mm this was measured at, or the load refuses. Below 5 the load refuses too:
       # where only the camera's boxes refuse the planner's world, the exact guard alone decides them.
-      perceived_min_distance_mm: 5.0
+      perceived_min_distance_mm: 3.0
 
     # Steady-state gating, consumed by the grasp execution policy rather than by the per-move
     # pipeline: before each commanded approach, grasp and retreat move it blocks on the driver's
@@ -388,7 +388,7 @@ robot:
         voxel_field_mm: 0.0
         cluster_voxel_mm: 25.0
         min_points: 12
-        margin_mm: 15.0
+        margin_mm: 8.0
         # Every object is a height map of a few boxes (a bin is its walls), so there is room for a few bins and
         # their parts. Past it boxes merge, down to one per object, before a motion is refused.
         max_boxes: 64
@@ -538,12 +538,11 @@ robot:
       # so the fused estimate reads high and some valid low grasps are refused. Declaring
       # `container.floor_height_mm` does not fix that, because the higher of the two still wins.
       refine_from_target: true
-      # How far the gripper envelope must stay above the support surface. 5.0 is also the schema
-      # default, so writing it changes nothing. Lowering it does not unlock flat parts: a 2F-85
-      # fingertip reaches 28.72 mm past the grasp centre, so a top-down grasp needs an object at
-      # least 33.72 mm tall to clear 5 mm even when the grasp sits on its very top edge. Parts
-      # shorter than that need a different end effector, not a smaller number here.
-      min_clearance_mm: 5.0
+      # How far the gripper envelope must stay above the support surface: 1 mm, the finger floor the
+      # exact guard holds over what a support reads (perceived.finger_floor_mm), the deepest it lets a
+      # finger go (the owner, 2026-10-06). The schema default too, so writing it changes nothing. A part
+      # has to stand this, the fingertip's reach past the grasp centre and 2 mm tall: 13.5 mm for the Hand-E.
+      min_clearance_mm: 1.0
       # The bin, tray or KLT the parts sit inside, if there is one. Everything here defaults to no
       # container, which is what this cell has.
       container:

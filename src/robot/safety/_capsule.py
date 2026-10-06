@@ -81,6 +81,11 @@ class AxisAlignedBox:
 
     ``note`` is what a refusal naming the box adds, where the box's builder knows more than its
     geometry: that the robot hid part of it from the cameras, or that it may be the robot itself.
+
+    ``soft_mm`` is how far into the box a finger link may come, at no distance kept: a box the cameras saw of a part
+    the detector named (``PerceivedBox.soft_mm``, the owner's "Finger dürfen streifen" of 2026-10-05). The exact
+    mesh guard judges the fingers against the box less it, every other link against the whole box; a guard that
+    cannot tell a finger, the capsule proxy, judges the whole box, the safe side. 0 for every other box.
     """
 
     center_mm: np.ndarray
@@ -88,6 +93,11 @@ class AxisAlignedBox:
     name: str = ""
     turned: TurnedBox | None = None
     note: str = ""
+    soft_mm: float = 0.0
+    #: How far under its top a finger link keeps the distance from, a support's solid (``PerceivedBox.finger_top_mm``):
+    #: the exact mesh guard judges the fingers against the box with its top lowered so, every other link against the
+    #: whole box; the capsule proxy judges the whole box, the safe side. 0 for every other box.
+    finger_top_mm: float = 0.0
 
 
 def segment_point_distance_mm(p0: np.ndarray, p1: np.ndarray, q: np.ndarray) -> float:

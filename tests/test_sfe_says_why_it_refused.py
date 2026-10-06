@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import functools
 import hashlib
+import math
 import unittest
 from typing import Any
 
@@ -154,32 +155,35 @@ def golden_runs() -> dict[str, list[Any]]:
         cube, support_height_mm=0.0, jaw=hande_jaw(), obstacle_points_base_mm=None,
         rigid_obstacle_points_base_mm=wall_cloud(36.0, height_mm=80.0), max_candidates=12)
     for wall_y in (None, 40.0):
-        # The library's 2F-85 on a 30 mm cube 50 tall: only tilted grasps fit (60-90 degrees).
+        # The library's 2F-85 on a 30 mm cube 50 tall: tilted grasps, and since the fingers stand at the anchor
+        # (2026-10-06) straight ones too.
         runs[f"default_cube_tilted_wall_{wall_y}"] = generate_support_footprint_grasps(
             box_cloud((-15.0, -15.0, 0.0), (15.0, 15.0, 50.0)), support_height_mm=0.0, jaw=default_jaw(),
             obstacle_points_base_mm=None if wall_y is None else wall_cloud(wall_y, height_mm=60.0), max_candidates=40)
     return runs
 
 
-#: ``golden_runs()`` on HEAD 1d91e3a, before the counters existed (recorded 2026-10-02, Windows, numpy as pinned).
+#: ``golden_runs()`` since the fingers stand at the anchor and the grasps sit on the part (recorded 2026-10-06, Windows,
+#: numpy as pinned); the counters change none of them.
 HEAD_DIGESTS: dict[str, str] = {
-    "top_face_h50_palm0": "12:5ec60e21efec8942",
-    "top_face_h50_palm1": "12:1f48cfa0b1d5e865",
-    "top_face_h60_palm0": "12:733b3930ad196687",
-    "top_face_h60_palm1": "12:733b3930ad196687",
-    "top_face_h70_palm0": "12:a47aef816860ac67",
-    "top_face_h70_palm1": "12:a47aef816860ac67",
-    "top_face_h90_palm0": "12:a48aad2ee1b4d14b",
-    "top_face_h90_palm1": "12:a48aad2ee1b4d14b",
-    "top_face_h120_palm0": "12:9c302b4effae6fe8",
-    "top_face_h120_palm1": "12:9c302b4effae6fe8",
-    "hande_cylinder_wall_12": "12:20f9ae987d833c00",
-    "hande_cylinder_free": "12:bd15cc0b0f955195",
+    "top_face_h50_palm0": "12:5c94309281c66830",
+    "top_face_h50_palm1": "12:75e67c551b8e1eed",
+    "top_face_h60_palm0": "12:49d0c376bcb2cbae",
+    "top_face_h60_palm1": "12:2a07c674f5bc4614",
+    "top_face_h70_palm0": "12:142cc6753630feeb",
+    "top_face_h70_palm1": "12:d22140189c7a3594",
+    "top_face_h90_palm0": "12:d0c669ed6464769f",
+    "top_face_h90_palm1": "12:f669685fb103d46b",
+    "top_face_h120_palm0": "12:2cb5c4c140704070",
+    "top_face_h120_palm1": "12:911f06b8144ff459",
+    # The Hand-E's two cylinders since its fingers come to 1 mm of the support (2026-10-06), 3 mm before.
+    "hande_cylinder_wall_12": "12:5aac8dfe7f2d777e",
+    "hande_cylinder_free": "12:3e546b7d75085ab7",
     "hande_bar_boxed_in_seen": "0:e3b0c44298fc1c14",
-    "hande_thin_bar_fragment": "6:550794360641a348",
-    "hande_cube_declared_wall": "12:1b1a16f258d5fdf7",
-    "default_cube_tilted_wall_None": "20:86d1d05695e18db5",
-    "default_cube_tilted_wall_40.0": "2:3a4ca6f9157812b6",
+    "hande_thin_bar_fragment": "6:63a94c5ac609b13d",
+    "hande_cube_declared_wall": "12:2bce7bcef31b0bc3",
+    "default_cube_tilted_wall_None": "12:6b69ffe34469825e",
+    "default_cube_tilted_wall_40.0": "6:04d2d04392b2cb6a",
 }
 
 
@@ -210,11 +214,15 @@ class TheCountersSayWhyTests(unittest.TestCase):
         self.assertEqual(0, counts.get("own_fragments", -1), counts)
 
     def test_a_part_beside_declared_points_is_refused_by_what_was_declared(self) -> None:
-        """The same neighbours handed as declared geometry (a container's walls): the declared counters, no seen one."""
+        """The same neighbours handed as declared geometry (a container's walls): the declared counters, no seen one.
+        The coarse grid fits no grasp between them, and the counts are its own; the fine grid it then runs (2026-10-06)
+        fits one closing 20 degrees off the bar's axis, inside the friction cone, where the declared grid stays
+        undilated."""
         bar, neighbours = boxed_in_bar()
         found, counts = _run(bar, support_height_mm=MAT_MM, obstacle_points_base_mm=None,
                              rigid_obstacle_points_base_mm=neighbours)
-        self.assertEqual([], found)
+        self.assertTrue(all(19.9 <= math.degrees(c.contact_angle_rad) <= 20.1 for c in found),
+                        [round(math.degrees(c.contact_angle_rad), 1) for c in found])
         self.assertGreater(counts.get("declared_fingers", 0) + counts.get("declared_corridor", 0), 0, counts)
         self.assertEqual((0, 0), (counts.get("seen_fingers"), counts.get("seen_corridor")), counts)
 
@@ -228,8 +236,9 @@ class TheCountersSayWhyTests(unittest.TestCase):
         del found
 
     def test_a_part_too_short_for_the_hand_is_refused_by_the_table(self) -> None:
-        """A 15 mm part: the Hand-E's fingertip cannot clear the support's 5 mm, whatever the tilt."""
-        found, counts = _run(box_cloud((-20.0, -20.0, 0.0), (20.0, 20.0, 15.0)))
+        """A 12 mm part: the Hand-E's fingertip cannot clear the support's 1 mm, whatever the tilt (15 mm until the
+        fingers came to 1 mm of the support, 2026-10-06; its least part is 13.5 mm)."""
+        found, counts = _run(box_cloud((-20.0, -20.0, 0.0), (20.0, 20.0, 12.0)))
         self.assertEqual([], found)
         self.assertGreater(counts.get("table", 0), 0, counts)
 
@@ -281,7 +290,8 @@ class NothingChangesWithoutTheCountersTests(unittest.TestCase):
                     np.testing.assert_array_equal(a.closing_axis, b.closing_axis)
 
     def test_refusals_none_is_byte_identical_to_head(self) -> None:
-        """Every golden scene, with the library's defaults, gives HEAD 1d91e3a's candidates."""
+        """Every golden scene, with the library's defaults, gives the candidates recorded when the fingers were placed
+        at the anchor and the grasps seated on the part (2026-10-06): before, HEAD 1d91e3a's."""
         self.assertTrue(HEAD_DIGESTS, "the HEAD digests were never recorded")
         runs = golden_runs()
         self.assertEqual(sorted(HEAD_DIGESTS), sorted(runs))

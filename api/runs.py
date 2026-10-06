@@ -594,11 +594,12 @@ class RunRegistry:
         return True
 
     def stop_home(self, run_id: str) -> bool:
-        """Ask a Home run not to send its move. False if it was not running.
+        """Ask a Home run not to send its move, or a wave its next swing. False if it was not running.
 
         During its countdown, or any time before its one move is sent, the run ends ``cancelled`` with nothing moved
         (the countdown and ``drive_home`` read the flag); a move already sent runs to its end, since this is not a kill.
-        Nothing is latched, so no "the cell is clear" is owed, as the brake would owe one.
+        A wave reads the flag before every swing (``drive_wave``) and ends ``cancelled`` where the arm stands. Nothing
+        is latched, so no "the cell is clear" is owed, as the brake would owe one.
         """
         with self._lock:
             run = self._runs.get(run_id)

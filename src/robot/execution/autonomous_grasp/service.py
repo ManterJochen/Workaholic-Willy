@@ -781,9 +781,13 @@ class AutonomousGraspService:
         )
 
         # Orchestrator overlays applied in place.
+        from src.robot.safety.planning.hand import hand_past_the_tcp_mm  # noqa: PLC0415
+
         apply_orchestrator_overlays(
             runtime, grasping_cfg, resolved_mode=resolved_mode,
             primary_camera_id=primary_camera_id, camera=camera,
+            hand_past_the_tcp_mm=hand_past_the_tcp_mm(robot_cfg),
+            palm_thickness_mm=_registry_palm_thickness_mm(robot_cfg),
         )
 
         # The half of multi-camera fusion that config cannot carry. The overlays above wire
@@ -1033,6 +1037,8 @@ class AutonomousGraspService:
         _looking: Any = getattr(self.runtime, "orchestrator", None)
         if getattr(_looking, "looked_around", None) is not None:
             _looking.looked_around = None
+        if getattr(_looking, "ranked_looked", None) is not None:
+            _looking.ranked_looked = None
         # A cancel that arrived between two picks is honoured here, before any work starts: a caller
         # running a campaign loops on pick(), and refusing to start is the cheapest possible stop.
         # Default ``None`` costs one attribute read and leaves the body below unchanged.
@@ -1284,6 +1290,13 @@ class AutonomousGraspService:
         is what ``PickRun(record_views=True)`` keeps. Readable after the pick: taking its looks back holds nothing.
         """
         return getattr(getattr(self.runtime, "orchestrator", None), "looked_around", None)
+
+    @property
+    def ranked_looked(self) -> "LookedAround | None":
+        """The last of the last pick's look sequences whose judgement ranked grasps (the pick loop's ``ranked_looked``):
+        what a failed pick's debug pictures draw its grasps from once its last look ranked none. ``None`` as for
+        :attr:`looked_around`, and where no look of the pick ranked a grasp."""
+        return getattr(getattr(self.runtime, "orchestrator", None), "ranked_looked", None)
 
     @property
     def perceives_from_the_wrist(self) -> bool:
@@ -1704,20 +1717,31 @@ class AutonomousGraspService:
         return min(float(fixture[2]), PUSH_DISTANCE_CAP_MM) if fixture is not None else PUSH_DISTANCE_CAP_MM
 
     def start_campaign(self, *, push_mm: "Maybe[float]" = UNSET,
-                       critical_parts: "Maybe[bool | None]" = UNSET) -> "PushCampaign":
+                       critical_parts: "Maybe[bool | None]" = UNSET,
+                       recovery_actions: "Maybe[tuple[str, ...] | None]" = UNSET,
+                       blocker_is_the_pick: "Maybe[bool]" = UNSET) -> "PushCampaign":
         """Start a campaign of picks: fresh push budgets (1 per part, 2 per pick, 5 per campaign), no part skipped, and
         the push distance ``push_mm`` settles to (:meth:`push_distance`, whose ``ValueError`` it raises before
         anything changes). Where nobody asked for a distance, a push that opens too little room may go as far as the
         cell allows (:meth:`push_ceiling`); one asked for is taken as asked. ``critical_parts`` is the run's word on the
-        owner's switch (``recovery.critical_parts``); unset or ``None``, the cell's stands. ``PickRun`` and a console run
+        owner's switch (``recovery.critical_parts``); unset or ``None``, the cell's stands. ``blocker_is_the_pick`` says a
+        blocker a pick takes away is the part it picks, which its caller sets down where its parts go (a task that takes
+        every part into one place, the owner, 2026-10-06); unset, it is set aside. ``PickRun`` and a console run
         each start one; a pick no caller started one for starts it. Starting one is a person's decision too: after a
         recovery that stopped where the arm stands (:attr:`stopped_where_the_arm_stands`), picks may start again."""
         from src.robot.grasping.recovery.push_gate import PushCampaign  # noqa: PLC0415
 
         critical = critical_parts if chosen(critical_parts) and critical_parts is not None else None
+        actions = recovery_actions if chosen(recovery_actions) and recovery_actions is not None else None
+        if actions is not None:
+            for name in actions:
+                _recovery_action(name)  # an unknown action is refused before anything changes
         self._campaign = PushCampaign(distance_mm=self.push_distance(push_mm),
                                       longest_mm=None if chosen(push_mm) else self.push_ceiling(),
-                                      critical_parts=None if critical is None else bool(critical))
+                                      critical_parts=None if critical is None else bool(critical),
+                                      recovery_actions=None if actions is None else tuple(actions),
+                                      blocker_is_the_pick=bool(blocker_is_the_pick) if chosen(blocker_is_the_pick)
+                                      else False)
         self.acknowledge_needs_person()
         return self._campaign
 
@@ -1934,10 +1958,14 @@ class AutonomousGraspService:
         """
 
         cfg = self.effective_config
-        if cfg is None or not cfg.recovery_orchestrator.enabled:
+        asked = getattr(getattr(self, "_campaign", None), "recovery_actions", None)
+        if cfg is None or (asked is None and not cfg.recovery_orchestrator.enabled):
             return SceneRecoveryPolicy(enabled=False)
+        if asked is not None and not asked:
+            return SceneRecoveryPolicy(enabled=False)
+        # The run's own ticks (the console, 2026-10-05) override the cell's list for this campaign alone.
         allowed = tuple(
-            _recovery_action(a) for a in cfg.recovery_orchestrator.allowed_actions
+            _recovery_action(a) for a in (asked if asked is not None else cfg.recovery_orchestrator.allowed_actions)
         )
         budget = {
             _recovery_action(name): int(count)
@@ -2011,7 +2039,7 @@ class AutonomousGraspService:
         campaign = self.campaign
         loop = self.runtime.orchestrator
         if not policy.enabled:
-            with _handed(loop, zones=campaign.zones, gate=None):
+            with _handed(loop, zones=campaign.zones, gate=None, blocker_is_the_pick=campaign.blocker_is_the_pick):
                 return self._pick_inner(mode=mode)
 
         cfg = self.effective_config
@@ -2021,7 +2049,7 @@ class AutonomousGraspService:
         )
         profile = _profile_for(effective_mode)
         if profile.mode.value not in policy.apply_modes:
-            with _handed(loop, zones=campaign.zones, gate=None):
+            with _handed(loop, zones=campaign.zones, gate=None, blocker_is_the_pick=campaign.blocker_is_the_pick):
                 return self._pick_inner(mode=mode)
         if not rescans and SceneRecoveryAction.RESCAN in policy.allowed_actions:
             _LOG.info("recovery rescans nothing for a wrist pick handed looks: its looks, and the one view they may "
@@ -2083,7 +2111,7 @@ class AutonomousGraspService:
             again[0] = "next_target"
             return True
 
-        with _handed(loop, zones=campaign.zones, gate=gate):
+        with _handed(loop, zones=campaign.zones, gate=gate, blocker_is_the_pick=campaign.blocker_is_the_pick):
             final, trail = run_recovery_loop(
                 pick=_pick_once,
                 profile=profile,
@@ -2955,16 +2983,22 @@ def _controller_stop_telemetry(orchestrator: Any) -> dict[str, Any]:
 
 
 @contextmanager
-def _handed(orchestrator: Any, *, zones: Any, gate: Any) -> Iterator[None]:
-    """Hand the pick loop the campaign's exclusion zones and this pick's push gate, and take both back after it, as the
-    looks and ``both_faces`` are handed: the next pick inherits neither."""
-    before = (getattr(orchestrator, "exclusion_zones", None), getattr(orchestrator, "push_gate", None))
+def _handed(orchestrator: Any, *, zones: Any, gate: Any, blocker_is_the_pick: bool = False) -> Iterator[None]:
+    """Hand the pick loop the campaign's exclusion zones, this pick's push gate and whether a blocker it takes away is
+    the part it picks, and take them back after it, as the looks and ``both_faces`` are handed: the next pick inherits
+    none of them."""
+    before = (getattr(orchestrator, "exclusion_zones", None), getattr(orchestrator, "push_gate", None),
+              getattr(orchestrator, "blocker_is_the_pick", False))
     orchestrator.exclusion_zones = zones
     orchestrator.push_gate = gate
+    if hasattr(orchestrator, "blocker_is_the_pick"):
+        orchestrator.blocker_is_the_pick = bool(blocker_is_the_pick)
     try:
         yield
     finally:
-        orchestrator.exclusion_zones, orchestrator.push_gate = before
+        orchestrator.exclusion_zones, orchestrator.push_gate = before[0], before[1]
+        if hasattr(orchestrator, "blocker_is_the_pick"):
+            orchestrator.blocker_is_the_pick = before[2]
 
 
 def _pushes_of(orchestrator: Any) -> "tuple[PickPush, ...]":
@@ -3102,11 +3136,27 @@ def _operator_box(fixture: Any) -> "AxisBox | None | str":
 
 
 def _push_cell_of(robot_cfg: Any, grasping_cfg: Any) -> "PushCell | PushRefusal | None":
-    """What the cell is as a push needs it, read where the config lets a push happen at all (``nudge_target`` in
-    ``grasping.recovery.allowed_actions``); ``None`` otherwise, so a cell that never pushes reads no gripper registry."""
+    """What the cell is as a push needs it, read wherever the config has a recovery block: a run may allow the push
+    for itself from the console (the owner, 2026-10-05) where the config's ``allowed_actions`` does not name it."""
     recovery = getattr(grasping_cfg, "recovery", None)
-    if recovery is None or "nudge_target" not in tuple(getattr(recovery, "allowed_actions", ()) or ()):
+    if recovery is None:
         return None
     from src.robot.grasping.recovery.push_gate import PushCell  # noqa: PLC0415
 
     return PushCell.from_robot_config(robot_cfg)
+
+
+def _registry_palm_thickness_mm(robot_cfg: Any) -> "float | None":
+    """The housing along the closing axis the gripper registry measured for ``robot.gripper.model``
+    (``palm_thickness_mm``), as the push reads it (``push_hand``); ``None`` where no registry hand is named or it says
+    none."""
+    model = str(getattr(getattr(robot_cfg, "gripper", None), "model", "") or "")
+    if not model:
+        return None
+    from src.config.grippers import load_gripper  # noqa: PLC0415 (config is read only when a cell is built)
+
+    try:
+        palm = getattr(load_gripper(model, aliases=False).jaw, "palm_thickness_mm", None)
+    except Exception:  # noqa: BLE001 (a hand the registry does not hold keeps the palm as wide as its fingers)
+        return None
+    return None if palm is None else float(palm)

@@ -655,6 +655,30 @@ def post_home(cell: Annotated[Console, Depends(console)], body: HomeIn) -> RunOu
     return RunOut(**run.as_accepted())
 
 
+@router.post("/wave", response_model=RunOut, status_code=202, summary="Wave back at a greeting (THIS MOVES)")
+def post_wave(cell: Annotated[Console, Depends(console)]) -> RunOut:
+    """Willy waves: the second wrist joint swings 15 degrees either way, twice, and back, each swing a straight joint
+    line the exact guard judges against the camera world before it is sent (``src.robot.execution.gestures``). The
+    console's answer to a greeting in the chat, at once or on a click as the app config says
+    (``runtime.greeting.wave``), after a 3 s countdown where a person's hands were last at the arm.
+
+    Refused as a new task is, bar a carried part: during a run, on a halted or stopped controller, before the cell is
+    cleared after a stop and while a Restart is required (a wave is no way back), while a person is needed, while the
+    jaws question waits or a toggle's jaws are not confirmed, while a part is held, and on an arm whose motions are
+    refused.
+    """
+    from api.task_run import drive_wave  # noqa: PLC0415
+
+    gates.refuse_unless(cell, gates.WAVE_GATES, record=cell.recovery)
+    try:
+        run = cell.registry.start_kind(cell, RunKind.WAVE, drive_wave)
+    except RunConflict as busy:
+        raise refusal("run_active", str(busy), run_id=busy.existing.id) from busy
+    except RunRefused as stopped:
+        raise refusal(stopped.code, str(stopped), **stopped.detail) from stopped
+    return RunOut(**run.as_accepted())
+
+
 @router.post("/planner", response_model=RunOut, status_code=202, summary="Start the planner (moves nothing)")
 def post_planner(cell: Annotated[Console, Depends(console)]) -> RunOut:
     """Starts cuRobo, which takes about a minute on a cell and moves nothing. Connect starts it by itself on a cuRobo

@@ -88,8 +88,10 @@ holds between calls, so they are Python only ([examples/real_robot/](../examples
 
 ### The operator console
 
-The console moves the arm only on a person's click in the browser, on a button that names the motion. Its
-routes are in [`api/README.md`](../api/README.md), its pages in [`frontend/README.md`](../frontend/README.md).
+The console moves the arm only on a person's click in the browser, on a button that names the motion, bar a
+greeting: "Hallo Willy" in the chat waves at once where `runtime.greeting.wave` says `direct`, the shipped
+default (the owner, 2026-10-06), two swings of the wrist the exact guard judges. Its routes are in
+[`api/README.md`](../api/README.md), its pages in [`frontend/README.md`](../frontend/README.md).
 
 | command | what it does | runbook |
 |---|---|---|

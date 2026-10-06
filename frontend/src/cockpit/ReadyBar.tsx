@@ -230,6 +230,9 @@ function RunHeader({ view, poses }: { view: RunView; poses: PosesOut | null }) {
     case 'planner':
       title = t('ck.run.planner')
       break
+    case 'wave':
+      title = t('ck.run.wave')
+      break
     case 'pick':
       title = t('ck.run.pick', { what: view.prompt || t('common.anything') })
       break

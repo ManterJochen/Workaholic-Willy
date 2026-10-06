@@ -43,7 +43,9 @@ _FOLDED = [1.95, 0.38, -1.33, -0.55, 2.00, 0.79]
 #: Measured on this box 2026-09-12: the exact mesh backend accepts it and refuses the fold.
 _NEAR_CLEAR = [1.95, 0.38, -1.33, -0.55, 1.65, 0.79]
 #: A leg whose two ends are clear and whose MIDDLE is not. Found by searching, not constructed:
-#: the straight joint space line between these two crosses the fold between t=0.65 and t=0.9.
+#: the straight joint space line between these two crosses the fold between t=0.65 and t=0.9. Searched at the 10 mm
+#: guard the cell shipped then: the line comes nearer than 10 mm and never nearer than 3 (measured 2026-10-05, 2001
+#: samples), so the test that uses it keeps the 10 mm it was found at.
 _LEG_END = [2.403, 0.805, -1.5466, -0.4135, 2.023, 1.6487]
 #: Far from all of the above. A whole move to here and back sweeps about 15 m of arm travel, which
 #: is over the sampler's cap, and that refusal is its own test below.
@@ -103,11 +105,14 @@ class MotionCommandStub:
     MOVE_TO = MotionCommand.MOVE_TO
 
 
-def _curobo_arm(trajectory: list[list[float]], *, max_detour_deg: float = 45.0) -> tuple[URRobotArm, _FakePlanner]:
+def _curobo_arm(trajectory: list[list[float]], *, max_detour_deg: float = 45.0,
+                min_distance_mm: "float | None" = None) -> tuple[URRobotArm, _FakePlanner]:
+    self_collision = {} if min_distance_mm is None else {"min_distance_mm": min_distance_mm}
     config = RobotConfig.model_validate({
         "vendor": "ur",
         "ur": {"motion_planner": "curobo"},
-        "safety": {"payload": {"enforce": False}, "planned_motion": {"max_detour_deg": max_detour_deg}},
+        "safety": {"payload": {"enforce": False}, "planned_motion": {"max_detour_deg": max_detour_deg},
+                   "self_collision": self_collision},
         "gripper": {"model": "robotiq_2f85"},
         # The configurations here were chosen for what the exact meshes say about them, and they put the flange
         # outside the shipped box; the box is not what this file is about.
@@ -147,7 +152,7 @@ class APlannedPathIsAlwaysJudgedTests(unittest.TestCase):
             pytest.skip("no exact mesh backend on this box")
         from src.robot.core import JointPositions
 
-        arm, planner = _curobo_arm([_NEAR_CLEAR, _LEG_END])
+        arm, planner = _curobo_arm([_NEAR_CLEAR, _LEG_END], min_distance_mm=10.0)
         self.enterContext(arm.without_camera_world(_DECLINED))
         endpoints_only = arm.safety_preflight
         assert endpoints_only is not None

@@ -33,6 +33,7 @@ const en: Record<keyof typeof de, string> = {
   'aud.cap.teach.sub': 'A person guides the arm by hand.',
   'aud.cap.planner': 'The planner starts',
   'aud.cap.planner.sub': 'About a minute; nothing moves.',
+  'aud.cap.wave': 'Willy waves',
   'aud.cap.halting': 'Halting…',
   'aud.cap.done': 'Done:',
   'aud.cap.stopped': 'Stopped:',

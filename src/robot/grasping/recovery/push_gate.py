@@ -102,7 +102,10 @@ class PushCell:
     grown by ``beside_part_mm``, the camera world's ``margin_mm``. ``None`` keeps
     ``hand_clearance_mm`` for every point. ``guard_distance_mm`` is what the exact guard keeps from a camera box,
     ``self_collision.perceived_min_distance_mm``: the push's finger rides at least that far, and 1 mm, over the solids the
-    camera world holds for what the part stands on.
+    camera world holds for what the part stands on. ``named_part_clearance_mm`` is how far the fingers come down from a
+    neighbour part the detector named on a rearranging push: where the guard holds a finger to such a part's measured
+    surface (``perceived.fingers_touch_parts``), the 1 mm a grasp's finger keeps (``scene_obstacles.SOFT_SLACK_MM``,
+    the owner, 2026-10-06); ``None`` keeps ``beside_part_clearance_mm`` for every neighbour.
     """
 
     hand: PushHand
@@ -112,6 +115,7 @@ class PushCell:
     beside_part_clearance_mm: Optional[float] = BESIDE_THE_PART_CLEARANCE_MM
     beside_part_mm: float = 15.0
     guard_distance_mm: float = 5.0
+    named_part_clearance_mm: Optional[float] = None
 
     def __post_init__(self) -> None:
         clearance = float(self.hand_clearance_mm)
@@ -128,6 +132,11 @@ class PushCell:
             if not math.isfinite(value) or value < 0.0:
                 raise ValueError(f"PushCell.{name} must be a non-negative number of mm, got {value!r}")
             object.__setattr__(self, name, value)
+        if self.named_part_clearance_mm is not None:
+            named = float(self.named_part_clearance_mm)
+            if not math.isfinite(named) or named < 0.0:
+                raise ValueError(f"PushCell.named_part_clearance_mm must be a non-negative number of mm, got {named!r}")
+            object.__setattr__(self, "named_part_clearance_mm", named)
 
     @classmethod
     def from_robot_config(cls, robot: Any) -> "Union[PushCell, PushRefusal]":
@@ -137,8 +146,10 @@ class PushCell:
         registry does not hold, or that carries a suction cup, is refused there). The clearance is
         ``robot.safety.planning_world.perceived.margin_mm`` plus ``robot.safety.planned_motion.line_clearance_mm``;
         beside the part it is :data:`BESIDE_THE_PART_CLEARANCE_MM` within that ``margin_mm``, and the guard's distance
-        is ``robot.safety.self_collision.perceived_min_distance_mm``.
+        is ``robot.safety.self_collision.perceived_min_distance_mm``. Beside a named part it is
+        ``scene_obstacles.SOFT_SLACK_MM`` where ``perceived.fingers_touch_parts`` is on, as at a grasp.
         """
+        from src.robot.grasping.generation.scene_obstacles import SOFT_SLACK_MM  # noqa: PLC0415
         from src.robot.grasping.recovery.push_hand import push_hand_from_robot_config  # noqa: PLC0415
 
         hand = push_hand_from_robot_config(robot)
@@ -156,9 +167,11 @@ class PushCell:
             if container is not None and bool(getattr(container, "interior_declared", False)):
                 interior = AxisBox(tuple(float(v) for v in container.interior_min_mm),  # type: ignore[arg-type]
                                    tuple(float(v) for v in container.interior_max_mm))  # type: ignore[arg-type]
+            touch = bool(getattr(safety.planning_world.perceived, "fingers_touch_parts", False))
             return cls(hand=hand, workspace=workspace, hand_clearance_mm=clearance, container_interior=interior,
                        beside_part_clearance_mm=BESIDE_THE_PART_CLEARANCE_MM, beside_part_mm=margin,
-                       guard_distance_mm=float(safety.self_collision.perceived_min_distance_mm))
+                       guard_distance_mm=float(safety.self_collision.perceived_min_distance_mm),
+                       named_part_clearance_mm=SOFT_SLACK_MM if touch else None)
         except (AttributeError, TypeError, ValueError) as exc:
             return PushRefusal(
                 code=REFUSED_PUSH_CELL_UNKNOWN,
@@ -175,12 +188,17 @@ class PushCampaign:
     distance the config refused. ``longest_mm`` is how far a push may go where that distance opens too little room: the
     cell's ``recovery.fixture.max_nudge_mm`` where nobody asked for a distance, ``None`` where someone did, whose push
     is taken as asked. ``critical_parts`` is what the run said of its parts (the owner's switch, 2026-10-03), ``None``
-    where it said nothing and the cell's ``recovery.critical_parts`` stands. One campaign is driven from one thread.
+    where it said nothing and the cell's ``recovery.critical_parts`` stands. ``recovery_actions`` is what the run lets
+    recovery do (the owner, 2026-10-05: the console's ticks override the config for one run), ``None`` where the cell's
+    ``recovery.allowed_actions`` stands. ``blocker_is_the_pick`` says that a blocker a pick takes away is the part it
+    picks, set down by the caller where its parts go (the pick loop's ``blocker_is_the_pick``): a task that takes every
+    part into one place says so (the owner, 2026-10-06). One campaign is driven from one thread.
     """
 
     def __init__(self, *, distance_mm: Optional[float], budgets: Optional[PushBudgets] = None,
                  zones: Optional[ExclusionZones] = None, longest_mm: Optional[float] = None,
-                 critical_parts: Optional[bool] = None) -> None:
+                 critical_parts: Optional[bool] = None,
+                 recovery_actions: Optional[tuple[str, ...]] = None, blocker_is_the_pick: bool = False) -> None:
         distance = None if distance_mm is None else float(distance_mm)
         if distance is not None and (not math.isfinite(distance) or distance <= 0.0):
             raise ValueError(f"a campaign's push distance is a positive number of mm, got {distance_mm!r}")
@@ -190,6 +208,8 @@ class PushCampaign:
         self.distance_mm = distance
         self.longest_mm = longest
         self.critical_parts = None if critical_parts is None else bool(critical_parts)
+        self.recovery_actions = None if recovery_actions is None else tuple(str(a) for a in recovery_actions)
+        self.blocker_is_the_pick = bool(blocker_is_the_pick)
         self.budgets = budgets if budgets is not None else PushBudgets()
         self.zones = zones if zones is not None else ExclusionZones()
 

@@ -37,6 +37,7 @@ const de = {
   'aud.cap.teach.sub': 'Ein Mensch führt den Arm von Hand.',
   'aud.cap.planner': 'Der Planer startet',
   'aud.cap.planner.sub': 'Etwa eine Minute, bewegt wird nichts.',
+  'aud.cap.wave': 'Willy winkt',
   'aud.cap.halting': 'Hält an …',
   'aud.cap.done': 'Fertig:',
   'aud.cap.stopped': 'Gestoppt:',

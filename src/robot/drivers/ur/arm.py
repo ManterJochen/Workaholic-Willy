@@ -7,7 +7,8 @@ import dataclasses
 import math
 import re
 import threading
-from contextlib import AbstractContextManager
+from collections.abc import Iterator
+from contextlib import AbstractContextManager, contextmanager
 from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
@@ -146,6 +147,13 @@ _UR_SAFETY_MODE: dict[int, SafetyMode] = {
 
 #: Why a cuRobo ``move`` says MISSING while no live camera world is wired to the arm.
 _UR_NO_LIVE_WORLD = "robot.ur.motion_planner is 'curobo' and no live camera world is wired to this arm"
+
+#: The exact guard's parts that hang on the flange, wrist 3 with them: on a straight line of the TCP they stand where
+#: the TCP puts them, whichever configuration the line starts from. The wrist cameras (``wrist_camera_<rig>``) too.
+_ON_THE_FLANGE = frozenset({"gripper", "lfinger", "rfinger", "wrist_3"})
+_WRIST_CAMERA_PART = "wrist_camera_"
+#: The pair the exact guard names in a refusal against a fixture: ``<part>|fixture:<name>``.
+_FIXTURE_PAIR = re.compile(r"(?P<part>[A-Za-z0-9_\-]+)\|fixture:")
 
 
 def _planner_refusal_status(refusal: object | None) -> MotionStatus:
@@ -334,6 +342,9 @@ class URRobotArm(RobotArm):
         #: cell declines to model, and cleared by :meth:`detach_payload` alone. While it is set no box the camera saw is
         #: set aside in the planner's world (:meth:`_world_aside_refusal`).
         self._closed_on_part = False
+        #: Why every line is judged against the world the last refresh built, with no new frame (:meth:`held_world`);
+        #: ``None`` outside such a block.
+        self._held_world_reason: str | None = None
         #: The hand this arm carries, as the cell that brought both up handed it over (:meth:`set_hand`); ``None`` for
         #: none. The camera's boxes are set aside only while it reads empty and open (the owner, 2026-10-01).
         self._hand: object | None = None
@@ -1326,8 +1337,31 @@ class URRobotArm(RobotArm):
         before = self._planner_refresh()
         unstamped = self._move_unstamped(pose, linear=linear, vel=vel, acc=acc, register=register)
         after = self._planner_refresh()
-        vouched = after.camera_world() if after is not None and after is not before else None
+        # Inside a held world no refresh is made for the motion: the one that built the world it was judged in vouches.
+        held = self._held_world_reason is not None
+        vouched = after.camera_world() if after is not None and (after is not before or held) else None
         return stamp_result(unstamped, self._move_camera_world(camera_world, planned=vouched))
+
+    @contextmanager
+    def held_world(self, reason: str) -> Iterator[None]:
+        """Judge every line inside the block against the world the last refresh built, with no new frame.
+
+        :class:`~src.robot.core.arm_capabilities.HoldsItsWorld`. A grasp holds it from the part until the arm is back
+        up (the owner, 2026-10-06: "Ja, beides"): the lift judged before the jaws close, the lift itself and the line
+        back up with the jaws open are judged against the world the line down was judged in, whose boxes the line down
+        kept clear of, and whose region between the jaws stood at the part. A refresh at the part, from there, held
+        boxes that one did not, and refused every way back up (the grasp bench, 2026-10-06). Every check the arm makes
+        still runs: the exact guard on every sample, the planner against that world, the controller, the halt. Where no
+        refresh built a world yet, a line refreshes as ever. ``reason`` is said in the log of every line judged so.
+        """
+        if not str(reason).strip():
+            raise ValueError("a held world says why it is held")
+        previous = self._held_world_reason
+        self._held_world_reason = str(reason)
+        try:
+            yield
+        finally:
+            self._held_world_reason = previous
 
     def _refused_for_camera_world(
         self, stamp: CameraWorldStamp, command: MotionCommand, *,
@@ -1918,16 +1952,20 @@ class URRobotArm(RobotArm):
         """Why the planner's world cannot be judged again with the boxes the camera saw set aside, or ``None``.
 
         Never where the exact guard holds no box the camera saw: what the planner's world refused is then the bench or
-        the declared geometry, which stay the planner's. Never while a part is carried, by the arm (any
-        :meth:`attach_payload` since the last :meth:`detach_payload`, also on a cell that models no carried part) or by
-        the planner, nor where the planner cannot say it holds none: the carried part is the planner's alone, and with
-        the camera's boxes set aside nobody would judge it against them. And never unless the hand this arm carries
-        reads empty and open (:meth:`set_hand`, ``core.gripper.why_not_known_open``): a toggle whose count stands and
-        says open, a gripper measured fully open, whatever verb closed the jaws last and whether or not a part is
-        modelled (the owner, 2026-10-01). ``hand`` false leaves the hand unread, for the pose screen, which judges a pose
-        for a hand known empty and open. A grasp asks whether its lift would run carrying before it closes
-        (:meth:`carried_line_refusal`), so it does not close where only these boxes let the empty hand stand; an arm
-        that holds a part there anyway leaves once a person opens the jaws, and the sentence says so.
+        the declared geometry, which stay the planner's. Never while a part the planner models is carried, by the arm
+        (:meth:`attach_payload` handed it one since the last :meth:`detach_payload`) or by the planner, nor where the
+        planner cannot say it holds none: the carried part is the planner's alone, and with the camera's boxes set
+        aside nobody would judge it against them. And never unless the hand this arm carries reads empty and open
+        (:meth:`set_hand`, ``core.gripper.why_not_known_open``): a toggle whose count stands and says open, a gripper
+        measured fully open, whatever verb closed the jaws last (the owner, 2026-10-01). ``hand`` false leaves the hand
+        unread, for the pose screen, which judges a pose for a hand known empty and open. A grasp asks whether its lift
+        would run carrying before it closes (:meth:`carried_line_refusal`), so it does not close where only these boxes
+        let the empty hand stand; an arm that holds a part there anyway leaves once a person opens the jaws, and the
+        sentence says so.
+
+        A cell that models no carried part (``planning_world.payload``) judges jaws closed on one as an empty hand is
+        judged, the boxes set aside and the hand left unread: nobody judges such a part against the camera's boxes
+        either way, and the exact guard still judges the arm and the hand (the owner, 2026-10-05: "mehr Griffe").
         """
         seen = self._preflight.perceived_obstacles(self) if self._preflight is not None else ()
         if not seen:
@@ -1939,7 +1977,10 @@ class URRobotArm(RobotArm):
             return (f"the exact guard holds boxes {sorted(names)} the camera world did not name as its own, so none is "
                     "set aside and the planner's world stands")
         carried = getattr(planner, "carries_part", None)
-        if self._attached_payload is not None or self._closed_on_part or carried is True:
+        # A cell that models no carried part judges a closed hand as an empty one (the owner, 2026-10-05): the exact guard
+        # holds the hand at full stroke, the widest it stands, and a part nobody models is judged by nobody either way.
+        unmodelled = self._attached_payload is None and self._payload_config_declined() is not None
+        if self._attached_payload is not None or (self._closed_on_part and not unmodelled) or carried is True:
             return ("a part is carried, and the carried part is the planner's alone, so the boxes the camera saw are not "
                     "set aside and the planner's world stands. An arm that holds a part where only those boxes refuse "
                     "the planner leaves once a person opens the jaws on it (Robot.release, which forgets the part), "
@@ -1947,7 +1988,7 @@ class URRobotArm(RobotArm):
         if carried is not False:
             return ("the planner cannot say whether it holds a carried part, so the boxes the camera saw are not set "
                     "aside and the planner's world stands")
-        why = why_not_known_open(self._hand) if hand else ""
+        why = why_not_known_open(self._hand) if hand and not unmodelled else ""
         if why:
             return (f"the hand is not known to be empty and open ({why}), so the boxes the camera saw are not set aside "
                     "and the planner's world stands")
@@ -2434,9 +2475,11 @@ class URRobotArm(RobotArm):
         case of a cell that uses no planner. A cell that cannot model its payload
         carries on and says so.
 
-        Every call says the jaws closed on a part, modelled or not: from here until
-        :meth:`detach_payload`, no box the camera saw is set aside in the planner's world
-        (the owner's Option 1), because nobody judges a carried part against them then.
+        Every call says the jaws closed on a part, modelled or not. A part the planner
+        models: from here until :meth:`detach_payload`, no box the camera saw is set aside
+        in the planner's world (the owner's Option 1), because nobody judges a carried part
+        against them then. A part the cell models nowhere is judged as an empty hand is
+        (:meth:`_world_aside_refusal`, the owner, 2026-10-05).
         """
         self._closed_on_part = True
         cfg = getattr(getattr(self.config.safety, "planning_world", None), "payload", None)
@@ -2596,6 +2639,9 @@ class URRobotArm(RobotArm):
             if asked.frame is not Frame.BASE:
                 return f"the {name} is not in Frame.BASE ({asked.frame!r}), so the grasp is not judged ahead"
         planner = self._curobo_ur_planner()
+        early = self._flange_line_refusal(standoff, grasp)
+        if early is not None:
+            return f"the line down to the grasp would be refused ({early.status.value}: {early.message})"
         try:
             route = self._route_to_the_nearest_goal(planner, self._pose_to_flange(standoff), standoff,
                                                     velocity=float(self.config.motion_limits.max_velocity))
@@ -2617,6 +2663,31 @@ class URRobotArm(RobotArm):
             return (f"the lift, as if the jaws held a part {float(grip_width_mm):g} mm across, would be refused "
                     f"({carried.status.value}: {carried.message})")
         return ""
+
+    def _flange_line_refusal(self, standoff: Pose, grasp: Pose) -> "MotionResult | None":
+        """The refusal of the line from ``standoff`` down to ``grasp`` where the exact guard refuses it at a part on the
+        flange against a fixture, judged from the standoff's nearest configuration; ``None`` otherwise.
+
+        The hand, its camera and wrist 3 hang on the flange: on a straight line of the TCP they stand where the TCP puts
+        them, whichever configuration the line starts from, so such a refusal is every configuration's and the route to
+        the standoff need not be planned to find it. It is judged before the route, which plans and judges thousands of
+        samples: 17 s a grasp in a bin's corner, for a line then refused 0.07 mm short at wrist 3 (the grasp bench,
+        2026-10-06). Any other refusal, of an arm link whose place the configuration decides, and any line the guard
+        lets run, is left to the judgement after the route, as before; so is a standoff with no configuration.
+        """
+        try:
+            at_standoff = [float(v) for v in self.nearest_configuration(standoff).values]
+        except Exception:  # noqa: BLE001 (no early answer: the route judges the standoff and says why)
+            return None
+        refused = self._judge_linear_move(grasp, command=MotionCommand.MOVE_TO, commanded=False,
+                                          start=(standoff, at_standoff))
+        if refused is None:
+            return None
+        found = _FIXTURE_PAIR.search(str(refused.message or ""))
+        part = found.group("part") if found is not None else ""
+        if part in _ON_THE_FLANGE or part.startswith(_WRIST_CAMERA_PART):
+            return refused
+        return None
 
     def lines_refusal_ahead(self, *, approach: Pose, lines: Sequence[Pose]) -> str:
         """Why the planned move to ``approach``, or one of the straight ``lines`` after it, would be refused, judged now
@@ -2765,6 +2836,11 @@ class URRobotArm(RobotArm):
         the world or the planner refuses to approach it.
         """
         return self._live_world
+
+    def wrist_bodies(self) -> "tuple[Any, ...]":
+        """The wrist cameras this arm carries (``body_link.WristBody``), as its guard holds them; empty for none. The
+        pick loop places their housing on each grasp to choose its wrist turn (``wrist_turn``)."""
+        return tuple(self._preflight.wrist_bodies(self)) if self._preflight is not None else ()
 
     def set_wrist_bodies(self, bodies: "Sequence[Any]") -> None:
         """Hand this arm the wrist cameras it carries (``body_link.WristBody``), before its planner or
@@ -3617,6 +3693,12 @@ class URRobotArm(RobotArm):
         """
         if self._live_world is None:
             return None
+        held = self._planner_refresh() if self._held_world_reason is not None else None
+        if held is not None:
+            # The world the last refresh built stands (:meth:`held_world`): the planner and the guard hold it as it is.
+            self.logger.info("the world is held (%s): judged against the %d box(es) the last refresh registered",
+                             self._held_world_reason, int(getattr(held, "registered", 0) or 0))
+            return None
         try:
             self._curobo_ur_planner().refresh_world(near_point_mm=near_point_mm, **self._goal_keep_out(goal_tcp_mm))
         except CuroboUnavailableError as exc:
@@ -3798,9 +3880,18 @@ class URRobotArm(RobotArm):
             return MotionResult.failed(
                 MotionStatus.UNSUPPORTED, command, target_pose=pose, message=str(exc),
             )
+        # The world is built about the line's lower end, the hand's own place there, where it passes the parts: the
+        # boxes beside the fingers stay as the camera saw them and the far ones merge first (``height_map.coarsen``).
+        # About the flange of the line's end, the lift's world merged the boxes beside the part it starts from, and the
+        # housing stood 0.9 mm inside one the line down had kept clear (the grasp bench, 2026-10-06).
+        low = pose if float(pose.position_mm[2]) <= float(start_tcp.position_mm[2]) else start_tcp
+        # The region between the jaws is left out there too: a lift starts with the part between them, and a line back up
+        # with the jaws open starts with them about it. At the line's end, the lift's world held the part it starts from
+        # between the fingers, and refused the line back up its own descent had run (the grasp bench, 2026-10-06).
         return self._judge_line_samples(
             samples, pose=pose, owns_tool=owns_tool, radii=radii, command=command,
             seed_joints=None if start is None else start[1],
+            near_point_mm=[float(v) for v in low.position_mm], keep_out_pose=low,
         )
 
     def _line_step_refusal(
@@ -3870,9 +3961,13 @@ class URRobotArm(RobotArm):
         radii: "tuple[float, ...]",
         command: MotionCommand,
         seed_joints: "Sequence[float] | None" = None,
+        near_point_mm: "Sequence[float] | None" = None,
+        keep_out_pose: Pose | None = None,
     ) -> "MotionResult | None":
         """Solve every sample of a line and hand the configurations to both authorities; ``seed_joints`` stands for the
-        joints the arm stands at where the line is judged from elsewhere (:meth:`_judge_linear_move`'s ``start``)."""
+        joints the arm stands at where the line is judged from elsewhere (:meth:`_judge_linear_move`'s ``start``).
+        ``near_point_mm`` is where the world is built about, the flange of ``pose`` where it is not given, and
+        ``keep_out_pose`` the TCP whose region between the jaws is left out of it, ``pose`` where it is not given."""
         assert self._preflight is not None  # noqa: S101 (the caller checked)
         configs: list[tuple[float, ...]] = []
         # The line starts at the joints the arm stands at. moveL starts there whatever an
@@ -3938,8 +4033,10 @@ class URRobotArm(RobotArm):
 
         judged = PathSamples(configs=tuple(configs), step_bound_mm=bound)
         refused = self._refresh_before_the_path_gate(
-            near_point_mm=[float(v) for v in self._pose_to_flange(pose).position_mm],
-            command=command, target_pose=pose, goal_tcp_mm=self._tcp_of_pose(pose),
+            near_point_mm=([float(v) for v in near_point_mm] if near_point_mm is not None
+                           else [float(v) for v in self._pose_to_flange(pose).position_mm]),
+            command=command, target_pose=pose,
+            goal_tcp_mm=self._tcp_of_pose(pose if keep_out_pose is None else keep_out_pose),
         )
         if refused is not None:
             return refused

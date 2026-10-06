@@ -115,7 +115,7 @@ class TranscriptReportTests(unittest.TestCase):
         text = _transcript().render()
         self.assertTrue(text.isascii(), text)
         self.assertFalse(text.endswith("\n"))
-        for fragment in ("W\\xfcrfel", "(de, detected)", "1.84 s", "412 ms", "whisper-transformers",
+        for fragment in ("Wuerfel", "(de, detected)", "1.84 s", "412 ms", "whisper-transformers",
                          "cuda", "openai--whisper-large-v3-turbo"):
             self.assertIn(fragment, text)
 

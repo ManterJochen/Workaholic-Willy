@@ -864,3 +864,32 @@ describe('a pick run (POST /v1/pick, no place)', () => {
     expect(view.nextQuestion).toBe(true)
   })
 })
+
+describe('a wave at a greeting', () => {
+  it('says it waves, ends on "Gewinkt" and asks for the next instruction', () => {
+    const view = replay([
+      ev(1, 'run_started', { kind: 'wave' }),
+      ev(2, 'wave.started', { swings: 2, swing_deg: 15 }),
+      ev(3, 'wave.done', { swings: 2 }),
+      ev(4, 'run_finished', ended('wave', 'finished', 'finished', 'done')),
+    ])
+    expect(view.kind).toBe('wave')
+    expect(say(lineOf(view, 'event.run_started.wave'))).toBe('Ich winke dir zu.')
+    expect(say(lineOf(view, 'event.wave.started'))).toBe('Das Handgelenk schwingt: 2× 15° zu jeder Seite.')
+    expect(say(lineOf(view, 'event.run_finished.wave'))).toBe('Gewinkt.')
+    expect(view.nextQuestion).toBe(true)
+  })
+
+  it('says a refused swing to everyone', () => {
+    const view = replay([
+      ev(1, 'run_started', { kind: 'wave' }),
+      ev(2, 'wave.started', { swings: 2, swing_deg: 15 }),
+      ev(3, 'wave.refused', { status: 'collision', message: 'the guard refused', moved: true }),
+      ev(4, 'run_finished', ended('wave', 'failed', 'return_failed', 'problem')),
+    ])
+    const refused = lineOf(view, 'event.wave.refused')
+    expect(refused?.level).toBe('demo')
+    expect(say(refused)).toBe('Winken abgelehnt: ein Schwung ist nicht frei.')
+    expect(view.stopCard).not.toBeNull()
+  })
+})

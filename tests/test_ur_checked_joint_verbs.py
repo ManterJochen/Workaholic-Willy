@@ -119,7 +119,7 @@ class TheWholeJointPathIsJudgedTests(unittest.TestCase):
         self.assertGreater(len(planner.checked), 2, "the planner saw the endpoints and no line")
         np.testing.assert_allclose(planner.checked[0], _HERE, atol=1e-9)
         np.testing.assert_allclose(planner.checked[-1], _THERE, atol=1e-9)
-        self.assertEqual(10.0, planner.clearance_mm, "the line was not judged at safety.planned_motion's clearance")
+        self.assertEqual(3.0, planner.clearance_mm, "the line was not judged at safety.planned_motion's clearance")
 
     def test_one_movej_reaches_the_controller_and_it_is_the_goal(self) -> None:
         arm = _arm()

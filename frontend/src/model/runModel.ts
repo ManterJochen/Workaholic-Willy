@@ -797,6 +797,9 @@ function finish(view: RunView, event: RunEvent, run: RunOut): RunView {
   } else if (kind === 'home' && code === 'finished') {
     end = m('event.run_finished.home', { to: returnWords(null, next.to) })
     tone = 'ok'
+  } else if (kind === 'wave' && code === 'finished') {
+    end = m('event.run_finished.wave')
+    tone = 'ok'
   } else if (kind === 'pick' && code === 'finished') {
     end = m('event.run_finished.pick', { succeeded: run.succeeded ?? next.stats.succeeded, attempted: run.attempted ?? next.stats.picks })
     tone = 'ok'
@@ -817,7 +820,7 @@ function finish(view: RunView, event: RunEvent, run: RunOut): RunView {
   }
   next = say(next, event, end, tone, 'demo')
 
-  const asks = (cls === 'done' || cls === 'operator') && (kind === 'task' || kind === 'pick' || kind === 'home')
+  const asks = (cls === 'done' || cls === 'operator') && (kind === 'task' || kind === 'pick' || kind === 'home' || kind === 'wave')
   if (asks) next = sayOwn({ ...next, nextQuestion: true }, event, 'next', m('chat.next'))
   return next
 }
@@ -870,6 +873,8 @@ function startRun(view: RunView, event: RunEvent): RunView {
     line = m('event.run_started.teach', { label: next.teach?.label || next.teach?.name || '—' })
   } else if (kind === 'planner') {
     line = m('event.run_started.planner')
+  } else if (kind === 'wave') {
+    line = m('event.run_started.wave')
   } else {
     line = m('event.run_started.pick', { what: next.prompt || m('common.anything') })
   }
@@ -1386,6 +1391,13 @@ export function reduce(view: RunView, action: RunAction): RunView {
       return say({ ...base, timeline: withStep(base.timeline, 'return', 'done') }, event, m('event.home.arrived', { to: returnWords(null, str(data.to) ?? base.to) }), 'info', 'tech')
     case 'home.refused':
       return say({ ...base, timeline: withStep(base.timeline, 'return', 'failed') }, event, m('event.home.refused'), 'error')
+    // A wave at a greeting: its first swing is the run's first motion, and a refused swing is said to everyone.
+    case 'wave.started':
+      return say(moving(base), event, m('event.wave.started', { swings: num(data.swings) ?? 2, deg: num(data.swing_deg) ?? 15 }), 'info', 'tech')
+    case 'wave.done':
+      return say(base, event, m('event.wave.done'), 'info', 'tech')
+    case 'wave.refused':
+      return say(base, event, m('event.wave.refused'), 'error')
     case 'planner.starting':
       return say(base, event, m('event.planner.starting'), 'info', 'tech')
     case 'planner.ready':

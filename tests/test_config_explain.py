@@ -41,7 +41,7 @@ class SchemaIndexTests(unittest.TestCase):
         self.assertIn(">= 0.0", field.constraints)
 
         guard = schema_index()["robot.safety.self_collision.min_distance_mm"]
-        self.assertEqual(guard.default, 10.0, "the guard's own margin still has one")
+        self.assertEqual(guard.default, 3.0, "the guard's own margin still has one")
 
     def test_it_does_not_hang_on_the_real_schema(self) -> None:
         """Depth-capped and ref-cycle-guarded: a self-referencing model must not spin the CLI."""

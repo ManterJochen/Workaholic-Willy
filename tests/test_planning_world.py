@@ -301,6 +301,8 @@ def test_the_driver_actually_hands_its_config_down_to_the_planner() -> None:
                 # The margin every UR cuRobo cell must declare (B1 S17). A stub client skips the factory that refuses an undeclared one,
                 # so this used to pass without it; the evidence check reads the margin to find its file (S22), and meets it here.
                 "planner_margin_mm": 4.0,
+                # A cell that declares a fixture keeps 10 mm from it, as robot.ur5e.yaml does.
+                "min_distance_mm": 10.0,
                 "fixtures": [{
                     "name": "bin_wall_left",
                     "center_mm": [400.0, -180.0, 75.0],
@@ -410,7 +412,8 @@ def test_the_preflight_reads_the_fixture_list_where_it_actually_lives() -> None:
     declared = RobotConfig.model_validate({
         "vendor": "ur",
         "safety": {
-            "self_collision": {"fixtures": [{
+            # A cell that declares a fixture keeps 10 mm from it, as robot.ur5e.yaml does.
+            "self_collision": {"min_distance_mm": 10.0, "fixtures": [{
                 "name": "bench_leg",
                 "center_mm": [0.0, 0.0, 0.0],
                 "half_extents_mm": [50.0, 50.0, 300.0],
@@ -444,7 +447,8 @@ def _preflight(*, fixtures=()):
 
     safety = RobotSafetyConfig.model_validate({
         "payload": {"enforce": False},
-        "self_collision": {"fixtures": [
+        # A cell that declares a fixture keeps 10 mm from it, as robot.ur5e.yaml does.
+        "self_collision": {"min_distance_mm": 10.0, "fixtures": [
             {"name": f.name, "center_mm": list(f.center_mm),
              "half_extents_mm": list(f.half_extents_mm)} for f in fixtures
         ]},

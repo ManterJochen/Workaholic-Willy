@@ -52,7 +52,8 @@ class TheOwnersHandE(_Loaded):
         model = ParallelJawGripperModel(finger_length_mm=36.53, finger_thickness_mm=10.80, finger_width_mm=29.24,
                                         fingertip_depth_mm=10.45, pad_length_mm=20.91, pad_ahead_mm=10.45,
                                         palm_depth_mm=104.12, palm_width_mm=75.0)
-        self.assertFalse(hasattr(model, "palm_thickness_mm"))
+        # The model carries the housing only where a cell hands it one (``build_gripper_geometry``); this one has none.
+        self.assertIsNone(model.palm_thickness_mm)
         hand = push_hand_from_registry(model, hand="robotiq_hande", open_width_mm=49.99)
         assert isinstance(hand, PushHand), hand
         self.assertEqual(hand.palm_thickness_mm, 75.0)

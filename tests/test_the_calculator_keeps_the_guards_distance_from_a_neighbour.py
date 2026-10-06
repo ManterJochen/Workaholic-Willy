@@ -135,6 +135,19 @@ class NoGraspComesNearerANeighbourThanTheGuardKeepsTests(unittest.TestCase):
         self.assertTrue(all(abs(float(g.axis[0])) < 0.5 for g in result.candidates),
                         [np.round(g.axis, 2).tolist() for g in result.candidates])
 
+    def test_room_the_guard_admits_is_not_refused_by_the_grid(self) -> None:
+        """Cubes 16 mm off both sides leave the open fingers room the guard admits beside the world's boxes. The grid,
+        12 mm cells grown once, refused every finger within 12 to 24 mm of a point, and with it these grasps; where the
+        boxes decide, it keeps the hand off the points alone (the grasp bench, 2026-10-05)."""
+        frame = Frame_((BENCH, MAT, *on_x(16.0)), PART)
+
+        result = compute(calculator(scene=True), frame)
+
+        self.assertGreater(len(result.candidates), 0)
+        boxes = world_boxes(on_x(16.0), frame)
+        near = [round(least_mm(g, boxes), 2) for g in result.candidates]
+        self.assertTrue(all(d >= GUARD_MM - 0.05 for d in near), near)
+
     def test_a_part_the_boxes_close_in_says_a_neighbour_is_in_the_way(self) -> None:
         from src.robot.grasping.types.feedback import GraspFailureReason
 

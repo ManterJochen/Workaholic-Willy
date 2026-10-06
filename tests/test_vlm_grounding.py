@@ -125,6 +125,28 @@ class PayloadExtractionTests(unittest.TestCase):
                 self.assertIsNone(extract_json_payload(text))
 
 
+    def test_a_list_cut_off_by_the_token_cap_keeps_its_whole_objects(self) -> None:
+        """Out of tokens mid-list (2026-10-06): a pile of parts came back as no part. The whole objects are what the
+        model asserted; the cut one is left out, wherever the cut fell."""
+        whole = '{"bbox_2d": [10, 20, 110, 220], "label": "a"}, {"bbox_2d": [300, 20, 400, 220], "label": "b"}'
+        for cut in ('{"bbox_2d": [500, 2', '{"bbox_2d": [500, 20, 600, 220]', '{"bbox_2d": [500, 20, 600, 220], "la'):
+            for fence in ("", "```json\n"):
+                with self.subTest(cut=cut, fence=fence):
+                    payload = extract_json_payload(f"{fence}[{whole}, {cut}")
+                    self.assertEqual(["a", "b"], [item["label"] for item in payload])
+
+    def test_a_cut_off_list_of_twelve_boxes_grounds_twelve_parts(self) -> None:
+        boxes = ", ".join(f'{{"bbox_2d": [{10 + 45 * i}, 20, {40 + 45 * i}, 220], "label": "part"}}' for i in range(12))
+        self.assertEqual(12, len(parse(f'[{boxes}, {{"bbox_2d": [9')))
+
+    def test_the_grounder_may_write_forty_boxes(self) -> None:
+        from src.models.vlm.qwen import GROUNDING_MAX_NEW_TOKENS, Qwen3VLGrounder
+
+        self.assertGreaterEqual(GROUNDING_MAX_NEW_TOKENS, 40 * 47)
+        grounder = Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct")
+        self.assertEqual(GROUNDING_MAX_NEW_TOKENS, grounder._max_new_tokens)  # noqa: SLF001
+
+
 class BoxParsingTests(unittest.TestCase):
     def test_the_documented_format(self) -> None:
         [det] = parse('[{"bbox_2d": [10, 20, 110, 220], "label": "red cube"}]')

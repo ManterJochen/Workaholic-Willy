@@ -232,6 +232,61 @@ class ARearrangingPushMayTouchWhatStandsInItsWayTests(unittest.TestCase):
         self.assertEqual((), _planned(self, _plan(**self._scene(SIDE))).kept_out_neighbours_mm)
 
 
+#: A low cube 5 mm beside where the fingers come down for +x: inside the owner's 10 mm, outside a grasp's 1 mm.
+BESIDE_THE_FINGERS = _block(centre_xy=(-70.0, 0.5 * 29.24 + 5.0 + 5.0), size_xy=(10.0, 10.0), height=10.0)
+
+
+class BesideANamedPartTheFingersComeDownAsAGraspsDoTests(unittest.TestCase):
+    """The owner, 2026-10-06 ("Wie beim Greifen: 1 mm"): on a rearranging push the fingers come down 1 mm from a part
+    the detector named, as a grasp's finger comes to one, and the owner's 10 mm from everything nobody named."""
+
+    def _scene(self, *, named: bool, clearance: "float | None" = 1.0) -> dict[str, Any]:
+        flags = np.concatenate([np.zeros(len(SIDE), dtype=bool), np.full(len(BESIDE_THE_FINGERS), named)])
+        return dict(neighbour_points_mm=np.vstack([SIDE, BESIDE_THE_FINGERS]), push_axes_xy=X_ONLY,
+                    push_distance_mm=50.0, may_shove=True, neighbour_named=flags, named_part_clearance_mm=clearance,
+                    **BESIDE)
+
+    def test_a_named_part_5_mm_beside_the_fingers_lets_them_come_down(self) -> None:
+        plan = _planned(self, _plan(**self._scene(named=True)))
+        np.testing.assert_allclose(plan.direction[:2], (1.0, 0.0), atol=1e-9)
+
+    def test_what_nobody_named_keeps_the_owners_10_mm(self) -> None:
+        refusal = _refused(self, _plan(**self._scene(named=False)), "no_free_direction")
+        self.assertEqual("hand_blocked", _verdict(refusal, (1.0, 0.0)))
+
+    def test_with_no_named_clearance_every_neighbour_keeps_10_mm(self) -> None:
+        refusal = _refused(self, _plan(**self._scene(named=True, clearance=None)), "no_free_direction")
+        self.assertEqual("hand_blocked", _verdict(refusal, (1.0, 0.0)))
+
+    def test_a_named_part_under_the_fingers_still_blocks_them(self) -> None:
+        under = _block(centre_xy=(-70.0, 0.0), size_xy=(10.0, 10.0), height=10.0)
+        flags = np.concatenate([np.zeros(len(SIDE), dtype=bool), np.ones(len(under), dtype=bool)])
+        refusal = _refused(self, _plan(neighbour_points_mm=np.vstack([SIDE, under]), push_axes_xy=X_ONLY,
+                                       push_distance_mm=50.0, may_shove=True, neighbour_named=flags,
+                                       named_part_clearance_mm=1.0, **BESIDE), "no_free_direction")
+        self.assertEqual("hand_blocked", _verdict(refusal, (1.0, 0.0)))
+
+    def test_flags_that_do_not_match_the_points_are_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            _plan(neighbour_named=np.ones(3, dtype=bool), named_part_clearance_mm=1.0)
+
+    def test_the_cell_takes_a_grasps_slack_where_the_fingers_touch_parts(self) -> None:
+        from src.robot.grasping.generation.scene_obstacles import SOFT_SLACK_MM
+        from src.robot.grasping.recovery.push_gate import PushCell
+        from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import hande_cell
+
+        cell = PushCell.from_robot_config(hande_cell())
+        assert isinstance(cell, PushCell), cell
+        self.assertEqual(SOFT_SLACK_MM, cell.named_part_clearance_mm)
+        on = hande_cell()
+        perceived = on.safety.planning_world.perceived.model_copy(update={"fingers_touch_parts": False})
+        world = on.safety.planning_world.model_copy(update={"perceived": perceived})
+        off = on.model_copy(update={"safety": on.safety.model_copy(update={"planning_world": world})})
+        cell = PushCell.from_robot_config(off)
+        assert isinstance(cell, PushCell), cell
+        self.assertIsNone(cell.named_part_clearance_mm)
+
+
 def _brushing_plan() -> PushPlan:
     plan = _plan(may_shove=True, neighbour_points_mm=np.vstack([SIDE, BRUSHED]), push_axes_xy=X_ONLY,
                  push_distance_mm=50.0, **BESIDE)

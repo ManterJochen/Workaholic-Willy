@@ -9,7 +9,7 @@ a few pixels are, not where a surface is.
 
 The drop (``drop_plan``) is ``SetDown.onto`` the bin, then four rules, in order:
 
-* the air over the rim is the task's rim air, 20 mm unless the operator chose 10 to 50 (Q3): ``SET_DOWN_AIR_MM`` plus the
+* the air over the rim is the task's rim air, 13 mm as shipped (20 mm where a tree says nothing) unless the operator chose 10 to 50 (Q3): ``SET_DOWN_AIR_MM`` plus the
   perceived world's margin (``rim_clearance_mm``), so the carried part clears what the planner keeps around the rim,
   held to the owner's 10 to 50 mm whatever the margin;
 * a grasp within 5 degrees of vertical is turned about the vertical until it closes along the cell's natural closing
@@ -171,12 +171,13 @@ class WhatATaskKeepsOfItsBinTests(unittest.TestCase):
 
 
 class TheRimClearanceTests(unittest.TestCase):
-    def test_it_is_the_set_down_air_and_the_perceived_worlds_margin_20_mm_as_shipped(self) -> None:
+    def test_it_is_the_set_down_air_and_the_perceived_worlds_margin_13_mm_as_shipped(self) -> None:
+        """5 mm of set-down air and the 8 mm margin the owner ships since 2026-10-05."""
         from src.config import load_tree
         from src.robot.execution.place_target import rim_clearance_mm
 
         robot = load_tree("console_dummy").robot
-        self.assertEqual(20.0, rim_clearance_mm(robot))
+        self.assertEqual(13.0, rim_clearance_mm(robot))
         margin = SimpleNamespace(safety=SimpleNamespace(planning_world=SimpleNamespace(
             perceived=SimpleNamespace(margin_mm=25.0))))
         self.assertEqual(30.0, rim_clearance_mm(margin))

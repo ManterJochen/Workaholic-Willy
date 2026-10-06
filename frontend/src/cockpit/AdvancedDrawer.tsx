@@ -34,6 +34,12 @@ export default function AdvancedDrawer({ draft, facts, tech, change, opened }: A
   const pushShown = o.pushMm ?? facts?.push?.default_mm ?? PUSH_MM
   const pushMax = Math.max(PUSH_MIN_MM, facts?.push?.ceiling_mm ?? 50)
   const critical = o.criticalParts ?? facts?.push?.critical_parts ?? false
+  // Where the task takes every part, a blocker may go where the parts go (the owner, 2026-10-06).
+  const intoThePlace = o.blockerIntoThePlace ?? facts?.push?.blocker_into_the_place ?? true
+  // The run's ticks start from what the cell's config allows, and override it for this task alone (2026-10-05).
+  const rescanOn = o.rescan ?? facts?.push?.rescan_allowed ?? false
+  const pushOn = o.push ?? ((facts?.push?.push_allowed ?? canPush) && !critical)
+  const clearOn = o.clear ?? facts?.push?.push_allowed ?? canPush
   const rimShown = o.rimAirMm ?? RIM_AIR_MM
   const onOff = (on: boolean) => t(on ? 'ck.adv.on' : 'ck.adv.off')
 
@@ -78,6 +84,36 @@ export default function AdvancedDrawer({ draft, facts, tech, change, opened }: A
           </select>
           <span className="ck-help">{t('ck.adv.axisHelp')}</span>
         </label>
+        <label className="ck-switch">
+          <input type="checkbox" checked={rescanOn} onChange={(e) => change({ rescan: e.target.checked })} />
+          <span className="ck-switch-name">{t('ck.adv.rescan')}</span>
+          <span className="ck-help">{t('ck.adv.rescanHelp')}</span>
+        </label>
+        {canPush && (
+          <label className="ck-switch">
+            <input type="checkbox" checked={pushOn} onChange={(e) => change({ push: e.target.checked })} />
+            <span className="ck-switch-name">{t('ck.adv.allowPush')}</span>
+            <span className="ck-help">{t('ck.adv.allowPushHelp')}</span>
+          </label>
+        )}
+        {canPush && (
+          <label className="ck-switch">
+            <input type="checkbox" checked={clearOn} onChange={(e) => change({ clear: e.target.checked })} />
+            <span className="ck-switch-name">{t('ck.adv.allowClear')}</span>
+            <span className="ck-help">{t('ck.adv.allowClearHelp')}</span>
+          </label>
+        )}
+        {canPush && clearOn && (
+          <label className="ck-switch">
+            <input
+              type="checkbox"
+              checked={intoThePlace}
+              onChange={(e) => change({ blockerIntoThePlace: e.target.checked })}
+            />
+            <span className="ck-switch-name">{t('ck.adv.blockerInto')}</span>
+            <span className="ck-help">{t('ck.adv.blockerIntoHelp')}</span>
+          </label>
+        )}
         {canPush && (
           <label className="ck-switch">
             <input type="checkbox" checked={critical} onChange={(e) => change({ criticalParts: e.target.checked })} />
@@ -85,7 +121,7 @@ export default function AdvancedDrawer({ draft, facts, tech, change, opened }: A
             <span className="ck-help">{t('ck.adv.criticalHelp')}</span>
           </label>
         )}
-        {canPush && !critical && (
+        {canPush && pushOn && !critical && (
           <label className="ck-field">
             <span className="ck-switch-name">{t('ck.adv.push')}</span>
             <span className="ck-number">

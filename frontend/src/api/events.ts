@@ -362,6 +362,9 @@ export interface EventDataMap {
   'planner.starting': Record<string, never>
   'planner.ready': { loaded?: boolean }
   'planner.failed': { refusal?: string }
+  'wave.started': { swings?: number; swing_deg?: number }
+  'wave.done': { swings?: number }
+  'wave.refused': { status?: string; message?: string; moved?: boolean }
   'cell.jaws_question': JawsQuestionData
   'cell.jaws_answered': { question_id?: string; choice?: JawsChoice }
   'cell.jaws_ended': { question_id?: string; outcome?: 'open' | 'refused' | 'no_answer' | 'cancelled'; refusal?: string; detached?: boolean }

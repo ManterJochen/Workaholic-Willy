@@ -179,7 +179,8 @@ class RefusedBeforeAnythingMovesTests(unittest.TestCase):
         anything = TaskPlan(object="", place=PlaceAt(pose="drop_left"), options=TaskOptions(pick_anything=True))
         ran = run(["part"], plan=anything)
         self.assertIs(TaskStop.FINISHED, ran.report.stop)
-        self.assertEqual([], ran.service.prompts, "an empty phrase was set as the prompt")
+        self.assertTrue(all(prompt.phrase for prompt in ran.service.prompts), "an empty phrase was set as the prompt")
+        self.assertEqual("each separate object", ran.service.prompts[0].phrase, "every part is grounded on its own")
 
     def test_an_empty_object_on_a_cell_that_grounds_nothing_picks_what_it_shows(self) -> None:
         from src.robot.execution.task import PlaceAt, TaskPlan, TaskStop

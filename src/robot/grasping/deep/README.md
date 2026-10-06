@@ -158,7 +158,8 @@ Four things the picture exists to make visible, each of which is a decision rath
    came through. [04_train_on_a_public_corpus.py](../../../../examples/offline/training/04_train_on_a_public_corpus.py)
    is that route end to end.
 
-[The model](#the-model) below says what is inside the backbone and the head; this says how a label
+[The model](#the-model) below says what is inside the backbone and the head, and
+[docs/deep-network.md](../../../../docs/deep-network.md) says it layer by layer with every default; this says how a label
 becomes a gradient.
 
 ## Recipes and tiers
@@ -271,5 +272,6 @@ its siblings; import the submodule you mean. `eval/` and `foreign/` re-export th
 
 - [grasping/](../README.md): the stack, and `build_calculator`
 - [generation/](../generation/README.md): the analytic generator this one is selected against
+- [docs/deep-network.md](../../../../docs/deep-network.md): the network layer by layer, and what it can add
 - [docs/cli.md](../../../../docs/cli.md): the data generation and training commands in order
 - [datagen/](../../../../datagen/README.md): the scene generator that writes the corpus

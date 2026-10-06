@@ -149,6 +149,10 @@ class SegmentationOffer:
     exclude_masks: tuple[np.ndarray, ...] = ()
     target_points_base_mm: np.ndarray | None = None
     target_label: str = ""
+    #: The other parts the detector named in the frame, each its label and its points in BASE: a box the camera world
+    #: builds of them is a named part's from any pose, a wrist camera's included, whose masks mean nothing once the arm
+    #: moved (``LivePlannerWorld.offer_segmentation``).
+    named_points_base_mm: tuple[tuple[str, np.ndarray], ...] = ()
 
     def __post_init__(self) -> None:
         if chosen(self.camera) and (not isinstance(self.camera, str) or not self.camera.strip()):
@@ -173,8 +177,11 @@ class SegmentationOffer:
                     f"target_points_base_mm are finite (N, 3) BASE millimetres, got shape {array.shape}"
                 )
             object.__setattr__(self, "target_points_base_mm", array)
+        named = tuple((str(label), np.asarray(points, dtype=np.float64).reshape(-1, 3))
+                      for label, points in self.named_points_base_mm)
         object.__setattr__(self, "labelled_masks", labelled)
         object.__setattr__(self, "exclude_masks", exclude)
+        object.__setattr__(self, "named_points_base_mm", named)
         object.__setattr__(self, "target_label", str(self.target_label))
         object.__setattr__(self, "captured_at_s", float(self.captured_at_s))
 
@@ -225,10 +232,11 @@ def _keeping_out(arm: object, offer: SegmentationOffer) -> Iterator[KeepOutScope
     if world is None:
         yield KeepOutScope(world_wired=False, offer=offer)
         return
+    named = {"named_points_base_mm": offer.named_points_base_mm} if offer.named_points_base_mm else {}
     world.offer_segmentation(
         camera=offer.camera, labelled_masks=offer.labelled_masks, exclude_masks=offer.exclude_masks,
         timestamp=offer.captured_at_s, target_points_base_mm=offer.target_points_base_mm,
-        target_label=offer.target_label, hold=True,
+        target_label=offer.target_label, hold=True, **named,
     )
     try:
         yield KeepOutScope(world_wired=True, offer=offer)

@@ -97,7 +97,7 @@ class AnEvidenceRefusalParsesBackTests(unittest.TestCase):
         args = _script("matrix_gate").parser().parse_args(_after(refused, "matrix_gate.py"))
         self.assertEqual((args.arm, args.hand), ("ur5e", "robotiq_hande"))
         self.assertEqual(args.plate, self._PLATE)
-        self.assertEqual((args.planner_margin_mm, args.guard_margin_mm, args.attach), (4.0, 10.0, 4))
+        self.assertEqual((args.planner_margin_mm, args.guard_margin_mm, args.attach), (4.0, 3.0, 4))
         self.assertEqual(list(args.tool_rotation_xyzw), [0.0, 0.0, 0.0, 1.0])
         self.assertTrue(args.write)
         looked_for = evidence_path(arm="ur5e", hand="robotiq_hande", coupling_mm=20.0, approach="+Z", closing="+X",

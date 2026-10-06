@@ -102,7 +102,8 @@ class AClearLineRunsTests(unittest.TestCase):
         np.testing.assert_allclose(execute[1][1], _THERE, atol=1e-6)
 
     def test_the_line_is_judged_at_the_configured_clearance_and_a_screen_at_none(self) -> None:
-        for clearance, safety in ((10.0, {}), (25.0, {"planned_motion": {"line_clearance_mm": 25.0}})):
+        # The default is the owner's 3 mm since 2026-10-05, 10 before.
+        for clearance, safety in ((3.0, {}), (25.0, {"planned_motion": {"line_clearance_mm": 25.0}})):
             with self.subTest(clearance_mm=clearance):
                 planner = RoutePlanner(here=_HERE)
                 _move(_arm(planner, safety=safety), _THERE)

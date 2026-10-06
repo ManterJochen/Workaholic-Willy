@@ -380,7 +380,10 @@ def _file_refusal(
         return (f"{name} was measured on guard_sha256 {evidence.guard_sha256[:12]}... and this cell composes "
                 f"{guard_sha256[:12]}..., so the body the exact mesh guard judges moved since. That is what a plate "
                 f"becoming a body does, and it is why it moves the evidence. Measure it again: {command}")
-    if abs(float(guard_margin_mm) - evidence.guard_margin_mm) > 1e-9:
+    # The measurement proves that no pose the planner clears is one the exact guard refuses at the margin it was
+    # measured at. A guard keeping less refuses a subset of those poses, so a file measured at a larger margin proves
+    # the smaller one too (the owner, 2026-10-05: 3 mm for every cell). A smaller measured margin proves nothing here.
+    if evidence.guard_margin_mm + 1e-9 < float(guard_margin_mm):
         return (f"{name} was measured against a guard keeping {evidence.guard_margin_mm:g} mm clear and this cell "
                 f"keeps {float(guard_margin_mm):g} mm, so what it proved is not what this cell asks. Measure it at this "
                 f"cell's margin: {command}")

@@ -126,8 +126,9 @@ one with an open finger in a neighbour; with the rule on it offers none and says
 
 **Side grasps** (`grasping.side_approaches`, on; the owner, 2026-10-01: equal by geometry). The
 support-footprint search offers every tilt the hand fits at, scored by the room each keeps from what the
-camera saw, and vertical wins a tie: a wall 12 mm beside a 40 mm cylinder puts a grasp tilted 30 degrees
-away from it first, with the vertical one still listed. A grasp 15 degrees or more off vertical is offered
+camera saw, and vertical wins a tie, every score within 0.001 of the best of its run counting as one: a wall
+12 mm beside a 40 mm cylinder puts a grasp tilted 30 degrees away from it first, with the vertical one still
+listed, and a face's normal read off a noisy footprint no longer hands a 15 degree tilt the rank. A grasp 15 degrees or more off vertical is offered
 only through space a depth ray saw. The policy lifts every grasp straight up (BASE +Z, `retreat_mm`), and
 `Robot.pick` lifts a grasp more than 10 degrees off vertical straight up too, by the standoff and at least
 60 mm; an empty hand backs out along its approach.
@@ -135,13 +136,13 @@ only through space a depth ray saw. The policy lifts every grasp straight up (BA
 **The next grasp of the same look.** Where a try was refused by a guard or the planner before anything was
 sent (`self_collision_rejected` and its kin, or the planner's own no-plan sentence) and every pose it did
 reach kept the open hand's jaw region out of the part's keep-out box, the attempt hands the policy the
-look's next grasp, up to four in all (`GRASPS_TRIED_PER_ATTEMPT`); with `both_faces` only the best. Before
+look's next grasp, up to twelve in all, every candidate the calculator offers (`GRASPS_TRIED_PER_ATTEMPT`); with `both_faces` only the best. Before
 each, a stop asked for and the controller are read, and a wrist pick that sent a motion goes back to its
 look on a judged move. A toggle is never switched between tries. The box is judged at the poses a try
 reached, not along the planned move to them. At a 10 mm standoff the open jaws stand inside the part's box
 (a measured double: the jaws 19.5 to 40.5 mm up, the box's top at 55), so a try that reached its standoff
 ends the tries; at 60 mm they stay over it. Each try is a row of `PickAttempt.tries` and a log line ("try 2
-of 4 ..."), each refused one at WARNING.
+of 6 ..."), each refused one at WARNING.
 
 Stage 6 depends on what the arm says about straight lines (`KeepsLines`). An arm that keeps them (a cuRobo
 UR or simulator arm, an ik UR, the dummy, the simulator mock) drives a planned move to the standoff, one line
@@ -489,8 +490,8 @@ The same values are fields of the report (`looks`, `looks_fused`, `jaw_faces_see
 | ERROR | `the motion to look ... failed once it may have been commanded` | the arm may have moved part of the way; nothing else is commanded |
 | ERROR | `... not seen from any view: both_faces asks for both before gripping` | `faces_unseen`: nothing gripped |
 | INFO | `no grasp: ...` (the calculator's sentence) | why the part got no grasp: a neighbour, the support, too short for the hand (section 2) |
-| WARNING | `try 2 of 4 (rank 1) motion_failed: ...` | a grasp refused before anything was sent; the next of the same look follows where the hand kept out of the part's box (section 2) |
-| WARNING | `try 1 of 4 (rank 0) judged from where the arm stands, nothing moved: ...` | the grasp's standoff, line in or lift would be refused; nothing moved, and the next grasp follows (6.4) |
+| WARNING | `try 2 of 6 (rank 1) motion_failed: ...` | a grasp refused before anything was sent; the next of the same look follows where the hand kept out of the part's box (section 2) |
+| WARNING | `try 1 of 6 (rank 0) judged from where the arm stands, nothing moved: ...` | the grasp's standoff, line in or lift would be refused; nothing moved, and the next grasp follows (6.4) |
 | INFO | `not taken away as a blocker: ...` | why each neighbour beside the part is no blocker (6.4) |
 | INFO | `clear the blocker (set_aside): ...` | a neighbour was taken away and the arm looked again; any other code says why none was (6.4) |
 | WARNING | `the world refused near ...: N of the M box(es) it holds lie within 300 mm of it: ...` | the boxes the planner held where it refused, nearest first ([04](04-robot-and-safety.md), section 6) |
@@ -563,15 +564,15 @@ kept, each the way round it closes.
 The camera world is a **height map** of what the cameras saw
 ([`height_map.py`](../../src/robot/safety/planning/height_map.py)): each object laid on a grid in its own
 turn, every cell keeping its highest seen point, cells of like height merged into boxes. Every box is
-**turned about base Z the way the object stands** and runs **from the bench to its top plus 15 mm**
+**turned about base Z the way the object stands** and runs **from the bench to its top plus 8 mm**
 (`perceived.margin_mm`):
 
 - an **open bin** is its walls with its **inside free**, so the hand reaches into it;
 - a **low part beside a tall one** keeps its own height;
 - a **turned object** is a turned box, and needs no squaring to base X/Y.
 
-cuRobo and the exact guard hold the same boxes; the guard keeps 5 mm from them where the arm and a declared
-fixture keep 10 ([04](04-robot-and-safety.md), 5.5). **Where only these boxes refuse the planner's world,
+cuRobo and the exact guard hold the same boxes; the guard keeps 3 mm from them, as from the arm itself and a
+declared fixture ([04](04-robot-and-safety.md), 5.5). **Where only these boxes refuse the planner's world,
 the exact guard decides them**, so a bin the camera saw stands about 30 mm from the shoulder housing (the
 guard decides from about 26) where the planner's own spheres alone wanted 50 to 60
 ([04](04-robot-and-safety.md), section 6). That holds with a hand known empty and open: while the hand
@@ -580,11 +581,40 @@ planner keeps its 50 to 60, and a grasp there judges its lift carrying before it
 body hides part of an object beside what the cameras saw, the hidden stretch stands as high as what was seen
 beside it; what no camera saw at all stays free.
 
+**Never through the robot itself.** The hand hides most where it stands: down at a part it hides the floor
+round its own fingers from the wrist camera. A hidden stretch, and the stretch the robot hides between two
+objects, is lowered wherever the robot's body stands in it or hangs less than twice the margin over it, until
+its box keeps a margin under the robot; lowered to the floor it is gone. A wall runs on into what the hand
+hides only where its last two cells stand at one height: a tray's wall and a small part beside it are two
+things, not one wall. It runs on as thick as it was seen, not as thick as a cell, and not through the robot
+standing in the run itself; beside the hand it still runs on, a wall 6 mm from the fingers being the wall the
+self filter took for the hand. On the grasp bench (2026-10-06) a tray's wall filled across to the part through
+the fingers, and a part's row ran on into the cell the fingers stood in; every way out was refused.
+
+**The fingers and what they may come to.** A box of a neighbour part the detector named holds the fingers to
+its measured surface, the box less its margin (`perceived.fingers_touch_parts`, the owner's "Finger dürfen
+streifen"), and lets them 3 mm past it (`perceived.finger_contact_mm`, the owner's "3 mm" of 2026-10-06): the
+descending finger may shove the neighbour aside that far, and the open Hand-E needs 15 mm beside a part rather
+than 18. The calculator plans them a millimetre short of that, and the whole hand a millimetre further from any
+other box than the guard keeps, as the guard's boxes, built from more frames and merged to fit the slots, stand
+a little apart from its own: on a tray the line down to four grasps in a row was refused 0.2 to 0.7 mm short.
+A finger comes to 1 mm of what a support reads, the mat or the bench (`perceived.finger_floor_mm`, the owner's "bis
+auf 1 mm, solange er sie nicht berührt" of 2026-10-06; `grasping.support.min_clearance_mm` 1 to match): the guard
+lowers a support solid's top for the fingers by the band, the allowance and its own distance less that millimetre,
+and keeps its distance from what is left, so a part 13.5 mm tall is the Hand-E's least. A part thinner than the band
+the reading swallowed is the support's, and a finger comes as near it. A support's solid holds the fingers at the guard's distance from the reading and
+its excess, not from the solid's top a band and the allowance higher (`perceived.fingers_to_the_support_reading`,
+the owner's "wir müssen tiefer gehen", both of 2026-10-05). Every other link keeps the guard's distance from the
+whole box, and a box nobody named stays whole for every link.
+
 **64 boxes, merged to fit.** `safety.planning_world.perceived.max_boxes` defaults to **64**, and the planner
 reserves **1 + declared + 64** box slots when it starts: **restart the planner after changing it**, and after
 updating to this version (65 slots on a cell that declares only its bench). Past the budget the boxes of one
 object merge into the box that holds them, the least added volume first, down to one box per object, and the
-refresh line says `N box(es) merged into the boxes holding them to fit the slots`. What still does not fit
+refresh line says `N box(es) merged into the boxes holding them to fit the slots`. The volume counts the more
+the nearer the merged box comes to the motion's goal (twice at 100 mm, five times at 50), so the boxes far
+from the hand merge first and those beside the fingers stay as seen; a straight line's world is built about
+its lower end, where the hand passes the parts, the goal of a line down and the start of a lift. What still does not fit
 refuses the motion, naming `safety.planning_world.perceived.max_boxes`: an obstacle the planner never
 received is one it routes straight through. The world's render adds `N cell(s) the robot hid from the cameras
 stand as high as what was seen beside them` and a line for every box that may be the robot seen off its
@@ -637,6 +667,17 @@ print(report)   # task FINISHED, 1 part placed, the arm back home
   every drop;
   moved more than min(100 mm, half its diagonal), another footprint or another rim, it is lost: the part
   goes back where it was gripped (`service.put_back`), the arm returns, and the task asks.
+- **What it picks.** `object` is the phrase the detector grounds, asked for every such part in a box of its
+  own on a cell that grounds a phrase (`task.EACH_SEPARATE`: "each separate green part"), each mapped back
+  onto the object named. An empty one, with `pick_anything`, grounds every part (`task.EVERY_PART_PHRASE`,
+  "each separate object"), every one a target and called "object" where its words allow. On a mat of 20
+  parts Qwen3-VL-4B grounded one box for "object", "all objects" or "every object" and all 20 for "each
+  separate object", one of the two green parts for "green part" and both for "each separate green part",
+  and both red ones and no orange one for "each separate red part" (2026-10-06). A part the detector names keeps the fingers' rules for parts beside it (5.3), the
+  push's 1 mm and the blocker's way into the bin (6.4); a part it does not name keeps the whole rule. The
+  grounder writes up to 2048 tokens, about 40 boxes, and keeps the whole boxes of an answer cut off
+  mid-list; the 512 it wrote before held 10 to 15. A look takes longer for it: 15 to 28 s for 20 parts on
+  this box's RTX 5080 beside the bench, against 2 s for one.
 - **How long.** `scope="once"` ends when the part is placed and the arm is back; `"until_empty"` after two
   empty looks in a row. Three failed picks in a row end it where the arm stands, 100 parts end it
   `part_limit`. Its own drop area stays out of its picks for the whole task: the bin's footprint, and 150 mm
@@ -770,7 +811,12 @@ check before the arm moves asks where the jaws stand, as at every pick start ([0
 move to a grasp's standoff, its line in and its lift as if the jaws held the part are judged from the look
 first. On URSim (2026-10-03) a lift that turned wrist 1 out of the cable window was refused only once the
 hand stood at the part; judged ahead it moves nothing, and the next grasp of the same look follows. A
-part every grasp of which was refused that way is treated as one every grasp of which collided.
+part every grasp of which was refused that way is treated as one every grasp of which collided. The line in
+is judged first, from the standoff's nearest configuration, before the route there is planned: where the
+exact guard refuses it at a part that hangs on the flange (a finger, the housing, the wrist camera, wrist 3)
+against a fixture, every configuration's line is refused the same and the route is never planned. The route
+costs seconds; on the grasp bench (2026-10-06) a bin's corner spent 17 s a grasp on routes whose line then
+failed 0.07 mm short at wrist 3.
 
 **Push, or clear a blocker: the owner's switch** (`recovery.critical_parts`, 2026-10-03; a console run
 sets it for itself under *Kritische Teile*). Off, the default: a boxed-in part is **pushed first**, and
@@ -797,14 +843,22 @@ the workspace, let go 3 mm over where it stood relative to its support) or at
 and looks again. There is **no budget**, but a rule: the clearing goes on only while each removal spares
 some of the part's refusals, and stops with a typed reason (`blocker.FREED_NOTHING`, `NO_FREE_SPOT`,
 `NO_GRASPABLE_BLOCKER`, ...) where one freed nothing, no spot is free or no blocker can be gripped; a
-blocker once set down is never taken again. A refusal before anything moved lets the attempt go on,
+blocker once set down is never taken again. A removal that spared nothing by the count is followed by one more
+where that one frees a grasp of the part outright: two posts either side of a part each free nothing alone,
+and the count is a new look's (the grasp bench, 2026-10-06). A refusal before anything moved lets the attempt go on,
 and so does a grasp refused once the arm stood over the blocker while the hand is known empty and open
 (`why_not_known_open`: its line in, or its lift judged as if carrying): the arm goes back to its look on a
 judged move first, the blocker still held out of the world as on the way down (the open jaws stand round
 it), and that blocker is not tried again. Any other stop once something moved ends the pick where the arm
 stands, the blocker maybe in the hand, and needs a person as a stopped push does. Each clearing is an
 attempt with `action: clear_blocker` (`blocker: set_aside` or the stop's code) and in
-`orchestrator.blockers`. Depth alone cannot part objects that touch: on the owner's pile every cluster was
+`orchestrator.blockers`. A task that takes every part into one place takes a blocker as the part its pick
+takes (`recovery.blocker_into_the_place`, on, the owner's "direkt weggepackt" of 2026-10-06; the console's
+**Blocker direkt wegpacken**): gripped, lifted and reported picked (`blocker: taken_as_the_pick`), set down by
+the task where its parts go, and the part it blocked is picked next. No free spot is asked for, and only a part
+the detector named is taken so: a wall of the tray the part stood in passed every other test. Off, or in a
+task that names an object, it is set aside as above ("nur umgelegt"). Nothing in a region the task keeps out,
+its bin among them, is ever a blocker. Depth alone cannot part objects that touch: on the owner's pile every cluster was
 55 to 80 mm across, too wide for the hand, so nothing there was taken. And the hand needs room round a
 blocker: a neighbour within about 31 mm leaves the Hand-E's part no grasp, and one within about 20 mm
 leaves the hand no room to grip that neighbour either, so a part boxed in that tightly stays boxed
@@ -838,7 +892,8 @@ at hand, and only where the parts are not critical. **A fixed-camera cell never 
   object the looks and the calculator saw beside the part among them, a push that touches nothing but the
   part first. **The push may rearrange the scene** (the owner, 2026-10-03: "Er darf die Szene ruhig dolle
   verändern"): the part may shove a lower neighbour ahead of it, and the fingers may brush one beside
-  their stroke. The fingers come down **10 mm** from every neighbour, on table the camera saw; the housing
+  their stroke. The fingers come down **10 mm** from every neighbour, **1 mm** from a part the detector
+  named (as a grasp's do, the owner's "wie beim Greifen" of 2026-10-06), on table the camera saw; the housing
   keeps the camera world's margin plus the line clearance (25 mm shipped) from every neighbour tall
   enough to reach it, and such a neighbour stays in the guard's world, the fingers keeping the same from
   it. A neighbour the push shoves counts where it ends, so driving one along in front of the part opens no
@@ -1081,9 +1136,12 @@ and why it stands. Give the bin room, about 30 mm from the shoulder housing, mor
 reads `execution_failed` with `the retreat, judged at the part as if the jaws held the part ... would be
 refused: ...` (the policy's own outcome is `carried_retreat_refused`): at the part, with the jaws still open,
 its lift carrying would be refused, so they stayed open and the arm went back up the line it came down; the
-pick goes on to its next part. Give the bin the 50 mm a carried part needs, or declare it. **An arm held after a
+pick goes on to its next part. Give the bin the 50 mm a carried part needs, or declare it. The check, the lift
+and the line back up are judged against the world the line down was judged in, with no new frame, each leaving
+the region between the jaws out at the part (the owner, 2026-10-06; [04](04-robot-and-safety.md)): a refresh at
+the part had refused every way back up. **An arm held after a
 close** (a plain close, or a grasp whose lift, judged again as it starts, refused what the check before the close
-let through: a new camera frame, a part measured wider, a lift in steps) reads `... at sample 0 of ...: the
+let through: a part measured wider, a lift in steps) reads `... at sample 0 of ...: the
 planner's world; it stands: a part is carried` or `... the hand is not known to be empty and open (...)`:
 nothing moves; release the part (`Robot.release`), and the arm leaves empty-handed.
 

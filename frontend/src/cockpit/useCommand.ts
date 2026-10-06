@@ -4,7 +4,9 @@
  * 1. `read(text, source)`: the operator's words go into the conversation as they were said, and to the VLM
  *    (`POST /v1/commands/parse`), which MOVES NOTHING. Its answer becomes the Understood card (`Draft`). Without a reader
  *    (501, or 409 `vlm_not_loaded`) the card opens by hand with the reason; a sentence read as "stop" only says where
- *    the stop buttons are. Reading never starts anything.
+ *    the stop buttons are. Reading never starts anything. A greeting ("Hallo Willy") opens no card: Willy greets back
+ *    and hands the wave to `greet`, as the app config says (`CommandOut.greeting`): at once where it says `direct`
+ *    (the owner, 2026-10-06), after the dialog's confirm where it says `confirm`, not at all where it says `off`.
  * 2. `update(field, change)`: a person corrects the card; each changed field is recorded for the run's record.
  * 3. `start()`: the click on Start, the confirmation. It posts the card once (`POST /v1/task`), follows the 202 answer
  *    and clears the card. A refusal stays on the card, said in the reader's language; nothing is retried.
@@ -20,6 +22,7 @@ import { lightMsg, refusalMsg } from '../i18n/codes'
 import type { Msg } from '../i18n/types'
 import { say } from '../model/chat'
 import { draftFromReading, edit, manualDraft, taskOf, type Draft, type DraftField } from './draft'
+import type { WaveAnswer } from './motions'
 
 /** The reader's refusals that open the card by hand (OD 22): there is no reader to ask. */
 const NO_READER = new Set(['vlm_unavailable', 'vlm_not_loaded', 'vlm_model_missing'])
@@ -57,11 +60,14 @@ export function useCommand({
   lang,
   follow,
   refresh = () => undefined,
+  greet,
 }: {
   lang: Lang
   follow: (run: RunOut) => void
   /** Poll the cell now: a run a click just started is then named by every chip at once. */
   refresh?: () => void
+  /** THIS MOVES: the wave at a greeting (`Motions.wave`), after the dialog's confirm where `ask`. None: no wave. */
+  greet?: (ask: boolean) => Promise<WaveAnswer>
 }): CommandModel {
   const [draft, setDraft] = useState<Draft | null>(null)
   const [busy, setBusy] = useState<CommandBusy>(null)
@@ -82,7 +88,21 @@ export function useCommand({
       const said = { text: words, source, language: lang }
       try {
         const out = await api.parse({ text: words, source, language: lang })
-        if (out.intent === 'stop') {
+        if (out.greeting) {
+          // A greeting opens no card: Willy greets back, and waves as the app config says. The wave is its own run,
+          // judged swing by swing, with the stop buttons under the image like every other.
+          const mode = out.greeting
+          setDraft(null)
+          const hello = mode === 'direct' && greet ? 'ck.greet.wave' : mode === 'confirm' && greet ? 'ck.greet.ask' : 'ck.greet.hello'
+          say({ who: 'willy', kind: 'reply', msg: { key: hello }, tone: 'info' })
+          if (mode !== 'off' && greet) {
+            void greet(mode === 'confirm').then((answer) => {
+              if (answer instanceof ApiError) {
+                say({ who: 'willy', kind: 'reply', msg: { key: 'ck.greet.refused', params: { why: refusalWords(answer) } }, tone: 'warn' })
+              }
+            })
+          }
+        } else if (out.intent === 'stop') {
           // Speech never stops anything (api/routers/media.py): the buttons do. Nothing is sent.
           say({ who: 'willy', kind: 'reply', msg: { key: 'ck.reply.stopHint' }, tone: 'warn' })
           setDraft(null)
@@ -106,7 +126,7 @@ export function useCommand({
         setBusy(null)
       }
     },
-    [lang],
+    [lang, greet],
   )
 
   const update = useCallback((field: DraftField, change: Partial<Draft>) => {

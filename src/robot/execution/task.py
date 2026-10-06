@@ -195,6 +195,21 @@ class TaskEvent(StrEnum):
     PART_FINISHED = "task.part_finished"
 
 
+#: What a task grounds in front of the object it names, so every such part comes back in a box of its own. On a mat of
+#: 20 parts Qwen3-VL-4B grounded one box for "object", "objects", "all objects" or "every object" and all 20 for "each
+#: separate object", one of the two green parts for "green part" and both for "each separate green part", both red
+#: ones and no orange one for "each separate red part" (2026-10-06). A part the detector does not name keeps the whole
+#: rule beside the fingers, the push and the blocker.
+EACH_SEPARATE = "each separate"
+#: What a task that names no object grounds: every part in a box of its own.
+EVERY_PART_PHRASE = f"{EACH_SEPARATE} object"
+
+
+def _grounds_a_phrase(service: Any) -> bool:
+    """Whether ``service``'s cell grounds a phrase (``grounds_a_phrase``); ``False`` for one that does not say."""
+    asked = getattr(service, "grounds_a_phrase", None)
+    return bool(asked()) if callable(asked) else False
+
 class TaskRefused(ValueError):
     """A task asked to do what this cell cannot, refused before anything was commanded.
 
@@ -255,7 +270,14 @@ class TaskOptions:
     longer where it opens too little room); ``critical_parts`` the owner's switch for this task (``None``: the cell's
     ``recovery.critical_parts``; true clears a blocker and pushes nothing); ``record_views`` each pick's looks
     kept for training; ``overlay`` the grasp overlay rendered during the task; ``pick_anything`` the operator's word
-    that an empty object means anything the camera sees, bin walls included (Q7 A+).
+    that an empty object means anything the camera sees, bin walls included (Q7 A+). ``rescan``, ``push`` and ``clear``
+    are the run's own word on recovery (the owner, 2026-10-05: the console's ticks override the config for one run):
+    ``None`` keeps the cell's ``recovery.allowed_actions``; ``push`` or ``clear`` true allows ``nudge_target``, both
+    false takes it out; ``clear`` without ``push`` clears blockers and pushes nothing (critical parts).
+    ``blocker_into_the_place`` the owner's switch for where a blocker goes (``None``: the cell's
+    ``recovery.blocker_into_the_place``): true, a task that names no object takes it as the part its pick takes and
+    sets it down where the parts go, then picks the part it blocked; false, it is set aside on the support. A task that
+    names an object sets every blocker aside (2026-10-06).
     """
 
     multi_view: bool = True
@@ -266,6 +288,10 @@ class TaskOptions:
     record_views: bool = False
     overlay: bool = True
     pick_anything: bool = False
+    rescan: bool | None = None
+    push: bool | None = None
+    clear: bool | None = None
+    blocker_into_the_place: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -752,14 +778,40 @@ class _Task:
             started["push_mm"] = options.push_mm
         if options.critical_parts is not None:
             started["critical_parts"] = bool(options.critical_parts)
+        actions = run_recovery_actions(self.service, rescan=options.rescan, push=options.push, clear=options.clear)
+        if actions is not None:
+            started["recovery_actions"] = actions
+            if options.push is False and options.clear is True and options.critical_parts is None:
+                started["critical_parts"] = True
+            elif options.push is True and options.critical_parts is None:
+                started["critical_parts"] = False
+        # A blocker goes where the parts go only where every part goes there: a task that names an object sets one
+        # aside, as it is not the part it asked for (the owner, 2026-10-06).
+        into = options.blocker_into_the_place
+        if into is None:
+            into = bool(getattr(getattr(getattr(self.service, "effective_config", None), "recovery_orchestrator", None),
+                                "blocker_into_the_place", True))
+        if into and not self.plan.object.strip():
+            started["blocker_is_the_pick"] = True
         try:
             self.service.start_campaign(**started)
         except ValueError as exc:
             raise TaskRefused("push_distance_refused", str(exc)) from None
         zones = self.service.campaign.zones
         undo.callback(_quietly, "forgetting the regions the task kept out", zones.forget_regions)
-        if self.plan.object.strip():
+        named = self.plan.object.strip()
+        if named and not _grounds_a_phrase(self.service):
             previous = self.service.set_prompt(self.plan.object)
+            undo.callback(_quietly, "putting the cell's prompt back", self.service.set_prompt, previous)
+        elif _grounds_a_phrase(self.service):
+            # Every part the task asks for in a box of its own: "each separate green part" grounds every green part, the
+            # phrase alone one of them. The detector echoes the phrase, which maps onto the object the task named; a
+            # task that names none takes every part it grounds, called "object" where the detector's words allow.
+            from src.robot.execution.autonomous_grasp.prompt import PickPrompt  # noqa: PLC0415
+
+            prompt = (PickPrompt(phrase=f"{EACH_SEPARATE} {named}", target_label=named, object_labels=(named,))
+                      if named else PickPrompt(phrase=EVERY_PART_PHRASE, target_label=None, object_labels=("object",)))
+            previous = self.service.set_prompt(prompt)
             undo.callback(_quietly, "putting the cell's prompt back", self.service.set_prompt, previous)
         if options.closing_axis is not None:
             try:
@@ -1461,3 +1513,21 @@ def _motion_note(moved: Any) -> str:
     message = str(getattr(moved, "message", "") or "")
     return "" if message in ("", "move_home", "move_to_home", "move_to_joints", "move_joint", "home", "joints") \
         else message
+
+def run_recovery_actions(service: Any, *, rescan: "bool | None", push: "bool | None",
+                         clear: "bool | None") -> "tuple[str, ...] | None":
+    """The recovery actions a run allows, the cell's ``recovery.allowed_actions`` changed by the run's ticks; ``None``
+    where no tick was given (the cell's list stands). ``push`` or ``clear`` allows ``nudge_target`` (the push gate, which
+    clearing a blocker runs under too); both false take it out."""
+    if rescan is None and push is None and clear is None:
+        return None
+    cfg = getattr(service, "effective_config", None)
+    recovery = getattr(cfg, "recovery_orchestrator", None)
+    base = list(getattr(recovery, "allowed_actions", ()) or ()) if getattr(recovery, "enabled", False) else []
+    actions = [str(a) for a in base]
+    if rescan is not None:
+        actions = [a for a in actions if a != "rescan"] + (["rescan"] if rescan else [])
+    if push is not None or clear is not None:
+        wants = bool(push) or bool(clear)
+        actions = [a for a in actions if a != "nudge_target"] + (["nudge_target"] if wants else [])
+    return tuple(dict.fromkeys(actions))

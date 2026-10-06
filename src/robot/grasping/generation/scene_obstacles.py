@@ -47,6 +47,8 @@ __all__ = [
     "NO_GRASP_SAID",
     "REACH_MM",
     "SEEN_TOLERANCE_MM",
+    "SOFT_SLACK_MM",
+    "WHOLE_SLACK_MM",
     "DeclaredBox",
     "EnvelopeVerdict",
     "SceneObstacleRules",
@@ -127,6 +129,15 @@ class SceneObstacleRules:
     #: The boxes the guard holds as declared, and what it keeps from them (``self_collision.min_distance_mm``).
     declared_boxes: tuple[DeclaredBox, ...] = ()
     declared_distance_mm: float = 10.0
+    #: How far into a box of a named neighbour part a finger may come, as the camera world says
+    #: (``WorldBuildTuning.part_soft_mm``): the margin and the finger contact where the fingers may touch parts
+    #: (``perceived.fingers_touch_parts``), 0 where they may not.
+    part_soft_mm: float = 0.0
+    #: Whether the fingers keep the guard's distance from a support's reading and excess rather than from its solid
+    #: (``perceived.fingers_to_the_support_reading``), as the guard holds them.
+    fingers_to_the_reading: bool = False
+    #: How much nearer than ``support_distance_mm`` a finger comes to what a support reads (``finger_floor_drop_mm``).
+    finger_floor_drop_mm: float = 0.0
     #: Declared meshes that could not be read, each said: what the camera sees of them stays an obstacle.
     unread: tuple[str, ...] = field(default=())
 
@@ -174,6 +185,10 @@ class SceneObstacleRules:
             support_distance_mm=float(guard.perceived_min_distance_mm),
             declared_boxes=boxes,
             declared_distance_mm=float(guard.min_distance_mm),
+            part_soft_mm=(float(getattr(perceived, "margin_mm", 15.0)) + float(getattr(perceived, "finger_contact_mm", 0.0))
+                          if bool(getattr(perceived, "fingers_touch_parts", False)) else 0.0),
+            fingers_to_the_reading=bool(getattr(perceived, "fingers_to_the_support_reading", False)),
+            finger_floor_drop_mm=finger_floor_drop_mm(robot_config),
             unread=tuple(unread),
         )
 
@@ -198,6 +213,11 @@ class SceneObstacles:
     #: The boxes the camera world builds of :attr:`world_rule_base_mm` (``perceived.SeenBox``, its margin in them):
     #: what the guard holds for these neighbours and keeps ``support_distance_mm`` from (:class:`SeenEnvelope`).
     boxes: tuple[Any, ...] = ()
+    #: Which of :attr:`points_base_mm` are a named neighbour part's, a finger may come to (``rules.part_soft_mm``);
+    #: ``None`` where none are.
+    part_points: "np.ndarray | None" = None
+    #: Which of :attr:`world_rule_base_mm` are a named neighbour part's, as :attr:`part_points`; ``None`` where none are.
+    world_rule_part: "np.ndarray | None" = None
 
     @classmethod
     def none(cls) -> "SceneObstacles":
@@ -267,6 +287,7 @@ def scene_obstacle_points(
     rules: SceneObstacleRules,
     support_height_mm: float | None,
     support_model: Any = None,
+    part_mask: "np.ndarray | None" = None,
 ) -> SceneObstacles:
     """The obstacles one frame shows beside the part ``target_mask`` covers, by ``rules``.
 
@@ -277,6 +298,9 @@ def scene_obstacle_points(
 
     An empty answer where the mask holds no measured pixel: there is nothing to grow it from, and a frame read without
     the part left out would take the part for its own neighbour.
+
+    ``part_mask`` is the pixels of the other parts the detector named in the frame: their points are a neighbour part's,
+    which a finger may come to (``rules.part_soft_mm``), and their boxes are built apart, soft (``SeenBox.soft_mm``).
     """
     depth = np.asarray(depth_mm, dtype=np.float64)
     mask = np.asarray(target_mask).astype(bool)
@@ -310,6 +334,8 @@ def scene_obstacle_points(
     points = camera @ turn.T + shift
     near = np.hypot(points[:, 0] - centre[0], points[:, 1] - centre[1]) < float(rules.reach_mm)
     points, trimmed, camera = points[near], behind[rows[near], cols[near]], camera[near]
+    on_a_part = (np.zeros(points.shape[0], dtype=bool) if part_mask is None or float(rules.part_soft_mm) <= 0.0
+                 else np.asarray(part_mask).astype(bool)[rows[near], cols[near]])
     counts: dict[str, int] = {"read": int(points.shape[0])}
 
     # The support rule (contract 7): a surface the model holds decides over its own pixels, the bench and the part's
@@ -341,6 +367,7 @@ def scene_obstacle_points(
     counts["declared"] = int((declared & ~surface & ~below).sum())
 
     world_rule = points[~surface & ~below_bench & ~declared]
+    world_rule_part = on_a_part[~surface & ~below_bench & ~declared]
     # The boxes of the neighbours: what stands over the support the part stands on and over what its solids erase, the
     # pixels behind a depth step left out as the obstacles leave them (a mixed pixel at the part's own rim is no
     # neighbour), thinned to one point a voxel
@@ -350,14 +377,21 @@ def scene_obstacle_points(
     if support_model is not None and hasattr(support_model, "erased_by_support") and points.shape[0]:
         # What a support's solid holds up to its erasure top leaves the world as that support's, its noise with it.
         beside &= ~np.asarray(support_model.erased_by_support(points), dtype=bool).reshape(-1)
-    thinned = points[beside][_first_in_each_voxel(camera[beside], float(rules.voxel_size_mm))]
-    candidates = points[~surface & ~below & ~declared & ~trimmed]
+    first = _first_in_each_voxel(camera[beside], float(rules.voxel_size_mm))
+    thinned, thinned_part = points[beside][first], on_a_part[beside][first]
+    wanted = ~surface & ~below & ~declared & ~trimmed
+    candidates, candidates_part = points[wanted], on_a_part[wanted]
     keep, groups = _voxel_groups(candidates, float(rules.cluster_voxel_mm), int(rules.min_points))
-    kept = candidates[keep]
+    kept, kept_part = candidates[keep], candidates_part[keep]
     counts["speck"] = int(candidates.shape[0] - kept.shape[0])
     counts["kept"] = int(kept.shape[0])
+    # A named neighbour's points make its own boxes, soft for the fingers; everything else makes the rest, whole.
+    boxes = seen_boxes(thinned[~thinned_part], rules)
+    if bool(thinned_part.any()):
+        boxes = boxes + soft_boxes(seen_boxes(thinned[thinned_part], rules), float(rules.part_soft_mm))
     return SceneObstacles(points_base_mm=kept, world_rule_base_mm=world_rule, clusters=groups, counts=counts,
-                          grown_px=grow, boxes=seen_boxes(thinned, rules))
+                          grown_px=grow, boxes=boxes, part_points=kept_part,
+                          world_rule_part=world_rule_part if bool(world_rule_part.any()) else None)
 
 
 def _first_in_each_voxel(camera_mm: np.ndarray, voxel_mm: float) -> np.ndarray:
@@ -387,15 +421,45 @@ def seen_boxes(points_base_mm: np.ndarray, rules: SceneObstacleRules) -> tuple[A
                            floor_mm=None if floor is None else float(floor), min_points=int(rules.min_points))
 
 
+def soft_boxes(boxes: Sequence[Any], soft_mm: float) -> tuple[Any, ...]:
+    """``boxes`` of a named neighbour part, each soft by ``soft_mm`` for the fingers where it is no larger than a part
+    (``perceived.PART_SIZED_MM``), as the camera world marks them (``PerceivedBox.soft_mm``)."""
+    from dataclasses import replace as _replace  # noqa: PLC0415
+
+    from src.robot.safety.planning.perceived import PART_SIZED_MM  # noqa: PLC0415
+
+    across, tall = PART_SIZED_MM
+    out = []
+    for box in boxes:
+        half = np.asarray(box.half_extents_mm, dtype=np.float64)
+        sized = 2.0 * max(float(half[0]), float(half[1])) <= across and 2.0 * float(half[2]) <= tall
+        out.append(_replace(box, soft_mm=float(soft_mm)) if soft_mm > 0.0 and sized else box)
+    return tuple(out)
+
+
+#: How far off a named part's measured surface the calculator plans a finger, millimetres, where the guard holds it to
+#: the surface at no distance (``SeenBox.soft_mm``, the owner, 2026-10-05: "Finger dürfen streifen"). The guard's boxes
+#: are built from every frame the pick kept and the calculator's from the one it judged, so they stand a little apart:
+#: planned at no distance, 11 of 11 grasps in a pile were refused 0.02 to 0.21 mm inside a neighbour's surface (the
+#: grasp bench, 2026-10-06). The finger still comes to within this of the part.
+SOFT_SLACK_MM = 1.0
+#: How far past the guard's distance the calculator plans the open hand from a whole box, millimetres, for the same
+#: reason: the guard's boxes, built from every frame the pick kept and merged to fit its slots, stand a little apart
+#: from the calculator's. On a tray the guard refused the line down to four grasps in a row 0.18 to 0.68 mm short of
+#: its 3 mm (the grasp bench, 2026-10-06), and every refused grasp took a try.
+WHOLE_SLACK_MM = 1.0
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class SeenEnvelope:
     """The open hand against the boxes the camera world holds for the neighbours one frame shows.
 
     The guard keeps ``distance_mm`` (``perceived_min_distance_mm``) from every camera box. A grasp whose open hand comes
-    nearer to one of these boxes, at the grasp or anywhere on its way in along the approach (``way_in_mm`` back from
-    it), would be refused there once the arm has moved: the calculator does not offer it. The hand is
-    ``gripper_model.collision_boxes(open_width_mm)``, which holds the hand's meshes, as :func:`envelope_verdicts` places
-    it: the rotation's columns are the closing axis, the binormal and the approach.
+    nearer to one of these boxes, at the grasp or anywhere on its way in along the approach (from the nearest to the
+    farthest of ``way_in_mm`` back from it, every place between), would be refused there once the arm has moved: the
+    calculator does not offer it. The hand is ``gripper_model.collision_boxes(open_width_mm)``, which holds the hand's
+    meshes, as :func:`envelope_verdicts` places it: the rotation's columns are the closing axis, the binormal and the
+    approach.
     """
 
     boxes: tuple[Any, ...]
@@ -403,6 +467,8 @@ class SeenEnvelope:
     hand_halves: np.ndarray
     distance_mm: float
     way_in_mm: tuple[float, ...] = (0.0, 40.0, 80.0)
+    #: Which of the hand's boxes are a finger, which may come to a soft box's measured surface (``SeenBox.soft_mm``).
+    hand_fingers: "np.ndarray | None" = None
 
     @classmethod
     def of(cls, boxes: Sequence[Any], *, gripper_model: Any, open_width_mm: float, distance_mm: float,
@@ -413,37 +479,74 @@ class SeenEnvelope:
         hand = gripper_model.collision_boxes(float(open_width_mm))
         centres = np.array([(np.asarray(b.min_corner_mm) + np.asarray(b.max_corner_mm)) / 2.0 for b in hand])
         halves = np.array([(np.asarray(b.max_corner_mm) - np.asarray(b.min_corner_mm)) / 2.0 for b in hand])
+        fingers = np.array([str(getattr(b, "label", "")).startswith("finger") for b in hand], dtype=bool)
         return cls(boxes=tuple(boxes), hand_centres=centres, hand_halves=halves, distance_mm=float(distance_mm),
-                   way_in_mm=tuple(float(v) for v in way_in_mm))
+                   way_in_mm=tuple(float(v) for v in way_in_mm), hand_fingers=fingers)
 
     def least_mm(self, position: np.ndarray, rotation: np.ndarray) -> float:
-        """The open hand's least distance to the boxes, at ``position`` and back along the approach, millimetres."""
+        """The open hand's least distance to the boxes, at ``position`` and back along the approach, millimetres: every
+        box whole for every part of the hand but a finger against a soft box, which :meth:`into_parts_mm` asks."""
+        return self._least(position, rotation, soft=False)
+
+    def into_parts_mm(self, position: np.ndarray, rotation: np.ndarray) -> float:
+        """The open fingers' least distance to the measured surface of every soft box (a named neighbour part, its
+        ``soft_mm`` taken off its sides and its top), at ``position`` and back along the approach; ``inf`` with none."""
+        return self._least(position, rotation, soft=True)
+
+    def _least(self, position: np.ndarray, rotation: np.ndarray, *, soft: bool) -> float:
         turn = np.asarray(rotation, dtype=np.float64).reshape(3, 3)
         at = np.asarray(position, dtype=np.float64).reshape(3)
-        approach = turn[:, 2]
+        softs = np.array([float(getattr(b, "soft_mm", 0.0) or 0.0) for b in self.boxes], dtype=np.float64)
+        fingers = (self.hand_fingers if self.hand_fingers is not None
+                   else np.zeros(self.hand_centres.shape[0], dtype=bool))
         centres_b = np.array([b.centre_mm for b in self.boxes], dtype=np.float64)
         turns_b = np.array([b.rotation for b in self.boxes], dtype=np.float64)
         halves_b = np.array([b.half_extents_mm for b in self.boxes], dtype=np.float64)
-        reach_hand = float(np.max(np.linalg.norm(self.hand_centres, axis=1) + np.linalg.norm(self.hand_halves, axis=1)))
-        reach_b = np.linalg.norm(halves_b, axis=1)
+        if soft:
+            # The fingers alone, against the soft boxes alone, each less its soft on its sides and its top.
+            keep_b, keep_h = softs > 0.0, fingers
+            lowered = np.minimum(softs, np.maximum(halves_b[:, 2] - 0.5, 0.0) * 2.0)
+            halves_b = halves_b.copy()
+            halves_b[:, :2] = np.maximum(halves_b[:, :2] - softs[:, None], 0.5)
+            halves_b[:, 2] -= lowered / 2.0
+            centres_b = centres_b - turns_b[:, :, 2] * (lowered / 2.0)[:, None]
+            reach = 0.0
+        else:
+            keep_b, keep_h = np.ones(len(self.boxes), dtype=bool), np.ones(fingers.shape[0], dtype=bool)
+            reach = self.distance_mm
         least = math.inf
-        for back in self.way_in_mm:
-            anchor = at - back * approach
-            near = np.linalg.norm(centres_b - anchor, axis=1) <= reach_hand + reach_b + self.distance_mm + 1.0
-            if not near.any():
-                continue
-            hand_c = anchor + self.hand_centres @ turn.T
-            n_hand, n_box = hand_c.shape[0], int(near.sum())
-            distances = box_distances_mm(
-                np.repeat(hand_c, n_box, axis=0), np.repeat(turn[None, :, :], n_hand * n_box, axis=0),
-                np.repeat(self.hand_halves, n_box, axis=0), np.tile(centres_b[near], (n_hand, 1)),
-                np.tile(turns_b[near], (n_hand, 1, 1)), np.tile(halves_b[near], (n_hand, 1)))
-            least = min(least, float(distances.min()))
-        return least
+        if not keep_b.any() or not keep_h.any():
+            return least
+        hand_centres, hand_halves = self.hand_centres[keep_h], self.hand_halves[keep_h]
+        hand_fingers = fingers[keep_h]
+        # The hand at every place of its way in, from the nearest to the farthest back along the approach: each of its
+        # boxes stands square to the approach, so the way one sweeps is a box again, as long as the box and the way
+        # together, and one distance answers for every place.
+        front, back = (min(self.way_in_mm), max(self.way_in_mm)) if self.way_in_mm else (0.0, 0.0)
+        hand_centres = hand_centres - np.array([0.0, 0.0, (front + back) / 2.0])
+        hand_halves = hand_halves + np.array([0.0, 0.0, (back - front) / 2.0])
+        reach_hand = float(np.max(np.linalg.norm(hand_centres, axis=1) + np.linalg.norm(hand_halves, axis=1)))
+        reach_b = np.linalg.norm(halves_b, axis=1)
+        near = keep_b & (np.linalg.norm(centres_b - at, axis=1) <= reach_hand + reach_b + reach + WHOLE_SLACK_MM + 1.0)
+        if not near.any():
+            return least
+        hand_c = at + hand_centres @ turn.T
+        n_hand, n_box = hand_c.shape[0], int(near.sum())
+        distances = box_distances_mm(
+            np.repeat(hand_c, n_box, axis=0), np.repeat(turn[None, :, :], n_hand * n_box, axis=0),
+            np.repeat(hand_halves, n_box, axis=0), np.tile(centres_b[near], (n_hand, 1)),
+            np.tile(turns_b[near], (n_hand, 1, 1)), np.tile(halves_b[near], (n_hand, 1))).reshape(n_hand, n_box)
+        if not soft:
+            # A finger against a soft box is :meth:`into_parts_mm`'s, not this one's.
+            distances = np.where(hand_fingers[:, None] & (softs[near] > 0.0)[None, :], np.inf, distances)
+        return min(least, float(distances.min()))
 
     def refuses(self, position: np.ndarray, rotation: np.ndarray) -> bool:
-        """Whether the open hand comes nearer the boxes than the guard keeps, at the grasp or on the way in."""
-        return self.least_mm(position, rotation) < self.distance_mm
+        """Whether the open hand comes nearer the boxes than the guard keeps, at the grasp or on the way in: every part
+        of it the guard's distance and :data:`WHOLE_SLACK_MM` from every whole box, and a finger no closer than
+        :data:`SOFT_SLACK_MM` to a soft box's measured surface."""
+        return (self.least_mm(position, rotation) < self.distance_mm + WHOLE_SLACK_MM
+                or self.into_parts_mm(position, rotation) < SOFT_SLACK_MM)
 
 
 def corridor_seen_in(
@@ -568,6 +671,18 @@ class EnvelopeVerdict:
     distance_mm: float
 
 
+def finger_floor_drop_mm(robot: Any) -> float:
+    """How much nearer than the guard's distance from a camera box a finger comes to what a support reads, millimetres:
+    ``self_collision.perceived_min_distance_mm`` less ``planning_world.perceived.finger_floor_mm`` (the owner's 1 mm,
+    2026-10-06), 0 where the fingers keep their distance from the whole solid or the floor is no nearer."""
+    safety = getattr(robot, "safety", None)
+    perceived = getattr(getattr(safety, "planning_world", None), "perceived", None)
+    if perceived is None or not bool(getattr(perceived, "fingers_to_the_support_reading", False)):
+        return 0.0
+    guard = float(getattr(getattr(safety, "self_collision", None), "perceived_min_distance_mm", 0.0) or 0.0)
+    return max(0.0, guard - float(getattr(perceived, "finger_floor_mm", guard)))
+
+
 def envelope_verdicts(
     poses: Sequence[tuple[np.ndarray, np.ndarray]],
     *,
@@ -579,6 +694,8 @@ def envelope_verdicts(
     declared_distance_mm: float = 10.0,
     seen_boxes: Sequence[Any] = (),
     seen_distance_mm: float = 5.0,
+    fingers_to_the_reading: bool = False,
+    finger_floor_drop_mm: float = 0.0,
 ) -> list[EnvelopeVerdict]:
     """For each BASE grasp ``(position, rotation)``, whether the open hand there keeps the guard's distances.
 
@@ -586,24 +703,32 @@ def envelope_verdicts(
     axis, the binormal and the approach, as a ``GraspPose`` holds them): it arrives open. A support's solid
     (``SupportSolid``: ``centre_mm``, ``rotation``, ``half_extents_mm``, the allowance included) is a camera box the
     guard keeps ``support_distance_mm`` from; a declared box keeps ``declared_distance_mm``; a box the camera world
-    builds of a neighbour (``perceived.SeenBox``, :func:`seen_boxes`) keeps ``seen_distance_mm``. Mirrors the guard over
-    the hand's box envelope, which holds the hand's meshes: it refuses at least what the guard would refuse at the hand.
+    builds of a neighbour (``perceived.SeenBox``, :func:`seen_boxes`) keeps ``seen_distance_mm``; one of a named
+    neighbour part (``SeenBox.soft_mm``) holds a finger to its measured surface instead, at no distance, every other
+    part of the hand to the whole box (the owner, 2026-10-05). With ``fingers_to_the_reading`` a support's solid holds
+    a finger at its distance from the solid's top less its band and its allowance (``band_mm``, ``allowance_mm``), as
+    the guard does (``PerceivedBox.finger_top_mm``). Mirrors the guard over the hand's box envelope, which holds the
+    hand's meshes: it refuses at least what the guard would refuse at the hand.
     """
     boxes = gripper_model.collision_boxes(float(open_width_mm))
     local_centres = np.array([(np.asarray(b.min_corner_mm) + np.asarray(b.max_corner_mm)) / 2.0 for b in boxes])
     local_halves = np.array([(np.asarray(b.max_corner_mm) - np.asarray(b.min_corner_mm)) / 2.0 for b in boxes])
-    held: list[tuple[str, str, np.ndarray, np.ndarray, np.ndarray, float]] = []
+    fingers = np.array([str(getattr(b, "label", "")).startswith("finger") for b in boxes], dtype=bool)
+    held: list[tuple[str, str, np.ndarray, np.ndarray, np.ndarray, float, float, float]] = []
     for solid in solids:
+        drop = (float(getattr(solid, "band_mm", 0.0) or 0.0) + float(getattr(solid, "allowance_mm", 0.0) or 0.0)
+                + max(0.0, float(finger_floor_drop_mm)) if fingers_to_the_reading else 0.0)
         held.append(("support", str(solid.name), np.asarray(solid.centre_mm, dtype=np.float64),
                      np.asarray(solid.rotation, dtype=np.float64).reshape(3, 3),
-                     np.asarray(solid.half_extents_mm, dtype=np.float64), float(support_distance_mm)))
+                     np.asarray(solid.half_extents_mm, dtype=np.float64), float(support_distance_mm), 0.0, drop))
     for box in declared_boxes:
         held.append(("declared", box.name, np.asarray(box.centre_mm, dtype=np.float64), np.eye(3),
-                     np.asarray(box.half_extents_mm, dtype=np.float64), float(declared_distance_mm)))
+                     np.asarray(box.half_extents_mm, dtype=np.float64), float(declared_distance_mm), 0.0, 0.0))
     for number, box in enumerate(seen_boxes):
         held.append(("seen", f"neighbour box {number}", np.asarray(box.centre_mm, dtype=np.float64),
                      np.asarray(box.rotation, dtype=np.float64).reshape(3, 3),
-                     np.asarray(box.half_extents_mm, dtype=np.float64), float(seen_distance_mm)))
+                     np.asarray(box.half_extents_mm, dtype=np.float64), float(seen_distance_mm),
+                     float(getattr(box, "soft_mm", 0.0) or 0.0), 0.0))
     out: list[EnvelopeVerdict] = []
     if not held:
         return [EnvelopeVerdict("", "", math.inf) for _ in poses]
@@ -617,8 +742,26 @@ def envelope_verdicts(
         cb = np.tile(np.array([h[2] for h in held]), (n_hand, 1))
         rb = np.tile(np.array([h[3] for h in held]), (n_hand, 1, 1))
         hb = np.tile(np.array([h[4] for h in held]), (n_hand, 1))
-        distances = box_distances_mm(ca, ra, ha, cb, rb, hb).reshape(n_hand, n_held).min(axis=0)
+        matrix = box_distances_mm(ca, ra, ha, cb, rb, hb).reshape(n_hand, n_held)
         limits = np.array([h[5] for h in held])
+        softs = np.array([h[6] for h in held])
+        soft = softs > 0.0
+        distances = matrix.min(axis=0)
+        if soft.any() and fingers.any():
+            # A finger against a named part's box: to its measured surface, the box less its soft, kept
+            # :data:`SOFT_SLACK_MM` off it. The rest of the hand against the whole box at the guard's; the box is short
+            # where either comes nearer.
+            whole = np.where(fingers[:, None] & soft[None, :], np.inf, matrix).min(axis=0)
+            surface = _surface_distances(centres[fingers], turn, local_halves[fingers], held, soft)
+            distances = np.where(soft, np.minimum(whole, surface - SOFT_SLACK_MM + limits), distances)
+        drops = np.array([h[7] for h in held])
+        dropped = drops > 0.0
+        if dropped.any() and fingers.any():
+            # A finger against a support's solid: to its top less its band and its allowance, at the distance; the rest
+            # of the hand against the whole solid.
+            whole = np.where(fingers[:, None] & dropped[None, :], np.inf, matrix).min(axis=0)
+            reading = _lowered_distances(centres[fingers], turn, local_halves[fingers], held, dropped)
+            distances = np.where(dropped, np.minimum(whole, reading), distances)
         short = distances < limits
         nearest = int(np.argmin(distances - limits))
         refused = ""
@@ -629,6 +772,56 @@ def envelope_verdicts(
             refused = "declared" if "declared" in kinds else "support" if "support" in kinds else "seen"
             nearest = int(np.nonzero(short)[0][np.argmin((distances - limits)[short])])
         out.append(EnvelopeVerdict(refused, held[nearest][1], float(distances[nearest])))
+    return out
+
+
+def _lowered_distances(finger_centres: np.ndarray, turn: np.ndarray, finger_halves: np.ndarray,
+                       held: Sequence[tuple[Any, ...]], dropped: np.ndarray) -> np.ndarray:
+    """Per held box, the fingers' least distance to it with its top lowered by its drop along its own up axis, where it
+    has one (a support's band and allowance), ``inf`` where it has none."""
+    out = np.full(len(held), np.inf)
+    indices = np.nonzero(dropped)[0]
+    if indices.size == 0 or finger_centres.shape[0] == 0:
+        return out
+    centres = np.array([held[int(i)][2] for i in indices], dtype=np.float64)
+    turns = np.array([held[int(i)][3] for i in indices], dtype=np.float64)
+    halves = np.array([held[int(i)][4] for i in indices], dtype=np.float64).copy()
+    drops = np.array([held[int(i)][7] for i in indices], dtype=np.float64)
+    lowered = np.minimum(drops, np.maximum(halves[:, 2] - 0.5, 0.0) * 2.0)
+    halves[:, 2] -= lowered / 2.0
+    centres = centres - turns[:, :, 2] * (lowered / 2.0)[:, None]
+    n_f, n_b = finger_centres.shape[0], indices.size
+    found = box_distances_mm(
+        np.repeat(finger_centres, n_b, axis=0), np.repeat(turn[None, :, :], n_f * n_b, axis=0),
+        np.repeat(finger_halves, n_b, axis=0), np.tile(centres, (n_f, 1)), np.tile(turns, (n_f, 1, 1)),
+        np.tile(halves, (n_f, 1))).reshape(n_f, n_b).min(axis=0)
+    out[indices] = found
+    return out
+
+
+def _surface_distances(finger_centres: np.ndarray, turn: np.ndarray, finger_halves: np.ndarray,
+                       held: Sequence[tuple[Any, ...]], soft: np.ndarray) -> np.ndarray:
+    """Per held box, the fingers' least distance to its measured surface where it is soft (the box less its soft on its
+    sides and its top, its foot where it stands), ``inf`` where it is not."""
+    out = np.full(len(held), np.inf)
+    indices = np.nonzero(soft)[0]
+    if indices.size == 0 or finger_centres.shape[0] == 0:
+        return out
+    centres = np.array([held[int(i)][2] for i in indices], dtype=np.float64)
+    turns = np.array([held[int(i)][3] for i in indices], dtype=np.float64)
+    halves = np.array([held[int(i)][4] for i in indices], dtype=np.float64)
+    softs = np.array([held[int(i)][6] for i in indices], dtype=np.float64)
+    lowered = np.minimum(softs, np.maximum(halves[:, 2] - 0.5, 0.0) * 2.0)
+    halves = halves.copy()
+    halves[:, :2] = np.maximum(halves[:, :2] - softs[:, None], 0.5)
+    halves[:, 2] -= lowered / 2.0
+    centres = centres - turns[:, :, 2] * (lowered / 2.0)[:, None]
+    n_f, n_b = finger_centres.shape[0], indices.size
+    found = box_distances_mm(
+        np.repeat(finger_centres, n_b, axis=0), np.repeat(turn[None, :, :], n_f * n_b, axis=0),
+        np.repeat(finger_halves, n_b, axis=0), np.tile(centres, (n_f, 1)), np.tile(turns, (n_f, 1, 1)),
+        np.tile(halves, (n_f, 1))).reshape(n_f, n_b).min(axis=0)
+    out[indices] = found
     return out
 
 
@@ -645,7 +838,7 @@ def least_part_height_mm(jaw: Any) -> float:
     A part lower than the least of those over the ladder gets no height to try: it is too short for this hand.
     """
     tilts = np.radians(np.asarray(_SFE_TILTS_DEG))
-    need = 2.0 * float(jaw.finger_ahead_mm) * np.cos(tilts) + float(jaw.finger_width_mm) * np.sin(tilts)
+    need = float(jaw.finger_ahead_mm) * np.cos(tilts) + (float(jaw.finger_width_mm) / 2.0) * np.sin(tilts)
     return float(jaw.table_clearance_mm + need.min() + _SFE_TOP_SLACK_MM)
 
 

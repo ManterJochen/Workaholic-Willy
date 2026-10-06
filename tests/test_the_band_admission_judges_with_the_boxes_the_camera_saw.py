@@ -2,8 +2,8 @@
 
 F1: a sample the planner's padded spheres refuse on a self pair the exact guard judges is left to that guard, which
 judges the very sample again (``URRobotArm._exact_guard_decides``). F2: the exact guard holds each camera-seen box turned,
-as cuRobo holds it, at ``perceived_min_distance_mm`` (5 mm), while a declared fixture and the arm itself keep
-``min_distance_mm`` (10 mm). Merged, the re-judgement is the whole exact guard with both distances:
+as cuRobo holds it, at ``perceived_min_distance_mm`` (5 mm here), while a declared fixture and the arm itself keep
+``min_distance_mm`` (10 mm here; the cell this file builds sets both, the owner ships 3 and 3 since 2026-10-05). Merged, the re-judgement is the whole exact guard with both distances:
 
 * a seen box 7 mm from the arm at LOOK[0] leaves the band's refusal to the guard, which accepts it;
 * a seen box 3 mm from it keeps the refusal standing, on the guard's own sentence naming the box;
@@ -48,7 +48,9 @@ def _arm(fixtures: "list[dict] | None" = None) -> Any:
                     "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 155.75],
                                    "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
         "safety": {"payload": {"enforce": False},
-                   "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "kinematics_model": "ur10",
+                   # The 5 mm and 10 mm these cases were built at; the owner ships 3 and 3 since 2026-10-05.
+                   "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "perceived_min_distance_mm": 5.0,
+                                      "kinematics_model": "ur10",
                                       "planner_margin_mm": 4.0, "fixtures": list(fixtures or [])}},
     }))
     arm._conn = MagicMock()

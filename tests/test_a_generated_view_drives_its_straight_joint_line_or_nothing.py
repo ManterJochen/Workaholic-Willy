@@ -92,7 +92,7 @@ class TheStraightJointLineOnlyTests(unittest.TestCase):
         (lined,) = planner.lines()
         np.testing.assert_allclose(lined[1][0], _HERE, atol=0.0)
         np.testing.assert_allclose(lined[1][-1], _THERE, atol=0.0)
-        self.assertEqual(10.0, lined[3], "the line was not judged at safety.planned_motion.line_clearance_mm")
+        self.assertEqual(3.0, lined[3], "the line was not judged at safety.planned_motion.line_clearance_mm")
         self.assertEqual([], planner.named("execute"), "a planned route ran")
 
     def test_a_line_that_is_not_clear_is_refused_and_nothing_is_planned_around_it(self) -> None:

@@ -732,7 +732,10 @@ def run_multiview_gate(
     gate = sim.scene_setup.gate
     session = arm.session
 
-    cal = _load_calibrated_eih(marker)
+    from src.willy_sim.calibration.paths import calibration_dir
+
+    # run_eih_calibrate writes per robot (logs/calibration/<model>/); the flat directory is the fallback.
+    cal = _load_calibrated_eih(marker, cal_dir=calibration_dir(sim.robot_model)) or _load_calibrated_eih(marker)
     if cal is None:
         raise SystemExit(f"multi-view pick requires a calibrated EIH artifact (marker={marker}, quality good/excellent)")
     p_cam_tool = np.asarray(cal.to_matrix(), dtype=np.float64)[:3, 3]

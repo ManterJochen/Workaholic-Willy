@@ -1482,9 +1482,10 @@ class WhatThePushNeedsBeforeItPlansTests(unittest.TestCase):
         self.assertIs(AutonomousGraspOutcome.NO_VALID_GRASP, report.outcome)
 
     def test_the_planner_keeps_the_hand_the_clearance_the_arm_s_line_judge_keeps(self) -> None:
-        """The cell's clearance reaches the planner: the camera world's margin_mm plus line_clearance_mm, 25 mm on the
-        owner's config. A push whose finger passes 15 mm from a post, inside the box the world grows around it, is one
-        the arm's line judge would refuse: at 25 mm it is not planned, where the 10 mm floor alone would plan it."""
+        """The cell's clearance reaches the planner: the camera world's margin_mm plus line_clearance_mm, 11 mm on the
+        owner's config since 2026-10-05 (8 + 3; 25 mm before, 15 + 10). A push whose finger passes 15 mm from a post
+        is planned at 11 mm and refused at 25 mm, inside the box a 15 mm margin grows around the post, where the arm's
+        line judge at those numbers would refuse it: the planner keeps whatever the cell keeps."""
         from src.config.loader import load_robot_config, reload_config
         from src.robot.grasping.recovery import push_planner
         from tests.test_a_push_moves_only_when_every_guard_holds import HAND_E as BLOCK_HAND
@@ -1496,7 +1497,7 @@ class WhatThePushNeedsBeforeItPlansTests(unittest.TestCase):
         self.addCleanup(reload_config)
         owners = PushCell.from_robot_config(load_robot_config(None, profile="ur10,hande"))
         assert isinstance(owners, PushCell), owners
-        self.assertEqual(25.0, owners.hand_clearance_mm)
+        self.assertEqual(11.0, owners.hand_clearance_mm)
         self.assertEqual(75.0, owners.hand.palm_thickness_mm)
 
         def plan(clearance: float) -> Any:
@@ -1507,7 +1508,8 @@ class WhatThePushNeedsBeforeItPlansTests(unittest.TestCase):
 
         self.assertIsInstance(plan(10.0), push_planner.PushPlan)
         self.assertIsInstance(plan(5.0), push_planner.PushPlan, "a clearance under the floor narrowed something")
-        refused = plan(owners.hand_clearance_mm)
+        self.assertIsInstance(plan(owners.hand_clearance_mm), push_planner.PushPlan)
+        refused = plan(25.0)
         self.assertEqual("no_free_direction", refused.code)
         self.assertEqual({"hand_blocked"}, {candidate.verdict for candidate in refused.candidates})
         with self.assertRaises(ValueError):
@@ -1532,9 +1534,10 @@ class WhatThePushNeedsBeforeItPlansTests(unittest.TestCase):
         judged = SimpleNamespace(look=SimpleNamespace(clouds=(part,)),
                                  fused_scene=SimpleNamespace(neighbour_for=lambda index: post if index == 0 else None))
 
-        seen = BinPickingOrchestrator._neighbour_points_of(judged, 0)  # type: ignore[arg-type]  # noqa: SLF001
+        seen, named = BinPickingOrchestrator._neighbour_points_of(judged, 0)  # type: ignore[arg-type]  # noqa: SLF001
 
         np.testing.assert_allclose(post, seen)
+        self.assertTrue(named.all(), "what another look segmented is a part the detector named")
 
 
 class TheServiceSaysWhatTheRecoveryCameToTests(unittest.TestCase):

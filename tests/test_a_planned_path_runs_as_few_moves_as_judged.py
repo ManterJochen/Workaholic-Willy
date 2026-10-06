@@ -263,7 +263,7 @@ class JudgedIsExecutedTests(unittest.TestCase):
         self.assertEqual(list(expected), check[1])
         self.assertIs(False, check[2], "the planner refreshed its world after the gate had judged against it")
         self.assertEqual(["plan", "check", "execute"], [call[0] for call in planner.calls])
-        self.assertEqual(10.0, check[3], "a shortened list's chords are lines nobody planned, judged at the line "
+        self.assertEqual(3.0, check[3], "a shortened list's chords are lines nobody planned, judged at the line "
                                          "clearance (found porting 85f082b to dev, 2026-09-25)")
 
     def test_the_plan_as_cuRobo_returned_it_is_judged_at_no_clearance(self) -> None:
@@ -272,7 +272,7 @@ class JudgedIsExecutedTests(unittest.TestCase):
         planner = _Planner(dense, verdicts=[_refused("a chord grazes the tote")])
         arm, _ = _arm(planner)
         self.assertTrue(self._move(arm, _THERE).ok)
-        self.assertEqual([10.0, 0.0], [check[3] for check in planner.named("check")])
+        self.assertEqual([3.0, 0.0], [check[3] for check in planner.named("check")])
 
     def test_a_plan_with_nothing_to_drop_is_judged_as_cuRobo_returned_it(self) -> None:
         planner = _Planner([list(_HERE), list(_THERE)])
@@ -439,7 +439,7 @@ def test_with_the_real_local_gate_a_clear_line_runs_and_nothing_is_planned() -> 
     assert result.ok, result.message
     assert planner.named("plan") == []
     ((_, configs, _, clearance),) = planner.named("check")
-    assert clearance == 10.0, "the line was not judged at the shipped clearance"
+    assert clearance == 3.0, "the line was not judged at the shipped clearance"
     (execute,) = planner.named("execute")
     assert len(execute[1]) == 2
     np.testing.assert_allclose(execute[1][-1], _THERE, atol=1e-6)

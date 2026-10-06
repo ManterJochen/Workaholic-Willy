@@ -12,7 +12,10 @@ cell the browser drives is the cell your code drives. The pages themselves are i
 [`frontend/`](../frontend/README.md).
 
 **Three promises.** Nothing moves but on a request that says it moves (the **Moves** column below), and the
-pages send one only on a person's click on a button that names the motion. Nothing moves on its own after a
+pages send one only on a person's click on a button that names the motion, bar the one exception the owner
+chose: a greeting typed in the chat ("Hallo Willy") waves at once where the app config says `direct`, the
+shipped default since 2026-10-06 (`runtime.greeting.wave`; `confirm` asks first), two swings of the wrist the
+exact guard judges, and never a way back after a stop. Nothing moves on its own after a
 stop: a person says the cell is clear, then chooses Restart or Home, and the stop outlives a restart of the
 server (`python -m api` keeps it in a file). And there is **no emergency stop endpoint**: "halt now" stops the
 run and latches the arm, so nothing after the move in flight is sent, and only with `robot.ur.brake_on_halt`
@@ -110,7 +113,7 @@ with. **Moves** says what a route can do to the arm and the hand.
 | `GET /v1/cell/status` | live pose, joints and wrench; `?include_controller_state=true` adds modes | no |
 | `POST /v1/cell/planner` | start cuRobo, as its own run; about a minute | no |
 | `POST /v1/task` | a task: pick, place, return, `once` or `until_empty`; answers `202` with the run | **yes** |
-| `POST /v1/task/stop?run_id=` | stop the task after the part in hand; a Home run before its move is sent | no |
+| `POST /v1/task/stop?run_id=` | stop the task after the part in hand; a Home run before its move is sent, a wave before its next swing | no |
 | `POST /v1/task/restart` | `{run_id}`: a new run of the stopped plan; first motion the planned move to the return pose | **yes** |
 | `POST /v1/pick` | `{prompt, picks}`, and `push_mm` for a `dense_clutter` push: picks only, nothing placed | **yes** |
 | `POST /v1/pick/stop?run_id=` | a pick run starts no next attempt; the motion in flight completes | no |
@@ -119,6 +122,7 @@ with. **Moves** says what a route can do to the arm and the hand.
 | `POST /v1/cell/brake` | **halt now**: the run commands nothing more, the arm latches, and brakes a move in flight where enabled | latches; brakes where enabled |
 | `POST /v1/cell/acknowledge` | `{cell_clear, jaws_empty}`: a person's word that the cell is clear | no |
 | `POST /v1/cell/home` | `{to}`: a planned move to Home or a taught pose; the second way back after a stop | **yes** |
+| `POST /v1/cell/wave` | Willy waves back at a greeting: two judged swings of the wrist | **yes** |
 | `GET /v1/cell/jaws` | the hand, and the jaws question waiting for its answer | no |
 | `POST /v1/cell/jaws/answer` | `{question_id, choice}`: answer it; `open_now` is ONE change of the output | `open_now`: the jaws |
 | `POST /v1/cell/jaws/check` | ask where the jaws stand now; blocks until answered | only after `open_now` |
@@ -133,6 +137,7 @@ with. **Moves** says what a route can do to the arm and the hand.
 | `GET /v1/commands/status` | whether the command reader is loaded, and why not | no |
 | `POST /v1/commands/warmup` | "Laden": load the command reader now | no |
 | `GET /v1/camera/live?rig=&max_width=` | a live display frame of one camera, during a pick too | no |
+| `GET /v1/camera/live.mjpeg?rig=&max_width=&fps=` | the same frames as a continuous MJPEG stream, up to 30 a second; a frame only when the camera has a new one | no |
 | `GET /v1/runs/{run_id}/overlays/{n}` | the n-th grasp overlay a task captured, as a PNG | no |
 | `GET /v1/runs/{run_id}/target/overlay` | the bin a task's camera found, drawn over the frame it was seen in | no |
 | `GET /v1/camera` | one picture and one sentence saying what it is | no |
@@ -275,7 +280,7 @@ whose own fields say it can move lets anything go: a status that does not say re
 
 **The cell's facts** are `GET /v1/cell/facts`, read once after a build and once after a connect: the cameras with
 their mounting and the looks, the natural closing axis, the push (`can_push`, `default_mm`, `ceiling_mm`, the
-50 mm hard cap where the cell declares no fixture, and `critical_parts`, the cell's switch), the detector
+50 mm hard cap where the cell declares no fixture, `critical_parts` and `blocker_into_the_place`, the cell's switches), the detector
 (`backend`, the router, the VLM's id, and its `precision`: `fp32 weights, fp16 autocast` where
 `optim.torch_dtype` is unset, the configured dtype otherwise, `auto (the checkpoint's own)` for the VLM, both
 for a routed stack), the brake (`latches`, `brakes_in_motion`), the carried part (`modelled`, why not,
@@ -303,7 +308,7 @@ nothing else starts a task, and a parse never does.
 | `place` | `{"kind": "pose", "pose": <name or null>}`, where `null` is `robot.default_place_pose`; or `{"kind": "camera", "phrase": "blue bin", "said": ...}`, a target the camera finds |
 | `return_to` | `home`, or a taught pose's name |
 | `scope` | `once`, or `until_empty` |
-| `options` | `multi_view` (on: the configured looks; off: the first look, no generated view), `both_faces`, `closing_axis`, `push_mm`, `critical_parts` (true: nothing is pushed, and a blocker is cleared instead; unset: the cell's `recovery.critical_parts`), `record_views`, `rim_air_mm` (10 to 50, the cell's 20 when unset; a camera place only), `pick_anything`, `overlay` |
+| `options` | `multi_view` (on: the configured looks; off: the first look, no generated view), `both_faces`, `closing_axis`, `push_mm`, `critical_parts` (true: nothing is pushed, and a blocker is cleared instead; unset: the cell's `recovery.critical_parts`), `blocker_into_the_place` (true: a task that names no object takes a blocker as the part its pick takes and sets it down where the parts go; false: it is set aside on the support; unset: the cell's `recovery.blocker_into_the_place`, on), `record_views`, `rim_air_mm` (10 to 50, the cell's 20 when unset; a camera place only), `pick_anything`, `overlay` |
 | `command` | `{text, source, language, parsed, edited}`: the sentence it came from, for the record only |
 
 **Refused before anything moves, in this order.** The cell's state first: `not_connected`, `run_active`,
@@ -473,6 +478,17 @@ a part), `jaws_not_confirmed`, `route_refused` and `unknown_pose`. Its events ar
 `home.arrived` and `home.refused`, and it ends `finished`, `cancelled`, `part_still_held`, `return_failed`,
 `halted`, `controller_stopped` or `disconnected`.
 
+**The wave** is `POST /v1/cell/wave`, `202` with a run of kind `wave`: the second wrist joint swings 15 degrees
+either way, twice, and back to where it stood, each swing a straight joint line the exact guard judges against the
+camera world before it is sent, after the countdown where one is due. The console starts it when someone greets
+Willy in the chat (`CommandOut.greeting`, see Commands). Refused as a new task is, bar a carried part:
+`not_connected`, `run_active`, `halted`, `controller_stopped`, `cell_not_cleared`, `restart_required` (a wave is
+no way back after a stop), `needs_person`, `jaws_question_pending`, `part_still_held`, `jaws_not_confirmed` and
+`route_refused`. Its events are `wave.started`, `wave.done` and `wave.refused`. `POST /v1/task/stop` ends it before
+its next swing (`cancelled`, the arm where the last swing left it). A swing the guard refuses before the first one
+ran ends it `cancelled` with nothing moved; after one ran, as a refused Home ends (`return_failed`, `halted`,
+`controller_stopped`), so a person decides. It also ends `finished`, `part_still_held` or `disconnected`.
+
 The stop card enables Restart and Home only when every gate is green:
 
 | Gate | Read from |
@@ -577,6 +593,14 @@ to the VLM, which answers `CommandOut`: `understood`, `intent` (`task`, `stop`, 
 and `return_to` (taught poses by **name**: a spoken label comes back as its name), `scope`, `count`, `notes`,
 the model's id, latency and attempts, and its raw answer. **Reading never starts anything**: no run, no prompt
 set, no cell touched. A sentence read as "stop" only points at the stop buttons.
+
+**A greeting** ("Hallo Willy", "Hi Willy, wie geht's?", "Tschüss Willy", "Willy, wink mal!") comes back with
+`greeting` set to how the console answers it, the app config's `runtime.greeting.wave` (`config/app/runtime.yaml`):
+`direct`, the default (the owner, 2026-10-06), and the console starts the wave at once, `POST /v1/cell/wave`, with
+no click; `confirm`, and a dialog like Home's asks first; `off`, and Willy only greets back. `null` for every
+other sentence. The model reads the sentence as ever; a greeting is a sentence it read as no command that opens with
+a greeting or a farewell or asks to wave, or one that is nothing but a greeting, whatever the model made of it, bar a
+stop (`src.models.vlm.command.greets`). A command with a greeting in front stays a task.
 
 Refused: `409 run_active` first (during any run, a teach included), `409 vlm_not_loaded` (a cell whose detector
 is not the VLM, before "Laden"; or another checkpoint loaded: rebuild the cell), `501 vlm_unavailable` (also a

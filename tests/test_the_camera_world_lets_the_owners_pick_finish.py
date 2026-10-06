@@ -12,6 +12,11 @@ cell or let obstacles go:
   * every wrist frame declared its rig's shutter-motion refusal threshold as its placement error although the arm
     stood still, and the bench band grew from 5 mm to 10-16 mm: a plate 8 mm tall left the world.
 
+The grasp bench (2026-10-05) found a fourth: deep in a bin the camera measures nothing at all at the standoff and at
+the grasp, and a frame with no depth raised wherever it was asked. While the pick holds the frames of its earlier
+poses, such a frame is judged where the motion goes, on what they measured; before that, and asked about no goal, it
+stays blind.
+
 The frames are rendered through a pinhole with the D415's field of view, 320 x 180, cut at its minimum range
 (Intel's datasheet: about 310 mm at 848 x 480 and 450 mm at 1280 x 720, not measured here).
 """
@@ -217,6 +222,58 @@ class AWristFrameStillRefusesWhatItDidNotSeeTests(unittest.TestCase):
 
         self.assertIs(WorldVerdict.BLIND, snapshot.verdict, snapshot.render())
         self.assertIn("30% of the pixels hold a depth", snapshot.reason)
+
+
+def _self_at(tool: Pose) -> SelfEnvelope:
+    """The body standing at ``tool``: the base's capsule and one over the flange, so two poses are two bodies."""
+    return SelfEnvelope(
+        frames_mm=(np.eye(4), tool.to_matrix()),
+        capsules=_SELF.capsules + (LinkCapsule(frame=1, start_mm=(0.0, 0.0, -220.0), end_mm=(0.0, 0.0, -170.0),
+                                               radius_mm=20.0),),
+    )
+
+
+class AWristFrameWithNoDepthInsideAPickTests(unittest.TestCase):
+    """Deep in a bin the wrist camera measures nothing at the standoff and at the grasp (the grasp bench, 2026-10-05).
+    While the pick holds the frames of its earlier poses, such a frame is judged where the motion goes."""
+
+    def _blind_at_the_grasp(self, *, hold: bool) -> tuple[LivePlannerWorld, _Wrist]:
+        world, camera = _wrist_world(_STANDOFF, 310.0)
+        if hold:
+            world.hold_pick_views()
+        standoff = refresh_planner_world(source=world, client=_Planner(), self_envelope=_self_at(_STANDOFF),
+                                         near_point_mm=list(_GRASP.position_mm), now=100.05)
+        self.assertTrue(standoff.ok, standoff.render())
+        camera.tool, camera.depth = _GRASP.to_matrix(), np.zeros((_H, _W))
+        return world, camera
+
+    def test_the_lift_out_of_the_grasp_is_planned_on_the_frame_the_pick_holds(self) -> None:
+        world, _ = self._blind_at_the_grasp(hold=True)
+        self.assertEqual(1, world.held_view_count)
+
+        lift = refresh_planner_world(source=world, client=_Planner(), self_envelope=_self_at(_GRASP),
+                                     near_point_mm=list(_STANDOFF.position_mm), now=100.05)
+
+        self.assertTrue(lift.ok, lift.render())
+        self.assertEqual(1, world.held_view_count, "a frame with no depth adds nothing, so it is not held")
+
+    def test_the_control_without_frames_the_pick_holds_it_raises(self) -> None:
+        world, camera = self._blind_at_the_grasp(hold=False)
+
+        with self.assertRaises(CameraWorldUnavailable) as caught:
+            refresh_planner_world(source=world, client=_Planner(), self_envelope=_self_at(_GRASP),
+                                  near_point_mm=list(_STANDOFF.position_mm), now=100.05)
+
+        self.assertIs(WorldVerdict.BLIND, caught.exception.verdict)
+        self.assertIn("no valid pixel", str(caught.exception))
+
+    def test_asked_about_no_goal_it_stays_blind(self) -> None:
+        world, _ = self._blind_at_the_grasp(hold=True)
+
+        snapshot = world.world_for(self_envelope=_self_at(_GRASP), now=100.05)
+
+        self.assertIs(WorldVerdict.BLIND, snapshot.verdict, snapshot.render())
+        self.assertIn("no valid pixel", snapshot.reason)
 
 
 # ---------------------------------------------------------------------------------------------------

@@ -56,8 +56,10 @@ def _tall_block() -> np.ndarray:
 
 
 def _flat_block() -> np.ndarray:
-    """60 x 60 x 40 mm: too low for a vertical jaw to clear the table, so its grasps come from the side."""
-    return _cloud(x=(400.0, 460.0), y=(-30.0, 30.0), height_mm=40.0)
+    """60 x 60 x 30 mm: too low for a vertical jaw to clear the table, so its grasps come from the side. 40 mm was low
+    enough until the fingers stood where the hand puts them (2026-10-05); since, a vertical jaw takes a 40 mm block at
+    34 mm, and from 35 mm down the grasps come from the side."""
+    return _cloud(x=(400.0, 460.0), y=(-30.0, 30.0), height_mm=30.0)
 
 
 class _TracingArm(DummyRobotArm):

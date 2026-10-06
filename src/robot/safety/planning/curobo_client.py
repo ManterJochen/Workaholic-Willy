@@ -1730,6 +1730,14 @@ class CuroboPlanClient:
         planner behind the config's back.
         """
         env = dict(os.environ)
+        # The sidecar runs its own interpreter: a PYTHONPATH or PYTHONHOME the parent set for itself (Isaac Sim's
+        # python.bat sets both) would load the parent's packages into it, and the planner's compiled kernels then fail
+        # with "DLL load failed" (2026-10-05). Only WILLY_CUROBO_SIDECAR_PYTHONPATH reaches it.
+        for name in ("PYTHONPATH", "PYTHONHOME"):
+            env.pop(name, None)
+        extra = (os.environ.get("WILLY_CUROBO_SIDECAR_PYTHONPATH") or "").strip()
+        if extra:
+            env["PYTHONPATH"] = extra
         # The margin and the payload slots are written from this client whatever the shell
         # holds, and removed where it asked for neither: nothing in this repository sets
         # either variable, so a value in the shell is a leftover, and inheriting one would

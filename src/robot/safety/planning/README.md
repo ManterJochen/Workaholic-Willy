@@ -53,7 +53,7 @@ standard machine sets no environment variable ([ext_deps/README.md](../../../../
 | a move fails `TIMEOUT` | the planner found no collision-free plan | move the goal, or clear the cell |
 | `CuroboUnavailableError` from `check_joints` | no reply, a sidecar that exited, or a reply that is not a verdict for every sample | restart the sidecar from this tree |
 | `ValueError` from `check_joints` | no configuration, a value that is not finite, or a wrong joint count | send whole configurations |
-| `CameraWorldUnavailable` from a verb | a camera stays silent, blind or stale after `perceived.fresh_frame_attempts` more readings; blind is a frame with no depth, a fixed camera's frame less than half of whose pixels hold one, or a wrist camera's asked about no goal | fix the camera, or move it further from what it sees; a pick stops |
+| `CameraWorldUnavailable` from a verb | a camera stays silent, blind or stale after `perceived.fresh_frame_attempts` more readings; blind is a frame with no depth (a wrist frame inside a pick that holds its earlier frames and is asked about a goal excepted: deep in a bin it is judged on those), a fixed camera's frame less than half of whose pixels hold one, or a wrist camera's asked about no goal | fix the camera, or move it further from what it sees; a pick stops |
 | a move fails `CONTROLLER_REJECTED`, world `unseen` | cameras look at the motion's goal and none holds a depth on half the 200 mm about it | look from further away, or use a depth mode with a shorter minimum range |
 | a planner that does not start | no committed evidence file for this arm, hand, coupling, placement and margin | measure one, see [`robot/evidence/`](robot/evidence/README.md) |
 | a planner that does not start, `..._a16.json` | a declared carried part (`planning_world.payload.length_mm`) reserves 16 attach slots, and nobody measured the combination with them | the refusal's `matrix_gate.py ... --attach 16` command, about a minute on the cell's GPU; the UR10 files are committed |
@@ -105,7 +105,9 @@ and the same frame always gives the same world. A pixel the thinning dropped can
 **The budget.** `perceived.max_boxes` defaults to **64**; the reservation follows, 1 + declared + 64 box
 slots, so **restart the planner after changing it**. Over budget, `coarsen()` merges two boxes of one object
 into the box that holds both, the least added volume first, until the world fits or every object is one
-box; the refresh says `N box(es) merged into the boxes holding them to fit the slots`
+box. The volume counts the more the nearer the merged box comes to the motion's goal (twice at 100 mm, five
+times at 50), so the boxes far from the hand merge first and those it passes between stay as seen; the
+refresh says `N box(es) merged into the boxes holding them to fit the slots`
 (`PerceivedWorld.merged_to_fit`, `WorldRefresh`). What still does not fit keeps the nearest boxes, empties
 the guard's and refuses the motion naming `safety.planning_world.perceived.max_boxes`.
 

@@ -77,7 +77,8 @@ class AnEmptyPickTests(unittest.TestCase):
         self.assertIs(TaskStop.DETECTOR_FAILED, report.stop, report.sentence)
         self.assertEqual("problem", str(report.stop.stop_class))
         self.assertIn("detector failed", report.sentence)
-        self.assertEqual(["cube"], detector.asked, "one failed look ends the task; it does not look again")
+        # Every cube in a box of its own (``task.EACH_SEPARATE``, 2026-10-06), asked once.
+        self.assertEqual(["each separate cube"], detector.asked, "one failed look ends the task; it does not look again")
         self.assertEqual(1, service.detector_failures())
         self.assertEqual([], motions(log), "the arm moved: a problem stop leaves it where it stands")
         self.assertEqual(0, do0_changes(log))
@@ -106,7 +107,7 @@ class ASurveyTests(unittest.TestCase):
         self.assertIs(TaskStop.DETECTOR_FAILED, report.stop, report.sentence)
         self.assertIn("blue bin", report.sentence)
         self.assertIn("blue bin", detector.asked, "the survey asked the service's own detector")
-        self.assertNotIn("cube", detector.asked, "a pick ran before the bin was found")
+        self.assertNotIn("each separate cube", detector.asked, "a pick ran before the bin was found")
         self.assertEqual([], motions(log))
         self.assertEqual(0, do0_changes(log))
 
@@ -117,7 +118,7 @@ class ASurveyTests(unittest.TestCase):
         report, log, service = _run(detector, PlaceAt(camera="blue bin"), "once")
 
         self.assertIs(TaskStop.TARGET_NOT_FOUND, report.stop, report.sentence)
-        self.assertNotIn("cube", detector.asked, "a pick ran with no bin to put the part into")
+        self.assertNotIn("each separate cube", detector.asked, "a pick ran with no bin to put the part into")
         self.assertEqual(0, service.detector_failures())
         self.assertEqual(0, do0_changes(log))
 

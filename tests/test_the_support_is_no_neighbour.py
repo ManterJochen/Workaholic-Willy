@@ -5,8 +5,10 @@ on is not one of them: where the camera world's support model holds a surface (`
 the band of that surface's local reading is the surface (F5), however the mat tilts and ripples. And the calculator
 keeps the open hand as far from the solid the guard holds as the guard keeps it (``perceived_min_distance_mm``), so a try
 is not spent on a grasp the guard refuses at the mat: an R3-type grasp 13 mm over the solid stays, 4 mm over it goes,
-counted as ``rejected_support``. Where nothing is left for want of height, the reason is ``ALL_TABLE_CONFLICT`` and the
-sentence says the part is too short for this hand (the Hand-E: about 28 mm, ``FIT/fit_sfe_flat_part.out``).
+counted as ``rejected_support``. Since 2026-10-06 SFE plans on that solid itself (``support_footprint.HandFloor``): a
+grasp the reading alone would put within the distance is planned higher, and the filter is left nothing to drop. Where
+nothing is left for want of height, the reason is ``ALL_TABLE_CONFLICT`` and the sentence says the part is too short for
+this hand (the Hand-E: about 28 mm, ``FIT/fit_sfe_flat_part.out``).
 """
 
 from __future__ import annotations
@@ -112,18 +114,25 @@ class TheMatIsNoNeighbourTests(unittest.TestCase):
 class TooShortForThisHandTests(unittest.TestCase):
     """A part lower than the Hand-E grips at any tilt: ``ALL_TABLE_CONFLICT``, "too short for this hand"."""
 
-    def test_a_25_mm_part_is_too_short_and_says_so(self) -> None:
+    def test_a_12_mm_part_is_too_short_and_says_so(self) -> None:
+        """Under the Hand-E's least height: 1 mm over the support, the fingertip's 10.45 mm and 2 mm (2026-10-06, the
+        owner's "bis auf 1 mm"; 15.5 mm at the 3 mm of 2026-10-05, 28 mm until the fingers stood at the anchor)."""
         from src.robot.grasping.generation.scene_obstacles import no_grasp_said
         from src.robot.grasping.types.feedback import GraspFailureReason
 
-        frame = Frame_((BENCH, MAT), Cylinder((0.0, -650.0), 20.0, MAT_MM, MAT_MM + 25.0))
+        frame = Frame_((BENCH, MAT), Cylinder((0.0, -650.0), 20.0, MAT_MM, MAT_MM + 12.0))
         result = compute(calculator(scene=True), frame)
         self.assertEqual((), result.candidates)
         self.assertEqual((GraspFailureReason.ALL_TABLE_CONFLICT, GraspFailureReason.RESCAN_RECOMMENDED),
                          result.reasons)
         said = no_grasp_said(result)
         self.assertIn("too short for this hand", said)
-        self.assertIn("less than about 28 mm", said)
+        self.assertIn("less than about 13 mm", said)
+
+    def test_a_25_mm_part_gets_grasps(self) -> None:
+        """The owner's flat parts, 24 to 26 mm tall, which the hand did not grip until 2026-10-06."""
+        frame = Frame_((BENCH, MAT), Cylinder((0.0, -650.0), 20.0, MAT_MM, MAT_MM + 25.0))
+        self.assertTrue(compute(calculator(scene=True), frame).candidates)
 
     def test_the_least_height_is_the_one_SFE_grips_at(self) -> None:
         """``least_part_height_mm`` restates SFE's ladder: just under it SFE offers nothing, just over it a grasp."""
@@ -133,7 +142,7 @@ class TooShortForThisHandTests(unittest.TestCase):
 
         jaw = SupportFootprintJaw.from_robot_config(_hande())
         least = least_part_height_mm(jaw)
-        self.assertAlmostEqual(27.9, least, delta=0.05)
+        self.assertAlmostEqual(13.45, least, delta=0.05)
         for height, expect in ((least - 1.0, False), (least + 1.5, True)):
             with self.subTest(height=height):
                 cloud = cylinder_cloud(40.0, height, support_mm=MAT_MM)
@@ -198,38 +207,65 @@ class TheOpenHandKeepsTheGuardsDistanceFromTheMatTests(unittest.TestCase):
                                       solids=(self._solid(MAT_MM, tilt_deg=0.0),))
         return frame, [v.distance_mm for v in reference]
 
-    def test_the_calculator_drops_and_counts_what_comes_within_5_mm_of_a_held_solid(self) -> None:
-        """A held solid raised until every offered grasp's open hand stands 3 mm or less over it: all of them go,
-        counted, and the reason says the support."""
+    def _kept_from(self, result: Any, solid: Any) -> "list[float]":
+        """Each offered grasp's open hand's distance to ``solid``, as the guard's filter measures it."""
+        from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
+        from src.robot.grasping.generation.scene_obstacles import envelope_verdicts
+
+        cfg = _hande()
+        hand = build_gripper_geometry(cfg.grasping.gripper_geometry)
+        poses = [(g.position, np.column_stack([g.axis, np.cross(g.approach, g.axis), g.approach]))
+                 for g in result.candidates]
+        return [v.distance_mm for v in envelope_verdicts(poses, gripper_model=hand,
+                                                         open_width_mm=cfg.gripper.max_width_mm, solids=(solid,))]
+
+    def test_a_held_solid_over_every_grasp_planned_on_the_reading_lifts_them_all_over_it(self) -> None:
+        """A held solid raised until every grasp planned on the reading alone stands 3 mm or less over it: SFE plans on
+        the solid instead (``support_footprint.HandFloor``), so every grasp offered keeps the guard's 5 mm and the
+        post-hoc filter has nothing left to drop. Until 2026-10-06 the filter dropped all of them, and a part the
+        hand could take higher up got no grasp."""
+        frame, over_slab = self._offered()
+        self.assertGreater(len(over_slab), 0)
+        solid, held = self._held(MAT_MM + max(over_slab) - 3.0)
+        on = compute(calculator(scene=True), frame, support_model=held)
+        self.assertGreater(len(on.candidates), 0)
+        self.assertEqual(0, on.telemetry["rejected_support"])
+        self.assertGreaterEqual(min(self._kept_from(on, solid)), 5.0 - 1e-6)
+
+    def test_a_held_solid_the_hand_cannot_keep_its_distance_from_is_a_table_conflict_said(self) -> None:
+        """Held up to 5 mm under the part's top, no finger fits over it at the guard's distance: no grasp, the support
+        named, the part too short for the hand over what the guard holds."""
         from src.robot.grasping.generation.scene_obstacles import no_grasp_said
         from src.robot.grasping.types.feedback import GraspFailureReason
 
-        frame, over_slab = self._offered()
-        self.assertGreater(len(over_slab), 0)
-        _, held = self._held(MAT_MM + max(over_slab) - 3.0)
+        frame, _ = self._offered()
+        _, held = self._held(MAT_MM + 40.0 - 5.0)
         on = compute(calculator(scene=True), frame, support_model=held)
         self.assertEqual((), on.candidates)
-        self.assertEqual(len(over_slab), on.telemetry["rejected_support"])
         self.assertEqual((GraspFailureReason.ALL_TABLE_CONFLICT, GraspFailureReason.RESCAN_RECOMMENDED), on.reasons)
-        self.assertEqual("every grasp brings the hand within 5 mm of the support surface the part stands on",
-                         no_grasp_said(on))
+        self.assertIn("too short", no_grasp_said(on))
 
     def test_a_held_solid_6_mm_under_every_open_hand_takes_nothing(self) -> None:
         frame, over_slab = self._offered()
-        _, held = self._held(MAT_MM + min(over_slab) - 6.0)
+        solid, held = self._held(MAT_MM + min(over_slab) - 6.0)
         on = compute(calculator(scene=True), frame, support_model=held)
-        self.assertEqual(len(over_slab), len(on.candidates))
+        # As many grasps or more: the palm, which the guard holds and the reading's check did not, is planned in SFE
+        # over the held solid, so a grasp the filter dropped for the reading's table is replaced there.
+        self.assertGreaterEqual(len(on.candidates), len(over_slab))
         self.assertEqual(0, on.telemetry["rejected_support"])
         self.assertGreaterEqual(on.telemetry["scene_held_least_mm"], 5.0)
+        self.assertGreaterEqual(min(self._kept_from(on, solid)), 5.0 - 1e-6)
 
-    def test_between_the_two_only_the_low_ones_go(self) -> None:
+    def test_between_the_two_every_grasp_is_planned_over_the_solid(self) -> None:
+        """Held between the lowest and the highest grasp planned on the reading: the low ones are planned higher, none
+        comes within the guard's 5 mm, none is dropped after."""
         frame, over_slab = self._offered()
         middle = (min(over_slab) + max(over_slab)) / 2.0
-        _, held = self._held(MAT_MM + middle - 5.0)
+        solid, held = self._held(MAT_MM + middle - 5.0)
         on = compute(calculator(scene=True), frame, support_model=held)
-        low = sum(1 for d in over_slab if d - (middle - 5.0) < 5.0)
-        self.assertEqual(low, on.telemetry["rejected_support"])
-        self.assertEqual(len(over_slab) - low, len(on.candidates))
+        self.assertGreater(len(on.candidates), 0)
+        self.assertEqual(0, on.telemetry["rejected_support"])
+        self.assertGreaterEqual(min(self._kept_from(on, solid)), 5.0 - 1e-6)
 
     def test_all_of_them_near_the_mat_is_a_table_conflict_said(self) -> None:
         from src.robot.grasping.generation.scene_obstacles import why_no_grasp

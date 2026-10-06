@@ -1,10 +1,13 @@
 /**
- * The two motions that are not Start: Home, and Restart after a problem stop (build plan item 12, 1.3.5, 1.3.6).
+ * The motions that are not Start: Home, and Restart after a problem stop (build plan item 12, 1.3.5, 1.3.6), and the
+ * wave at a greeting.
  *
- * Each asks first, through the console's one confirm host: the dialog names the first motion (the planned move to the
- * return pose), the 3 s hands-off countdown when one is due, and that a planned move may begin with a short straight
- * leg. Only a click on the dialog's confirm sends the request, once; Cancel, Escape and a click beside it send nothing.
- * The 202 answer is followed at once, so the run is drawn even if it ends before the next cell poll.
+ * Home and Restart ask first, through the console's one confirm host: the dialog names the first motion (the planned
+ * move to the return pose), the 3 s hands-off countdown when one is due, and that a planned move may begin with a short
+ * straight leg. Only a click on the dialog's confirm sends the request, once; Cancel, Escape and a click beside it send
+ * nothing. The wave asks the same way where the app config says `confirm`, and goes at once where it says `direct`
+ * (the owner, 2026-10-06: "Sofort winken"), the greeting the person typed being the click. The 202 answer is followed
+ * at once, so the run is drawn even if it ends before the next cell poll.
  */
 
 import { createElement, useCallback, useState } from 'react'
@@ -16,9 +19,14 @@ import { useCell } from '../model/useCell'
 import { useRun } from '../model/useRun'
 import { COCKPIT } from './i18n'
 
+/** What became of a wave: started (its run is followed), declined at the dialog, or refused, with the refusal. */
+export type WaveAnswer = 'started' | 'declined' | ApiError
+
 export interface Motions {
   /** THIS MOVES, after the dialog's confirm: the planned move to Home. */
   home(): Promise<void>
+  /** THIS MOVES: Willy waves, after the dialog's confirm where `ask`, else at once. The refusal is returned, not kept. */
+  wave(ask: boolean): Promise<WaveAnswer>
   /** THIS MOVES, after the dialog's confirm: a new run of the stopped one, its first motion the move to `to`. */
   restart(runId: string, to: string, then: string | null): Promise<void>
   readonly busy: boolean
@@ -78,5 +86,28 @@ export function useMotions(): Motions {
     [confirm, countdown, send, t],
   )
 
-  return { home, restart, busy, error, clearError: () => setError(null) }
+  const wave = useCallback(
+    async (ask: boolean): Promise<WaveAnswer> => {
+      if (ask) {
+        const yes = await confirm({
+          title: t('ck.confirm.waveTitle'),
+          firstMotion: t('ck.confirm.waveMotion'),
+          countdown,
+          confirmLabel: t('ck.confirm.waveGo'),
+          moves: true,
+        })
+        if (!yes) return 'declined'
+      }
+      try {
+        follow(await api.wave())
+        refresh()
+        return 'started'
+      } catch (err: unknown) {
+        return err instanceof ApiError ? err : new ApiError(0, null, String(err))
+      }
+    },
+    [confirm, countdown, follow, refresh, t],
+  )
+
+  return { home, restart, wave, busy, error, clearError: () => setError(null) }
 }

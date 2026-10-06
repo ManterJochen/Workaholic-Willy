@@ -130,6 +130,33 @@ class TheOwnersSentencesOnTheRealModelTests(unittest.TestCase):
                 if "return_to" in want:
                     self.assertEqual(reading.return_to, want["return_to"], reading.raw)
 
+    def test_the_mat_the_parts_lie_on_is_never_the_object(self) -> None:
+        """The demo's sentence and the ways the owner may say it on the day (2026-10-07): everything off the foam mat
+        into the yellow bin. The mat is where the parts lie, never what is picked; the yellow bin is the place, and the
+        task runs until the mat is clear."""
+        ask = self.holder.asker_for(self.vlm, may_load=False)
+        for sentence, place in (
+            ("alle Objekte auf der Schaumstoffmatte in die gelbe Kiste", ("yellow",)),
+            ("Leg alle Teile von der Matte in die gelbe Kiste", ("yellow",)),
+            ("Nimm alles von der Schaumstoffmatte und pack es in die gelbe Box", ("yellow",)),
+            ("Räum die Schaumstoffmatte ab", None),
+        ):
+            with self.subTest(sentence=sentence):
+                reading = understand(sentence, ask=ask, poses=POSES)
+                self.assertTrue(reading.understood, f"{reading.reason} | raw: {reading.raw}")
+                self.assertEqual("task", reading.intent, reading.raw)
+                if reading.object is not None:
+                    for word in ("mat", "foam", "table"):
+                        self.assertNotIn(word, reading.object.phrase, reading.raw)
+                if place is None:
+                    self.assertIsNone(reading.place, reading.raw)
+                else:
+                    self.assertIsNotNone(reading.place, reading.raw)
+                    assert reading.place is not None
+                    for word in place:
+                        self.assertIn(word, reading.place.phrase, reading.raw)
+                self.assertEqual("until_empty", reading.scope, reading.raw)
+
 
 if __name__ == "__main__":
     unittest.main()

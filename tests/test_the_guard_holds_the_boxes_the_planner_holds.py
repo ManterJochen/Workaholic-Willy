@@ -17,6 +17,9 @@ The UR10 cases are the investigation's own (scratchpad selfcol_seen_answer.md), 
 cast straight down, the live world, the refresh, the exact guard on the committed UR10 meshes at joints
 (0, -60, 80, -110, -90, 0) degrees, where the shoulder housing hangs 52 mm over the base plate along base -Y. They skip
 where no collision engine loads. Names new with this change are imported inside the tests.
+
+The owner lowered the shipped distances on 2026-10-05 (3 mm to a seen box, 3 mm step, 8 mm margin); the cases here
+keep the 5 and 10 mm they were measured at, and only the shipped-number tests read the new ones.
 """
 
 from __future__ import annotations
@@ -101,6 +104,9 @@ def _ctx() -> SafetyContext:
 
 
 def _guard(**config: Any) -> SelfCollisionGuard:
+    """A UR10 guard. Its seen-box distance is the 5 mm these cases were measured at unless a case asks another; the
+    owner ships 3 mm since 2026-10-05."""
+    config.setdefault("perceived_min_distance_mm", 5.0)
     return SelfCollisionGuard(SelfCollisionSafetyConfig(kinematics_model="ur10", **config))
 
 
@@ -471,20 +477,24 @@ class TheRealSurfaceStaysClearBetweenSamplesTests(unittest.TestCase):
     def test_a_voxel_coarser_than_the_one_the_seen_distance_was_measured_at_is_refused_at_load(self) -> None:
         """At a 20 mm voxel a pixel the camera measured lay 5.6 mm outside every box, so a sample the guard passes at
         5 mm can touch it: while seen boxes are held nearer than the step, the thinning stays at the 10 it was measured
-        at. Held at the step, the rule from before 2026-09-30 stands unchanged."""
+        at. Held at the step, the rule from before 2026-09-30 stands unchanged. The step here is the 10 mm it was
+        written at; the shipped 3 mm holds seen boxes at the step itself."""
+        step = {"min_distance_mm": 10.0}
         with self.assertRaises(ValidationError) as caught:
-            RobotSafetyConfig.model_validate({"planning_world": {"perceived": {"voxel_size_mm": 20.0}}})
+            RobotSafetyConfig.model_validate({"self_collision": step,
+                                              "planning_world": {"perceived": {"voxel_size_mm": 20.0}}})
         said = str(caught.exception)
         for key in ("perceived.voxel_size_mm", "perceived_min_distance_mm", "min_distance_mm"):
             self.assertIn(key, said)
         for voxel in (10.0, 5.0):
-            RobotSafetyConfig.model_validate({"planning_world": {"perceived": {"voxel_size_mm": voxel}}})
-        RobotSafetyConfig.model_validate({"self_collision": {"perceived_min_distance_mm": 10.0},
+            RobotSafetyConfig.model_validate({"self_collision": step,
+                                              "planning_world": {"perceived": {"voxel_size_mm": voxel}}})
+        RobotSafetyConfig.model_validate({"self_collision": {**step, "perceived_min_distance_mm": 10.0},
                                           "planning_world": {"perceived": {"voxel_size_mm": 20.0}}})
 
     def test_the_shipped_numbers_add_up_to_the_step(self) -> None:
         config = RobotSafetyConfig()
-        self.assertEqual(config.self_collision.perceived_min_distance_mm, 5.0)  # type: ignore[attr-defined]
+        self.assertEqual(config.self_collision.perceived_min_distance_mm, 3.0)  # type: ignore[attr-defined]
         self.assertGreaterEqual(
             config.self_collision.perceived_min_distance_mm + config.planning_world.perceived.margin_mm,  # type: ignore[attr-defined]
             config.self_collision.min_distance_mm)
@@ -503,7 +513,7 @@ class TheRealSurfaceStaysClearBetweenSamplesTests(unittest.TestCase):
         from src.config.schema.robot import RobotConfig
 
         robot = load_robot_section(None, profile="ur10")
-        self.assertEqual(robot.safety.self_collision.perceived_min_distance_mm, 5.0)  # type: ignore[attr-defined]
+        self.assertEqual(robot.safety.self_collision.perceived_min_distance_mm, 3.0)  # type: ignore[attr-defined]
         self.assertEqual(robot.safety.planning_world.perceived.max_boxes, 64)
         self.assertEqual(WorldBuildTuning().max_boxes, 64)
         # The planner reserves a slot for every box the world may send: the bench, and the 64.

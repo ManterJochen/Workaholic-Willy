@@ -132,6 +132,15 @@ WRITABLE: tuple[Writable, ...] = (
         unit="mm",
     ),
     Writable(
+        path="robot.safety.planning_world.payload.length_mm",
+        label="Carried part length",
+        measure=(
+            "How far your longest part hangs below the closed fingertips, in millimetres. The planner carries a "
+            "box of this length under the jaws while a part is held; a task needs it before it starts."
+        ),
+        unit="mm",
+    ),
+    Writable(
         path="robot.gripper.tool_frame.source",
         label="Tool frame owner",
         measure=(
@@ -644,8 +653,21 @@ def pose_target_file(root: Path, layers: tuple[str, ...]) -> Path | None:
     Whether the file may take a pose (git keeps it out) is :func:`pose_layer_refusal`'s to say.
     """
     if not layers:
-        return None
+        if _is_shipped_tree(root):
+            return None
+        # A cell's own tree, outside this repository's config folder (``--data``): its base robot.yaml is the cell's
+        # own file, as a layer would be, and git keeps it out or no git holds it (:func:`pose_layer_refusal`).
+        return target_file("robot.named_poses", root, layers)
     return target_file("robot.named_poses", root, layers)
+
+
+def _is_shipped_tree(root: Path) -> bool:
+    """Whether ``root`` is this repository's own config folder, whose base ``robot.yaml`` every cell reads."""
+    shipped = Path(__file__).resolve().parents[2] / "config"
+    try:
+        return Path(root).resolve() == shipped.resolve()
+    except OSError:  # pragma: no cover (a root that cannot be resolved is treated as the shared one)
+        return True
 
 
 def _one_line(text: str) -> str:
@@ -682,7 +704,7 @@ def pose_layer_refusal(root: Path, layers: tuple[str, ...], *, what: str = "a ta
     the pose door asks again before it writes. The sentence says what happens and what to do; the caller adds what was
     not done (nothing written, nothing freed).
     """
-    if not layers:
+    if not layers and _is_shipped_tree(root):
         return (f"{what} is written into the last layer of the profile chain, the cell's own, and this chain names no "
                 f"layer, so it would land in the shared robot.yaml every cell reads. {_CELL_LAYER}")
     target = pose_target_file(root, layers)

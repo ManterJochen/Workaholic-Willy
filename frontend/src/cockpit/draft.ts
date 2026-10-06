@@ -32,6 +32,13 @@ export interface DraftOptions {
   /** The owner's switch (2026-10-03): critical parts are never pushed, a blocker is cleared instead. `null` is the
    *  cell's own. */
   readonly criticalParts: boolean | null
+  /** The owner's switch (2026-10-06): where the task takes every part, a blocker goes where the parts go ("direkt
+   *  weggepackt"), else it is only set aside ("nur umgelegt"). `null` is the cell's own. */
+  readonly blockerIntoThePlace: boolean | null
+  /** The run's own word on recovery (null: the cell's). */
+  readonly rescan: boolean | null
+  readonly push: boolean | null
+  readonly clear: boolean | null
   readonly recordViews: boolean
   readonly rimAirMm: number | null
   readonly overlay: boolean
@@ -43,6 +50,10 @@ export const DEFAULT_OPTIONS: DraftOptions = {
   closingAxis: null,
   pushMm: null,
   criticalParts: null,
+  blockerIntoThePlace: null,
+  rescan: null,
+  push: null,
+  clear: null,
   recordViews: false,
   rimAirMm: null,
   overlay: true,
@@ -204,6 +215,10 @@ export function draftFromPlan(plan: TaskPlanOut): Draft {
       closingAxis: (options?.closing_axis as ClosingAxis | null | undefined) ?? null,
       pushMm: null,
       criticalParts: options?.critical_parts ?? null,
+      blockerIntoThePlace: options?.blocker_into_the_place ?? null,
+      rescan: options?.rescan ?? null,
+      push: options?.push ?? null,
+      clear: options?.clear ?? null,
       recordViews: options?.record_views ?? false,
       rimAirMm: null,
       overlay: options?.overlay ?? true,
@@ -240,6 +255,10 @@ export function taskOf(draft: Draft): TaskIn {
       closing_axis: draft.options.closingAxis,
       push_mm: draft.options.pushMm,
       critical_parts: draft.options.criticalParts,
+      blocker_into_the_place: draft.options.blockerIntoThePlace,
+      rescan: draft.options.rescan,
+      push: draft.options.push,
+      clear: draft.options.clear,
       record_views: draft.options.recordViews,
       // A pose place has no rim: the library refuses air for one (`PlaceAt` in src/robot/execution/place_target.py).
       rim_air_mm: camera ? draft.options.rimAirMm : null,

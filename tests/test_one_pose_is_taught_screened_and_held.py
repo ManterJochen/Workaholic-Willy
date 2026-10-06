@@ -670,10 +670,16 @@ class TheCellsOwnLayerKeepsThePoseTests(_Case):
             with self.subTest(name=name, label=label), self.assertRaises(TeachRefused) as caught:
                 ProfilePoseStore(self.tree, name, label)
             self.assertEqual(code, caught.exception.code)
-        with self.assertRaises(TeachRefused) as caught:
+        # Over the shipped tree (the scratch tree stands for it), a chain with no layer would write the robot.yaml
+        # every cell reads; a customer's own tree outside the repository takes the pose there (2026-10-05).
+        from unittest.mock import patch
+
+        with patch("src.config.edit._is_shipped_tree", return_value=True), self.assertRaises(TeachRefused) as caught:
             ProfilePoseStore(ConfigTree(root=self.tmp, profile=None, layers=()), "drop", "Ablage")
         self.assertEqual("no_layer", caught.exception.code)
         self.assertIn("robot.yaml", str(caught.exception))
+        own = ProfilePoseStore(ConfigTree(root=self.tmp, profile=None, layers=()), "drop", "Ablage")
+        self.assertEqual(str(self.tmp / "robot" / "robot.yaml"), own.target)
 
     def test_a_name_the_tree_holds_is_taken_unless_it_is_replaced(self) -> None:
         self.assertTrue(self.tree.write_named_pose("drop_left", joints_deg=list(LOOK_1_DEG), label="Ablage links",

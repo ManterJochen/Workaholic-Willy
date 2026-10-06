@@ -101,6 +101,8 @@ export function captionOf(view: RunView, connected: boolean, labels: PoseLabels 
       return { verb: m('aud.cap.teach'), what: view.teach?.label || view.teach?.name || null, sub: m('aud.cap.teach.sub'), tone: 'run' }
     case 'planner':
       return { verb: m('aud.cap.planner'), what: null, sub: m('aud.cap.planner.sub'), tone: 'run' }
+    case 'wave':
+      return { verb: m('aud.cap.wave'), what: null, sub: null, tone: 'run' }
     default:
       break
   }

@@ -48,7 +48,9 @@ The owner's rules (2026-09-29, and 2026-10-03 where it says so), each one a name
   The planner then slides the part sideways out of that neighbour's reach, or it refuses.
 * **The rearranging push** (``may_shove``). The fingers come down where no neighbour stands within
   ``beside_part_clearance_mm`` of them (the owner's 10 mm; ``hand_clearance_mm`` where none is given), on table the
-  camera saw. The housing keeps ``hand_clearance_mm`` from every neighbour tall enough to reach its underside, all
+  camera saw; beside a neighbour part the detector named (``neighbour_named``) within ``named_part_clearance_mm``,
+  as a grasp's finger comes to one (the owner, 2026-10-06: "Wie beim Greifen: 1 mm"; walls, bins and what nobody
+  named keep the 10 mm). The housing keeps ``hand_clearance_mm`` from every neighbour tall enough to reach its underside, all
   along the stroke. Such a neighbour stays in the guard's world, and the fingers keep the hand's clearance from it
   too. Contact is allowed with what stands lower: a neighbour in the stroke's corridor (the part's width or the
   finger's, whichever is wider, :data:`SHOVE_TOLERANCE_MM` more) is shoved ahead to where the part's front ends,
@@ -859,6 +861,19 @@ def _clusters(points: np.ndarray, plane_xy: np.ndarray, heights: np.ndarray
     return labels, labels[first], tops
 
 
+def _cells_named(plane_xy: np.ndarray, named: np.ndarray) -> np.ndarray:
+    """Per :data:`PLANNER_GRID_MM` cell in :func:`_cells`' order, whether every point in it is a named part's."""
+
+    if len(plane_xy) == 0:
+        return np.zeros(0, dtype=bool)
+    keys = np.floor(plane_xy / PLANNER_GRID_MM).astype(np.int64)
+    _, inverse = np.unique(keys, axis=0, return_inverse=True)
+    inverse = np.asarray(inverse).reshape(-1)
+    every = np.ones(int(inverse.max()) + 1, dtype=bool)
+    np.logical_and.at(every, inverse, np.asarray(named, dtype=bool))
+    return every
+
+
 def _cells(plane_xy: np.ndarray, heights: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Points reduced to :data:`PLANNER_GRID_MM` cells: the mean position in each cell and its highest point."""
 
@@ -1137,6 +1152,10 @@ class _Scene:
     # brush what stands beside their stroke, and they come down ``descent_clearance`` from every neighbour.
     may_shove: bool = False
     descent_clearance: float = HAND_NEIGHBOUR_CLEARANCE_MM
+    # Which neighbour cells hold a named part's points alone, and how far the fingers come down from those
+    # (``plan_push``'s ``named_part_clearance_mm``); None keeps ``descent_clearance`` for every cell.
+    neighbour_named: Optional[np.ndarray] = None
+    named_clearance: Optional[float] = None
     # The neighbours' own BASE points within the window, above the band, the cluster each belongs to as the camera world
     # joins them (NEIGHBOUR_CLUSTER_MM), and the cluster of each neighbour cell: what a rearranging push keeps out whole.
     neighbour_raw: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
@@ -1170,6 +1189,8 @@ def plan_push(
     beside_part_mm: float = 0.0,
     may_shove: bool = False,
     longest_push_mm: Optional[float] = None,
+    neighbour_named: Optional[ArrayLike] = None,
+    named_part_clearance_mm: Optional[float] = None,
 ) -> Union[PushPlan, PushRefusal]:
     """Plan one push of the failed part, or refuse with a reason.
 
@@ -1203,6 +1224,10 @@ def plan_push(
     that touches nothing but the part. ``longest_push_mm``, where given, is how far a push may go where nobody asked for
     its distance: where none of the directions frees the part at ``push_distance_mm``, longer pushes are tried in steps
     of :data:`PUSH_DISTANCE_STEP_MM` up to it (never past :data:`PUSH_DISTANCE_CAP_MM`), the shortest that works first.
+    ``neighbour_named``, one flag per neighbour point, says which are a part the detector named; on a rearranging push
+    the fingers come down ``named_part_clearance_mm`` from those (the owner, 2026-10-06: as a grasp's finger comes to a
+    named part, which the guard holds to its measured surface), and ``beside_part_clearance_mm`` from every other. A
+    grid cell holding any point nobody named keeps the larger. Either ``None`` holds every point as before.
     """
 
     clearance = float(hand_clearance_mm)
@@ -1219,6 +1244,12 @@ def plan_push(
     beside_mm = float(beside_part_mm)
     if not math.isfinite(beside_mm) or beside_mm < 0.0:
         raise ValueError(f"beside_part_mm must be a non-negative number of mm, got {beside_part_mm!r}")
+    named_clearance: Optional[float] = None
+    if named_part_clearance_mm is not None:
+        named_clearance = float(named_part_clearance_mm)
+        if not math.isfinite(named_clearance) or named_clearance < 0.0:
+            raise ValueError(f"named_part_clearance_mm must be a non-negative number of mm, got "
+                             f"{named_part_clearance_mm!r}")
     floor_mm = float(finger_floor_mm)
     if not math.isfinite(floor_mm):
         raise ValueError(f"finger_floor_mm must be a number of mm, got {finger_floor_mm!r}")
@@ -1278,14 +1309,24 @@ def plan_push(
     target_ab = frame.plane_xy(target)
     target_cells, _ = _cells(target_ab, target_h)
     neighbours = _points(neighbour_points_mm, "neighbour_points_mm")
+    named_points: Optional[np.ndarray] = None
+    if neighbour_named is not None:
+        named_points = np.asarray(neighbour_named, dtype=bool).reshape(-1)
+        if named_points.shape[0] != neighbours.shape[0]:
+            raise ValueError(f"neighbour_named holds {named_points.shape[0]} flag(s) for {neighbours.shape[0]} "
+                             "neighbour point(s)")
     neighbour_h = frame.height(neighbours)
     keep = neighbour_h > SUPPORT_BAND_MM
     neighbours, neighbour_h = neighbours[keep], neighbour_h[keep]
+    if named_points is not None:
+        named_points = named_points[keep]
     neighbour_ab = frame.plane_xy(neighbours)
     lo_ab = target_ab.min(axis=0) - NEIGHBOUR_WINDOW_MM
     hi_ab = target_ab.max(axis=0) + NEIGHBOUR_WINDOW_MM
     near = np.all((neighbour_ab >= lo_ab) & (neighbour_ab <= hi_ab), axis=1) if len(neighbour_ab) else keep[:0]
     neighbour_cells, neighbour_tops = _cells(neighbour_ab[near], neighbour_h[near])
+    named_cells = (None if named_points is None or named_clearance is None
+                   else _cells_named(neighbour_ab[near], named_points[near]))
     raw_labels, cell_labels, cluster_tops = _clusters(neighbours[near], neighbour_ab[near], neighbour_h[near])
     gap = _min_distance(target_cells, neighbour_cells)
     if not gap <= NEIGHBOUR_EVIDENCE_RADIUS_MM:
@@ -1345,7 +1386,9 @@ def plan_push(
                        tcp_height=tcp_height, distance=travel, clearance_before=gap, landing_box=landing_box,
                        hand_region=hand_region, seen=seen, workspace=workspace, hand=hand, hand_clearance=clearance,
                        beside_clearance=beside, beside_mm=beside_mm, may_shove=bool(may_shove),
-                       descent_clearance=descent, neighbour_raw=neighbours[near], neighbour_raw_labels=raw_labels,
+                       descent_clearance=descent, neighbour_named=named_cells,
+                       named_clearance=None if named_cells is None else named_clearance,
+                       neighbour_raw=neighbours[near], neighbour_raw_labels=raw_labels,
                        neighbour_labels=cell_labels, cluster_tops=cluster_tops, foot_inferred=foot_unseen)
         verdicts: list[DirectionVerdict] = []
         best: Optional[tuple[tuple[bool, float], np.ndarray, float, bool]] = None
@@ -1544,8 +1587,8 @@ def _shove_reach(scene: _Scene, direction_ab: np.ndarray, st: _Stations, target_
                  lateral: np.ndarray) -> _Reach:
     """The owner's rearranging push (2026-10-03) along one direction.
 
-    The fingers come down where no neighbour stands within ``scene.descent_clearance`` of either (and on seen table,
-    which :func:`_judge` asks), and the housing keeps the hand's clearance from every neighbour tall enough to reach it,
+    The fingers come down where no neighbour stands within ``scene.descent_clearance`` of either, a named part's
+    ``scene.named_clearance`` (and on seen table, which :func:`_judge` asks), and the housing keeps the hand's clearance from every neighbour tall enough to reach it,
     all along the stroke. In between, contact is allowed with what stands lower than that: a neighbour in the stroke's
     corridor (the part's width or the finger's, whichever is wider, :data:`SHOVE_TOLERANCE_MM` more) is shoved ahead to
     where the part's front ends, and one within the hand's clearance of the fingers' stroke may be brushed. Each such
@@ -1555,7 +1598,11 @@ def _shove_reach(scene: _Scene, direction_ab: np.ndarray, st: _Stations, target_
 
     hand = scene.hand
     hc = scene.hand_clearance
-    c = scene.descent_clearance
+    c: Union[float, np.ndarray] = scene.descent_clearance
+    if scene.neighbour_named is not None and scene.named_clearance is not None:
+        # Beside a part the detector named the fingers come down as a grasp's do (the owner, 2026-10-06).
+        c = np.where(scene.neighbour_named, min(scene.named_clearance, scene.descent_clearance),
+                     scene.descent_clearance)
     half_finger = 0.5 * hand.finger_width_mm
     outer = hand.half_outer_mm
     none = np.zeros((0, 2))

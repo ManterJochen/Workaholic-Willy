@@ -342,6 +342,8 @@ def library_plan(plan: Mapping[str, Any]) -> "tuple[TaskPlan, dict[str, JointPos
                             # A distance nobody asked for is the cell's, which may go longer where it opens too little.
                             push_mm=options.push_mm if options.push_asked else None,
                             critical_parts=options.critical_parts,
+                            rescan=options.rescan, push=options.push, clear=options.clear,
+                            blocker_into_the_place=options.blocker_into_the_place,
                             record_views=options.record_views, overlay=options.overlay,
                             pick_anything=options.pick_anything),
         first_motion=resolved.first_motion,
@@ -479,6 +481,93 @@ def drive_home(console: "Console", run: "Run") -> StopCode:
         return StopCode.CONTROLLER_STOPPED
     run.error = (f"the move to {to} was refused ({status}: {moved.message}), and the arm stays where it stands; a "
                  "person decides what happens next")
+    return StopCode.RETURN_FAILED
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The wave
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+def _wave_stopped(run: "Run") -> bool:
+    """Whether the wave sends no next swing: the operator's stop, a halt, or a cell taken down."""
+    return bool(run.stop_requested or run.halt_requested or run.abandoned)
+
+
+def drive_wave(console: "Console", run: "Run") -> StopCode:
+    """The body of a wave run: Willy waves back at a greeting (``src.robot.execution.gestures.wave``), the second
+    wrist joint swung out and back twice, each swing a straight joint line the exact guard judges before it is sent.
+
+    Before it, as Home: a cell taken down, a halt or a part still held ends it with nothing sent, and so does the
+    operator's stop, which ends it ``cancelled``. The stop, the halt and the cell are read again before every swing, and
+    end the wave where the arm stands: ``cancelled``, ``halted``, ``disconnected``. A swing the arm refuses ends it
+    there too: before the first one ran, nothing moved and the run ends ``cancelled`` with the refusal said, as a task
+    the library refused before its first motion; after one ran, the arm stands a swing off where it started and the run
+    ends as Home's refused move does (the halt, the controller, else ``return_failed``), so a person decides.
+    """
+    from api import readiness  # noqa: PLC0415
+    from api.jaws import hand_of  # noqa: PLC0415
+    from api.runs import motion_started  # noqa: PLC0415
+    from src.robot.execution import gestures  # noqa: PLC0415
+
+    session = console.session
+    arm, gripper = session.arm, session.gripper
+    run.step = "wave"
+    if run.abandoned:
+        run.error = f"{run.abandoned} The wave was not sent."
+        return StopCode.DISCONNECTED
+    if run.halt_requested or readiness.halt_reason(arm):
+        run.error = _halted_error(console, run, "the wave was not sent")
+        return StopCode.HALTED
+    if run.stop_requested:
+        logger.warning("Wave run %s was stopped before its first swing was sent; nothing moved.", run.id)
+        return StopCode.CANCELLED
+    held = readiness.part_held(arm, gripper, hand_of(gripper), record=console.recovery)
+    if held:
+        run.error = f"{held}: the wave was not sent, and no move outside a task carries a part"
+        return StopCode.PART_STILL_HELD
+    console.hub.publish(run.id, "wave.started", severity=Severity.INFO, human="Waving.",
+                        swings=gestures.WAVE_SWINGS, swing_deg=gestures.WAVE_SWING_DEG)
+    waved = gestures.wave(arm, should_stop=lambda: _wave_stopped(run))
+    if waved.moved:
+        motion_started(console)
+    if waved.ok:
+        console.hub.publish(run.id, "wave.done", severity=Severity.SUCCESS, human="Waved.",
+                            swings=gestures.WAVE_SWINGS)
+        return StopCode.FINISHED
+    ran = sum(1 for report in waved.reports if report.ok)
+    if waved.ended == "stopped":
+        if run.abandoned:
+            run.error = f"{run.abandoned} The wave ended after {ran} swing(s)."
+            return StopCode.DISCONNECTED
+        if run.halt_requested or readiness.halt_reason(arm):
+            run.error = _halted_error(console, run, f"the wave ended after {ran} swing(s)")
+            return StopCode.HALTED
+        logger.warning("Wave run %s was stopped after %d swing(s); the arm stands where it stopped.", run.id, ran)
+        return StopCode.CANCELLED
+    refused = waved.refusal
+    status = refused.status.value if refused is not None else "unknown"
+    message = str(refused.message) if refused is not None else "no report"
+    console.hub.publish(run.id, "wave.refused", severity=Severity.ERROR,
+                        human=f"The wave did not run on: {status}: {message}", status=status, message=message,
+                        moved=waved.moved)
+    if run.abandoned:
+        run.error = f"{run.abandoned} The wave said: {message}"
+        return StopCode.DISCONNECTED
+    if run.halt_requested or readiness.halt_reason(arm):
+        run.error = _halted_error(console, run, f"the wave ended after {ran} swing(s) ({status})")
+        return StopCode.HALTED
+    stopped = readiness.controller_gate(arm)
+    if stopped:
+        run.error = f"the wave was refused after {ran} swing(s) ({status}: {message}); {stopped}"
+        return StopCode.CONTROLLER_STOPPED
+    if not waved.moved:
+        # Nothing moved: the arm stands where the greeting found it, and the cell stays ready.
+        run.error = f"refused before anything moved ({status}): {message}"
+        logger.warning("Wave run %s refused before its first swing: %s", run.id, run.error)
+        return StopCode.CANCELLED
+    run.error = (f"the wave was refused after {ran} swing(s) ({status}: {message}), and the arm stays where it stands, "
+                 "a swing off where it started; a person decides what happens next")
     return StopCode.RETURN_FAILED
 
 

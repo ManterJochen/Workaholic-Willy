@@ -141,6 +141,7 @@ from src.robot.grasping.geometry.closing_axis import (
     result_closing_along,
     result_closing_toward,
 )
+from src.robot.grasping.geometry.wrist_turn import WristHousing, turned_for_the_wrist
 from src.robot.grasping.telemetry.latency_tracker import LatencyStage
 from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
 from src.robot.grasping.generation.calculator import GraspCalculator
@@ -239,10 +240,18 @@ __all__ = [
 #: The pick loop's own lines, to the robot log and ``pick_loop.log`` (RC6 of the cell-fix plan: they reached no file).
 _LOG: logging.Logger = create_robot_logger(__name__, "pick_loop.log")
 
-#: How many grasps of one look an attempt tries at most: the best, then up to three more of its candidates, each only
+#: A segmentation wider than this across, in BASE millimetres (5th to 95th percentile of its points), and flatter than
+#: :data:`SURFACE_FLAT_MM`, is a surface the parts lie on, never a part (the owner, 2026-10-05).
+SURFACE_SPAN_MM = 250.0
+SURFACE_FLAT_MM = 20.0
+
+#: How many grasps of one look an attempt tries at most: the best, then up to eleven more of its candidates, each only
 #: after the one before was refused before anything was sent with the hand kept out of the part's keep-out box (the
-#: owner's "try the next grasps", cell fixes Track C).
-GRASPS_TRIED_PER_ATTEMPT: int = 4
+#: owner's "try the next grasps", cell fixes Track C), every candidate the calculator offers. Four until 2026-10-06; a
+#: grasp refused at the hand on its line down is now refused before its route is planned, in about half a second
+#: (``URRobotArm._flange_line_refusal``), and on a tray all six tried were refused 0.03 to 0.5 mm short of the guard's
+#: 3 mm with six more untried (the grasp bench, 2026-10-06).
+GRASPS_TRIED_PER_ATTEMPT: int = 12
 #: What a try was, on ``PickAttempt.tries`` (the fix plan's contract 3).
 _TRY_KEYS = ("rank", "outcome", "motion_status", "motion_message", "sent", "reached_part")
 #: The opening a hand that says none is taken to have when its jaw region is laid out at a pose a try sent, millimetres:
@@ -745,14 +754,15 @@ class _BlockerChoice:
     cluster: "Cluster"
     mask: np.ndarray
     grasp: GraspPoint
-    release: "Pose"
+    #: ``None`` where the blocker is the pick (:attr:`BinPickingOrchestrator.blocker_is_the_pick`).
+    release: "Pose | None"
     where: str
     spot_xy: tuple[float, float]
     freed: int
     fewer: int
     #: The blocker's next grasps the clearing may take where :attr:`grasp` is refused, each with the TCP pose that sets
     #: the blocker down from it, in the calculator's order (``recovery.blocker_grasp_tries`` in all).
-    alternatives: "tuple[tuple[GraspPoint, Pose], ...]" = ()
+    alternatives: "tuple[tuple[GraspPoint, Pose | None], ...]" = ()
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -935,6 +945,10 @@ def segmentation_offer_from_frame(
     what every view of the pick saw of it, so its box leaves the part out of every frame the world
     holds. With no camera only the target's points are offered, and with neither a camera nor
     points, or a frame that carries no capture time, nothing is.
+
+    Every other segmentation's surface in BASE is offered under its label too (``named_points_base_mm``), placed
+    the same way: the world names its boxes by them from any pose, a wrist camera's included, and the fingers may
+    come to a named part's measured surface (the owner, 2026-10-05: "Finger dürfen streifen").
     """
     segmentations = tuple(frame.segmentations)
     labelled = tuple(
@@ -960,17 +974,48 @@ def segmentation_offer_from_frame(
                 points = base if base.shape[0] else None
     if target_points_base_mm is not None and np.asarray(target_points_base_mm).size:
         points = np.asarray(target_points_base_mm, dtype=np.float64).reshape(-1, 3)
+    named = _named_points_base(frame, segmentations, target_index, camera_to_base_mm)
     stamp = getattr(frame, "timestamp", None)
     if stamp is None:
         return None
     if not chosen(camera):
         if points is None:
             return None
-        return SegmentationOffer(captured_at_s=float(stamp), target_points_base_mm=points, target_label=target_label)
+        return SegmentationOffer(captured_at_s=float(stamp), target_points_base_mm=points, target_label=target_label,
+                                 named_points_base_mm=named)
     return SegmentationOffer(
         captured_at_s=float(stamp), camera=camera, labelled_masks=labelled, exclude_masks=exclude,
-        target_points_base_mm=points, target_label=target_label,
+        target_points_base_mm=points, target_label=target_label, named_points_base_mm=named,
     )
+
+
+#: Every how many millimetres a named part's surface is offered in BASE: the world's own thinning voxel's size.
+_NAMED_VOXEL_MM = 5.0
+
+
+def _named_points_base(
+    frame: "PerceptionFrame", segmentations: "tuple[Any, ...]", target_index: "int | None",
+    camera_to_base_mm: "np.ndarray | None",
+) -> "tuple[tuple[str, np.ndarray], ...]":
+    """Every segmentation but the target, its label and its surface in BASE thinned to a :data:`_NAMED_VOXEL_MM` voxel;
+    none where the frame cannot be placed."""
+    if camera_to_base_mm is None or not segmentations:
+        return ()
+    from src.robot.grasping.multiview.scene_geometry import to_base_mm
+
+    surface = getattr(frame, "surface_depth_map", None)
+    depth = surface if surface is not None else frame.depth_map
+    named: list[tuple[str, np.ndarray]] = []
+    for index, seg in enumerate(segmentations):
+        mask = getattr(seg, "mask", None)
+        if index == target_index or mask is None:
+            continue
+        base = to_base_mm(np.asarray(mask).astype(bool), depth, frame.intrinsics, camera_to_base_mm)
+        if not base.shape[0]:
+            continue
+        _, first = np.unique(np.floor(base / _NAMED_VOXEL_MM).astype(np.int64), axis=0, return_index=True)
+        named.append((str(getattr(seg, "label", "") or f"object_{index}"), base[np.sort(first)]))
+    return tuple(named)
 
 
 @dataclass
@@ -1246,6 +1291,12 @@ class BinPickingOrchestrator:
     #: default, sets it down on a free spot of the support the camera saw, away from the part and everything else
     #: (:meth:`_clear_the_blockers`). Like ``looks``, it stays set until whoever set it resets it.
     blocker_place: "Pose | None" = None
+    #: Whether a blocker this pick takes away is the part it picks (the owner, 2026-10-06: "direkt weggepackt"): gripped
+    #: and lifted as the pick's own grasp, and reported as the part picked, its cloud the judged one, so the caller sets
+    #: it down where its parts go, as a task that takes every part into a bin does. No spot to set it down on is asked
+    #: for. ``False``, the default, sets it down on a free spot of the support or at :attr:`blocker_place` and grasps the
+    #: part after ("nur umgelegt"). Like ``looks``, it stays set until whoever set it resets it.
+    blocker_is_the_pick: bool = False
 
     # ---- per pick, while a wrist pick looks around (``look_around``) ----
     #: The earlier looks of this pick, in the order they were visited: what every later look is fused with.
@@ -1268,6 +1319,10 @@ class BinPickingOrchestrator:
     _pending_looked: "LookedAround | None" = field(default=None, init=False, repr=False)
     #: What the last wrist pick's looks came to; ``None`` for a fixed camera and before the first look.
     looked_around: "LookedAround | None" = field(default=None, init=False, repr=False)
+    #: The last of this pick's look sequences whose judgement ranked grasps, which :attr:`looked_around` may no longer be
+    #: once a blocker was set aside, a push ran or the attempt looked again: what a failed pick's debug pictures draw
+    #: its grasps from (``pick_run._keep_debug_images``). The service lets it go as a pick begins.
+    ranked_looked: "LookedAround | None" = field(default=None, init=False, repr=False)
     #: Holds what a pick keeps for as long as it looks and picks: the frames its wrist camera took at every pose, in the
     #: arm's live planner world (``keep_out.holding_views``), for a pick handed looks. Closed by :meth:`close_looks`.
     _views_scope: ExitStack = field(default_factory=ExitStack, init=False, repr=False)
@@ -1304,6 +1359,9 @@ class BinPickingOrchestrator:
     _tries_box: "KeepOutBox | None" = field(default=None, init=False, repr=False)
     #: The objects the last ranking iterated, for where the chosen one was seen (``PickReport.target_centre_mm``).
     _last_scene_objects: tuple[Any, ...] = field(default=(), init=False, repr=False)
+    #: The wrist cameras' housing the arm carries (:meth:`_wrist_housing`), read once.
+    _wrist_housing_read: bool = field(default=False, init=False, repr=False)
+    _wrist_housing_cached: "WristHousing | None" = field(default=None, init=False, repr=False)
     _resolved_sampling_mode: GraspSamplingMode = field(
         default=GraspSamplingMode.AUTO, init=False, repr=False
     )
@@ -1959,9 +2017,16 @@ class BinPickingOrchestrator:
             withheld=withheld,
         )
         self._say_what_the_looks_came_to(looked)
+        self._looked_at(looked)
+        return looked
+
+    def _looked_at(self, looked: "LookedAround") -> None:
+        """``looked`` is what this pick's looks came to now, and the last that ranked grasps where its judgement did."""
         self.looked_around = looked
         self._open_looked = looked
-        return looked
+        judged = looked.judged
+        if judged is not None and tuple(getattr(judged.result, "candidates", ()) or ()):
+            self.ranked_looked = looked
 
     def close_looks(self) -> "LookedAround | None":
         """End what a pick's looks hold, the frames held in the planner world among it, and drop a look sequence handed
@@ -3284,7 +3349,7 @@ class BinPickingOrchestrator:
             offset = float(surface.offset_mm)
             _LOG.info("the push plans on %s, tilted %.1f deg, through its reading under the part at %.1f mm",
                       surface.name, float(surface.tilt_deg), float(surface.at_mm[2]) if surface.at_mm else offset)
-        neighbours = self._neighbour_points_of(judged, target_index)
+        neighbours, named = self._neighbour_points_of(judged, target_index)
         try:
             evidence = neighbour_evidence(target_points_mm=points, neighbour_points_mm=neighbours,
                                           support_normal=normal, support_offset_mm=offset)
@@ -3317,7 +3382,8 @@ class BinPickingOrchestrator:
                 push_distance_mm=gate.distance_mm, container_interior=gate.cell.container_interior,
                 operator_box=gate.operator_box, hand_clearance_mm=gate.cell.hand_clearance_mm,
                 beside_part_clearance_mm=gate.cell.beside_part_clearance_mm, beside_part_mm=gate.cell.beside_part_mm,
-                may_shove=not gate.critical_parts, longest_push_mm=gate.longest_mm, **floor_kwargs,
+                may_shove=not gate.critical_parts, longest_push_mm=gate.longest_mm, neighbour_named=named,
+                named_part_clearance_mm=getattr(gate.cell, "named_part_clearance_mm", None), **floor_kwargs,
             )
         except ValueError as exc:
             return self._push_record(trigger, "refused_plan_malformed",
@@ -3640,24 +3706,39 @@ class BinPickingOrchestrator:
         return np.asarray(cloud, dtype=np.float64).reshape(-1, 3)
 
     @staticmethod
-    def _neighbour_points_of(judged: _Judgement, target_index: int) -> np.ndarray:
-        """Every other object the looks saw, in BASE: the judged look's own other objects, what every other view saw
-        that is not the part (the fused neighbour cloud the candidate filter reads), and what the calculator saw beside
-        the part that no prompt named (the fix plan's contract 2): Track A's obstacle points, and every point the camera
-        world's rule keeps there with no voxel threshold, so a neighbour the voxel rule dropped still refuses the push's
-        path. On the owner's cell every prompt grounded one box, and without those the push knew no neighbour at all."""
-        parts = [cloud for index, cloud in enumerate(judged.look.clouds)
-                 if index != target_index and np.asarray(cloud).size]
+    def _neighbour_points_of(judged: _Judgement, target_index: int) -> "tuple[np.ndarray, np.ndarray]":
+        """Every other object the looks saw, in BASE, and which of its points are a part the detector named: the judged
+        look's own other objects, what every other view saw that is not the part (the fused neighbour cloud the
+        candidate filter reads), both named, and what the calculator saw beside the part that no prompt named (the fix
+        plan's contract 2): Track A's obstacle points, and every point the camera world's rule keeps there with no voxel
+        threshold, so a neighbour the voxel rule dropped still refuses the push's path, each named where the calculator
+        found it on a named neighbour's mask. On the owner's cell every prompt grounded one box, and without those the
+        push knew no neighbour at all."""
+        parts: list[np.ndarray] = []
+        named: list[np.ndarray] = []
+        for index, cloud in enumerate(judged.look.clouds):
+            if index != target_index and np.asarray(cloud).size:
+                parts.append(np.asarray(cloud, dtype=np.float64).reshape(-1, 3))
+                named.append(np.ones(parts[-1].shape[0], dtype=bool))
         fused = judged.fused_scene.neighbour_for(target_index) if judged.fused_scene is not None else None
         if fused is not None and np.asarray(fused).size:
             parts.append(np.asarray(fused, dtype=np.float64).reshape(-1, 3))
+            named.append(np.ones(parts[-1].shape[0], dtype=bool))
         metadata = getattr(getattr(judged, "result", None), "metadata", None)
         if isinstance(metadata, Mapping):
-            for key in ("scene_obstacle_points_base_mm", "scene_points_world_rule_base_mm"):
+            for key, part_key in (("scene_obstacle_points_base_mm", "scene_obstacle_part_points"),
+                                  ("scene_points_world_rule_base_mm", "scene_world_rule_part_points")):
                 seen = metadata.get(key)
                 if seen is not None and np.asarray(seen).size:
                     parts.append(np.asarray(seen, dtype=np.float64).reshape(-1, 3))
-        return np.vstack(parts) if parts else np.zeros((0, 3), dtype=np.float64)
+                    on_a_part = metadata.get(part_key)
+                    flags = (np.asarray(on_a_part, dtype=bool).reshape(-1) if on_a_part is not None
+                             else np.zeros(0, dtype=bool))
+                    named.append(flags if flags.shape[0] == parts[-1].shape[0]
+                                 else np.zeros(parts[-1].shape[0], dtype=bool))
+        if not parts:
+            return np.zeros((0, 3), dtype=np.float64), np.zeros(0, dtype=bool)
+        return np.vstack(parts), np.concatenate(named)
 
     def _look_again_after_the_push(
         self, looked: LookedAround, judged: _Judgement, label: str, back_to: "JointPositions", *, attempt_index: int,
@@ -3674,8 +3755,7 @@ class BinPickingOrchestrator:
             views=tuple(self._look_views), generated=looked.generated, generated_view_deg=looked.generated_view_deg,
             generated_skipped=looked.generated_skipped, withheld=withheld,
         )
-        self.looked_around = relooked
-        self._open_looked = relooked
+        self._looked_at(relooked)
         return relooked
 
     # ------------------------------------------------------------------
@@ -3739,9 +3819,14 @@ class BinPickingOrchestrator:
         current = looked
         before = _seen_refusals(judged.result)
         cleared = 0
+        # A blocker already chosen for the next round, where a removal that spared nothing by the count was followed by
+        # one that frees a grasp outright (below).
+        next_one: Any = None
         while True:
             assert current.judged is not None  # every look this loop goes on with judged the part
-            chosen_one = self._choose_a_blocker(current.judged, gate, refusals=before)
+            chosen_one = next_one if next_one is not None else self._choose_a_blocker(current.judged, gate,
+                                                                                    refusals=before)
+            next_one = None
             if isinstance(chosen_one, B.BlockerRecord):
                 self._said_blocker(chosen_one)
                 if not cleared:
@@ -3769,6 +3854,17 @@ class BinPickingOrchestrator:
                 return True
             now = _seen_refusals(now_judged.result)
             if now >= before:
+                # The count is a new look's, and two blockers either side of a part each spare nothing alone: two posts
+                # 10 mm off a cylinder, the first set aside and its count up by 11 of 1419, the second freeing 7 grasps
+                # outright (the grasp bench, 2026-10-06). One more is taken away only where it frees a grasp outright.
+                follow = self._choose_a_blocker(now_judged, gate, refusals=now)
+                if not isinstance(follow, B.BlockerRecord) and int(follow.freed) > 0:
+                    _LOG.info("setting the blocker aside spared none of the part's %d refusal(s) by the count (%d now), "
+                              "and the next one frees %d grasp(s) outright: it is taken away too", before, now,
+                              int(follow.freed))
+                    next_one = follow
+                    before = now
+                    continue
                 self._said_blocker(B.BlockerRecord(code=B.FREED_NOTHING, sentence=(
                     f"Setting the blocker aside freed no grasp of the part: {now} of its tries still meet what the camera "
                     f"saw beside it, against {before} before. No other blocker is taken away in this pick.")))
@@ -3776,6 +3872,50 @@ class BinPickingOrchestrator:
                 self._pending_looked = current
                 return True
             before = now
+
+    @staticmethod
+    def _named_points(seen: Any, metadata: Any) -> np.ndarray:
+        """The points of ``seen`` (the calculator's obstacle points) that lie on a part the detector named, by the mask
+        the calculator handed with them (``scene_obstacle_part_points``); none where it handed none."""
+        points = np.asarray(seen, dtype=np.float64).reshape(-1, 3)
+        flags = metadata.get("scene_obstacle_part_points") if isinstance(metadata, Mapping) else None
+        if flags is None:
+            return np.zeros((0, 3), dtype=np.float64)
+        flags = np.asarray(flags, dtype=bool).reshape(-1)
+        return points[flags] if flags.shape[0] == points.shape[0] else np.zeros((0, 3), dtype=np.float64)
+
+    def _the_blocker_is_the_pick(
+        self, attempt_index: int, attempts: list[PickAttempt], looked: LookedAround, choice: "_BlockerChoice",
+        grasp: GraspPoint, picked: "PolicyReport",
+    ) -> PickReport:
+        """The report of a pick whose blocker is the part it takes (:attr:`blocker_is_the_pick`): executed, on the
+        blocker's grasp, the blocker's cloud the judged one, so the caller sets the blocker down as any part it picked
+        (its drop reads how far the part hangs off that cloud). The part it blocked is picked by the next pick."""
+        from src.robot.grasping.recovery import blocker as B  # noqa: PLC0415
+
+        judged = looked.judged
+        assert judged is not None  # the caller's
+        cluster = choice.cluster
+        centre = (float(cluster.centre_mm[0]), float(cluster.centre_mm[1]), float(cluster.centre_mm[2]))
+        self._last_policy_report = picked
+        self.looked_around = replace(looked, judged=replace(
+            judged, target_cloud_base_mm=np.asarray(cluster.points_base_mm, dtype=np.float64).reshape(-1, 3)))
+        record = B.BlockerRecord(
+            code=B.TAKEN_AS_THE_PICK, sentence=(
+                f"The blocker at ({centre[0]:.0f}, {centre[1]:.0f}) mm was gripped as the part this pick takes, and goes "
+                "where the parts go; the part it blocked is picked next."),
+            centre_mm=centre, widths_mm=cluster.widths_mm, freed=choice.freed, fewer_refusals=choice.fewer,
+            place=choice.where, moved=True)
+        self._said_blocker(record)
+        attempts.append(PickAttempt(attempt_index=attempt_index, target_index=judged.target_index, reasons=(),
+                                    score=float(getattr(grasp, "score", 0.0) or 0.0), action="blocker_picked",
+                                    **_motion_fields(picked), blocker=B.TAKEN_AS_THE_PICK))
+        emit(self.on_progress, PickStage.ATTEMPT_FINISHED, attempt=attempt_index, action="blocker_picked",
+             outcome=str(PickOutcome.EXECUTED))
+        return PickReport(outcome=PickOutcome.EXECUTED, attempts=tuple(attempts),
+                          executed_grasp=GraspResult(candidates=(grasp,),
+                                                     top_score=float(getattr(grasp, "score", 0.0) or 0.0)),
+                          target_centre_mm=centre)
 
     def _choose_a_blocker(self, judged: _Judgement, gate: "PushGate", *, refusals: int) -> Any:
         """The blocker to take away (a ``_BlockerChoice``), or why none (a ``blocker.BlockerRecord``); nothing moves.
@@ -3787,7 +3927,11 @@ class BinPickingOrchestrator:
         (:meth:`_ask_again`): how many grasps of the part its removal frees, and how many of the part's refusals by
         what the camera saw it spares. Those that free or spare any are taken in that order, the nearer the part first
         on a tie; the first the calculator grasps (:meth:`_blocker_grasp`) with somewhere to go
-        (:meth:`_where_the_blocker_goes`) is the blocker."""
+        (:meth:`_where_the_blocker_goes`) is the blocker.
+
+        Never one in a region the task keeps out (its bin, a part it placed). Where the blocker is the pick
+        (:attr:`blocker_is_the_pick`), only a part the detector named: it is carried where the parts go, and a wall of
+        the tray it stands in passed every other test and was gripped as one (the grasp bench, 2026-10-06)."""
         from src.robot.grasping.recovery import blocker as B  # noqa: PLC0415
         from src.robot.grasping.recovery.blocker import clusters_of, mask_of, not_a_blocker  # noqa: PLC0415
 
@@ -3812,10 +3956,20 @@ class BinPickingOrchestrator:
         depth = np.asarray(call.depth, dtype=np.float64)
         intrinsics = np.asarray(judged.frame.intrinsics, dtype=np.float64)
         target_mask = self._grown(np.asarray(getattr(call.seg, "mask", np.zeros(depth.shape[:2], bool))).astype(bool), 3)
+        named = self._named_points(seen, metadata)
+        zones = self.exclusion_zones
         candidates: list[tuple[Any, float | None, np.ndarray]] = []
         said: list[str] = []
-        for cluster in clusters_of(seen):
+        for cluster in clusters_of(seen, open_width_mm=width):
             centre = cluster.centre_mm
+            if zones is not None and zones.kept_out_by_a_region(label=str(self.target_label or ""),
+                                                                 centre_mm=(float(centre[0]), float(centre[1]))):
+                said.append(f"({centre[0]:.0f}, {centre[1]:.0f}): in a region the task keeps out")
+                continue
+            if self.blocker_is_the_pick and _named_share(cluster.points_base_mm, named) < _BLOCKER_NAMED_SHARE:
+                said.append(f"({centre[0]:.0f}, {centre[1]:.0f}): no part the detector named, and a blocker taken as "
+                            "the pick goes where the parts go")
+                continue
             if any(float(np.hypot(centre[0] - x, centre[1] - y)) <= _SET_DOWN_REACH_MM for x, y in self._set_down_at):
                 said.append(f"({centre[0]:.0f}, {centre[1]:.0f}): a blocker this pick set down")
                 continue
@@ -3882,7 +4036,7 @@ class BinPickingOrchestrator:
         carried = self._carried_length_mm()
         tries = max(1, int(getattr(gate, "blocker_grasp_tries", 1) or 1))
         for cluster, support, mask, freed, fewer in frees:
-            usable: list[tuple[GraspPoint, Any, str, tuple[float, float]]] = []
+            usable: list[tuple[GraspPoint, "Pose | None", str, tuple[float, float]]] = []
             no_place = False
             long_reach: list[float] = []
             for grasped in self._blocker_grasps(call, judged, cluster, mask, limit=tries):
@@ -3898,15 +4052,20 @@ class BinPickingOrchestrator:
                               carried)
                     long_reach.append(reach)
                     continue
+                if self.blocker_is_the_pick:
+                    # The blocker is the part this pick takes, set down where the caller's parts go: no spot is asked.
+                    usable.append((grasped, None, "where the parts go",
+                                   (float(cluster.centre_mm[0]), float(cluster.centre_mm[1]))))
+                    continue
                 place = self._where_the_blocker_goes(judged, cluster, support, grasped, gate)
                 if place is None:
                     no_place = True
                     continue
-                pose, where, spot_xy = place
-                usable.append((grasped, pose, where, spot_xy))
+                set_down, where, spot_xy = place
+                usable.append((grasped, set_down, where, spot_xy))
             if usable:
-                grasped, pose, where, spot_xy = usable[0]
-                return _BlockerChoice(cluster=cluster, mask=mask, grasp=grasped, release=pose, where=where,
+                grasped, release, where, spot_xy = usable[0]
+                return _BlockerChoice(cluster=cluster, mask=mask, grasp=grasped, release=release, where=where,
                                       spot_xy=spot_xy, freed=freed, fewer=fewer,
                                       alternatives=tuple((g, r) for g, r, _w, _s in usable[1:]))
             if no_place:
@@ -4175,6 +4334,7 @@ class BinPickingOrchestrator:
             tries = ((choice.grasp, choice.release), *choice.alternatives)
             said: list[str] = []
             moved = False
+            gripped = False
             release: "Pose | None" = None
             for number, (grasp, release_pose) in enumerate(tries, start=1):
                 ahead = self._blocker_refusal_ahead(grasp)
@@ -4189,7 +4349,7 @@ class BinPickingOrchestrator:
                     self._blocker_stopped_by_the_camera_world(exc, said_of, "the blocker was picked")
                     raise
                 if picked.outcome is PolicyOutcome.EXECUTED:
-                    release = release_pose
+                    release, gripped = release_pose, True
                     break
                 why = (f"{getattr(picked.motion_status, 'value', None) or picked.outcome.value}: "
                        f"{picked.motion_message or 'no reason was given'}")
@@ -4218,7 +4378,7 @@ class BinPickingOrchestrator:
                               "the arm stays where it stopped, the blocker may be in the hand, and a person decides."),
                     said_of=said_of, fields=_motion_fields(picked),
                     gripper_fault=picked.outcome is PolicyOutcome.GRIPPER_FAULT)
-            if release is None:
+            if not gripped:
                 # No grasp of the blocker ran to its close: the blocker back into the world, the part offered again, and
                 # this blocker is not tried again in this pick.
                 scope.close()
@@ -4238,6 +4398,11 @@ class BinPickingOrchestrator:
             if controller is not None:
                 return self._blocker_stopped(attempt_index, attempts, judged, reasons=reasons, controller=controller,
                                              said_of=said_of, sentence=f"With the blocker in the hand: {controller}")
+            if self.blocker_is_the_pick:
+                # Held out of the world as a picked part is, until the pick ends.
+                self._keep_out = scope.pop_all()
+                return self._the_blocker_is_the_pick(attempt_index, attempts, looked, choice, grasp, picked)
+            assert release is not None  # a blocker set aside has somewhere to go (_choose_a_blocker)
             robot = Robot.from_parts(arm=self.arm, gripper=self.gripper, lock_key=None)
             placed = robot.place(release, standoff_mm=standoff)
             if not placed.ok:
@@ -4290,8 +4455,7 @@ class BinPickingOrchestrator:
             generated_view_deg=looked.generated_view_deg if generated else None,
             generated_skipped=looked.generated_skipped, withheld=withheld,
         )
-        self.looked_around = relooked
-        self._open_looked = relooked
+        self._looked_at(relooked)
         record = B.BlockerRecord(code=B.SET_ASIDE, sentence=(
             f"The blocker was taken from ({centre[0]:.0f}, {centre[1]:.0f}) mm and set down at {choice.where}; the arm "
             f"went back to the look and looked again ({label})."), moved=True, **said_of)
@@ -4462,6 +4626,24 @@ class BinPickingOrchestrator:
         diagonal = footprint_diagonal_mm(points) if points is not None and len(points) >= 2 else None
         self.failed_part = FailedPart(label=label, centre_mm=where, footprint_diagonal_mm=diagonal) if label else None
         return where
+
+    def _a_surface_not_a_part(self, frame: PerceptionFrame, index: int) -> str:
+        """Why segmentation ``index`` is a surface the parts lie on and no part, or ``""``: wider than
+        :data:`SURFACE_SPAN_MM` across in BASE and flatter than :data:`SURFACE_FLAT_MM` (the spread of its heights,
+        10th to 90th percentile). No hand this stack carries grips across that span."""
+        try:
+            points = self._target_surface_base_mm(frame, index)
+        except Exception:  # noqa: BLE001 (a segmentation that cannot be placed is judged as before)
+            return ""
+        if points is None or len(points) < 50:
+            return ""
+        pts = np.asarray(points, dtype=np.float64)
+        span = float(np.linalg.norm(np.percentile(pts[:, :2], 95, axis=0) - np.percentile(pts[:, :2], 5, axis=0)))
+        flat = float(np.percentile(pts[:, 2], 90) - np.percentile(pts[:, 2], 10))
+        if span > SURFACE_SPAN_MM and flat < SURFACE_FLAT_MM:
+            return (f"it is {span:.0f} mm across and {flat:.0f} mm high in its spread: a surface the parts lie on "
+                    "(a mat, a table, a tray), not a part")
+        return ""
 
     def _label_key_of(self, index: int | None) -> str:
         """The name object ``index`` of the last ranking goes by at the label gate: its label, else its prim path."""
@@ -5514,6 +5696,13 @@ class BinPickingOrchestrator:
             ):
                 continue
             label_matches += 1
+            # A surface the parts lie on is never a part (the owner, 2026-10-05: "alle Objekte auf der Matte" grounded
+            # the mat itself, and the arm found no way to grip it): wide and flat, it is a mat, a table or a tray.
+            surface = self._a_surface_not_a_part(frame, idx)
+            if surface:
+                _LOG.info("segmentation %d (%s) is not taken as a part: %s", idx,
+                          getattr(seg, "label", "") or "?", surface)
+                continue
             # Next to the label gate: a part of the same label that next_target skips is no target either.
             held = self._exclusion_of(zones, idx, obj, frame) if zones is not None else ""
             if held:
@@ -5749,13 +5938,52 @@ class BinPickingOrchestrator:
             refused = closing_axis_refusal(kept)
             if refused:
                 _LOG.warning("%s", refused)
-        elif self.natural_closing_axis is not None and not getattr(self.policy, "align_closing_to_base_x", False):
-            kept = result_closing_toward(result, closing_axis_of(self.natural_closing_axis))
+        elif not getattr(self.policy, "align_closing_to_base_x", False):
+            kept = (result_closing_toward(result, closing_axis_of(self.natural_closing_axis))
+                    if self.natural_closing_axis is not None else result)
+            kept = self._turned_for_the_wrist(kept)
         else:
             return result
         if kept is not result:
             self._overlay_the_kept(self.calculator_for(camera_id), kept)
         return kept
+
+    def _turned_for_the_wrist(self, result: GraspResult) -> GraspResult:
+        """``result`` with every grasp the way round its wrist camera keeps the guard's distance from the boxes the
+        camera world builds of the neighbours, along its line in from the standoff, and those that keep it neither way
+        after the rest (``wrist_turn.turned_for_the_wrist``, the grasp bench of 2026-10-05). ``result`` itself where the
+        arm carries no camera, the calculator read no scene, or nothing changed. Never beside a named closing axis,
+        whose name says the way round."""
+        metadata = result.metadata if isinstance(result.metadata, Mapping) else {}
+        seen = metadata.get("scene_seen_boxes")
+        distance = metadata.get("scene_seen_distance_mm")
+        if not result.candidates or not seen or not isinstance(distance, (int, float)):
+            return result
+        housing = self._wrist_housing()
+        if housing is None:
+            return result
+        standoff = float(getattr(self.policy, "standoff_mm", 80.0) or 0.0)
+        ordered, turns = turned_for_the_wrist(result.candidates, housing, seen, standoff_mm=standoff,
+                                              distance_mm=float(distance))
+        _LOG.info("%s", turns.render())
+        if all(mine is theirs for mine, theirs in zip(ordered, result.candidates)):
+            return result
+        return replace(result, candidates=ordered, top_score=float(ordered[0].score))
+
+    def _wrist_housing(self) -> "WristHousing | None":
+        """The housing of the wrist cameras the arm carries (``arm.wrist_bodies()``), read once; ``None`` for none."""
+        if self._wrist_housing_read:
+            return self._wrist_housing_cached
+        bodies = getattr(self.arm, "wrist_bodies", None)
+        try:
+            listed = tuple(bodies()) if callable(bodies) else ()
+            self._wrist_housing_cached = WristHousing.of(listed)
+        except Exception as exc:  # noqa: BLE001 (an arm that cannot say leaves the turns as ranked)
+            _LOG.warning("the wrist camera's housing could not be read (%s: %s); grasps keep their turn", type(exc)
+                         .__name__, exc)
+            self._wrist_housing_cached = None
+        self._wrist_housing_read = True
+        return self._wrist_housing_cached
 
     @contextmanager
     def _asking_more_along_the_axis(self, calculator: Any) -> Iterator["int | None"]:
@@ -6051,6 +6279,21 @@ class BinPickingOrchestrator:
             grasp_pose, obstacle_points_mm=cloud, policy=self.approach_path_policy, gripper_model=self.gripper_model,
         )
         return approach_report.is_clear and retreat_report.is_clear
+
+
+#: The share of a blocker's points that has to lie on a part the detector named for it to be taken as the pick.
+_BLOCKER_NAMED_SHARE = 0.5
+
+
+def _named_share(points: np.ndarray, named: np.ndarray) -> float:
+    """The share of ``points`` that are among ``named`` (the same points, as the calculator handed them), 0 to 1."""
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    if pts.shape[0] == 0 or named.shape[0] == 0:
+        return 0.0
+    from scipy.spatial import cKDTree  # noqa: PLC0415
+
+    near, _ = cKDTree(named).query(pts, k=1, distance_upper_bound=0.5)
+    return float(np.mean(np.isfinite(near)))
 
 
 def _seen_refusals(result: Any) -> int:

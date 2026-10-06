@@ -72,7 +72,7 @@ class DefaultsTests(unittest.TestCase):
     def test_self_collision_defaults(self) -> None:
         c = SelfCollisionSafetyConfig()
         self.assertEqual(c.backend, "fcl")
-        self.assertEqual(c.min_distance_mm, 10.0)
+        self.assertEqual(c.min_distance_mm, 3.0)
         self.assertEqual(c.fixtures, [])
         self.assertIsNone(c.mesh_dir)
 
@@ -167,6 +167,7 @@ class YamlShapeIntegrationTests(unittest.TestCase):
                     "enforce": True,
                     "backend": "capsule",
                     "min_distance_mm": 15.0,
+                    "perceived_min_distance_mm": 7.0,
                     "fixtures": [
                         {
                             "name": "table",

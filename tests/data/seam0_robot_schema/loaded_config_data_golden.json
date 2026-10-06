@@ -556,11 +556,11 @@
       "self_collision": {
         "enforce": true,
         "backend": "fcl",
-        "min_distance_mm": 10.0,
+        "min_distance_mm": 3.0,
         "planner_margin_mm": null,
         "link_radii_mm": null,
         "fixtures": [],
-        "perceived_min_distance_mm": 5.0,
+        "perceived_min_distance_mm": 3.0,
         "mesh_dir": null,
         "kinematics_model": null,
         "kinematics_base_yaw_deg": 0.0,
@@ -594,7 +594,7 @@
         "max_tcp_step_mm": 250.0
       },
       "planned_motion": {
-        "line_clearance_mm": 10.0,
+        "line_clearance_mm": 3.0,
         "max_detour_deg": 45.0
       },
       "dwell": {
@@ -621,7 +621,11 @@
           "voxel_field_mm": 0.0,
           "cluster_voxel_mm": 25.0,
           "min_points": 12,
-          "margin_mm": 15.0,
+          "margin_mm": 8.0,
+          "fingers_touch_parts": true,
+          "finger_contact_mm": 3.0,
+          "fingers_to_the_support_reading": true,
+          "finger_floor_mm": 1.0,
           "max_boxes": 64,
           "floor_to_plane": true,
           "plane_clearance_mm": 5.0,
@@ -698,6 +702,7 @@
         "per_action_budget": [],
         "blocker_grasp_tries": 3,
         "critical_parts": false,
+        "blocker_into_the_place": true,
         "apply_modes": [
           "auto",
           "dense_clutter"
@@ -837,7 +842,7 @@
           "wall_thickness_mm": 5.0,
           "wall_sample_mm": 8.0
         },
-        "min_clearance_mm": 5.0
+        "min_clearance_mm": 1.0
       },
       "geometry": {
         "stage": "support_footprint",
@@ -891,6 +896,9 @@
   "runtime": {
     "image_encoding": {
       "frame_quality": 60
+    },
+    "greeting": {
+      "wave": "direct"
     }
   }
 }

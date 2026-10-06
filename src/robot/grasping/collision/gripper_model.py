@@ -126,8 +126,15 @@ class ParallelJawGripperModel:
     palm_depth_mm: float = 35.0
     palm_width_mm: float = 70.0
     outer_margin_mm: float = 0.0
+    #: The housing along the closing axis, millimetres, where the registry measured it (``palm_thickness_mm``): the palm
+    #: box is at least this wide across the closing axis. ``None`` keeps it as wide as the open fingers' outer faces, as
+    #: it always was. The Hand-E's housing is 75.0 mm across, its open fingers 71.6, and the guard held it 1.7 mm past the
+    #: box on either side (the grasp bench, 2026-10-06).
+    palm_thickness_mm: float | None = None
 
     def __post_init__(self) -> None:
+        if self.palm_thickness_mm is not None:
+            object.__setattr__(self, "palm_thickness_mm", _positive(self.palm_thickness_mm, "palm_thickness_mm"))
         for field_name in (
             "finger_length_mm",
             "finger_thickness_mm",
@@ -170,7 +177,7 @@ class ParallelJawGripperModel:
             cast(np.ndarray, [half_gap + self.finger_thickness_mm + margin, y_finger + margin, z_max + margin]),
         )
 
-        outer_half_x = half_gap + self.finger_thickness_mm
+        outer_half_x = max(half_gap + self.finger_thickness_mm, 0.5 * float(self.palm_thickness_mm or 0.0))
         palm_half_y = 0.5 * self.palm_width_mm
         palm = CollisionBox(
             "palm",

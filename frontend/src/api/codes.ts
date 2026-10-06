@@ -48,10 +48,11 @@ export const RUN_KINDS = every<RunKind>()([
   'home',
   'teach',
   'planner',
+  'wave',
 ])
 
 /** The kinds that move the arm by themselves; a problem stop of one of them leaves the recovery record. */
-export const MOVING_KINDS = ['pick', 'task', 'home'] as const satisfies readonly RunKind[]
+export const MOVING_KINDS = ['pick', 'task', 'home', 'wave'] as const satisfies readonly RunKind[]
 
 export const STOP_CODES = every<StopCode>()([
   'finished',
@@ -180,6 +181,9 @@ export const EVENT_TYPES = every<EventType>()([
   'planner.starting',
   'planner.ready',
   'planner.failed',
+  'wave.started',
+  'wave.done',
+  'wave.refused',
   'cell.jaws_question',
   'cell.jaws_answered',
   'cell.jaws_ended',

@@ -360,7 +360,12 @@ def build_service(
         src_note = f"CALIBRATED({marker})"
     else:
         # Ground-truth-oracle fallback: the wrist cam must see the table here; flaky depth is retried.
-        arm.move(init_viewpose(sim.robot_model))
+        moved = arm.move(init_viewpose(sim.robot_model))
+        if not getattr(moved, "success", True):
+            # Said, not swallowed: an arm that did not reach the view leaves the wrist camera looking at nothing, and the
+            # oracle below then reports an empty depth instead of the move's own reason.
+            print(f"[eih] the move to the view pose did not run: {getattr(moved, 'status', '?')}: "
+                  f"{getattr(moved, 'message', '')}", flush=True)
         arm.session.step_n(15)
         app = getattr(arm.session, "app", None)
 

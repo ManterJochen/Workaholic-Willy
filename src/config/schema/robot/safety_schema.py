@@ -17,7 +17,7 @@ _SEEN_BOX_VOXEL_MM = 10.0
 #: The least distance the exact guard keeps from a box a camera saw, millimetres (the owner, 2026-10-01). Wherever only
 #: those boxes refuse the planner's world, the planner is asked again with them set aside and the exact guard alone
 #: decides them, so a config asking less is refused at load (``SelfCollisionSafetyConfig.perceived_min_distance_mm``).
-_SEEN_BOX_LEAST_MM = 5.0
+_SEEN_BOX_LEAST_MM = 3.0
 
 #: The least ``self_collision.min_distance_mm`` while a fixture is declared and the planning world includes it,
 #: millimetres: the camera world's band round a declared body (``perceived.DECLARED_SURFACE_MM``, 5) plus the 5 mm the
@@ -167,7 +167,7 @@ class SelfCollisionSafetyConfig(StrictModel):
 
     enforce: bool = Field(default=True)
     backend: Literal["capsule", "fcl"] = Field(default="fcl")
-    min_distance_mm: float = Field(default=10.0, ge=0.0, le=500.0)
+    min_distance_mm: float = Field(default=3.0, ge=0.0, le=500.0)
     #: Clearance (mm) handed to the trajectory planner so it stops proposing configurations this guard
     #: will reject: cuRobo plans against a sphere model, the guard re-checks the exact meshes, and the
     #: two disagree. cuRobo returns UR5e plans at 9.44-9.47 mm against this guard's 10.000 mm, losing
@@ -202,7 +202,7 @@ class SelfCollisionSafetyConfig(StrictModel):
     #:
     #: At least 5, refused below at load (the owner, 2026-10-01): wherever only these boxes refuse the
     #: planner's world, the planner is asked again with them set aside, and this guard alone decides them.
-    perceived_min_distance_mm: float = Field(default=5.0, ge=_SEEN_BOX_LEAST_MM, le=500.0)
+    perceived_min_distance_mm: float = Field(default=3.0, ge=_SEEN_BOX_LEAST_MM, le=500.0)
     mesh_dir: ConfigPath | None = Field(default=None)
 
     # Which bundled arm kinematics (DH) table supplies the per-link arm-vs-arm capsules. Under the
@@ -351,7 +351,7 @@ class PlannedMotionSafetyConfig(StrictModel):
     the owner's cell (2026-09-24).
     """
 
-    line_clearance_mm: float = Field(default=10.0, ge=0.0, le=100.0)
+    line_clearance_mm: float = Field(default=3.0, ge=0.0, le=100.0)
     max_detour_deg: float = Field(default=45.0, gt=0.0, le=360.0)
 
 
@@ -551,7 +551,44 @@ class PerceivedWorldConfig(StrictModel):
     #: Grown on every side of every box, millimetres. A box that is exactly the measured hull is a
     #: box the planner will graze, and depth noise at an edge is one-sided. The same padding is added
     #: around the robot's own body when the cameras' view of it is taken back out.
-    margin_mm: float = Field(default=15.0, ge=0.0, le=500.0)
+    margin_mm: float = Field(default=8.0, ge=0.0, le=500.0)
+
+    #: The fingers may come to a detected neighbour part (the owner, 2026-10-05: "Finger dürfen streifen").
+    #:
+    #: A box the camera world builds of a part the detector named, no larger than a part
+    #: (``perceived.PART_SIZED_MM``), holds a finger link to its measured surface rather than to its
+    #: margin and the guard's distance: the exact guard judges the Hand-E's finger meshes against that
+    #: box less ``margin_mm`` and ``finger_contact_mm``, at 0 mm, and every other link, the hand's
+    #: housing and the wrist camera among them, as before. A box nobody named (a wall, a bin, a support,
+    #: what the detector did not see) stays whole for every link. The calculator offers the grasps the
+    #: guard admits so (``scene_obstacles.SeenEnvelope``). Off, every box is whole for every link.
+    fingers_touch_parts: bool = Field(default=True)
+
+    #: How far past a detected part's measured surface a finger may go, millimetres: 3, the owner's
+    #: decision of 2026-10-06 ("3 mm, in Isaac prüfen"); 0, that of 2026-10-05, is to its surface and no
+    #: further. The descending finger may shove the neighbour aside by up to this much, which a dense pile
+    #: with gaps under the open finger needs: the open Hand-E then needs 15 mm beside a part, not 18.
+    finger_contact_mm: float = Field(default=3.0, ge=0.0, le=20.0)
+
+    #: The fingers keep the guard's distance from what a support surface reads, not from the solid held over it (the
+    #: owner, 2026-10-05: "wir müssen tiefer gehen").
+    #:
+    #: A support's solid stands over the surface's reading by what the reading stands over its plane, the band and
+    #: ``support_allowance_mm``; the band and the allowance keep the guard's distance from a thin thing the band took for
+    #: the surface. On: the Hand-E's finger meshes keep ``perceived_min_distance_mm`` from the solid's top less its band
+    #: and its allowance, the reading and its excess, and every other link, the housing among them, from the whole
+    #: solid; the calculator plans the fingers so (``support_footprint.HandFloor``). On the grasp bench the solid stood
+    #: about 7 mm over the mat's reading and the fingertips stayed 10 mm over the mat; a D415 on a real cell reads a
+    #: wider band, and its grasps stood at the parts' tops. Off, every link keeps the distance from the whole solid.
+    fingers_to_the_support_reading: bool = Field(default=True)
+
+    #: How near a finger comes to what a support surface reads, millimetres, where the fingers keep their distance from
+    #: the reading (``fingers_to_the_support_reading``): 1, the owner's "bis auf 1 mm, solange er sie nicht berührt"
+    #: of 2026-10-06, for the mat and the bench alike. The guard holds every finger mesh this far over the reading and
+    #: its excess, every other link ``perceived_min_distance_mm`` from the whole solid; at or over that distance it
+    #: changes nothing. A part thinner than the band the reading swallowed is the support's, and the fingers come this
+    #: near it too.
+    finger_floor_mm: float = Field(default=1.0, ge=0.0, le=20.0)
 
     #: How many perceived boxes there is room for beside the declared ones.
     #:

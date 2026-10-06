@@ -140,6 +140,7 @@ function server(over: Record<string, Route> = {}): ApiCall[] {
     'POST /v1/cell/brake': { run_halted: true, latched: true, braking: false, in_motion: true, run_id: null, message: 'halted' },
     'POST /v1/task/stop': ACCEPTED,
     'POST /v1/cell/home': reply(202, { ...ACCEPTED, id: 'run-home', kind: 'home' }),
+    'POST /v1/cell/wave': reply(202, { ...ACCEPTED, id: 'run-wave', kind: 'wave', prompt: '' }),
     'POST /v1/task/restart': reply(202, { ...ACCEPTED, id: 'run-restart', restart_of: HALTED }),
     'POST /v1/cell/acknowledge': CELL,
     'POST /v1/cell/jaws/check': { hand: HAND, question: null },
@@ -147,7 +148,7 @@ function server(over: Record<string, Route> = {}): ApiCall[] {
   })
 }
 
-const MOVES = ['POST /v1/task', 'POST /v1/task/restart', 'POST /v1/cell/home', 'POST /v1/pick']
+const MOVES = ['POST /v1/task', 'POST /v1/task/restart', 'POST /v1/cell/home', 'POST /v1/pick', 'POST /v1/cell/wave']
 const moved = (calls: ApiCall[]) => calls.filter((c) => MOVES.includes(`${c.method} ${c.path}`))
 const sent = (calls: ApiCall[], key: string) => calls.filter((c) => `${c.method} ${c.path}` === key)
 
@@ -1444,15 +1445,15 @@ describe('the stage\'s pace', () => {
     return counts
   }
 
-  it('asks for the live image four times a second, and twice a second while a pose is taught', async () => {
+  it('plays the camera as a stream and asks only twice a second for what the badges say', async () => {
+    // The first answer arrives through the poll; from then on the stream plays and the poll keeps the badges.
     const [first, after1, after2] = await countFor(false)
     expect(first).toBe(1)
-    expect(after1 - first).toBe(4)
-    expect(after2 - after1).toBe(4)
-    const [t0, t1, t2] = await countFor(true)
+    expect(after2 - after1).toBe(2)
+    expect(after1 - first).toBeLessThanOrEqual(3)
+    const [t0, , t2] = await countFor(true)
     expect(t0).toBe(1)
-    expect(t1 - t0).toBe(2)
-    expect(t2 - t1).toBe(2)
+    expect(t2 - t0).toBeLessThanOrEqual(6)
   })
 })
 
@@ -1733,6 +1734,24 @@ describe('the Advanced drawer and the numbers', () => {
     expect(sent(calls, 'POST /v1/task')[0].body).toMatchObject({ options: { critical_parts: true, push_mm: null } })
   })
 
+  it('sends where a blocker goes only where it was touched', async () => {
+    // The owner's switch (2026-10-06): a blocker goes where the parts go, or is only set aside.
+    const calls = server()
+    cockpit()
+    await command('Räum alle grünen Würfel auf die Ablage links')
+    const card = await screen.findByRole('region', { name: 'Verstanden' })
+    fireEvent.click(within(card).getByText('Erweitert'))
+    const into = within(card).getByRole('checkbox', { name: /Blocker direkt wegpacken/ }) as HTMLInputElement
+    expect(into.checked).toBe(true)
+    fireEvent.click(into)
+    await waitFor(() => expect(into.checked).toBe(false))
+    const start = within(card).getByRole('button', { name: /^Start/ })
+    await waitFor(() => expect(start.hasAttribute('disabled')).toBe(false))
+    fireEvent.click(start)
+    await waitFor(() => expect(sent(calls, 'POST /v1/task')).toHaveLength(1))
+    expect(sent(calls, 'POST /v1/task')[0].body).toMatchObject({ options: { blocker_into_the_place: false } })
+  })
+
   it("leaves the cell's switch to the cell where nobody touched it", async () => {
     const calls = server()
     cockpit()
@@ -1742,7 +1761,9 @@ describe('the Advanced drawer and the numbers', () => {
     await waitFor(() => expect(start.hasAttribute('disabled')).toBe(false))
     fireEvent.click(start)
     await waitFor(() => expect(sent(calls, 'POST /v1/task')).toHaveLength(1))
-    expect(sent(calls, 'POST /v1/task')[0].body).toMatchObject({ options: { critical_parts: null } })
+    expect(sent(calls, 'POST /v1/task')[0].body).toMatchObject({
+      options: { critical_parts: null, blocker_into_the_place: null },
+    })
   })
 
   it('brings Start back into the chat\'s view when Advanced opens above it', async () => {
@@ -1799,5 +1820,67 @@ describe('without a loaded reader', () => {
     await screen.findByRole('region', { name: 'Verstanden' })
     expect(sent(calls, 'POST /v1/commands/parse')).toHaveLength(2)
     expect(moved(calls)).toHaveLength(0)
+  })
+})
+
+describe('a greeting in the chat (the owner, 2026-10-06: "Sofort winken", the app config may ask first)', () => {
+  const GREETED = { ...PARSED, intent: 'none', object: null, place_pose: null, scope: null }
+
+  it('waves at once where the app config says direct, and opens no card', async () => {
+    const calls = server({ 'POST /v1/commands/parse': { ...GREETED, greeting: 'direct' } })
+    cockpit()
+    await command('Hallo Willy!')
+    expect(await screen.findByText('Hallo!')).toBeTruthy()
+    await waitFor(() => expect(sent(calls, 'POST /v1/cell/wave')).toHaveLength(1))
+    expect(sent(calls, 'POST /v1/task')).toHaveLength(0)
+    expect(screen.queryByRole('region', { name: 'Verstanden' })).toBeNull()
+  })
+
+  it("asks first where the app config says confirm, and waves only on the dialog's button", async () => {
+    const calls = server({ 'POST /v1/commands/parse': { ...GREETED, greeting: 'confirm' } })
+    cockpit()
+    await command('Hallo Willy!')
+    expect(await screen.findByText('Hallo! Soll ich winken?')).toBeTruthy()
+    const dialog = await screen.findByRole('dialog', { name: 'Winken' })
+    expect(sent(calls, 'POST /v1/cell/wave')).toHaveLength(0)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Winken – der Roboter bewegt sich' }))
+    await waitFor(() => expect(sent(calls, 'POST /v1/cell/wave')).toHaveLength(1))
+  })
+
+  it('sends nothing where the dialog is cancelled', async () => {
+    const calls = server({ 'POST /v1/commands/parse': { ...GREETED, greeting: 'confirm' } })
+    cockpit()
+    await command('Hallo Willy!')
+    const dialog = await screen.findByRole('dialog', { name: 'Winken' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Abbrechen' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Winken' })).toBeNull())
+    expect(moved(calls)).toHaveLength(0)
+  })
+
+  it('only greets back where the app config says off, and moves nothing', async () => {
+    const calls = server({ 'POST /v1/commands/parse': { ...GREETED, greeting: 'off' } })
+    cockpit()
+    await command('Hallo Willy!')
+    expect(await screen.findByText('Hallo! Schön, dass du da bist.')).toBeTruthy()
+    expect(moved(calls)).toHaveLength(0)
+  })
+
+  it('says a refused wave in the chat, and tries it once', async () => {
+    const calls = server({
+      'POST /v1/commands/parse': { ...GREETED, greeting: 'direct' },
+      'POST /v1/cell/wave': refusal(409, 'restart_required', 'a stop record stands'),
+    })
+    cockpit()
+    await command('Hallo Willy!')
+    expect(await screen.findByText(/Winken geht gerade nicht/)).toBeTruthy()
+    expect(sent(calls, 'POST /v1/cell/wave')).toHaveLength(1)
+  })
+
+  it('reads a sentence with no greeting as ever: a task card, and no wave', async () => {
+    const calls = server()
+    cockpit()
+    await command('Räum alle grünen Würfel auf die Ablage links')
+    await screen.findByRole('region', { name: 'Verstanden' })
+    expect(sent(calls, 'POST /v1/cell/wave')).toHaveLength(0)
   })
 })

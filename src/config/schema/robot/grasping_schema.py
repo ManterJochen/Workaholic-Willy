@@ -297,6 +297,13 @@ class GraspingRecoveryConfig(StrictModel):
     #: (gripped and set aside) instead. A console run may say otherwise for itself. Read where ``nudge_target`` is
     #: allowed, which arms both.
     critical_parts: bool = False
+    #: Where a blocker goes in a task that takes every part to one place (the owner, 2026-10-06: "einmal das es direkt
+    #: weggepackt wird und einmal nur umgelegt"). True, the default: it is the part the pick takes, gripped, lifted and
+    #: set down where the parts go, and the part it blocked is picked next. False: it is set down on a free spot of the
+    #: support and the part is grasped after. A task that names an object sets every blocker aside whatever this says,
+    #: as a blocker is not the part it asked for. A console run may say otherwise for itself. Read where
+    #: ``nudge_target`` is allowed, which arms the clearing.
+    blocker_into_the_place: bool = True
     apply_modes: tuple[str, ...] = Field(
         default=("auto", "dense_clutter")
     )
@@ -1591,19 +1598,17 @@ class GraspingSupportConfig(StrictModel):
         description="Optional bin/tray the parts rest in. Default: none, the workspace surface is used.",
     )
     min_clearance_mm: float = Field(
-        default=5.0,
+        default=1.0,
         ge=0.0,
         le=200.0,
         description=(
-            "How far the gripper envelope must stay above the support surface. Measured, not chosen: "
-            "swept 0 / 2 / 5 mm over the gate subset (n=354), the strictness is nearly free: "
-            "precision 18.87 -> 20.00 -> 22.08 %, coverage 28.81 -> 28.53 -> 28.53 %, top-1 flat at "
-            "~24.3 % throughout. 5 mm buys 3.2 pp of precision for 0.28 pp of coverage, so it stays "
-            "the default and is the safer value on real hardware. Lowering it does not unlock flat "
-            "parts: with the 2F-85's 28.72 mm fingertip reach an object must be >= 33.72 mm tall for a "
-            "top-down grasp to clear 5 mm even when the grasp sits on its very top edge, and 34.1 % "
-            "of the reference objects are shorter than that. That is gripper geometry, not a "
-            "threshold: those parts need suction or a different end-effector."
+            "How far the gripper envelope must stay above the support surface: the finger floor the exact guard "
+            "holds over what a support reads (safety.planning_world.perceived.finger_floor_mm, 1 mm), the deepest "
+            "it lets a finger go, so a grasp the calculator offers is one the guard admits (the owner, 2026-10-06: "
+            "\"bis auf 1 mm, solange er sie nicht berührt\"; 3 mm from 2026-10-05, 5 mm before). Swept 0 / 2 / 5 mm "
+            "over the gate subset (n=354): precision 18.87 -> 20.00 -> 22.08 %, coverage 28.81 -> 28.53 -> 28.53 %, "
+            "top-1 flat at ~24.3 %. A part has to stand at least this, the fingertip's reach past the grasp centre "
+            "and 2 mm tall (scene_obstacles.least_part_height_mm): 13.5 mm for the Hand-E."
         ),
     )
 

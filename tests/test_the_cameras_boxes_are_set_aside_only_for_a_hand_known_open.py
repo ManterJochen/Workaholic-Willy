@@ -11,10 +11,14 @@ the camera's boxes. Now the hand decides. The set-aside is asked only where it i
   says open;
 * a gripper that measures its width: connected, within 2 mm of its widest, and no part measured held.
 
-No hand, any other hand, a count that says closed or that nobody can vouch for, a width short of open and a read that
-fails keep the camera's boxes in, and cuRobo decides as before, whether the payload model is on or not and whatever
-verb closed the jaws. The arm learns its hand where a cell comes up (``connect_cell``), once the hand connected. The
-pose screen judges a pose and not a hand: it reads none, and says what runs there with a hand known empty and open.
+On a cell that models a carried part (``safety.planning_world.payload``), no hand, any other hand, a count that says
+closed or that nobody can vouch for, a width short of open and a read that fails keep the camera's boxes in, and cuRobo
+decides as before, whatever verb closed the jaws. A cell that models no carried part, the owner's, judges jaws closed on
+one as an empty hand is judged and reads no hand: nobody judges such a part against the camera's boxes either way, and
+the exact guard still judges the arm and the hand at full stroke (the owner, 2026-10-05: "wir nehmen das, wo wir uns
+sicherer sind, dass wir mehr erhalten ... Also mehr Griffe"). The arm learns its hand where a cell comes up
+(``connect_cell``), once the hand connected. The pose screen judges a pose and not a hand: it reads none, and says what
+runs there with a hand known empty and open.
 
 The arm, the camera world and the bin are those of ``test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards.py``:
 a bin turned 30 degrees, 30 mm from the UR10's meshes, which only the camera's boxes refuse on the planner's world. The
@@ -168,9 +172,14 @@ class WhatTheHandSaysTests(unittest.TestCase):
 # ---------------------------------------------------------------------------------------------------------------------
 
 
-def _beside_the_bin(hand: Any) -> "tuple[Any, Any]":
-    """The arm at OFF beside the bin 30 mm away, the camera's boxes held by both, ``hand`` the hand it carries."""
-    arm, planner = _cell()
+#: How far a carried part hangs past the fingertips on a cell that models one, millimetres.
+CARRIED_PART_MM = 40.0
+
+
+def _beside_the_bin(hand: Any, *, models_a_part: bool = True) -> "tuple[Any, Any]":
+    """The arm at OFF beside the bin 30 mm away, the camera's boxes held by both, ``hand`` the hand it carries, on a cell
+    that models a carried part unless ``models_a_part`` is false."""
+    arm, planner = _cell(carried_part_mm=CARRIED_PART_MM if models_a_part else None)
     arm.set_hand(hand)
     _from(arm, planner, OFF)
     return arm, planner
@@ -190,7 +199,8 @@ class OnlyAHandKnownOpenSetsTheBoxesAsideTests(unittest.TestCase):
         self.assertEqual(len(planner.set_aside()), 1)
 
     def test_every_hand_not_known_open_keeps_them_in_and_moves_nothing(self) -> None:
-        """⭐ Red before: every one of these ran the line, the planner asked with the camera's boxes set aside."""
+        """⭐ Red before: every one of these ran the line, the planner asked with the camera's boxes set aside. On a cell
+        that models a carried part."""
         switched = _toggle()
         switched._io.do[0] = not switched._io.do[0]
         for name, hand, words in (
@@ -211,14 +221,16 @@ class OnlyAHandKnownOpenSetsTheBoxesAsideTests(unittest.TestCase):
                              "the hand is not known to be empty and open", words):
                     self.assertIn(said, result.message or "")
 
-    def test_a_part_the_jaws_closed_on_with_no_attach_keeps_them_in(self) -> None:
-        """⭐ THE L2 CASE. ``Robot.grasp`` on a cell that models no carried part closes the jaws and attaches nothing,
-        so the arm's own record said no part. Red before: the line out of the pose beside the bin ran, part in the
-        jaws. Released, the same line runs."""
+    def test_a_part_the_jaws_closed_on_with_no_attach_is_judged_as_an_empty_hand(self) -> None:
+        """⭐ THE L2 CASE, as the owner decided it on 2026-10-05. ``Robot.grasp`` on a cell that models no carried part
+        closes the jaws and attaches nothing. Until then the hand's count kept the camera's boxes in and the line out of
+        the pose beside the bin was refused, part in the jaws; the owner's carried lifts died there. Now the cell judges
+        the closed hand as an empty one: the boxes set aside, the exact guard decides, and the line runs. Released, it
+        runs as before."""
         from src.robot.execution import handling
 
         jaws = _toggle()
-        arm, planner = _beside_the_bin(jaws)
+        arm, planner = _beside_the_bin(jaws, models_a_part=False)
         running_normally(arm._conn)
         robot = SimpleNamespace(arm=arm, gripper=jaws)
         held = handling.grasp(robot, 39.0)
@@ -227,14 +239,30 @@ class OnlyAHandKnownOpenSetsTheBoxesAsideTests(unittest.TestCase):
         self.assertIsNone(arm._attached_payload)
         self.assertTrue(jaws.jaws_closed)
         result = _line(arm, OFF_ON)
-        self.assertFalse(result.ok)
-        arm._conn.moveJ.assert_not_called()
-        self.assertIn("count says the jaws stand closed", result.message or "")
-        self.assertEqual(planner.set_aside(), [])
+        self.assertTrue(result.ok, result.message)
+        arm._conn.moveJ.assert_called_once()
+        self.assertEqual(len(planner.set_aside()), 1)
 
         released = handling.release(robot)
         self.assertTrue(released.ok, released.render())
         self.assertTrue(_line(arm, OFF_ON).ok, "opened, the same line runs")
+
+    def test_a_cell_that_models_no_carried_part_reads_no_hand(self) -> None:
+        """Whatever the hand says, a cell that models no carried part sets the boxes aside and the exact guard decides:
+        it holds the hand at full stroke, the widest it stands, and a part nobody models is judged by nobody either
+        way (the owner, 2026-10-05)."""
+        switched = _toggle()
+        switched._io.do[0] = not switched._io.do[0]
+        short = _WidthHand(31.0)
+        for name, hand in (("no hand", None), ("the toggle's count says closed", _toggle(closed=True)),
+                           ("a toggle switched by hand", switched), ("a width short of open", short),
+                           ("any other hand", _OtherHand())):
+            with self.subTest(name):
+                arm, planner = _beside_the_bin(hand, models_a_part=False)
+                result = _line(arm, OFF_ON)
+                self.assertTrue(result.ok, result.message)
+                self.assertEqual(len(planner.set_aside()), 1)
+        self.assertEqual(short.reads, 0, "the hand is not read")
 
     def test_a_carried_part_is_said_first(self) -> None:
         """Where a part is attached and the jaws are closed, the carried part is the reason: it names the way out."""

@@ -97,6 +97,44 @@ _STATUS_HINTS = {
 
 
 
+#: The hand's parts that may come to a named part's measured surface (``AxisAlignedBox.soft_mm``): its two fingers. The
+#: housing, ``gripper``, keeps the whole box and the distance, as every other link does.
+FINGER_PARTS: frozenset[str] = frozenset({"lfinger", "rfinger"})
+
+
+def _surface_of(adapter: Any, fixture: Any, soft_mm: float) -> Any:
+    """``fixture`` less ``soft_mm`` on its sides and its top, its foot where it stands: the measured surface of a part
+    the camera world grew by its margin. Never thinner than a millimetre."""
+    turned = getattr(fixture, "turned", None)
+    centre = np.asarray(fixture.center_mm, dtype=np.float64).copy()
+    half = np.asarray(fixture.half_extents_mm if turned is None else turned.half_extents_mm, dtype=np.float64).copy()
+    lowered = min(float(soft_mm), max(0.0, float(half[2]) - 0.5) * 2.0)
+    half[:2] = np.maximum(half[:2] - float(soft_mm), 0.5)
+    half[2] -= lowered / 2.0
+    centre[2] -= lowered / 2.0
+    if turned is None:
+        return adapter.box_object(half, centre)
+    return adapter.box_object(half, centre, float(turned.yaw_rad), getattr(turned, "rotation", None))
+
+
+def _finger_top_of(adapter: Any, fixture: Any, drop_mm: float) -> Any:
+    """``fixture`` with its top lowered by ``drop_mm`` along its own up axis, its sides and its foot where they stand: a
+    support's solid as a finger keeps the distance from it, the reading and its excess (``finger_top_mm``). Never
+    thinner than a millimetre."""
+    turned = getattr(fixture, "turned", None)
+    centre = np.asarray(fixture.center_mm, dtype=np.float64).copy()
+    half = np.asarray(fixture.half_extents_mm if turned is None else turned.half_extents_mm, dtype=np.float64).copy()
+    lowered = min(float(drop_mm), max(0.0, float(half[2]) - 0.5) * 2.0)
+    rotation = None if turned is None else getattr(turned, "rotation", None)
+    up = (np.array([0.0, 0.0, 1.0]) if rotation is None
+          else np.asarray(rotation, dtype=np.float64).reshape(3, 3)[:, 2])
+    half[2] -= lowered / 2.0
+    centre = centre - up * (lowered / 2.0)
+    if turned is None:
+        return adapter.box_object(half, centre)
+    return adapter.box_object(half, centre, float(turned.yaw_rad), rotation)
+
+
 def _yaw_matrix(yaw_deg: float) -> np.ndarray:
     """The 3x3 rotation about +Z by ``yaw_deg``, which is the kinematics_base_yaw_deg reconcile."""
     import math
@@ -282,12 +320,25 @@ class MeshSelfCollisionBackend:
             else:
                 box = a.box_object(np.asarray(turned.half_extents_mm, dtype=np.float64), fc, float(turned.yaw_rad),
                                    getattr(turned, "rotation", None))
+            # A box of a part the detector named holds the fingers to its measured surface: the box less ``soft_mm`` on
+            # its sides and its top, its foot where it stands, at no distance (the owner, 2026-10-05).
+            soft = float(getattr(fx, "soft_mm", 0.0) or 0.0)
+            surface = _surface_of(a, fx, soft) if soft > 0.0 else None
+            # A support's solid holds the fingers to its reading and excess, at the distance (the owner, 2026-10-05).
+            drop = float(getattr(fx, "finger_top_mm", 0.0) or 0.0)
+            reading = _finger_top_of(a, fx, drop) if drop > 0.0 and surface is None else None
             for name in self._names:
+                if surface is not None and name in FINGER_PARTS:
+                    probe, limit = surface, 0.0
+                elif reading is not None and name in FINGER_PARTS:
+                    probe, limit = reading, min_distance_mm
+                else:
+                    probe, limit = box, min_distance_mm
                 if broadphase and (float(np.linalg.norm(wc[name] - fc))
-                                   - self._sph_r[name] - fr > min_distance_mm):
+                                   - self._sph_r[name] - fr > limit):
                     continue
-                d = a.distance(self._models[name], box)
-                if d < min_distance_mm:
+                d = a.distance(self._models[name], probe)
+                if d < limit:
                     fname = getattr(fx, "name", "") or "fixture"
                     return (f"{name}|fixture:{fname}", d)
         return None

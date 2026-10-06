@@ -132,7 +132,7 @@ class TheLineAndThePlanTests(unittest.TestCase):
         self.assertEqual([], planner.named("plan_joint"))
         self.assertEqual([], planner.named("execute"))
         (lined,) = planner.lines()
-        self.assertEqual(10.0, lined[3])
+        self.assertEqual(3.0, lined[3])
         self.assertIn("move_to_joints: direct line; 2 waypoint(s) dense, 2 executed (1 leg(s))", "\n".join(logs.output))
 
     def test_a_line_that_collides_is_planned_around_and_the_judged_list_runs(self) -> None:
@@ -169,7 +169,7 @@ class TheLineAndThePlanTests(unittest.TestCase):
         self.assertTrue(result.ok, result.message)
         (execute,) = planner.named("execute")
         self.assertEqual(21, len(execute[1]), "the plan ran shortened into the line the planner refused")
-        self.assertEqual([10.0, 10.0, 0.0], [c[3] for c in planner.named("check") if len(c[1]) > 1])
+        self.assertEqual([3.0, 3.0, 0.0], [c[3] for c in planner.named("check") if len(c[1]) > 1])
 
     def test_a_transport_lost_while_cuRobo_plans_is_a_typed_connection_error(self) -> None:
         """Found porting 85f082b to dev, 2026-09-25: ``plan_joint`` reads where the arm stands again, and a transport
@@ -284,7 +284,7 @@ class TheLineAndThePlanTests(unittest.TestCase):
 class TheConfigTests(unittest.TestCase):
     def test_the_keys_default_to_the_planners_clearance_and_45_degrees(self) -> None:
         planned = RobotConfig.model_validate({"vendor": "ur"}).safety.planned_motion
-        self.assertEqual((10.0, 45.0), (planned.line_clearance_mm, planned.max_detour_deg))
+        self.assertEqual((3.0, 45.0), (planned.line_clearance_mm, planned.max_detour_deg))
 
     def test_a_bound_of_nothing_and_a_clearance_the_planner_cannot_ask_are_refused(self) -> None:
         from pydantic import ValidationError

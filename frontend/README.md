@@ -137,6 +137,12 @@ bewegt". It stays as the thumbnail of its part's card.
 - **Without the language model** (`501`, or not loaded) the card opens by hand with the reason, every field
   editable; "Laden" loads the reader where the cell allows it. A sentence read as "stop" stops nothing: the card
   points at the stop buttons.
+- **"Hallo Willy" waves back** (the owner, 2026-10-06). A greeting, a farewell or "wink mal" opens no card:
+  Willy says "Hallo!" and waves at once, two swings of the wrist the exact guard judges, its own
+  run with "Winken stoppen" under the image (`runtime.greeting.wave: direct`, the shipped default). With
+  `confirm` it asks first, in a dialog like Home's ("Winken – der Roboter bewegt sich"); with `off` it only greets
+  back. A refused wave is said in the chat. A command with a greeting in front ("Hallo Willy, nimm den Würfel")
+  is a command.
 - **The chat is locked during a run**, the box and the microphone; a teach switches the microphone off too.
 
 The page encodes 16-bit PCM WAV itself (`src/prompt/recordWav.ts`), because no browser records WAV and WAV is
@@ -269,7 +275,7 @@ for the cell poll, and names taught poses by their labels.
 | The screen | Because | Test |
 |---|---|---|
 | Start names the first motion, the countdown and a camera place's fallback, and stays off until ready | Start is the confirmation; nothing moves on a click that did not say where | yes |
-| Enter and a spoken sentence only fill the card; nothing starts but Start | a misheard word must never move an arm | yes |
+| Enter and a spoken sentence only fill the card; nothing starts but Start, bar a greeting's wave where the app config says `direct` | a misheard word must never move an arm; the owner chose the wave at once, two judged swings of the wrist, `confirm` to ask first | yes |
 | "Sofort anhalten" is one click, orange, and says it is not the e-stop, whatever else is open | the red button at the cell is the e-stop | yes |
 | "Not-Aus drücken" only where the arm brakes and no confirmation came | a false alarm teaches people to ignore the real one | yes |
 | After a stop nothing starts by itself; Restart and Home stay off until every gate is green, and ask first | the arm stands where the problem left it | yes |

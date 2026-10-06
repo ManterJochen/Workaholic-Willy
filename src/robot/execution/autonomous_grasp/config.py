@@ -252,6 +252,9 @@ class EffectiveRecoveryOrchestratorConfig:
     #: Whether the parts are critical (``recovery.critical_parts``): a blocker is cleared and nothing is pushed. Not in
     #: :meth:`EffectiveGraspingConfig.to_dict`, like the fixture.
     critical_parts: bool = False
+    #: Whether a blocker of a task that takes every part goes where the parts go (``recovery.blocker_into_the_place``).
+    #: Not in :meth:`EffectiveGraspingConfig.to_dict`, like the fixture.
+    blocker_into_the_place: bool = True
     #: The operator-declared BASE-frame box a physical recovery action may act inside, as
     #: ``(centre_xyz_mm, half_extents_xyz_mm, max_nudge_mm)``. ``None`` when the config declares no
     #: fixture, which the schema permits unless ``container_agitate`` is allowed.

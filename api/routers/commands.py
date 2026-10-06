@@ -2,7 +2,9 @@
 
 Reading never starts anything: it creates no run, sets no prompt and touches no cell. The card shows what was
 understood, a person corrects it, and Start on the card starts the task. A sentence read as "stop" only shows where
-the stop buttons are. Refused during a run, whose chat input is disabled anyway.
+the stop buttons are. A greeting says how the console answers it (``CommandOut.greeting``, the app config's
+``runtime.greeting.wave``): the console starts the wave, ``POST /v1/cell/wave``, never this route. Refused during a
+run, whose chat input is disabled anyway.
 
 One VLM copy per process reads commands and, on a cell whose detector is the VLM, detects too (``shared_vlm``). The
 load rule is the library's (owner decision Q8 A): a cell that detects with the VLM loads it at its first command; any
@@ -82,6 +84,11 @@ def _poses(cell: Console) -> dict[str, str]:
     return {(pose.label or name): name for name, pose in named.items()}
 
 
+def _greeting(cell: Console) -> str:
+    """How the console answers a greeting: ``runtime.greeting.wave`` of the app config the cell reads now."""
+    return str(cell.config().runtime.greeting.wave)
+
+
 def _status(availability: Any) -> CommandStatusOut:
     return CommandStatusOut(
         state=availability.state, model_id=availability.model_id, weights_present=availability.weights_present,
@@ -111,13 +118,15 @@ def post_parse(cell: Annotated[Console, Depends(console)], body: CommandIn) -> C
     except ValueError as exc:
         raise _refuse(RefusalCode.BAD_REQUEST, f"there is no command to read: {exc}") from exc
     said = reading.to_dict()
+    said["greeting"] = _greeting(cell) if reading.greeting else None
     for field in ("object", "place"):
         phrase = said.get(field)
         if isinstance(phrase, dict) and phrase.get("phrase"):
             phrase["route"] = diagnostics.preview_route(str(phrase["phrase"]), cell).model_dump()
-    logger.info("Command read (%s source, %s): intent %s, %d question(s), %.0f ms%s.", body.source,
+    logger.info("Command read (%s source, %s): intent %s, %d question(s), %.0f ms%s%s.", body.source,
                 body.language or "language unsaid", reading.intent, reading.attempts, reading.latency_ms,
-                ", the model loaded for it" if reading.loaded_now else "")
+                ", the model loaded for it" if reading.loaded_now else "",
+                f", a greeting (wave {said['greeting']})" if reading.greeting else "")
     return CommandOut.model_validate(said)
 
 

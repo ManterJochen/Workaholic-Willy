@@ -60,6 +60,8 @@ def _cell(
             "payload": {"enforce": False},
             "self_collision": {
                 "planner_margin_mm": planner_margin_mm,
+                # A cell that declares a fixture keeps 10 mm from it, as robot.ur5e.yaml does.
+                "min_distance_mm": 10.0 if fixtures else 3.0,
                 "fixtures": [
                     {"name": f"wall{i}", "center_mm": [400.0, -300.0 + 40.0 * i, 75.0],
                      "half_extents_mm": [10.0, 10.0, 75.0]}

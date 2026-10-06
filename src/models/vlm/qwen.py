@@ -38,13 +38,20 @@ from src.utility.log_cfg import create_logger
 
 from .parsing import CoordinateSpace, parse_grounding_response
 
-__all__ = ["Qwen3VLGrounder", "GROUNDING_INSTRUCTION"]
+__all__ = ["Qwen3VLGrounder", "GROUNDING_INSTRUCTION", "GROUNDING_MAX_NEW_TOKENS"]
 
 #: A file sink: nothing in this repo configures the root logger, so a bare ``getLogger`` would
 #: format the lines below and then discard them. The name stays ``__name__``, matching its siblings
 #: in this package rather than the class-named loggers elsewhere in ``models``. ``create_logger`` is
 #: stdlib-only, so the no-torch-at-import promise above holds.
 _LOG = create_logger(__name__, log_file=VLM_GROUNDER_LOG_FILE, log_dir=MODELS_LOG_DIR)
+
+#: How many tokens a grounding answer may run to. Qwen3-VL spends about 33 tokens on a box written compactly and
+#: 47 on one fenced and indented, as it often answers: 512 tokens, the earlier cap, held 10 to 15 boxes, and a pile of
+#: more parts on the mat came back cut off mid-list, which no JSON reading takes (measured on the checkpoint's own
+#: tokenizer, 2026-10-06). 2048 holds about 40; greedy decoding stops at the answer's end, so a short answer costs
+#: no more than before.
+GROUNDING_MAX_NEW_TOKENS = 2048
 
 #: The instruction wrapped around every operator prompt.
 #:
@@ -90,7 +97,7 @@ class Qwen3VLGrounder:
         model_path: str | None = None,
         local: bool = False,
         device: str = "cuda",
-        max_new_tokens: int = 512,
+        max_new_tokens: int = GROUNDING_MAX_NEW_TOKENS,
         preload: bool = False,
         coordinate_space: CoordinateSpace = CoordinateSpace.GRID_1000,
     ) -> None:

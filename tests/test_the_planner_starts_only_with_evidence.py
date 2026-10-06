@@ -48,7 +48,7 @@ _SIM_FILE = "ur5e_robotiq_2f85_c0mm_+Y+X_m4mm_a0.json"
 
 
 def _cell(**over: object) -> RobotConfig:
-    """A real UR cell whose combination the matrix measured: ur5e, 2F-85, +Y+X, 4 mm against a 10 mm guard."""
+    """A real UR cell whose combination the matrix measured: ur5e, 2F-85, +Y+X, 4 mm, measured against a 10 mm guard."""
     tree: dict = {
         "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
         "gripper": {"model": "robotiq_2f85", "tool_frame": _TOOL},
@@ -105,10 +105,18 @@ class TheFileHalfRunsAtTheDesk(unittest.TestCase):
         assert said is not None
         self.assertIn("m6mm", said)
 
-    def test_a_guard_at_another_margin_refuses(self) -> None:
-        said, _ = desk_evidence_refusal(_cell(safety__self_collision__min_distance_mm=8.0))
+    def test_a_guard_asking_more_than_was_measured_refuses(self) -> None:
+        """The matrix measured this combination against a 10 mm guard: a guard asking 11 mm was never proven."""
+        said, _ = desk_evidence_refusal(_cell(safety__self_collision__min_distance_mm=11.0))
         assert said is not None
         self.assertIn("guard", said)
+
+    def test_a_guard_asking_less_than_was_measured_is_admitted(self) -> None:
+        """A run clear at a 10 mm guard is clear at 8 mm too: the larger measured margin proves the smaller one."""
+        said, evidence = desk_evidence_refusal(_cell(safety__self_collision__min_distance_mm=8.0))
+        self.assertIsNone(said)
+        assert evidence is not None
+        self.assertEqual(evidence.path.name, _SIM_FILE)
 
     def test_a_cell_whose_plate_became_a_body_is_another_robot(self) -> None:
         """UM8's coupling body moves the guard geometry, and that is exactly what the guard hash sees."""

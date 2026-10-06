@@ -64,7 +64,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
+
+import numpy as np
 
 from src.contracts import UNSET, Maybe, chosen
 from src.robot.constants import create_robot_logger
@@ -961,7 +964,62 @@ def keep_pick_views(service: Any, report: Any, *, name: str) -> str:
     except Exception as exc:  # noqa: BLE001 (a lost training file never stops a campaign or a task)
         logger.warning("pick run: the looks of %s were not kept: %s: %s", recorded or name, type(exc).__name__, exc)
         return ""
+    if written is not None:
+        try:
+            _keep_debug_images(views, getattr(looked, "judged", None), Path(written),
+                               ranked=getattr(getattr(service, "ranked_looked", None), "judged", None))
+        except Exception as exc:  # noqa: BLE001 (a debug picture never stops a campaign or a task)
+            logger.warning("pick run: the debug pictures of %s were not drawn: %s: %s", recorded or name,
+                           type(exc).__name__, exc)
     return "" if written is None else str(written)
+
+
+#: How many of the look's ranked grasps a debug picture draws, the chosen one first and thicker.
+DEBUG_GRASPS_DRAWN = 5
+
+
+def _keep_debug_images(views: Any, judged: Any, written: Path, *, ranked: Any = None) -> list[Path]:
+    """One PNG per look beside ``written`` (``<stem>_look<i>.png``): every detection's mask, box, label and score, and
+    the ranked grasps of the judged look as grasp rectangles, the chosen one thicker (the owner, 2026-10-05). A look
+    with no colour image is skipped.
+
+    Where the judged look ranked no grasp, as after a blocker was set aside or the attempt looked again, the grasps are
+    those of ``ranked``, the pick's last look that ranked any (``ranked_looked``): what the pick tried and why it failed
+    is still in the picture."""
+    from src.robot.grasping.visualization.scene_debug import (  # noqa: PLC0415
+        draw_scene_debug,
+        grasp_rectangle,
+        save_scene_debug,
+    )
+
+    result = getattr(judged, "result", None)
+    candidates = list(getattr(result, "candidates", ()) or ())[:DEBUG_GRASPS_DRAWN]
+    if not candidates and ranked is not None:
+        candidates = list(getattr(getattr(ranked, "result", None), "candidates", ()) or ())[:DEBUG_GRASPS_DRAWN]
+    out: list[Path] = []
+    for index, view in enumerate(views):
+        frame = getattr(view, "frame", view)
+        rgb = getattr(frame, "rgb", None)
+        if rgb is None:
+            continue
+        camera_to_base = getattr(view, "camera_to_base", None)
+        base_to_camera = None
+        if camera_to_base is not None and np.all(np.isfinite(np.asarray(camera_to_base, dtype=np.float64))):
+            base_to_camera = np.linalg.inv(np.asarray(camera_to_base, dtype=np.float64))
+        rects = []
+        for grasp in candidates:
+            in_base = str(getattr(getattr(grasp, "frame", None), "value", getattr(grasp, "frame", ""))).lower() == "base"
+            if in_base and base_to_camera is None:
+                continue
+            rect = grasp_rectangle(grasp.position, grasp.axis, grasp.approach, float(grasp.grip_width_mm),
+                                   np.asarray(frame.intrinsics), base_to_camera=base_to_camera if in_base else None)
+            if rect is not None:
+                rects.append(rect)
+        title = f"{getattr(view, 'name', '')} {getattr(view, 'label', '')}".strip()
+        image = draw_scene_debug(rgb, tuple(getattr(frame, "segmentations", ()) or ()), grasps=rects, chosen=0,
+                                 title=title)
+        out.append(save_scene_debug(written.with_name(f"{written.stem}_look{index}.png"), image))
+    return out
 
 
 def configured_looks_of(service: Any) -> "tuple[LookPose, ...]":

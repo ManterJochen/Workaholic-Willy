@@ -83,15 +83,18 @@ export default function StopButtons({ view, running, facts }: StopButtonsProps) 
   const kind = running ? view.kind : null
   const asked =
     (kind === 'task' && view.stopScope === 'after_part') ||
-    (kind === 'home' && view.stopScope === 'before_motion') ||
+    ((kind === 'home' || kind === 'wave') && view.stopScope === 'before_motion') ||
     (kind === 'pick' && view.stopScope === 'between_attempts')
-  const canStop = running && runId !== null && (kind === 'task' || kind === 'home' || kind === 'pick') && !asked && !stopping
+  const canStop =
+    running && runId !== null && (kind === 'task' || kind === 'home' || kind === 'pick' || kind === 'wave') && !asked && !stopping
 
-  const stopTitle = kind === 'home' ? t('ck.stopHome') : kind === 'pick' ? t('ck.stopPick') : t('ck.stopAfter')
+  const stopTitle = kind === 'home' ? t('ck.stopHome') : kind === 'wave' ? t('ck.stopWave') : kind === 'pick' ? t('ck.stopPick') : t('ck.stopAfter')
   const stopSub =
     kind === 'home'
       ? t(asked ? 'ck.stopHomeAsked' : 'ck.stopHomeSub')
-      : kind === 'pick'
+      : kind === 'wave'
+        ? t(asked ? 'ck.stopWaveAsked' : 'ck.stopWaveSub')
+        : kind === 'pick'
         ? t('ck.stopPickSub')
         : t(asked ? 'ck.stopAfterAsked' : 'ck.stopAfterSub')
 

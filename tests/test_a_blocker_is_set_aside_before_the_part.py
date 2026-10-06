@@ -170,10 +170,12 @@ class _Boxed:
     render_debug_images = False
 
     def __init__(self, camera: _SceneCamera, scene: _Scene, *, graspable: bool = True, stuck: bool = False,
-                 seen: int = 6) -> None:
+                 seen: int = 6, named: bool = False) -> None:
         self.camera = camera
         self.scene = scene
         self.graspable = graspable
+        #: Whether the post is a part the detector named: its points handed as such (``scene_obstacle_part_points``).
+        self.named = named
         self.stuck = stuck
         self.seen = seen
         self.calls: list[str] = []
@@ -204,7 +206,8 @@ class _Boxed:
             return GraspResult(
                 reasons=(GraspFailureReason.ALL_COLLIDED, GraspFailureReason.RESCAN_RECOMMENDED),
                 telemetry={"support_footprint_refused": {"seen_corridor": self.seen}},
-                metadata={"scene_obstacle_points_base_mm": points, "scene_points_world_rule_base_mm": points})
+                metadata={"scene_obstacle_points_base_mm": points, "scene_points_world_rule_base_mm": points,
+                          **({"scene_obstacle_part_points": np.ones(len(points), dtype=bool)} if self.named else {})})
         grasp = _top_down(self.scene.centre("part"), width_mm=40.0, label="part")
         return GraspResult(candidates=(grasp,), top_score=0.9)
 
@@ -215,6 +218,49 @@ class _Boxed:
         camera = np.column_stack([(cols - K[0, 2]) * z / K[0, 0], (rows - K[1, 2]) * z / K[1, 1], z])
         matrix = np.asarray(kwargs["camera_to_base"].to_matrix(), dtype=np.float64)
         return camera @ matrix[:3, :3].T + matrix[:3, 3]
+
+
+#: A second post 7 mm off the cube's +x face, as the first stands off its -x face.
+POST_PLUS_X = Box((27.0, -715.0, 0.0), (55.0, -685.0, 40.0), "post_plus_x")
+
+
+class _TwoPosts(_Boxed):
+    """Both posts box the part in: it collides while either post's pixels stand in the depth it is handed and that post
+    stands beside it, by the same count of seen refusals however many do, and has one grasp once neither does. Asked
+    for a blocker, a grasp at the centre of the post the blocker's mask lies on."""
+
+    def compute_result(self, seg: Any, depth: Any, *_args: Any, **kwargs: Any) -> GraspResult:
+        label = str(getattr(seg, "label", ""))
+        if label == "blocker":
+            self.calls.append(label)
+            mask = np.asarray(getattr(seg, "mask"), dtype=bool)
+            assert self.camera.last_hit is not None
+            met = [self.camera.last_boxes[int(i)].label for i in np.unique(self.camera.last_hit[mask]) if int(i) >= 0]
+            post = next((name for name in met if name.startswith("post")), None)
+            if post is None:
+                return GraspResult(reasons=(GraspFailureReason.NO_VALID_GRASP, GraspFailureReason.RESCAN_RECOMMENDED))
+            return GraspResult(candidates=(_top_down(self.scene.centre(post), width_mm=28.0, label="blocker"),),
+                               top_score=0.9)
+        if label != "part":
+            return super().compute_result(seg, depth, *_args, **kwargs)
+        self.calls.append(label)
+        handed = np.asarray(depth, dtype=np.float64)
+        points = []
+        for index, box in enumerate(self.camera.last_boxes):
+            if not box.label.startswith("post"):
+                continue
+            pixels = (self.camera.last_hit == index) & (handed > 0.0)
+            beside = float(np.hypot(*(self.scene.centre(box.label)[:2] - self.scene.centre("part")[:2]))) < 60.0
+            if pixels.any() and beside:
+                points.append(self._base(pixels, handed, kwargs))
+        if points:
+            seen = np.vstack(points)
+            return GraspResult(
+                reasons=(GraspFailureReason.ALL_COLLIDED, GraspFailureReason.RESCAN_RECOMMENDED),
+                telemetry={"support_footprint_refused": {"seen_corridor": self.seen}},
+                metadata={"scene_obstacle_points_base_mm": seen, "scene_points_world_rule_base_mm": seen})
+        return GraspResult(candidates=(_top_down(self.scene.centre("part"), width_mm=40.0, label="part"),),
+                           top_score=0.9)
 
 
 class _HeldWorld(_World):
@@ -238,13 +284,13 @@ class _HeldWorld(_World):
 
 class _Cell:
     def __init__(self, *, gate: bool = True, workspace: AxisBox = WORKSPACE, graspable: bool = True,
-                 stuck: bool = False, on_close: Any = None, **wiring: Any) -> None:
+                 stuck: bool = False, on_close: Any = None, named: bool = False, **wiring: Any) -> None:
         self.scene = _Scene((CUBE, POST))
         self.arm = LookingArm(_poses())
         self.world = _HeldWorld()
         self.arm.live_planner_world = self.world  # type: ignore[attr-defined]
         self.camera = _SceneCamera(self.arm, self.scene)
-        self.calculator = _Boxed(self.camera, self.scene, graspable=graspable, stuck=stuck)
+        self.calculator = _Boxed(self.camera, self.scene, graspable=graspable, stuck=stuck, named=named)
         self.offers_at_close: list[list[str]] = []
 
         def closing() -> None:
@@ -316,6 +362,90 @@ class ABlockerIsSetAsideTests(unittest.TestCase):
         np.testing.assert_allclose(cell.scene.centre("post")[:2], (200.0, -400.0), atol=1e-6)
 
 
+class ABlockerIsThePickWhereTheTaskTakesEveryPartTests(unittest.TestCase):
+    """The owner, 2026-10-06: "einmal das es direkt weggepackt wird und einmal nur umgelegt". Where the pick loop's
+    ``blocker_is_the_pick`` is on (a task that takes every part to one place), the blocker it takes away is the part it
+    picks: gripped and lifted, reported executed on the blocker's grasp with the blocker's cloud the judged one, and
+    set down by the caller where its parts go. Nothing is set down here, and no free spot is asked for."""
+
+    def test_the_post_is_the_part_the_pick_takes(self) -> None:
+        cell = _Cell(blocker_is_the_pick=True, named=True)
+
+        report = cell.run()
+
+        self.assertIs(PickOutcome.EXECUTED, report.outcome, [a.action for a in report.attempts])
+        self.assertEqual(["blocker_picked"], [attempt.action for attempt in report.attempts])
+        self.assertEqual("taken_as_the_pick", report.attempts[0].blocker)
+        # One close, on the post, and no open: the caller sets it down where its parts go.
+        self.assertEqual(["close"], cell.hand.commands)
+        self.assertEqual("post", cell.scene.held)
+        (record,) = cell.orchestrator.blockers
+        self.assertEqual("taken_as_the_pick", record.code)
+        self.assertEqual("where the parts go", record.place)
+        # The grasp reported is the post's, and so is the cloud the caller's drop reads how far the part hangs off.
+        assert report.executed_grasp is not None
+        grasp = report.executed_grasp.candidates[0]
+        self.assertLess(float(np.hypot(*(np.asarray(grasp.position)[:2] - cell.scene.centre("post")[:2]))), 20.0)
+        judged = cell.orchestrator.looked_around.judged
+        cloud = np.asarray(judged.target_cloud_base_mm)
+        self.assertLess(float(np.hypot(*(np.median(cloud[:, :2], axis=0) - cell.scene.centre("post")[:2]))), 20.0)
+        np.testing.assert_allclose(np.asarray(report.target_centre_mm)[:2], cell.scene.centre("post")[:2], atol=20.0)
+
+    def test_no_free_spot_is_asked_for(self) -> None:
+        """The workspace leaves no spot to set the post down on, and it is taken all the same."""
+        tight = AxisBox((-70.0, -740.0, -100.0), (60.0, -640.0, 600.0))
+        cell = _Cell(workspace=tight, blocker_is_the_pick=True, named=True)
+
+        report = cell.run()
+
+        self.assertIs(PickOutcome.EXECUTED, report.outcome)
+        self.assertEqual("post", cell.scene.held)
+
+    def test_only_a_part_the_detector_named_is_taken_as_the_pick(self) -> None:
+        """A wall of the tray the part stood in passed every other test and was gripped as the pick (the grasp bench,
+        2026-10-06): what nobody named is no blocker taken as the pick, and nothing moves for it."""
+        cell = _Cell(blocker_is_the_pick=True, named=False)
+
+        cell.run()
+
+        self.assertEqual([], cell.hand.commands)
+        self.assertEqual("no_blocker_seen", cell.orchestrator.blockers[0].code)
+        self.assertIn("no part the detector named", cell.orchestrator.blockers[0].sentence)
+
+    def test_nothing_in_a_region_the_task_keeps_out_is_a_blocker(self) -> None:
+        from src.robot.grasping.recovery.exclusion_zones import ExclusionRegion, ExclusionZones
+
+        zones = ExclusionZones()
+        zones.keep_out_region(ExclusionRegion.circle((-41.0, -700.0), 30.0, reason="the bin"))
+        cell = _Cell(blocker_is_the_pick=True, named=True, exclusion_zones=zones)
+
+        cell.run()
+
+        self.assertEqual([], cell.hand.commands)
+        self.assertIn("in a region the task keeps out", cell.orchestrator.blockers[0].sentence)
+
+    def test_off_the_post_is_set_aside_as_before(self) -> None:
+        cell = _Cell(blocker_is_the_pick=False)
+
+        report = cell.run()
+
+        self.assertEqual(["clear_blocker", "executed"], [attempt.action for attempt in report.attempts])
+        self.assertEqual("part", cell.scene.held)
+
+    def test_a_stop_asked_for_once_the_post_is_held_still_leaves_it_to_a_person(self) -> None:
+        stops: list[bool] = []
+
+        def held() -> bool:
+            return bool(stops)
+
+        cell = _Cell(blocker_is_the_pick=True, named=True, on_close=lambda: stops.append(True), should_cancel=held)
+
+        report = cell.run()
+
+        self.assertIsNot(PickOutcome.EXECUTED, report.outcome)
+        self.assertEqual(["close"], cell.hand.commands)
+
+
 class ClearingTheBlockerStopsWithAReasonTests(unittest.TestCase):
     def test_no_graspable_blocker_falls_to_the_push_with_nothing_moved(self) -> None:
         cell = _Cell(graspable=False)
@@ -348,6 +478,27 @@ class ClearingTheBlockerStopsWithAReasonTests(unittest.TestCase):
         codes = [record.code for record in cell.orchestrator.blockers]
         self.assertEqual(["set_aside", "freed_nothing"], codes)
         self.assertNotIn("executed", [attempt.action for attempt in report.attempts])
+
+    def test_two_posts_that_free_the_part_only_together_are_both_taken_away(self) -> None:
+        """A post either side of the part: each alone frees nothing, and once the first is set aside the part's count of
+        refusals is a new look's and need not fall. The second frees a grasp outright, so it is taken away too, and the
+        part is picked (the grasp bench, 2026-10-06: two posts 10 mm off a cylinder, the clearing stopped after the
+        first)."""
+        cell = _Cell()
+        cell.scene = _Scene((CUBE, POST, POST_PLUS_X))
+        cell.camera.scene = cell.scene
+        cell.calculator = _TwoPosts(cell.camera, cell.scene)
+        cell.orchestrator.calculator = cell.calculator  # type: ignore[assignment]
+        cell.hand.scene = cell.scene
+
+        report = cell.run()
+
+        codes = [record.code for record in cell.orchestrator.blockers]
+        self.assertEqual(["set_aside", "set_aside"], codes[:2], codes)
+        self.assertNotIn("freed_nothing", codes)
+        self.assertIs(PickOutcome.EXECUTED, report.outcome)
+        # Each post closed on and set down, then the part closed on and held.
+        self.assertEqual(["close", "open", "close", "open", "close"], cell.hand.commands)
 
     def test_without_the_push_gate_nothing_is_cleared(self) -> None:
         cell = _Cell(gate=False)

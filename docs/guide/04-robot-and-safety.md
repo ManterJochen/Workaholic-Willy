@@ -856,8 +856,18 @@ grasp ends `carried_retreat_refused` (a pick's attempt reads `execution_failed`,
 pick goes on to its next part or reports. Where the lift would run, the controller is asked last, and the
 jaws close. The pick loop's grasp and `Robot.pick` both judge.
 
+**The way back up is judged against the world that let the line down run** (the owner, 2026-10-06: "Ja,
+beides"). From the part until the arm is back up, the arm holds its world (`HoldsItsWorld.held_world`): the
+check before the close, the lift itself and the line back up with the jaws open are judged against the world
+the line down was judged in, with no new frame, and stamped with the refresh that built it. Each line also
+leaves the region between the jaws out at its lower end, where its world is built about: at the part for a
+line up, where a lift starts with the part between the jaws. On the grasp bench a refresh at the part, from
+there, held the part it starts from between the fingers, and refused the lift and the line back up its own
+descent had run, the arm standing in a bin of 22 parts. Every check still runs: the exact guard on every
+sample, the planner against that world, the controller, the halt.
+
 **The check and the lift are two judgements.** The lift is judged again as it starts, as every motion is,
-and it can still refuse what the check let through: the camera world refreshed from a new frame, the part's
+and it can still refuse what the check let through: the part's
 box fitted with the planner's spheres anew by the attach after the close, a part a measuring hand reads wider
 than the grasp said, or a lift in steps (`retreat_steps`), whose samples are not the judged line's. Rarely,
 then, the arm holds the part where it stands. That arm, and one that closed its
@@ -1031,10 +1041,17 @@ line, 200 watched moves returned no early true, a braked path sent no later wayp
 after a halt. Switch it on in the cell's own profile only after those measurements and a supervised halt at the
 cell ([console_at_the_cell.md](../runbooks/console_at_the_cell.md)).
 
-**Nothing moves without a click.** Every motion the console makes starts on a person's click on a button that
-names it: Start, whose label names the first motion; Restart and Home, which ask first; "Jetzt öffnen", one
-change of a toggle's output. A command is only read, and speech only fills the box. After a person's hands were
-at the arm (a teach, "Jetzt öffnen", "Backen leer"), the next motion counts down 3 s, hands off.
+**Nothing moves without a click,** bar the one exception the owner chose. Every motion the console makes starts
+on a person's click on a button that names it: Start, whose label names the first motion; Restart and Home, which
+ask first; "Jetzt öffnen", one change of a toggle's output. A command is only read, and speech only fills the box.
+The exception is a greeting: "Hallo Willy" in the chat makes Willy wave back at once where the app config says
+`direct` (`runtime.greeting.wave` in `config/app/runtime.yaml`, the shipped default since 2026-10-06: "Sofort
+winken, aber man kann es einstellen, dass man es vorher bestätigen muss"). The wave is two swings of wrist 2,
+15 degrees either way and back, each a straight joint line the exact guard judges against the camera world before
+it is sent ([`gestures.py`](../../src/robot/execution/gestures.py)); a refused swing ends it where the arm stands,
+it is refused while a stop record stands, and the stop buttons stop it before its next swing. `confirm` asks first
+in a dialog like Home's; `off` only greets back. After a person's hands were at the arm (a teach, "Jetzt öffnen",
+"Backen leer"), the next motion counts down 3 s, hands off, a wave's too.
 
 **Nothing moves on its own after a stop.** A pick, task or Home run that ends on a problem leaves the arm where it
 stands and the console a **stop record**, which outlives a Disconnect, a rebuild, a page reload and a restart of

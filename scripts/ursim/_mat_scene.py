@@ -90,6 +90,8 @@ class Part:
     frame: np.ndarray
     #: Its frame relative to the TCP while the jaws hold it, else ``None``.
     held: Optional[np.ndarray] = None
+    #: A part of the cell, not of the scene's work: a bin's wall or floor, seen by the camera, never gripped or pushed.
+    fixed: bool = False
 
     @property
     def height_mm(self) -> float:
@@ -382,6 +384,8 @@ class Scene:
         with self._lock:
             if closed:
                 for part in self.parts.values():
+                    if part.fixed:
+                        continue
                     local = np.linalg.inv(part.frame) @ np.append(tcp[:3, 3], 1.0)
                     if part.held is None and part.contains(local, grow_mm=4.0):
                         part.held = np.linalg.inv(tcp) @ part.frame
@@ -413,7 +417,10 @@ class Scene:
             if not self.parts:
                 return
             centre = np.asarray(plan.target_centre_mm, dtype=np.float64)
-            part = min(self.parts.values(), key=lambda p: float(np.hypot(*(p.frame[:2, 3] - centre[:2]))))
+            movable = [p for p in self.parts.values() if not p.fixed]
+            if not movable:
+                return
+            part = min(movable, key=lambda p: float(np.hypot(*(p.frame[:2, 3] - centre[:2]))))
             direction = np.asarray(plan.direction, dtype=np.float64)[:2]
             direction = direction / max(float(np.linalg.norm(direction)), 1e-12)
             if "push" in legs_done:
@@ -427,9 +434,15 @@ class Scene:
             if moved <= 0.0:
                 return
             xy = part.frame[:2, 3] + moved * direction
-            foot, normal = self.foot_on_mat(xy)
-            yaw = math.atan2(float(part.frame[1, 0]), float(part.frame[0, 0]))
-            part.frame = standing_frame(foot, normal, yaw)
+            if getattr(self, "keep_height_on_push", False):
+                # On a floor that is not the mat (a bin's), the part slides at the height it stood at.
+                part.frame = part.frame.copy()
+                part.frame[:2, 3] = xy
+                foot = part.frame[:3, 3]
+            else:
+                foot, normal = self.foot_on_mat(xy)
+                yaw = math.atan2(float(part.frame[1, 0]), float(part.frame[0, 0]))
+                part.frame = standing_frame(foot, normal, yaw)
             self.version += 1
             self.events.append({"t": time.time(), "event": "pushed", "part": part.name, "moved_mm": round(moved, 1),
                                 "to_mm": [round(float(v), 1) for v in foot]})
@@ -555,6 +568,9 @@ class StandInBackend:
         self.camera = camera
         self.min_pixels = int(min_pixels)
         self.calls: list[dict[str, Any]] = []
+        #: Ground every part the render shows (a bin to clear, "alle Objekte"), not the scene's target alone. Fixed parts
+        #: (a bin's walls and floor) and the part in the jaws are never grounded.
+        self.all_parts = False
 
     def perceive(self, image_bgr: Any, prompt: str) -> tuple[Any, ...]:
         from src.models.detection.types import Detection  # noqa: PLC0415
@@ -562,24 +578,33 @@ class StandInBackend:
         from src.models.segmentation.types import SegmentationResult  # noqa: PLC0415
 
         rendered = self.camera.last
-        target = self.camera.scene.target
-        mask = None if rendered is None else rendered.masks.get(target)
-        area = 0 if mask is None else int(mask.sum())
-        self.calls.append({"t": time.time(), "prompt": prompt, "target": target, "pixels": area})
-        if mask is None or area < self.min_pixels:
-            return ()
-        rows, cols = np.nonzero(mask)
-        x0, x1, y0, y1 = int(cols.min()), int(cols.max()) + 1, int(rows.min()), int(rows.max()) + 1
+        scene = self.camera.scene
+        target = scene.target
+        if self.all_parts and rendered is not None:
+            with scene._lock:  # noqa: SLF001 (the scene's own lock, read once)
+                names = [n for n, p in scene.parts.items() if not p.fixed and p.held is None]
+        else:
+            names = [target]
         label = str(prompt).strip() or target
-        det = Detection(box=[float(x0), float(y0), float(x1), float(y1)], x_center=(x0 + x1) / 2.0,
-                        y_center=(y0 + y1) / 2.0, label=label, score=0.9)
-        seg = SegmentationResult(
-            label=label, score=0.9, bbox_xyxy=(x0, y0, x1, y1), mask=mask.astype(np.uint8), mask_area_px=area,
-            centroid_xy=(float(cols.mean()), float(rows.mean())), derived_bbox_xyxy=(x0, y0, x1, y1),
-            inference_time_s=0.0, timestamp_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            frame_id=None, metadata={"stand_in": True},
-        )
-        return (PerceivedObject(detection=det, segmentation=seg),)
+        out = []
+        for name in names:
+            mask = None if rendered is None else rendered.masks.get(name)
+            area = 0 if mask is None else int(mask.sum())
+            if mask is None or area < self.min_pixels:
+                continue
+            rows, cols = np.nonzero(mask)
+            x0, x1, y0, y1 = int(cols.min()), int(cols.max()) + 1, int(rows.min()), int(rows.max()) + 1
+            det = Detection(box=[float(x0), float(y0), float(x1), float(y1)], x_center=(x0 + x1) / 2.0,
+                            y_center=(y0 + y1) / 2.0, label=label, score=0.9)
+            seg = SegmentationResult(
+                label=label, score=0.9, bbox_xyxy=(x0, y0, x1, y1), mask=mask.astype(np.uint8), mask_area_px=area,
+                centroid_xy=(float(cols.mean()), float(rows.mean())), derived_bbox_xyxy=(x0, y0, x1, y1),
+                inference_time_s=0.0, timestamp_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                frame_id=None, metadata={"stand_in": True, "part": name},
+            )
+            out.append(PerceivedObject(detection=det, segmentation=seg))
+        self.calls.append({"t": time.time(), "prompt": prompt, "target": target, "grounded": len(out)})
+        return tuple(out)
 
 
 @dataclass

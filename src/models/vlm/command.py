@@ -38,6 +38,13 @@ card errs toward fewer motions.
 the order of :data:`NOTE_ORDER`: words the sentence does not contain, a pose nobody taught (or Home as a place), a
 count the task cannot honour, and that a retry was needed.
 
+**A greeting.** A sentence the model read as no command that opens with a greeting or a farewell ("Hallo Willy, wie
+geht's?", "Tschüss Willy") or asks Willy to wave ("Willy, wink mal!") is a greeting (:func:`greets`); so is a sentence
+that is nothing but one ("Hallo Willy!"), whatever the model made of it, bar a stop. It is the one thing a word list
+reads, and only beside the model's answer, never in place of it: a command with a greeting in front ("Hallo Willy,
+nimm den Würfel") stays the model's task. The console answers a greeting as its app config says (a wave at once, a
+wave on a click, or a greeting back); the reading itself moves nothing.
+
 **Reading moves nothing.** :func:`understand` calls ``ask`` and nothing else, and this module imports no robot,
 camera or console module: it never starts a run, never sets a detector prompt and never touches the cell. A
 sentence read as "stop" stops nothing either; the card points at the stop buttons. :func:`read_command` is the
@@ -83,6 +90,7 @@ __all__ = [
     "CommandScope",
     "EXAMPLE_POSES",
     "GERMAN_WORDS",
+    "GREETING_WORDS",
     "HOME_POSE",
     "MAX_PHRASE_CHARS",
     "MAX_SENTENCE_CHARS",
@@ -90,7 +98,9 @@ __all__ = [
     "PhraseReading",
     "ReadingNote",
     "SHARED_WORDS",
+    "WAVE_WORDS",
     "extract_command_object",
+    "greets",
     "read_command",
     "understand",
 ]
@@ -163,6 +173,31 @@ ANY_PART_WORDS: Final[frozenset[str]] = frozenset({
     "components", "workpiece", "workpieces", "anything", "everything", "something", "stuff",
 })
 
+#: What a greeting or a farewell opens with, folded as :func:`_fold` folds a sentence ("Grüß Gott" is "gruess gott"):
+#: the sentences Willy may wave at (:func:`greets`).
+GREETING_WORDS: Final[tuple[str, ...]] = (
+    "hallo", "hello", "hi", "hey", "huhu", "hallihallo", "halli hallo", "servus", "moin", "moinsen", "tach",
+    "gruess gott", "gruss gott", "gruezi", "gruess dich", "gruss dich", "guten morgen", "guten tag", "guten abend",
+    "good morning", "good afternoon", "good evening", "howdy", "greetings", "ahoi", "hola",
+    "tschuess", "tschau", "ciao", "bye", "goodbye", "auf wiedersehen", "bis bald", "see you",
+)
+
+#: Words that ask Willy to wave, folded.
+WAVE_WORDS: Final[frozenset[str]] = frozenset({"wink", "winke", "winken", "winkst", "zuwinken", "wave", "waving"})
+
+#: The robot's name, which a greeting may carry anywhere ("Hallo Willy!", "Willy, hallo").
+_ROBOT_NAMES: Final[frozenset[str]] = frozenset({"willy", "willi"})
+
+#: What may stand beside a greeting in a sentence that is nothing but one ("Hallo zusammen!", "Hi there").
+_BESIDE_A_GREETING: Final[frozenset[str]] = frozenset({
+    "du", "ihr", "zusammen", "allerseits", "there", "everyone", "everybody", "all", "you", "na", "mal", "doch",
+    "bitte", "please", "again", "wieder", "lieber", "mein", "my", "freund", "friend", "robot", "roboter",
+})
+
+#: A word that turns a greeting or a wave around ("nicht winken", "don't wave"): such a sentence greets nobody.
+_NEGATIONS: Final[frozenset[str]] = frozenset({"nicht", "kein", "keine", "not", "dont", "don", "never", "nie", "no",
+                                               "nein"})
+
 #: What may stand before a pose's label in a place's own words and leave it that pose: "auf Ablage links", "to the
 #: Wartepose". Never a word that places a spot beside it ("neben", "next"): that is a place the camera finds.
 _BEFORE_A_POSE: Final[frozenset[str]] = frozenset({
@@ -196,6 +231,8 @@ COMMAND_EXAMPLES: Final[tuple[tuple[str, dict[str, Any]], ...]] = (
     ("alle Schrauben in die Kiste",
      _example(object="screw", object_said="Schrauben", place="bin", place_said="in die Kiste", scope="until_empty")),
     ("räum die Kiste aus", _example(scope="until_empty")),
+    ("alle Objekte auf der Schaumstoffmatte in die gelbe Kiste",
+     _example(place="yellow bin", place_said="in die gelbe Kiste", scope="until_empty")),
     ("pick the red cylinder and go to Wartepose",
      _example(object="red cylinder", object_said="the red cylinder", return_to="wartepose")),
     ("leg den Becher auf Ablage links", _example(object="cup", object_said="den Becher", place_pose="ablage_links")),
@@ -231,7 +268,8 @@ COMMAND_INSTRUCTION: Final[str] = "\n".join([
     "Rules:",
     "- object: what to pick, as 1 to 4 lowercase English words, singular, no article, keeping colour, size and "
     'material ("den grünen Würfel" -> "green cube"). Always English, never German. Empty "" when the command '
-    'names no kind of thing ("räum die Kiste aus", "pick anything").',
+    'names no kind of thing ("räum die Kiste aus", "pick anything"). Where the parts lie (auf der Matte, on the '
+    'table, aus der Kiste, from the tray) is never the object: the mat, table or tray they lie on is not picked.',
     "- object_said / place_said: the command's own words for it, copied exactly as they appear in the command. "
     "Never invent an object or a place the command does not name.",
     "- place_pose: when the command says to put the part on or into one of the POSES (by its spoken label or its "
@@ -609,6 +647,10 @@ class CommandReading:
     model_id: str = ""
     #: This reading loaded the model: the first command a VLM cell read.
     loaded_now: bool = False
+    #: The sentence greets Willy, bids it goodbye or asks it to wave, and is no command (:func:`greets`). The
+    #: console answers it as its app config says (``CommandOut.greeting``, which the route fills in, not
+    #: :meth:`to_dict`); the reading moves nothing.
+    greeting: bool = False
 
     def __str__(self) -> str:
         return self.render()
@@ -619,7 +661,8 @@ class CommandReading:
         elif self.intent == "stop":
             lines = ["command read: stop (a sentence stops nothing; the stop buttons do)"]
         elif self.intent == "none":
-            lines = ["command read: not a pick command"]
+            lines = ["command read: a greeting, not a pick command" if self.greeting
+                     else "command read: not a pick command"]
         else:
             lines = ["command read: task", f"  pick    : {self._pick()}", f"  place   : {self._place()}"]
             scope = str(self.scope)
@@ -627,6 +670,8 @@ class CommandReading:
                 scope += f" (the sentence names {self.count}; a count is not supported)"
             lines.append(f"  scope   : {scope}")
             lines.append(f"  then    : {self.return_to or 'home (the default)'}")
+        if self.greeting and self.intent != "none":
+            lines.append("  greeting: the sentence is nothing but a greeting, and the console answers it as one")
         if self.notes:
             lines.append(f"  notes   : {', '.join(self.notes)}")
         model = f"  model   : {self.model_id or 'unnamed'}, {self.attempts} question(s), {self.latency_ms:.0f} ms"
@@ -731,6 +776,43 @@ def _reading(answer: CommandAnswer, sentence: str, offered: _Offered, *, retried
     )
 
 
+# --- a greeting -----------------------------------------------------------------------------------------------------
+
+
+def _greeting_length(words: list[str]) -> int:
+    """How many of ``words`` the greeting they open with takes (the longest that fits), or 0 for none."""
+    best = 0
+    for greeting in GREETING_WORDS:
+        span = greeting.split()
+        if len(span) > best and words[:len(span)] == span:
+            best = len(span)
+    return best
+
+
+def greets(sentence: str, *, intent: CommandIntent | None) -> bool:
+    """Whether ``sentence`` greets Willy, bids it goodbye or asks it to wave, beside the model's reading ``intent``
+    (``None`` where its answer was not usable).
+
+    A sentence the model read as no command (``"none"``) greets when, the robot's name aside, it opens with one of
+    :data:`GREETING_WORDS` ("Hallo Willy, wie geht's?") or holds one of :data:`WAVE_WORDS` ("Kannst du winken?"). A
+    sentence that is nothing but that, the name and a few words that may stand beside a greeting ("Hallo zusammen!",
+    "Willy, wink mal!"), greets whatever the model made of it, bar a stop: a small model that reads "Hallo Willy" as a
+    task without a part, or not at all, does not keep Willy from waving back. A sentence with a negation ("nicht
+    winken", "don't wave") greets nobody.
+    """
+    words = _fold(sentence).split()
+    if not words or intent == "stop" or any(word in _NEGATIONS for word in words):
+        return False
+    rest = [word for word in words if word not in _ROBOT_NAMES]
+    opened = _greeting_length(rest)
+    asks = any(word in WAVE_WORDS for word in rest)
+    if not opened and not asks:
+        return False
+    if intent == "none":
+        return True
+    return all(word in _BESIDE_A_GREETING or word in WAVE_WORDS for word in rest[opened:])
+
+
 # --- the verbs ------------------------------------------------------------------------------------------------------
 
 
@@ -764,12 +846,14 @@ def understand(text: str, *, ask: Ask, poses: Mapping[str, str]) -> CommandReadi
     if answer is None:
         reading = CommandReading(
             understood=False, intent="none", notes=("retried",),
-            reason=f"the model's answer was not usable after one corrective retry: {problem}", **record,
+            reason=f"the model's answer was not usable after one corrective retry: {problem}",
+            greeting=greets(sentence, intent=None), **record,
         )
         _LOG.warning("not read %r after %d question(s): %s (last answer: %.200s)",
                      sentence[:120], attempts, problem, raw)
     else:
-        reading = _reading(answer, sentence, offered, retried=attempts > 1, record=record)
+        reading = _reading(answer, sentence, offered, retried=attempts > 1,
+                           record={**record, "greeting": greets(sentence, intent=answer.intent)})
         _LOG.info("read %r as %s in %d question(s), %.0f ms, notes %s",
                   sentence[:120], reading.intent, attempts, reading.latency_ms, list(reading.notes))
     return reading

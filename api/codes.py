@@ -63,7 +63,7 @@ __all__ = [
 
 # --- runs --------------------------------------------------------------------------------------------------------
 
-RunKindName: TypeAlias = Literal["pick", "task", "home", "teach", "planner"]
+RunKindName: TypeAlias = Literal["pick", "task", "home", "teach", "planner", "wave"]
 
 
 class RunKind(StrEnum):
@@ -79,11 +79,13 @@ class RunKind(StrEnum):
     TEACH = "teach"
     #: ``POST /v1/cell/planner``: starting cuRobo. It moves nothing.
     PLANNER = "planner"
+    #: ``POST /v1/cell/wave``: Willy waves back at a greeting, two swings of the wrist, each judged.
+    WAVE = "wave"
 
 
 #: The kinds that move the arm by themselves. A problem stop of one of them writes the console's recovery record, and
 #: each of them counts down first where a person's hands were last at the arm (a teach, "open now").
-MOVING_KINDS: Final[frozenset[RunKind]] = frozenset({RunKind.PICK, RunKind.TASK, RunKind.HOME})
+MOVING_KINDS: Final[frozenset[RunKind]] = frozenset({RunKind.PICK, RunKind.TASK, RunKind.HOME, RunKind.WAVE})
 
 
 StopCodeName: TypeAlias = Literal[
@@ -217,6 +219,8 @@ EventTypeName: TypeAlias = Literal[
     "teach.holding", "teach.screening", "teach.saved", "teach.refused", "teach.not_saved",
     # starting the planner
     "planner.starting", "planner.ready", "planner.failed",
+    # a wave at a greeting
+    "wave.started", "wave.done", "wave.refused",
     # the cell's own stream (run_id "cell"): what belongs to no run
     "cell.jaws_question", "cell.jaws_answered", "cell.jaws_ended", "cell.halted", "cell.recovery",
     "cell.recovery_ended", "cell.acknowledged", "cell.planner",
@@ -277,6 +281,9 @@ class EventType(StrEnum):
     PLANNER_STARTING = "planner.starting"
     PLANNER_READY = "planner.ready"
     PLANNER_FAILED = "planner.failed"
+    WAVE_STARTED = "wave.started"
+    WAVE_DONE = "wave.done"
+    WAVE_REFUSED = "wave.refused"
     CELL_JAWS_QUESTION = "cell.jaws_question"
     CELL_JAWS_ANSWERED = "cell.jaws_answered"
     CELL_JAWS_ENDED = "cell.jaws_ended"

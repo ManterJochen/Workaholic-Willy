@@ -514,6 +514,15 @@ class TaskOptionsIn(BaseModel):
     #: cleared instead; false, a push may rearrange the scene, and a blocker is cleared where none plans. Null: the
     #: cell's ``robot.grasping.recovery.critical_parts``.
     critical_parts: bool | None = None
+    #: The run's own word on recovery (2026-10-05), overriding the cell's ``recovery.allowed_actions`` for this task:
+    #: look again, push a boxed-in part, clear a blocker. Null: the cell's.
+    rescan: bool | None = None
+    push: bool | None = None
+    clear: bool | None = None
+    #: The owner's switch for this task (2026-10-06): true, a task that names no object takes a blocker as the part its
+    #: pick takes and sets it down where the parts go, then picks the part it blocked; false, a blocker is set aside on
+    #: the support. Null: the cell's ``robot.grasping.recovery.blocker_into_the_place``.
+    blocker_into_the_place: bool | None = None
     #: Keep each pick's looks on disk.
     record_views: bool = False
     #: A camera place only: the air over the rim when the jaws open, 10-50 mm; null means 20.
@@ -575,6 +584,12 @@ class TaskOptionsOut(BaseModel):
     push_asked: bool = False
     #: As asked (``TaskOptionsIn.critical_parts``); null, the cell's.
     critical_parts: bool | None = None
+    #: As asked (``TaskOptionsIn``); null, the cell's.
+    rescan: bool | None = None
+    push: bool | None = None
+    clear: bool | None = None
+    #: As asked (``TaskOptionsIn.blocker_into_the_place``); null, the cell's.
+    blocker_into_the_place: bool | None = None
     record_views: bool = False
     rim_air_mm: float | None = None
     pick_anything: bool = False
@@ -918,6 +933,13 @@ class PushFactsOut(BaseModel):
     ceiling_mm: float | None = None
     #: The cell's ``robot.grasping.recovery.critical_parts``: true, nothing is pushed and a blocker is cleared instead.
     critical_parts: bool = False
+    #: The cell's ``robot.grasping.recovery.blocker_into_the_place``: true, a task that names no object sets a blocker
+    #: down where the parts go; false, it is set aside on the support.
+    blocker_into_the_place: bool = True
+    #: Whether the cell's ``recovery.allowed_actions`` names ``rescan`` and ``nudge_target`` (with recovery on): what
+    #: the console's ticks start from; a task may override them for itself.
+    rescan_allowed: bool = False
+    push_allowed: bool = False
 
 
 class DetectorFactsOut(BaseModel):
@@ -1188,6 +1210,11 @@ class CommandModelOut(BaseModel):
     loaded_now: bool = False
 
 
+#: How the console answers a greeting, ``runtime.greeting.wave`` of the app config
+#: (``src.config.schema.runtime.GreetingWave``, which ``tests/test_a_greeting_waves.py`` pins against this).
+GreetingAnswer: TypeAlias = Literal["direct", "confirm", "off"]
+
+
 class CommandOut(BaseModel):
     """What the reader understood. It creates no run and touches no cell; Start does, after a person looked."""
 
@@ -1205,6 +1232,10 @@ class CommandOut(BaseModel):
     model: CommandModelOut | None = None
     #: The model's raw answer, at most 500 characters.
     raw: str = ""
+    #: The sentence greets Willy, bids it goodbye or asks it to wave, and how the console answers it, as the app config
+    #: says (``runtime.greeting.wave``): ``direct`` waves at once (``POST /v1/cell/wave``), ``confirm`` asks first in a
+    #: dialog like Home's, ``off`` greets back only. ``None`` for any other sentence. The reading moves nothing.
+    greeting: GreetingAnswer | None = None
 
 
 #: The command reader's state (the commands light carries the same codes).

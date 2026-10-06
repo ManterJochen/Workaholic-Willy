@@ -9,10 +9,12 @@ owner's bins beside the robot's base were refused by exactly those boxes.
 
 So a cluster is laid on a grid in the bench plane, turned the way the cluster lies (:func:`turn_of`) and cut into
 cells of at least the clustering grid, 25 mm. Each cell keeps the highest point seen in it. Neighbouring cells of about one height, within
-the cloud's own resolution of each other, merge into rectangles, and each rectangle is one box: its points' extent
-along the turned axes grown by the margin, from the floor up to its highest point and the margin. A cell with no
-point seen in it is in no box, as unseen space is nowhere else in the world. An open bin is its walls and a free
-inside, two parts stay two boxes, and a turned part is a turned box.
+the cloud's own resolution of each other, whose points reach as far across the rectangle as its own do, within that
+resolution too, merge into rectangles, and each rectangle is one box: its points' extent along the turned axes grown
+by the margin, from the floor up to its highest point and the margin. A cell with no point seen in it is in no box, as
+unseen space is nowhere else in the world. An open bin is its walls and a free inside, each wall as thick as it was
+seen and each corner a box of its own (a corner cell holds the other wall's points, and a wall that took it was boxed
+a cell thick: the grasp bench, 2026-10-05), two parts stay two boxes, and a turned part is a turned box.
 
 Except where the robot itself hid it. A camera over a bin beside the base cannot see the stretch of rim under the
 UR10's shoulder housing, because the housing is in the way; one box per cluster covered that stretch, and a height map
@@ -155,14 +157,16 @@ def height_map_columns(
     hidden: "Callable[[np.ndarray], np.ndarray] | None" = None,
     reach_mm: float = 0.0,
     taken_mm: "np.ndarray | None" = None,
+    robot_on: "Callable[[np.ndarray], np.ndarray] | None" = None,
 ) -> list[Column]:
     """The boxes of one cluster's height map, turned by ``yaw_rad``.
 
     The points are laid on a grid in the turned bench plane, their span along each axis cut into whole cells of at
     least ``cell_mm`` (:func:`_cells`). Each cell
     keeps the highest point in it, and, with no floor, the lowest. Cells merge into rectangles in a fixed order, row by
-    row, a rectangle growing along a row and then row by row while every cell it takes is seen, not yet taken, and
-    keeps its tops within ``step_mm`` of each other (its bottoms too, with no floor). Each rectangle is one box grown
+    row, a rectangle growing along a row and then row by row while every cell it takes is seen, not yet taken, keeps
+    its tops within ``step_mm`` of each other (its bottoms too, with no floor), and has its points reach as far across
+    the rectangle as the rectangle's own do, within ``step_mm`` (:func:`_rectangles`). Each rectangle is one box grown
     by ``margin_mm``: from ``floor_mm`` where given, else its lowest point less the margin, up to its highest point
     plus the margin. The same points give the same boxes.
 
@@ -171,6 +175,17 @@ def height_map_columns(
     (:func:`_fill_hidden`), and its box covers the whole cell. Past the grid's own cells, the extent of what was seen, a
     row that runs into its edge runs on while the robot hides the next cell and the self filter took points there no
     higher than the row, ``taken_mm``, ``reach_mm`` at most (:func:`_run_on`). ``None`` fills nothing.
+
+    ``robot_on`` answers which BASE points lie on the robot's own body as it stands now (``SelfBody.on_itself``): no
+    stretch is filled through it for its neighbours alone, its box, the margin grown round it, kept a margin under the
+    robot (:func:`_under_the_robot`). Where the robot stands nothing else is: the Hand-E down in a bin hid the floor
+    beside the part from the wrist camera, the floor was filled as high as the wall beside it, and the guard held a
+    column 212 mm tall through the hand and refused every way out (the grasp bench, 2026-10-05). A row runs on as wide
+    as the row (:func:`_run_on_extents`), and not through the robot standing in the run itself
+    (:func:`_run_on_under_the_robot`): a part's row ran on a whole cell into the cell the fingers stood in, on one point
+    the filter had taken there, the fingers 10 mm inside its box, and every way out was refused (the grasp bench,
+    2026-10-06). A wall the robot stands beside, the margin of its box round the hand, still runs on: there the wall was
+    seen up to the hand. A rim under the shoulder housing keeps its fill, the housing being over it.
     """
     points = np.asarray(points_mm, dtype=np.float64).reshape(-1, 3)
     if points.shape[0] == 0:
@@ -197,8 +212,6 @@ def height_map_columns(
         grid = (float(yaw_rad), along_low, along_cell, across_low, across_cell)
         inner = np.zeros((rows, cols), dtype=bool)
         inner[deep:rows - deep, wide:cols - wide] = True
-        top, bottom, filled = _fill_hidden(top, bottom, grid, hidden, floor_mm=floor_mm, step_mm=float(step_mm),
-                                           within=inner)
         # The lowest point the self filter took for the robot in each cell, where a row may run on into.
         taken_low = np.full((rows, cols), np.inf)
         taken = np.zeros((0, 3)) if taken_mm is None else np.asarray(taken_mm, dtype=np.float64).reshape(-1, 3)
@@ -207,10 +220,31 @@ def height_map_columns(
             taken_row = np.floor((-sin * taken[:, 0] + cos * taken[:, 1] - across_low) / across_cell).astype(np.int64)
             on_grid = (taken_col >= 0) & (taken_col < cols) & (taken_row >= 0) & (taken_row < rows)
             np.minimum.at(taken_low, (taken_row[on_grid], taken_col[on_grid]), taken[on_grid, 2])
-        top, bottom, ran = _run_on(top, bottom, grid, hidden, inner=(deep, rows - deep, wide, cols - wide),
-                                   taken_low=taken_low, floor_mm=floor_mm, step_mm=float(step_mm))
+        seen_top, seen_bottom = top.copy(), bottom.copy()
+        top, bottom, filled = _fill_hidden(top, bottom, grid, hidden, floor_mm=floor_mm, step_mm=float(step_mm),
+                                           within=inner)
+        if robot_on is not None and bool(filled.any()):
+            # A stretch filled for its neighbours alone, never one run on where the filter took the wall for the hand.
+            top, bottom, filled = _under_the_robot(top, bottom, filled, seen_top, seen_bottom, grid, robot_on,
+                                                   float(margin_mm), floor_mm)
+        top, bottom, ran, sources = _run_on(top, bottom, grid, hidden, inner=(deep, rows - deep, wide, cols - wide),
+                                            taken_low=taken_low, floor_mm=floor_mm, step_mm=float(step_mm))
+    else:
+        seen_top, seen_bottom = top, bottom
+        ran, sources = np.zeros((rows, cols), dtype=bool), {}
+    # How far each cell's points reach along and across, the whole cell where the robot hid it, as wide as its row where
+    # a row ran on into it: a rectangle takes a cell only where the two reach as far across it, within the cloud's
+    # resolution (:func:`_rectangles`).
+    cells = (along_low, along_cell, across_low, across_cell)
+    extents = _cell_extents(along, across, row, col, (rows, cols), filled, cells)
+    if bool(ran.any()):
+        extents = _run_on_extents(extents, ran, sources, cells)
+        if robot_on is not None:
+            # A row is never run on through the robot standing in the run itself (:func:`_run_on_under_the_robot`).
+            top, bottom, ran = _run_on_under_the_robot(top, bottom, ran, extents, seen_top, seen_bottom,
+                                                       float(yaw_rad), robot_on, float(margin_mm), floor_mm)
         filled |= ran
-    rectangle = _rectangles(top, bottom, float(step_mm), floored=floor_mm is not None)
+    rectangle = _rectangles(top, bottom, float(step_mm), floored=floor_mm is not None, extents=extents)
 
     label = rectangle[row, col]
     order = np.argsort(label, kind="stable")
@@ -226,9 +260,9 @@ def height_map_columns(
             near.append((float(along[members].min()), float(across[members].min())))
             far.append((float(along[members].max()), float(across[members].max())))
         if cover[0].size:
-            near.append((along_low + float(cover[1].min()) * along_cell, across_low + float(cover[0].min()) * across_cell))
-            far.append((along_low + float(cover[1].max() + 1) * along_cell,
-                        across_low + float(cover[0].max() + 1) * across_cell))
+            # Over its extent: the whole cell where the robot hid it, its row's width where a row ran on into it.
+            near.append((float(extents[0][cover].min()), float(extents[2][cover].min())))
+            far.append((float(extents[1][cover].max()), float(extents[3][cover].max())))
         highest = max([float(height[members].max())] if members.size else [], default=-np.inf)
         if cover[0].size:
             highest = max(highest, float(top[cover].max()))
@@ -321,42 +355,55 @@ def _run_on(
     taken_low: np.ndarray,
     floor_mm: float | None,
     step_mm: float,
-) -> "tuple[np.ndarray, np.ndarray, np.ndarray]":
+) -> "tuple[np.ndarray, np.ndarray, np.ndarray, dict[tuple[int, int], tuple[int, int, bool]]]":
     """Every row and column of the height map that runs into the edge of what was seen, run on past it where the self
-    filter took the rest of it for the robot: its tops, its bottoms, and which cells it ran into.
+    filter took the rest of it for the robot: its tops, its bottoms, which cells it ran into, and for each of those the
+    edge cell it continues and whether it runs along the grid's columns (:func:`_run_on_extents`).
 
     The self filter takes what a camera sees within the padding of the robot's body for the robot, and about the hand
     that is up to 27 mm of its mesh: a wall 6 mm from the Hand-E's fingers is seen up to that far from them, and a
     camera looking past the hand sees nothing of the rest of it (review of 2026-09-30). So a row runs into an edge where
-    its last cell and the one inside it both stand (seen, or filled by :func:`_fill_hidden`), and it runs on, as high
-    as those two, one cell at a time into the room past the edge, while ``hidden`` hides that cell's column (asked as
+    its last cell and the one inside it both stand (seen, or filled by :func:`_fill_hidden`) within ``step_mm`` of one
+    height, one wall, and it runs on, as high as those two, one cell at a time into the room past the edge, while
+    ``hidden`` hides that cell's column (asked as
     :func:`_shaded` asks, no higher than the row) and the self filter took a point in it no higher than half a step
     over the row (``taken_low``, the lowest point it took in each cell): stopping at the first cell that is not so, or
     at the end of the room. Only where the filter took something: past what a camera saw of a bin's wall, the robot's
     mere shadow is no sign the wall goes on, and the housing over it stands higher than the wall. A row one cell deep
-    does not run across itself, so an object is never widened, only continued. ``inner`` is ``(first_row, end_row,
-    first_col, end_col)`` of what was seen, the rest being the room.
+    does not run across itself, so an object is never widened, only continued. Two cells of two heights are two things
+    and no wall: a tray's wall and a small cylinder beside it, one cluster of two cells each, ran on past the cylinder as
+    high as the wall, into the cell where the hand stood at the part, on the cube's own top the filter had taken for the
+    hand (the grasp bench, 2026-10-06). ``inner`` is ``(first_row, end_row, first_col, end_col)`` of what was seen, the
+    rest being the room.
     """
     first_row, end_row, first_col, end_col = inner
     rows, cols = top.shape
     stands = np.isfinite(top)
     # (row, col, step row, step col, height) of every row and column that runs into an edge, and its first cell out.
-    runs: list[tuple[int, int, int, int, float]] = []
+    # (first cell out, step, height, the edge cell it continues)
+    runs: list[tuple[int, int, int, int, float, int, int]] = []
+
+    def one_wall(a: float, b: float) -> bool:
+        return abs(a - b) <= float(step_mm)
+
     for r in range(first_row, end_row):
         for edge, inward, out in ((end_col - 1, end_col - 2, 1), (first_col, first_col + 1, -1)):
-            if first_col <= inward < end_col and stands[r, edge] and stands[r, inward]:
-                runs.append((r, edge + out, 0, out, float(max(top[r, edge], top[r, inward]))))
+            if (first_col <= inward < end_col and stands[r, edge] and stands[r, inward]
+                    and one_wall(float(top[r, edge]), float(top[r, inward]))):
+                runs.append((r, edge + out, 0, out, float(max(top[r, edge], top[r, inward])), r, edge))
     for c in range(first_col, end_col):
         for edge, inward, out in ((end_row - 1, end_row - 2, 1), (first_row, first_row + 1, -1)):
-            if first_row <= inward < end_row and stands[edge, c] and stands[inward, c]:
-                runs.append((edge + out, c, out, 0, float(max(top[edge, c], top[inward, c]))))
+            if (first_row <= inward < end_row and stands[edge, c] and stands[inward, c]
+                    and one_wall(float(top[edge, c]), float(top[inward, c]))):
+                runs.append((edge + out, c, out, 0, float(max(top[edge, c], top[inward, c])), edge, c))
     ran = np.zeros(top.shape, dtype=bool)
+    sources: dict[tuple[int, int], tuple[int, int, bool]] = {}
     if not runs:
-        return top, bottom, ran
+        return top, bottom, ran, sources
     room = np.zeros(top.shape, dtype=bool)
     # A cell is asked up to the height of the highest row that would run into it: what stands over that is not the row.
     cap = np.full(top.shape, -np.inf)
-    for r, c, dr, dc, height in runs:
+    for r, c, dr, dc, height, _r0, _c0 in runs:
         while 0 <= r < rows and 0 <= c < cols and not (first_row <= r < end_row and first_col <= c < end_col):
             room[r, c] = True
             cap[r, c] = max(float(cap[r, c]), height)
@@ -366,15 +413,154 @@ def _run_on(
     shaded = _shaded(top, grid, hidden, base_mm=base, step_mm=step_mm, asked_cells=room, cap=cap)
     top, bottom = top.copy(), bottom.copy()
     lowest = float(bottom[seen].min())
-    for r, c, dr, dc, height in runs:
+    for r, c, dr, dc, height, r0, c0 in runs:
         while (0 <= r < rows and 0 <= c < cols and room[r, c] and shaded[r, c]
                and taken_low[r, c] <= height + float(step_mm) / 2.0):
             if top[r, c] < height:
                 top[r, c] = height
                 ran[r, c] = True
+                sources[(r, c)] = (r0, c0, dc != 0)
             bottom[r, c] = min(float(bottom[r, c]), lowest)
             r, c = r + dr, c + dc
+    return top, bottom, ran, sources
+
+
+def _run_on_extents(
+    extents: "tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]", ran: np.ndarray,
+    sources: "dict[tuple[int, int], tuple[int, int, bool]]", grid: "tuple[float, float, float, float]",
+) -> "tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]":
+    """The cells' extents with each cell a row ran on into (:func:`_run_on`) as long as the cell along the run and as
+    wide across it as the edge cell it continues: a wall 5 mm thick runs on 5 mm thick, not as thick as the cell. Until
+    2026-10-06 a cell run on was boxed over its whole width, and a part's row run on into the hand's own cell was one box
+    through the fingers (the grasp bench)."""
+    along_low, along_cell, across_low, across_cell = grid
+    along_lo, along_hi, across_lo, across_hi = (np.array(values, copy=True) for values in extents)
+    for (r, c), (r0, c0, along_run) in sources.items():
+        if not ran[r, c]:
+            continue
+        if along_run:
+            along_lo[r, c], along_hi[r, c] = along_low + c * along_cell, along_low + (c + 1) * along_cell
+            across_lo[r, c], across_hi[r, c] = extents[2][r0, c0], extents[3][r0, c0]
+        else:
+            across_lo[r, c], across_hi[r, c] = across_low + r * across_cell, across_low + (r + 1) * across_cell
+            along_lo[r, c], along_hi[r, c] = extents[0][r0, c0], extents[1][r0, c0]
+    return along_lo, along_hi, across_lo, across_hi
+
+
+def _run_on_under_the_robot(
+    top: np.ndarray,
+    bottom: np.ndarray,
+    ran: np.ndarray,
+    extents: "tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]",
+    seen_top: np.ndarray,
+    seen_bottom: np.ndarray,
+    yaw: float,
+    robot_on: "Callable[[np.ndarray], np.ndarray]",
+    margin_mm: float,
+    floor_mm: float | None,
+) -> "tuple[np.ndarray, np.ndarray, np.ndarray]":
+    """The cells a row ran on into kept out of where the robot stands in the run itself: its tops, its bottoms, and
+    which cells stay run on.
+
+    Each such cell is asked over its own extent (:func:`_run_on_extents`), not grown, from its floor up to twice the
+    margin over its top, every :data:`_ROBOT_SAMPLE_MM`: where the robot stands in the run, the row did not go on
+    through it, and the cell is lowered to keep its box a margin under the robot's lowest point there, or is no longer
+    run on where that is under its floor. Where the robot stands only beside the run, within the margin its box grows
+    by, the run stands: a wall 6 mm from the Hand-E's fingers is the wall the self filter took for the hand (review of
+    2026-09-30). A part's row run on a whole cell into the cell the fingers stood in put them 10 mm inside its box, and
+    every way out was refused (the grasp bench, 2026-10-06).
+    """
+    along_lo, along_hi, across_lo, across_hi = extents
+    cos, sin = math.cos(yaw), math.sin(yaw)
+    grow = 2.0 * float(margin_mm)
+    top, bottom, ran = top.copy(), bottom.copy(), ran.copy()
+    for r, c in zip(*np.nonzero(ran)):
+        fill = float(top[r, c])
+        floor = float(floor_mm) if floor_mm is not None else float(bottom[r, c])
+        lo_a, hi_a = float(along_lo[r, c]), float(along_hi[r, c])
+        lo_b, hi_b = float(across_lo[r, c]), float(across_hi[r, c])
+        if not all(math.isfinite(v) for v in (fill, floor, lo_a, hi_a, lo_b, hi_b)) or fill <= floor:
+            continue
+        alongs = np.linspace(lo_a, hi_a, max(2, int(math.ceil((hi_a - lo_a) / _ROBOT_SAMPLE_MM)) + 1))
+        acrosses = np.linspace(lo_b, hi_b, max(2, int(math.ceil((hi_b - lo_b) / _ROBOT_SAMPLE_MM)) + 1))
+        heights = np.arange(floor, fill + grow + 1e-9, _ROBOT_SAMPLE_MM)
+        grid_a, grid_b, grid_z = np.meshgrid(alongs, acrosses, heights, indexing="ij")
+        samples = np.column_stack((cos * grid_a.ravel() - sin * grid_b.ravel(),
+                                   sin * grid_a.ravel() + cos * grid_b.ravel(), grid_z.ravel()))
+        on = np.asarray(robot_on(samples), dtype=bool).reshape(-1)
+        if not bool(on.any()):
+            continue
+        cap = float(samples[on, 2].min()) - grow
+        if cap <= max(float(seen_top[r, c]), floor):
+            top[r, c], bottom[r, c] = float(seen_top[r, c]), float(seen_bottom[r, c])
+            ran[r, c] = False
+        else:
+            top[r, c] = cap
     return top, bottom, ran
+
+
+#: How far apart the samples stand that ask a filled cell's column whether the robot's body passes through it, along
+#: each axis and up, millimetres: a hand's finger, 10.8 mm thick, is not missed between two of them.
+_ROBOT_SAMPLE_MM = 5.0
+
+
+def _under_the_robot(
+    top: np.ndarray,
+    bottom: np.ndarray,
+    filled: np.ndarray,
+    seen_top: np.ndarray,
+    seen_bottom: np.ndarray,
+    grid: "tuple[float, float, float, float, float]",
+    robot_on: "Callable[[np.ndarray], np.ndarray]",
+    margin_mm: float,
+    floor_mm: float | None,
+) -> "tuple[np.ndarray, np.ndarray, np.ndarray]":
+    """The filled cells kept out of where the robot stands now: its tops, its bottoms, and which cells stay filled.
+
+    ``robot_on`` answers which of ``(N, 3)`` BASE points lie on the robot's own body (``SelfBody.on_itself``). Each
+    filled cell's column, grown by twice the margin (the margin its box grows by, and as much again to keep), is asked
+    from its floor up to twice the margin over its fill, as high as its box and the margin past it reach, every
+    :data:`_ROBOT_SAMPLE_MM`: the lowest point on the robot is where the robot stands down to there. A fill over that put
+    the column's box through the robot itself, which nothing else can be in: it is lowered to keep its box a margin under
+    that point, never under what was seen in the cell. A fill the robot stands higher over is kept as it is, so a rim the
+    shoulder housing hides keeps its height under the housing. A cell lowered to what was seen in it, or under the floor
+    of what it stands on, is no longer filled. Asked up to the fill alone, a hand hanging less than the margin over a
+    fill stood inside the box grown round it: the Hand-E's housing 0.9 mm deep in a tray's wall filled across to the
+    part, and the retreat was refused (the grasp bench, 2026-10-06).
+    """
+    rows_i, cols_i = np.nonzero(filled)
+    if rows_i.size == 0:
+        return top, bottom, filled
+    yaw, along_low, along_cell, across_low, across_cell = grid
+    cos, sin = math.cos(yaw), math.sin(yaw)
+    grow = 2.0 * float(margin_mm)
+    step = _ROBOT_SAMPLE_MM
+    top, bottom, filled = top.copy(), bottom.copy(), filled.copy()
+    for r, c in zip(rows_i, cols_i):
+        fill = float(top[r, c])
+        seen = float(seen_top[r, c])
+        # The floor of what it stands on: the given floor, or where the fill reached down to.
+        floor = float(floor_mm) if floor_mm is not None else float(bottom[r, c])
+        if not (math.isfinite(fill) and math.isfinite(floor)) or fill <= floor:
+            continue
+        a0, b0 = along_low + c * along_cell - grow, across_low + r * across_cell - grow
+        alongs = np.arange(a0, a0 + along_cell + 2.0 * grow + 1e-9, step)
+        acrosses = np.arange(b0, b0 + across_cell + 2.0 * grow + 1e-9, step)
+        heights = np.arange(floor, fill + grow + 1e-9, step)
+        grid_a, grid_b, grid_z = np.meshgrid(alongs, acrosses, heights, indexing="ij")
+        samples = np.column_stack((cos * grid_a.ravel() - sin * grid_b.ravel(),
+                                   sin * grid_a.ravel() + cos * grid_b.ravel(), grid_z.ravel()))
+        on = np.asarray(robot_on(samples), dtype=bool).reshape(-1)
+        if not bool(on.any()):
+            continue
+        cap = float(samples[on, 2].min()) - grow
+        if cap <= max(seen, floor):
+            # Lowered to what was seen in it, or under its floor: it stands as it was seen, unfilled.
+            top[r, c], bottom[r, c] = seen, float(seen_bottom[r, c])
+            filled[r, c] = False
+        else:
+            top[r, c] = cap
+    return top, bottom, filled
 
 
 def _shaded(
@@ -433,6 +619,7 @@ def bridge_columns(
     step_mm: float,
     hidden: "Callable[[np.ndarray], np.ndarray]",
     reach_mm: float,
+    robot_on: "Callable[[np.ndarray], np.ndarray] | None" = None,
 ) -> list[Column]:
     """Boxes over what the robot hid between two objects or more, square with BASE, none of them holding a point.
 
@@ -447,6 +634,11 @@ def bridge_columns(
     everywhere else. Each rectangle of such cells, of about one height, is one box: the cells, cut back to the extent of
     the points of the parts beside them, grown by ``margin_mm``, from ``floor_mm`` where given, else the lowest of the
     parts less the margin. So no bridge reaches further than one box around the parts it joins would have.
+
+    ``robot_on`` keeps a bridge out of where the robot stands now as it keeps a height map's fill
+    (:func:`_under_the_robot`): what the robot hides between two parts is often where its own hand stands. The Hand-E at
+    a cube in a tray hid the floor between the cube and the wall from the wrist camera, the bridge stood as high as the
+    wall through the fingers, and every way out was refused (the grasp bench, 2026-10-06).
     """
     from scipy import ndimage  # noqa: PLC0415 (kept out of import time)
 
@@ -491,7 +683,17 @@ def bridge_columns(
         near_xy, far_xy = joined[:, :2].min(axis=0), joined[:, :2].max(axis=0)
         filled_top = np.full((rows, cols), -np.inf)
         filled_top[stretch] = float(top[beside].max())
-        rectangle = _rectangles(filled_top, np.where(stretch, lowest, np.inf), float(step_mm), floored=True)
+        filled_bottom = np.where(stretch, lowest, np.inf)
+        if robot_on is not None:
+            # Nothing was seen in a bridge's cells: one the robot stands down to under the floor stands no more.
+            filled_top, filled_bottom, kept = _under_the_robot(
+                filled_top, filled_bottom, stretch, np.full((rows, cols), -np.inf), np.full((rows, cols), np.inf),
+                (0.0, float(low[0]), cell, float(low[1]), cell), robot_on, float(margin_mm), floor_mm)
+            if not bool(kept.any()):
+                continue
+            filled_top = np.where(kept, filled_top, -np.inf)
+            filled_bottom = np.where(kept, filled_bottom, np.inf)
+        rectangle = _rectangles(filled_top, filled_bottom, float(step_mm), floored=True)
         for piece in range(int(rectangle.max()) + 1):
             cells_rows, cells_cols = np.nonzero(rectangle == piece)
             first = np.maximum([float(low[0]) + cells_cols.min() * cell, float(low[1]) + cells_rows.min() * cell],
@@ -511,8 +713,40 @@ def bridge_columns(
     return columns
 
 
-def _rectangles(top: np.ndarray, bottom: np.ndarray, step_mm: float, *, floored: bool) -> np.ndarray:
-    """Every seen cell's rectangle number, -1 for a cell with nothing seen in it."""
+def _cell_extents(
+    along: np.ndarray, across: np.ndarray, row: np.ndarray, col: np.ndarray, shape: "tuple[int, int]",
+    filled: np.ndarray, grid: "tuple[float, float, float, float]",
+) -> "tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]":
+    """How far each cell's points reach, as four grids of ``shape``: the least and the most along, the least and the
+    most across. A cell the robot hid (``filled``) reaches over the whole cell, as its box does; a cell with nothing in
+    it reaches nowhere (``inf`` and ``-inf``). ``grid`` is ``(along_low, along_cell, across_low, across_cell)``."""
+    along_low, along_cell, across_low, across_cell = grid
+    along_lo, along_hi = np.full(shape, np.inf), np.full(shape, -np.inf)
+    across_lo, across_hi = np.full(shape, np.inf), np.full(shape, -np.inf)
+    np.minimum.at(along_lo, (row, col), along)
+    np.maximum.at(along_hi, (row, col), along)
+    np.minimum.at(across_lo, (row, col), across)
+    np.maximum.at(across_hi, (row, col), across)
+    hid_rows, hid_cols = np.nonzero(filled)
+    along_lo[hid_rows, hid_cols] = along_low + hid_cols * along_cell
+    along_hi[hid_rows, hid_cols] = along_low + (hid_cols + 1) * along_cell
+    across_lo[hid_rows, hid_cols] = across_low + hid_rows * across_cell
+    across_hi[hid_rows, hid_cols] = across_low + (hid_rows + 1) * across_cell
+    return along_lo, along_hi, across_lo, across_hi
+
+
+def _rectangles(
+    top: np.ndarray, bottom: np.ndarray, step_mm: float, *, floored: bool,
+    extents: "tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None" = None,
+) -> np.ndarray:
+    """Every seen cell's rectangle number, -1 for a cell with nothing seen in it.
+
+    With ``extents`` (:func:`_cell_extents`) a rectangle grows along its row only into a cell whose points reach as far
+    across as the rectangle's do, and down a row only where that row's reach as far along, each within ``step_mm``, the
+    cloud's own resolution. A bin's corner cell holds the other wall's points too, and a wall that took it was boxed as
+    thick as the cell over its whole length: 12 mm into the bin on the grasp bench (2026-10-05), along every wall, where
+    the fingers of a part beside it go. The corner is a box of its own instead.
+    """
     rows, cols = top.shape
     seen = np.isfinite(top)
     rectangle = np.full(top.shape, -1, dtype=np.int64)
@@ -525,17 +759,31 @@ def _rectangles(top: np.ndarray, bottom: np.ndarray, step_mm: float, *, floored:
             return None
         return [high, low, deepest, shallowest]
 
+    def reaches(now: "list[float]", lo: float, hi: float) -> bool:
+        return abs(lo - now[0]) <= step_mm and abs(hi - now[1]) <= step_mm
+
     for first_row in range(rows):
         for first_col in range(cols):
             if not seen[first_row, first_col] or rectangle[first_row, first_col] >= 0:
                 continue
             bounds = [float(top[first_row, first_col])] * 2 + [float(bottom[first_row, first_col])] * 2
+            along_now: list[float] = []
+            across_now: list[float] = []
+            if extents is not None:
+                along_now = [float(extents[0][first_row, first_col]), float(extents[1][first_row, first_col])]
+                across_now = [float(extents[2][first_row, first_col]), float(extents[3][first_row, first_col])]
             last_col = first_col
             while last_col + 1 < cols and seen[first_row, last_col + 1] and rectangle[first_row, last_col + 1] < 0:
                 grown = fits(top[first_row, last_col + 1:last_col + 2], bottom[first_row, last_col + 1:last_col + 2],
                              bounds)
                 if grown is None:
                     break
+                if extents is not None:
+                    lo, hi = float(extents[2][first_row, last_col + 1]), float(extents[3][first_row, last_col + 1])
+                    if not reaches(across_now, lo, hi):
+                        break
+                    across_now = [min(across_now[0], lo), max(across_now[1], hi)]
+                    along_now = [along_now[0], max(along_now[1], float(extents[1][first_row, last_col + 1]))]
                 bounds, last_col = grown, last_col + 1
             last_row = first_row
             while last_row + 1 < rows:
@@ -545,19 +793,34 @@ def _rectangles(top: np.ndarray, bottom: np.ndarray, step_mm: float, *, floored:
                 grown = fits(top[last_row + 1, span], bottom[last_row + 1, span], bounds)
                 if grown is None:
                     break
+                if extents is not None:
+                    lo, hi = float(extents[0][last_row + 1, span].min()), float(extents[1][last_row + 1, span].max())
+                    if not reaches(along_now, lo, hi):
+                        break
+                    along_now = [min(along_now[0], lo), max(along_now[1], hi)]
                 bounds, last_row = grown, last_row + 1
             rectangle[first_row:last_row + 1, first_col:last_col + 1] = count
             count += 1
     return rectangle
 
 
-def coarsen(parts: Sequence[list[Column]], budget: int) -> int:
+def coarsen(
+    parts: Sequence[list[Column]], budget: int, *, near_mm: "np.ndarray | None" = None,
+    yaws: "Sequence[float] | None" = None,
+) -> int:
     """Merge boxes until no more than ``budget`` are left in ``parts`` together, or each part is one box. In place.
 
     Only two boxes of one part merge, into the box that holds both, so nothing any box held is ever let go. The merge
     that adds the least volume to what the two already held goes first, over every part: the pieces of one surface
     before two objects, and the space between two objects before the inside of a bin. A box the merged one holds whole
     goes with them. Returns how many boxes the merging took away; what still does not fit is the caller's to refuse.
+
+    ``near_mm`` is the goal of the motion the world is built for, in BASE, and ``yaws`` each part's turn: the volume a
+    merge adds counts the more the nearer its box comes to the goal (:func:`_merge_cost`), so the boxes far from the hand
+    merge first and those it passes between stay as the cameras saw them. In a pile of twenty parts on the mat, 35 to 42
+    boxes merged to fit 64 slots wherever the least volume was, and the boxes beside the part grew past what the
+    calculator had planned the fingers against: grasp after grasp was refused 2.5 to 3 mm short of the guard's 3 mm on
+    the line down (the grasp bench, 2026-10-06).
 
     What each merge would add is kept as merges go (:class:`_Merges`), so a cluster of a few hundred columns merges
     down in tens of milliseconds rather than seconds (measured 2026-09-30: 494 columns to 64 took 2.9 s asked afresh
@@ -566,7 +829,11 @@ def coarsen(parts: Sequence[list[Column]], budget: int) -> int:
     total = sum(len(part) for part in parts)
     if total <= int(budget):
         return 0
-    merges = [_Merges(part) for part in parts]
+    turns = list(yaws) if yaws is not None else [0.0] * len(parts)
+    if len(turns) != len(parts):
+        raise ValueError(f"coarsen needs one yaw per part, got {len(turns)} for {len(parts)}")
+    merges = [_Merges(part, near=None if near_mm is None else _in_turn(np.asarray(near_mm, dtype=np.float64), yaw))
+              for part, yaw in zip(parts, turns)]
     removed = 0
     while total > int(budget):
         best: "tuple[float, int, int, int] | None" = None
@@ -583,6 +850,34 @@ def coarsen(parts: Sequence[list[Column]], budget: int) -> int:
     for part, part_merges in zip(parts, merges):
         part[:] = [column for column in part_merges.slots if column is not None]
     return removed
+
+
+#: How near the goal a merge counts more, millimetres: the volume a merge adds counts ``1 + (_NEAR_GOAL_MM / d) ** 2``
+#: times, ``d`` how near the box holding both comes to the goal, no nearer than :data:`_NEAREST_MM`. Twice at 100 mm,
+#: five times at 50, a hundred and one at 10 and in it. A choice: about the hand's own reach round the goal.
+_NEAR_GOAL_MM = 100.0
+_NEAREST_MM = 10.0
+
+
+def _in_turn(point_mm: np.ndarray, yaw: float) -> np.ndarray:
+    """A BASE point in a part's own turn, as its columns lie: along, across and up."""
+    cos, sin = math.cos(float(yaw)), math.sin(float(yaw))
+    x, y, z = (float(v) for v in np.asarray(point_mm, dtype=np.float64).reshape(3))
+    return np.array([cos * x + sin * y, -sin * x + cos * y, z])
+
+
+def _merge_cost(low: np.ndarray, high: np.ndarray, other_low: np.ndarray, other_high: np.ndarray,
+                near: "np.ndarray | None") -> np.ndarray:
+    """Per pair, what a merge costs: the volume it adds (:func:`_added_volume`), weighed by how near the box holding
+    both comes to ``near`` where one is given (:data:`_NEAR_GOAL_MM`)."""
+    added = _added_volume(low, high, other_low, other_high)
+    if near is None:
+        return added
+    joined_low = np.minimum(low[:, None, :], other_low[None, :, :])
+    joined_high = np.maximum(high[:, None, :], other_high[None, :, :])
+    outside = np.maximum(np.maximum(joined_low - near, near - joined_high), 0.0)
+    distance = np.maximum(np.linalg.norm(outside, axis=2), _NEAREST_MM)
+    return np.asarray(added * (1.0 + (_NEAR_GOAL_MM / distance) ** 2))
 
 
 def _added_volume(low: np.ndarray, high: np.ndarray, other_low: np.ndarray, other_high: np.ndarray) -> np.ndarray:
@@ -609,8 +904,10 @@ class _Merges:
     #: Rows of the cost table computed at a time, which bounds the temporaries of computing it, not the table.
     _ROWS = 256
 
-    def __init__(self, part: Sequence[Column]) -> None:
+    def __init__(self, part: Sequence[Column], near: "np.ndarray | None" = None) -> None:
         self.slots: list[Column | None] = list(part)
+        #: The goal in the part's own turn, which a merge near it pays for (:func:`_merge_cost`); ``None`` for none.
+        self.near = near
         count = len(part)
         self.low = np.stack([column.low for column in part]) if count else np.zeros((0, 3))
         self.high = np.stack([column.high for column in part]) if count else np.zeros((0, 3))
@@ -618,7 +915,7 @@ class _Merges:
         self.cost = np.full((count, count), np.inf)
         for first in range(0, count, self._ROWS):
             rows = slice(first, min(count, first + self._ROWS))
-            self.cost[rows] = _added_volume(self.low[rows], self.high[rows], self.low, self.high)
+            self.cost[rows] = _merge_cost(self.low[rows], self.high[rows], self.low, self.high, self.near)
         np.fill_diagonal(self.cost, np.inf)
         self.row_min = self.cost.min(axis=1) if count else np.zeros(0)
         self.row_arg = self.cost.argmin(axis=1) if count else np.zeros(0, dtype=np.int64)
@@ -651,7 +948,7 @@ class _Merges:
         self.low[first], self.high[first] = low, high
         self.cost[gone, :] = np.inf
         self.cost[:, gone] = np.inf
-        row = _added_volume(low[None, :], high[None, :], self.low, self.high)[0]
+        row = _merge_cost(low[None, :], high[None, :], self.low, self.high, self.near)[0]
         row[~self.alive] = np.inf
         row[first] = np.inf
         self.cost[first, :] = row

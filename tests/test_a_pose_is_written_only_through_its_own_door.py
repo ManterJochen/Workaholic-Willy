@@ -6,8 +6,9 @@ writes measured values; a pose is no measurement a person types, it is joints a 
 guard and the planner screened. So:
 
 * ``set_named_pose`` writes a pose's five keys, and the default place with it where asked, into the overlay of the
-  LAST layer of the chain, never the shared ``robot.yaml``: a chain with no layer is refused with nothing written, and
-  the file is named (``pose_target_file``) before anything is;
+  LAST layer of the chain, never this repository's shared ``robot.yaml``: a chain with no layer over the shipped tree
+  is refused with nothing written, and the file is named (``pose_target_file``) before anything is. A cell's own tree
+  outside the repository (``--data``, the owner, 2026-10-05) takes a pose with no layer in its own ``robot.yaml``;
 * inside a git work tree that layer must be one git keeps out (ignored, and tracked nowhere): one git does not ignore,
   and a shared layer git tracks, are refused with nothing written, the sentence naming the line to add or the chain to
   run (``pose_layer_refusal``); a tree in no work tree asks git nothing;
@@ -53,6 +54,11 @@ LAYERS = ("ur10", "hande", "cell")
 DROP = [-60.0, -95.0, -120.0, -55.0, 90.0, 0.0]
 PARK = [-90.0, -80.0, -110.0, -80.0, 90.0, 0.0]
 TAUGHT_AT = "2026-10-01T09:12:00+02:00"
+
+
+def _the_shipped_tree() -> Any:
+    """Every tree read as this repository's shipped one, whose base ``robot.yaml`` every cell reads."""
+    return patch("src.config.edit._is_shipped_tree", return_value=True)
 
 
 def _tree_hash(root: Path) -> dict[str, str]:
@@ -108,33 +114,51 @@ class APoseLandsInTheCellsOwnLayerTests(_Case):
 
     def test_the_file_is_named_before_anything_is_written(self) -> None:
         self.assertEqual(self.cell, pose_target_file(self.tmp, LAYERS))
-        self.assertIsNone(pose_target_file(self.tmp, ()))
+        self.assertIsNone(pose_target_file(_SHIPPED, ()))
+        with _the_shipped_tree():
+            self.assertIsNone(pose_target_file(self.tmp, ()))
+            self.assertIsNone(ConfigTree(root=self.tmp, profile=None, layers=()).pose_file())
         tree = ConfigTree(root=self.tmp, profile=CHAIN, layers=LAYERS)
         self.assertEqual(self.cell, tree.pose_file())
-        self.assertIsNone(ConfigTree(root=self.tmp, profile=None, layers=()).pose_file())
         self.assertEqual(self.CELL_TEXT, self.cell.read_text(encoding="utf-8"), "naming the file wrote to it")
 
     def test_a_chain_with_no_layer_is_refused_with_nothing_written(self) -> None:
-        """⛔ With no layer the generic writer's target is the shared base ``robot.yaml`` every cell reads."""
+        """⛔ Over the shipped tree, with no layer the generic writer's target is the shared base ``robot.yaml`` every
+        cell reads. The scratch copy stands for it here, so a regression writes nowhere it matters."""
         before = _tree_hash(self.tmp)
 
-        result = self.write(layers=(), profile=None)
+        with _the_shipped_tree():
+            result = self.write(layers=(), profile=None)
+            refused = set_default_place_pose("drop_left", root=self.tmp, layers=(), profile=None)
 
         self.assertFalse(result.applied)
         self.assertIs(WriteRefused.NO_LAYER, result.refused)
         for part in ("layer", "robot.yaml"):
             self.assertIn(part, result.message)
-        self.assertEqual(before, _tree_hash(self.tmp))
-        refused = set_default_place_pose("drop_left", root=self.tmp, layers=(), profile=None)
         self.assertIs(WriteRefused.NO_LAYER, refused.refused)
         self.assertEqual(before, _tree_hash(self.tmp))
 
     def test_the_no_layer_refusal_says_how_to_make_the_cells_own_layer(self) -> None:
         """The loader refuses a chain whose layer has no file of its own, so "run the cell's chain" alone fails until
         the cell's file exists: the refusal says to create it (a comment line is enough) and to git-ignore it."""
-        result = self.write(layers=(), profile=None)
+        with _the_shipped_tree():
+            result = self.write(layers=(), profile=None)
         for part in ("robot.cell.yaml", "comment", "git-ignore", "--profile ur10,hande,cell"):
             self.assertIn(part, result.message)
+
+    def test_a_cells_own_tree_outside_the_repository_takes_the_pose_with_no_layer(self) -> None:
+        """The owner, 2026-10-05: a customer's tree lives outside this repository (``--data``) and is wholly the
+        cell's own, so its base ``robot.yaml`` takes the pose, with nothing else in the tree written."""
+        base = self.tmp / "robot" / "robot.yaml"
+        before = _tree_hash(self.tmp)
+
+        result = self.write(layers=(), profile=None)
+
+        self.assertTrue(result.applied, result.message)
+        self.assertEqual((base,), result.files)
+        after = _tree_hash(self.tmp)
+        self.assertEqual([str(Path("robot") / "robot.yaml")], sorted(n for n in after if after[n] != before.get(n)))
+        self.assertEqual(tuple(DROP), self.robot(profile="").named_poses["drop_left"].joints_deg)
 
     def test_the_tree_writes_through_the_same_door(self) -> None:
         tree = ConfigTree(root=self.tmp, profile=CHAIN, layers=LAYERS)

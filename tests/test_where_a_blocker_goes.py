@@ -69,6 +69,26 @@ class SeenPointsGroupIntoObjectsTests(unittest.TestCase):
     def test_nothing_seen_is_no_object(self) -> None:
         self.assertEqual((), clusters_of(np.zeros((0, 3))))
 
+    def test_two_cubes_whose_corners_nearly_touch_split_where_the_hand_opens_too_little(self) -> None:
+        """The grasp bench's L (2026-10-05): two 40 mm cubes, corners 7 mm apart, one object at the 8 mm voxel, 54 mm
+        across its narrow side and no blocker; asked again finer they are two, each one the hand grips."""
+        west = _block((-65.0, -720.0, 0.0), (-25.0, -680.0, 40.0))
+        north = _block((-20.0, -675.0, 0.0), (20.0, -635.0, 40.0))
+        both = np.vstack([west, north])
+
+        (joined,) = clusters_of(both)
+        self.assertGreater(joined.widths_mm[0], 48.0, "the control: at the coarse voxel the L is one object")
+
+        apart = clusters_of(both, open_width_mm=50.0)
+
+        self.assertEqual(2, len(apart))
+        self.assertTrue(all(c.widths_mm[0] <= 41.0 for c in apart), [c.widths_mm for c in apart])
+
+    def test_a_pile_too_wide_that_holds_together_stays_one_object(self) -> None:
+        (pile,) = clusters_of(_block((-200.0, -800.0, 0.0), (-60.0, -660.0, 40.0)), open_width_mm=50.0)
+
+        self.assertGreater(pile.widths_mm[0], 100.0)
+
 
 class WhatMayBeGrippedAsABlockerTests(unittest.TestCase):
     def test_a_post_on_the_support_beside_the_part_is_a_blocker(self) -> None:

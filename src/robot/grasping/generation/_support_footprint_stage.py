@@ -37,6 +37,7 @@ from src.robot.grasping.scoring import GraspScoreBreakdown
 from .support_footprint import (
     DEFAULT_FLOOR_MARGIN_MM,
     CorridorSeen,
+    HandFloor,
     SupportFootprintCandidate,
     SupportFootprintJaw,
     generate_support_footprint_grasps,
@@ -86,6 +87,7 @@ def support_footprint_breakdowns(
     side_approaches: bool = False,
     corridor_seen: CorridorSeen | None = None,
     seen_envelope: Any = None,
+    hand_floor: HandFloor | None = None,
 ) -> tuple[list[GraspScoreBreakdown], dict]:
     """Run SFE and return camera-frame breakdowns plus its telemetry.
 
@@ -101,6 +103,8 @@ def support_footprint_breakdowns(
 
     ``seen_envelope`` (``scene_obstacles.SeenEnvelope``) holds the boxes the camera world builds of the neighbours: a
     build whose open hand comes nearer to one than the guard keeps is refused under ``seen_fingers``.
+
+    ``hand_floor`` (``support_footprint.HandFloor``) holds the support solids the guard holds under the hand.
     """
     refused: dict[str, int] = {}
     candidates = generate_support_footprint_grasps(
@@ -118,6 +122,7 @@ def support_footprint_breakdowns(
         side_approaches=side_approaches,
         corridor_seen=corridor_seen,
         seen_envelope=seen_envelope,
+        hand_floor=hand_floor,
     )
     breakdowns: list[GraspScoreBreakdown] = []
     for candidate in candidates:

@@ -46,7 +46,7 @@ from src.robot.grasping.generation.scene_obstacles import (
     scene_obstacle_points,
     why_no_grasp,
 )
-from src.robot.grasping.generation.support_footprint import DEFAULT_FLOOR_MARGIN_MM, SupportFootprintJaw
+from src.robot.grasping.generation.support_footprint import DEFAULT_FLOOR_MARGIN_MM, HandFloor, SupportFootprintJaw
 from src.robot.grasping.contacts import (
     ContactPair,
     dense_surface_samples,
@@ -1106,15 +1106,25 @@ class GraspCalculator:
         # points the way the neighbours' masks do above, so SFE's grid and the post-hoc filter both see it.
         scene: SceneObstacles | None = None
         seen_envelope: SeenEnvelope | None = None
+        hand_floor: HandFloor | None = None
         scene_support_mm: float | None = None
         if self._scene_obstacles is not None:
             telemetry["candidates_final_source"] = "prompt_only"
             if transform is not None:
                 scene_support_mm = self._scene_support_mm(
                     support_plane, support_model, cloud, geometry_points_base_mm, transform, telemetry)
+                # The other parts the detector named in this frame: a finger may come to their measured surface
+                # (the owner, 2026-10-05: "Finger dürfen streifen"), where the cell lets the fingers touch parts.
+                part_mask = None
+                if other_object_masks and float(self._scene_obstacles.part_soft_mm) > 0.0:
+                    part_mask = np.zeros(mask_bool.shape, dtype=bool)
+                    for other in other_object_masks:
+                        other_mask = np.asarray(other).astype(bool)
+                        if other_mask.shape == part_mask.shape:
+                            part_mask |= other_mask
                 scene = scene_obstacle_points(
                     depth_arr * scale, mask_bool, intrinsics, transform, rules=self._scene_obstacles,
-                    support_height_mm=scene_support_mm, support_model=support_model)
+                    support_height_mm=scene_support_mm, support_model=support_model, part_mask=part_mask)
                 telemetry["scene_obstacle_points"] = int(scene.points_base_mm.shape[0])
                 telemetry["scene_obstacle_clusters"] = int(scene.clusters)
                 telemetry["scene_obstacle_world_rule_points"] = int(scene.world_rule_base_mm.shape[0])
@@ -1126,6 +1136,14 @@ class GraspCalculator:
                 seen_envelope = SeenEnvelope.of(
                     scene.boxes, gripper_model=gripper_model if gripper_model is not None else ParallelJawGripperModel(),
                     open_width_mm=self.max_grip_mm, distance_mm=self._scene_obstacles.support_distance_mm)
+                # The solids the guard holds under the part stand over the reading by its band and allowance, and the
+                # guard keeps its distance from their tops: SFE plans the hand's height on them, not on the reading,
+                # or the filter below refuses every grasp it lowered (``support_footprint.HandFloor``).
+                held = tuple(getattr(support_model, "solids", ()) or ()) if support_model is not None else ()
+                if held:
+                    hand_floor = HandFloor(solids=held, distance_mm=float(self._scene_obstacles.support_distance_mm),
+                                           fingers_to_the_reading=bool(self._scene_obstacles.fingers_to_the_reading),
+                                           finger_floor_drop_mm=float(self._scene_obstacles.finger_floor_drop_mm))
                 if scene.points_base_mm.shape[0]:
                     _to_cam = np.linalg.inv(np.asarray(transform, dtype=np.float64))
                     _scene_cam = scene.points_base_mm @ _to_cam[:3, :3].T + _to_cam[:3, 3]
@@ -1220,7 +1238,12 @@ class GraspCalculator:
                         sfe_cloud.points_mm, dtype=np.float64).reshape(-1, 3).T).T + transform[:3, 3]
                 )
                 obstacles_base = None
-                if scene_points_mm is not None and np.asarray(scene_points_mm).size > 0:
+                if scene is not None and scene.part_points is not None and bool(scene.part_points.any()):
+                    # A named neighbour's points leave the grid: the boxes the camera world builds of them hold the
+                    # fingers to their measured surface (``SeenEnvelope.into_parts_mm``), the rest of the hand to the
+                    # guard's distance. What nobody named stays in the grid.
+                    obstacles_base = scene.points_base_mm[~scene.part_points]
+                elif scene_points_mm is not None and np.asarray(scene_points_mm).size > 0:
                     _sp = np.asarray(scene_points_mm, dtype=np.float64).reshape(-1, 3)
                     obstacles_base = (transform[:3, :3] @ _sp.T).T + transform[:3, 3]
                 # Declared geometry stays out of the sparse cloud above and gets its own,
@@ -1251,6 +1274,7 @@ class GraspCalculator:
                     score_weights=self._support_footprint_score_weights,
                     floor_margin_mm=self._support_footprint_floor_margin_mm,
                     seen_envelope=seen_envelope,
+                    hand_floor=hand_floor,
                     **sfe_side,
                 )
                 telemetry.update(sfe_telemetry)
@@ -1264,7 +1288,15 @@ class GraspCalculator:
                     _over = target_base[np.isfinite(target_base).all(axis=1) & (target_base[:, 2] > _floor), 2]
                     if _over.size:
                         telemetry["scene_part_height_mm"] = round(float(np.percentile(_over, 98.0)) - sfe_support_mm, 1)
-                    telemetry["scene_least_part_height_mm"] = round(least_part_height_mm(sfe_jaw), 1)
+                    # The solid the guard holds under the part lifts the hand by as much as its top and distance stand
+                    # over the clearance the reading alone asks (``hand_floor``).
+                    _rise = 0.0
+                    if hand_floor is not None and _over.size:
+                        _under = hand_floor.at(target_base[np.isfinite(target_base).all(axis=1), :2], fingers=True)
+                        _under = _under[np.isfinite(_under)]
+                        if _under.size:
+                            _rise = max(0.0, float(_under.max()) - sfe_support_mm - float(sfe_jaw.table_clearance_mm))
+                    telemetry["scene_least_part_height_mm"] = round(least_part_height_mm(sfe_jaw) + _rise, 1)
                 telemetry["geometry_stage"] = "support_footprint"
                 # An abstention is not a rejection. SFE returns an empty list for two very different
                 # reasons: it looked and found no legal grasp, or it could not look at all;
@@ -1372,6 +1404,16 @@ class GraspCalculator:
                 **({
                     "scene_obstacle_points_base_mm": scene.points_base_mm.copy(),
                     "scene_points_world_rule_base_mm": scene.world_rule_base_mm.copy(),
+                    # Which of each are a named neighbour part's: a push's finger comes down beside those as a grasp's
+                    # finger does (the owner, 2026-10-06).
+                    "scene_obstacle_part_points": None if scene.part_points is None else scene.part_points.copy(),
+                    "scene_world_rule_part_points": (None if scene.world_rule_part is None
+                                                     else scene.world_rule_part.copy()),
+                    # The boxes the camera world builds of them and the guard's distance from those: the pick loop
+                    # turns each grasp the way round its wrist camera keeps it (``wrist_turn``).
+                    "scene_seen_boxes": tuple(scene.boxes),
+                    "scene_seen_distance_mm": float(self._scene_obstacles.support_distance_mm)
+                    if self._scene_obstacles is not None else None,
                 } if scene is not None else {}),
             },
         )
@@ -2039,7 +2081,9 @@ class GraspCalculator:
             poses, gripper_model=gripper_model if gripper_model is not None else ParallelJawGripperModel(),
             open_width_mm=self.max_grip_mm, solids=held_solids, support_distance_mm=rules.support_distance_mm,
             declared_boxes=rules.declared_boxes, declared_distance_mm=rules.declared_distance_mm,
-            seen_boxes=seen_boxes, seen_distance_mm=rules.support_distance_mm)
+            seen_boxes=seen_boxes, seen_distance_mm=rules.support_distance_mm,
+            fingers_to_the_reading=bool(rules.fingers_to_the_reading),
+            finger_floor_drop_mm=float(rules.finger_floor_drop_mm))
         kept: list[GraspScoreBreakdown] = []
         for score, verdict in zip(ranked, verdicts):
             if verdict.refused == "declared":

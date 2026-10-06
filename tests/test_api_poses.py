@@ -239,8 +239,19 @@ class TheDefaultPlaceIsChosenTests(LayerCell):
 
 
 class AChainWithNoLayerOfItsOwnTests(LayerCell):
+    """The shipped tree with no layer of the cell's own: its ``robot.yaml`` is the one every cell reads. The scratch tree
+    stands for it here (``_is_shipped_tree``), so a regression writes nowhere it matters."""
+
     PROFILE = None
     LAYER = None
+
+    def setUp(self) -> None:
+        from unittest.mock import patch
+
+        shipped = patch("src.config.edit._is_shipped_tree", return_value=True)
+        shipped.start()
+        self.addCleanup(shipped.stop)
+        super().setUp()
 
     def test_the_default_place_is_refused_and_the_shared_file_kept(self) -> None:
         base = (self.tmp / "robot" / "robot.yaml").read_text(encoding="utf-8")
@@ -262,6 +273,23 @@ class AChainWithNoLayerOfItsOwnTests(LayerCell):
         self.assertFalse(body["teachable"])
         self.assertIn("robot.yaml", body["why_not"])
         self.assertEqual("no_layer", body["why_not_code"])
+
+
+
+class ACustomersOwnTreeWithNoLayerTests(LayerCell):
+    """The owner, 2026-10-05: a customer's tree lives outside this repository (``--data``) and is wholly the cell's own,
+    so its ``robot.yaml`` takes a taught pose, and the console says so."""
+
+    PROFILE = None
+    LAYER = None
+
+    def test_the_poses_name_the_trees_own_robot_yaml(self) -> None:
+        body = self.client.get("/v1/poses").json()
+        self.assertEqual(str(self.tmp / "robot" / "robot.yaml"), body["target_file"])
+
+    def test_the_default_place_lands_in_it(self) -> None:
+        answer = self.client.put("/v1/poses/default-place", json={"name": None})
+        self.assertNotEqual("no_layer", answer.json().get("code"), answer.text)
 
 
 if __name__ == "__main__":  # pragma: no cover

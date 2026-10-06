@@ -88,6 +88,9 @@ _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
 #: followed by a closing remark.
 _ARRAY = re.compile(r"\[.*\]", re.DOTALL)
 _OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+#: One flat JSON object, as each box of a grounding answer is: no brace inside it. What an answer cut off mid-list
+#: still holds whole.
+_FLAT_OBJECT = re.compile(r"\{[^{}]*\}", re.DOTALL)
 
 #: Box-field key names accepted from an answer. ``bbox_2d`` is Qwen's documented name; the others
 #: cost one tuple entry each and save a box that would otherwise be dropped.
@@ -119,7 +122,33 @@ def extract_json_payload(text: str) -> Any | None:
             return json.loads(candidate)
         except (ValueError, TypeError):
             continue
-    return None
+    return _whole_objects_of_a_cut_list(text)
+
+
+def _whole_objects_of_a_cut_list(text: str) -> list[dict[str, Any]] | None:
+    """The whole objects of a list the answer opened and never closed, or ``None`` where it is no such answer.
+
+    A model that runs out of tokens stops mid-list: ``[{...}, {...}, {"bbox_2d": [1, 2`` reads as no JSON at all, and a
+    pile of parts came back as no part. Each object written whole is what the model asserted, exactly; only the cut
+    one is left out, so nothing is guessed. Asked only where no reading of the answer parsed; an answer that opens no
+    list is not read so.
+    """
+    start = text.find("[")
+    if start < 0:
+        return None
+    objects: list[dict[str, Any]] = []
+    for found in _FLAT_OBJECT.finditer(text, start):
+        try:
+            value = json.loads(found.group(0))
+        except (ValueError, TypeError):
+            continue
+        if isinstance(value, dict):
+            objects.append(value)
+    if not objects:
+        return None
+    _LOG.warning("the grounding answer stops mid-list (out of tokens): the %d whole object(s) in it are kept, the cut "
+                 "one is left out", len(objects))
+    return objects
 
 
 def _as_items(payload: Any) -> list[dict[str, Any]]:

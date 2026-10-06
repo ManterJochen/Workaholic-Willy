@@ -4,7 +4,9 @@ Two of the owner's looks of 2026-10-01 (P1, P5: LOOK[0], the Zollstock in a pile
 beside it), built into the world the cell builds from the owner's profile. Before, the mat came back as strips of
 obstacles 15 mm over its reading and the slots overflowed: 73 and 79 boxes merged to fit the 64. Now the stack finds
 the mat itself, as one surface tilted the degree the camera reads it, and holds it as at most four solids; the bin's
-floor is a support of its own and the bin's walls stay obstacles.
+floor is a support of its own and the bin's walls stay obstacles. Since 2026-10-06 a box holds each cell's own extent
+rather than the whole cell, so more boxes come out of a look and more merge, the far ones first: 102 and 110 without the
+mat, 68 and 80 with it.
 """
 
 from __future__ import annotations
@@ -23,11 +25,11 @@ _BIN_X, _BIN_Y = (100.0, 350.0), (-690.0, -490.0)
 def _world(name: str, **perceived: object) -> Any:
     owner = cell.owner_cell()
     look = cell.look(name)
-    config = None
-    if perceived:
-        from src.config.schema.robot import RobotConfig
+    from src.config.schema.robot import RobotConfig
 
-        config = RobotConfig.model_validate(cell.owner_robot(perceived=perceived))
+    # The counts below were read at the 15 mm margin the camera world shipped with on 2026-10-01; the owner ships 8 mm
+    # since 2026-10-05, and a thinner box merges differently. The looks are judged at the margin they were recorded at.
+    config = RobotConfig.model_validate(cell.owner_robot(perceived={"margin_mm": 15.0, **perceived}))
     world = owner.world(look, config=config)
     world.offer_segmentation(camera="EIH_Cam", target_points_base_mm=look.target_points_base_mm,
                              target_label="Einen Zollstock", hold=True)
@@ -64,17 +66,17 @@ class TheRecordedLooksFindTheMatTests(unittest.TestCase):
     def test_the_merges_drop_and_the_bench_is_held(self) -> None:
         for name, world in self.worlds.items():
             with self.subTest(look=name):
-                self.assertLessEqual(world.merged_to_fit, 67)
+                self.assertLessEqual(world.merged_to_fit, 80)
                 self.assertEqual(world.dropped_obstacle_count, 0)
                 bench = [box for box in world.boxes if box.kind == "bench"]
                 self.assertEqual(len(bench), 1)
                 self.assertAlmostEqual(bench[0].center_mm[2] + bench[0].dims_mm[2] / 2.0, 7.0, places=6)
-        self.assertLessEqual(self.worlds["P1"].merged_to_fit, 66)
+        self.assertLessEqual(self.worlds["P1"].merged_to_fit, 68)
 
     def test_before_the_mat_was_strips_and_the_slots_overflowed(self) -> None:
         before = _world("P1", support_surfaces=False)
         self.assertIsNone(before.supports)
-        self.assertEqual(before.merged_to_fit, 73)
+        self.assertEqual(before.merged_to_fit, 102)
         self.assertGreater(before.merged_to_fit, self.worlds["P1"].merged_to_fit + 15)
 
     def test_the_yellow_bins_floor_is_a_support_and_its_walls_stay_obstacles(self) -> None:

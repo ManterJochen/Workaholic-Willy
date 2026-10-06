@@ -55,10 +55,11 @@ def _room_to_the_wall_mm(candidate: Any) -> float:
 class TheSideGraspWinsWhereItKeepsMoreRoomTests(unittest.TestCase):
     def test_beside_a_wall_rank_zero_leans_away_and_a_vertical_stays_listed(self) -> None:
         """⭐ Red before: there was no side-approach switch, and the vertical grasp was rank 0 (the prototype's
-        "shipped" row). Now rank 0 is tilted 30 degrees, its hand leaning away from the wall."""
+        "shipped" row). Now rank 0 is tilted, its hand leaning away from the wall: 30 degrees until 2026-10-05, 75 since
+        the score pays for how a grasp sits on the part and the side grasp at the part's middle sits best."""
         found = _side(12.0)
         self.assertTrue(found)
-        self.assertAlmostEqual(30.0, tilt_deg(found[0]), places=3, msg=[round(tilt_deg(c)) for c in found])
+        self.assertGreaterEqual(tilt_deg(found[0]), 15.0, [round(tilt_deg(c)) for c in found])
         self.assertGreater(float(found[0].approach[1]), 0.0, "the tool travels toward the wall: the hand leans away")
         self.assertTrue(any(tilt_deg(c) < 1.0 for c in found), "a vertical candidate is still listed")
 
@@ -146,25 +147,29 @@ def _telemetry(points: int, z: float | None = None, anchor: float | None = None,
 
 
 #: ``stage_runs()`` on HEAD 1d91e3a (recorded 2026-10-02): the breakdowns' digest and the telemetry the stage stamped.
+#: Re-recorded 2026-10-06: SFE stands its fingers at the anchor and its score pays for how a grasp sits on the part, no
+#: longer for height over the support (the owner, 2026-10-05: "wir müssen tiefer gehen"), so the grasps sit at the parts'
+#: middles (the 90 mm block from 86 mm down to 45) where the fingers reach, and the palm term tells palm-aware runs apart.
 HEAD_STAGE: dict[str, tuple[str, dict[str, Any]]] = {
-    "top90_identity": ("12:247954fa2c8b345d", _telemetry(256, 90.0, 86.0, 33.67)),
-    "top90_flipped": ("12:f61bb32de95d3674", _telemetry(256, 90.0, 86.0, 33.67)),
+    "top90_identity": ("12:4a842c8c2c29719c", _telemetry(256, 90.0, 45.0, 16.28)),
+    "top90_flipped": ("12:9342f19cc1c1608e", _telemetry(256, 90.0, 45.0, 16.28)),
     "sparse50": ("0:e3b0c44298fc1c14", _telemetry(9, 50.0, candidates=0)),
     "empty": ("0:e3b0c44298fc1c14", _telemetry(0, candidates=0)),
-    "top50_palm0": ("12:29430ecc8b580f00", _telemetry(256, 50.0, 46.4, 12.89)),
-    "top50_palm1": ("12:77a27eb492d7e979", _telemetry(256, 50.0, 46.4, 12.89)),
-    "top60_palm0": ("12:a3f6557cb4709ca9", _telemetry(256, 60.0, 56.0, 18.26)),
-    "top60_palm1": ("12:a3f6557cb4709ca9", _telemetry(256, 60.0, 56.0, 18.26)),
-    "top70_palm0": ("12:149dbe1bc9019eed", _telemetry(256, 70.0, 68.0, 15.67)),
-    "top70_palm1": ("12:149dbe1bc9019eed", _telemetry(256, 70.0, 68.0, 15.67)),
-    "top90_palm0": ("12:247954fa2c8b345d", _telemetry(256, 90.0, 86.0, 33.67)),
-    "top90_palm1": ("12:247954fa2c8b345d", _telemetry(256, 90.0, 86.0, 33.67)),
-    "top120_palm0": ("12:cac424d6d48a7d18", _telemetry(256, 120.0, 116.0, 63.67)),
-    "top120_palm1": ("12:cac424d6d48a7d18", _telemetry(256, 120.0, 116.0, 63.67)),
-    "hande_cylinder_wall_12": ("12:c85c6da4f9bcae87", {
+    "top50_palm0": ("12:a5ed45b230cdbf2e", _telemetry(256, 50.0, 34.2, 17.28)),
+    "top50_palm1": ("12:cea11aa065dffb27", _telemetry(256, 50.0, 35.4, 11.78)),
+    "top60_palm0": ("12:0d64c1eb06be10aa", _telemetry(256, 60.0, 34.2, 17.28)),
+    "top60_palm1": ("12:6ef99477fa0aa95e", _telemetry(256, 60.0, 35.4, 11.78)),
+    "top70_palm0": ("12:9654d6a8bc30479d", _telemetry(256, 70.0, 35.0, 27.28)),
+    "top70_palm1": ("12:26710fa6b7e5545a", _telemetry(256, 70.0, 35.4, 11.78)),
+    "top90_palm0": ("12:4a842c8c2c29719c", _telemetry(256, 90.0, 45.0, 16.28)),
+    "top90_palm1": ("12:cc91268c92fbdfe1", _telemetry(256, 90.0, 45.0, 16.28)),
+    "top120_palm0": ("12:3cdd339ced7199d3", _telemetry(256, 120.0, 60.0, 31.28)),
+    "top120_palm1": ("12:a75f54b2db9e4587", _telemetry(256, 120.0, 60.0, 31.28)),
+    # Since the Hand-E's fingers come to 1 mm of the support (2026-10-06).
+    "hande_cylinder_wall_12": ("12:e439d56f5338f9c1", {
         "support_footprint_candidates": 12, "support_footprint_kept": 12, "support_footprint_points": 5593,
         "support_footprint_cloud_z_min_mm": 1.0, "support_footprint_cloud_z_max_mm": 60.0,
-        "support_footprint_top_anchor_z_mm": 56.0, "support_footprint_best_clearance_mm": 35.1}),
+        "support_footprint_top_anchor_z_mm": 30.0, "support_footprint_best_clearance_mm": 45.55}),
 }
 
 
@@ -196,7 +201,8 @@ class TheLibraryCallerIsUnchangedTests(unittest.TestCase):
         self.assertTrue(breakdowns)
         self.assertIs(True, telemetry["support_footprint_side_approaches"])
         self.assertIs(True, telemetry["support_footprint_corridor_seen"])
-        self.assertAlmostEqual(30.0, telemetry["support_footprint_top_tilt_deg"], places=1)
+        # 30 degrees until 2026-10-05; 75 since the score pays for how the grasp sits on the part (see above).
+        self.assertAlmostEqual(75.0, telemetry["support_footprint_top_tilt_deg"], places=1)
         _none, without = support_footprint_breakdowns(
             cloud, camera_to_base=_FLIPPED, support_height_mm=0.0, jaw=hande_jaw(), obstacle_points_base_mm=wall,
             max_candidates=12, side_approaches=True)

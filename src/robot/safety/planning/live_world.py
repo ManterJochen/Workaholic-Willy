@@ -31,7 +31,9 @@ limits is said on the stamp the motion carries (``UnseenSpace``) rather than vou
 the whole frame has to hold a depth depends on where the camera stands. A fixed camera is never carried
 toward what it sees, so a fixed frame that is mostly holes is a camera fault and is refused as blind. A
 camera on the wrist is carried inside its own minimum range by every grasp, so its frame is judged
-where the motion goes, and by the whole frame only when no goal is named.
+where the motion goes, and by the whole frame only when no goal is named. Deep in a bin it measures
+nothing at all, and while a pick holds the frames of its earlier poses such a frame is judged where
+the motion goes too, on what those frames measured; anywhere else a frame with no depth is blind.
 
 A pick on a camera on the wrist is the one time a frame outlives the pose it was taken at. The
 pick looks from several poses and ranks its grasp on everything those looks saw together, so the
@@ -388,6 +390,9 @@ class LivePlannerWorld:
     _held: set[str] = field(default_factory=set, init=False, repr=False)
     #: The target box each offer's points were fitted to, by the same key.
     _targets: dict[str, KeepOutBox] = field(default_factory=dict, init=False, repr=False)
+    #: The other parts each offer named, their labels and their points in BASE, by the same key: a box built of them is
+    #: a named part's from any pose (``build_perceived_boxes(named_points_base_mm=...)``).
+    _named: dict[str, tuple[tuple[str, np.ndarray], ...]] = field(default_factory=dict, init=False, repr=False)
     #: The declared fixtures and meshes as the cameras see them again, read once when the world is built.
     _declared_bodies: tuple[DeclaredBody, ...] = field(default=(), init=False, repr=False)
     #: The declared shapes that could not be read for that, each with why.
@@ -443,6 +448,7 @@ class LivePlannerWorld:
         target_points_base_mm: np.ndarray | None = None,
         target_label: str = "",
         hold: bool = False,
+        named_points_base_mm: Sequence[tuple[str, np.ndarray]] = (),
     ) -> None:
         """Hand over the masks from a perception frame, for as long as they stay fresh.
 
@@ -469,6 +475,11 @@ class LivePlannerWorld:
 
         A cell that never calls this still gets a world. It gets unnamed boxes, and during a pick it
         gets one box where the target is, which is why the pick loop calls it.
+
+        ``named_points_base_mm`` are the other parts the frame's detector named, each its label and its points in
+        BASE. A camera on the wrist offers no mask that holds after the arm moved, so its boxes are named by these
+        instead, from every pose of the pick: a box most of whose points lie on a named part's is that part's
+        (``PerceivedBox.label``), which the fingers may come to (``PerceivedBox.soft_mm``, the owner, 2026-10-05).
         """
         if not chosen(camera) or camera is None:
             if len(labelled_masks) or len(exclude_masks):
@@ -496,6 +507,8 @@ class LivePlannerWorld:
         else:
             self._held.discard(name)
         self._targets.pop(name, None)
+        self._named[name] = tuple((str(label), np.asarray(points, dtype=np.float64).reshape(-1, 3))
+                                  for label, points in named_points_base_mm)
         if target_points_base_mm is not None:
             box = target_keep_out_box(
                 target_points_base_mm, name=f"target_{target_label or name}", limits=self.limits, tuning=self.tuning,
@@ -536,6 +549,7 @@ class LivePlannerWorld:
         self._offer_stamps.clear()
         self._held.clear()
         self._targets.clear()
+        self._named.clear()
         self.drop_cached_frames()
 
     def hold_pick_views(self) -> bool:
@@ -739,6 +753,7 @@ class LivePlannerWorld:
         ]
         held_keys = [key for key in sorted(live) if key in self._targets]
         keep_out = tuple(self._targets[key] for key in held_keys)
+        named = tuple(item for key in sorted(live) for item in self._named.get(key, ()))
         region = goal_keep_out.region if chosen(goal_keep_out) else None
         if region is not None:
             keep_out = keep_out + (region,)
@@ -762,6 +777,8 @@ class LivePlannerWorld:
                 cut_around=tuple(self._targets[key] for key in held_keys),
                 # No support is found over the robot's own base.
                 base=self_envelope.base,
+                # The parts the frame's detector named, in BASE: their boxes are named from every pose.
+                named_points_base_mm=named,
             )
         except PerceptionGeometryError as exc:
             return PlannerWorldSnapshot(
@@ -921,8 +938,9 @@ class LivePlannerWorld:
         """
         if (
             self._pick_frames is None or camera.camera_to_tool is None or envelope is None or body is None
-            or frame.tool_to_base_mm is None
+            or frame.tool_to_base_mm is None or _depth_coverage(frame) <= 0.0
         ):
+            # A frame with no depth (``_blind``: deep in a bin, asked about a goal) adds nothing to a later world.
             return
         superseded = [
             held for held in self._pick_frames if held.camera == camera.name and _same_body(held.body, body)
@@ -1008,21 +1026,32 @@ class LivePlannerWorld:
     def _blind(self, camera: CameraView, frame: DepthSnapshot, *, goal_named: bool) -> str:
         """Why ``frame`` cannot vouch for the part of the cell ``camera`` watches, or empty when it can.
 
-        No depth at all is blind in every camera. Less than ``min_depth_coverage`` of the frame
-        holding a depth is blind in a fixed camera, which is never carried toward what it sees, so
-        a frame of it mostly holes is the camera or something in front of it. A camera on the wrist
+        No depth at all is blind in every camera, but one. Less than ``min_depth_coverage`` of the
+        frame holding a depth is blind in a fixed camera, which is never carried toward what it sees,
+        so a frame of it mostly holes is the camera or something in front of it. A camera on the wrist
         is carried inside its own minimum range by every grasp, so its frame is blind by that share
         only when no goal is named; asked about a goal it is judged about the goal instead
         (``world_for``: the region about it, and the stamp saying what the rest of the frame did not
         see).
+
+        The one: a wrist frame with no depth at all, asked about a goal while the pick holds frames of
+        its earlier poses (:meth:`hold_pick_views`). Deep in a bin every surface the camera faces is
+        nearer than it measures, so the frame at the standoff and at the grasp holds nothing, and the
+        lift out with the part clamped would raise (the grasp bench, 2026-10-05). It is judged about
+        the goal as a frame mostly holes is: the frames the pick holds have to measure the goal's
+        region where the camera looks at it, or the world is ``UNSEEN``, and everything they saw stays
+        in the world. Before the pick holds a frame, at its first look, and asked about no goal, a
+        frame with no depth stays blind: there it can only be the camera.
         """
         coverage = _depth_coverage(frame)
+        on_wrist = camera.camera_to_tool is not None
         if coverage <= 0.0:
+            if on_wrist and goal_named and self.held_view_count > 0:
+                return ""
             return (
                 f"camera {camera.name!r} returned a depth frame with no valid pixel, so it is "
                 "blind and cannot vouch for the part of the cell it watches"
             )
-        on_wrist = camera.camera_to_tool is not None
         if coverage >= float(self.min_depth_coverage) or (on_wrist and goal_named):
             return ""
         return (
@@ -1636,6 +1665,10 @@ def _guard_boxes(perceived: PerceivedWorld | None) -> tuple[AxisAlignedBox, ...]
                              rotation=None if box.rotation is None else box.rotation_matrix),
             # What a refusal naming it adds: the robot hid part of it, or it may be the robot itself.
             note=box.note(),
+            # How far a finger may come into a box of a named part (``PerceivedBox.soft_mm``).
+            soft_mm=float(box.soft_mm),
+            # How far under a support solid's top a finger keeps the distance from (``PerceivedBox.finger_top_mm``).
+            finger_top_mm=float(getattr(box, "finger_top_mm", 0.0) or 0.0),
         )
         for box in perceived.boxes
     )

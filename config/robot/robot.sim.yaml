@@ -169,7 +169,7 @@ robot:
       backend: "fcl"
       kinematics_model: "ur5e"
       kinematics_base_yaw_deg: 180.0
-      min_distance_mm: 10.0
+      min_distance_mm: 3.0
       # The same clearance handed to the trajectory planner, so it stops returning paths this guard
       # would then reject: cuRobo plans against a sphere model while the guard re-checks the exact
       # meshes, and with no margin at all the two disagree by fractions of a millimetre and the

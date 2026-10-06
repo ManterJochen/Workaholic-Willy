@@ -3,8 +3,10 @@
 A cell built from its tree carries ``planning_world.perceived.support_surfaces`` (on) and ``support_allowance_mm`` (2)
 into its world, which then holds the surfaces and the bench as solids. ``WorldBuildTuning`` is the library's own: its
 default leaves the supports off, so a caller that builds a tuning by hand gets the world of before, byte for byte. The
-fingerprints below are that world's on the owner's two recorded looks, with and without a held target, as commit
-1d91e3a builds it (every float to a millionth).
+fingerprints below are that world's on the owner's two recorded looks, with and without a held target (every float to a
+millionth). Commit 1d91e3a built the first; they were taken again on 2026-10-06, when the camera world's boxes came to
+hold each cell's own extent, a run-on to run along one wall only and the merges to fit the slots to weigh nearness to
+the goal. The same 64 boxes of what was seen, no support among them.
 """
 
 from __future__ import annotations
@@ -22,11 +24,11 @@ from src.robot.safety.planning.live_world import CameraView
 from src.robot.safety.planning.perceived import WorldBuildTuning, build_perceived_boxes, target_keep_out_box
 from tests import _cell_2026_10_01 as cell
 
-#: ``sha256`` of the world's ``to_dict()``, floats to six places, keys sorted, as 1d91e3a builds it: by look, without and
-#: with the look's target held out.
+#: ``sha256`` of the world's ``to_dict()``, floats to six places, keys sorted, as the camera world builds it since
+#: 2026-10-06: by look, without and with the look's target held out.
 _BEFORE = {
-    ("P1", False): "91ffe553c87979e7", ("P1", True): "5c79e555cddd9546",
-    ("P5", False): "b3d00391b5f9f8f3", ("P5", True): "04ae67d7efb652d4",
+    ("P1", False): "cacfaffc865aebd9", ("P1", True): "4e420a1b83cda978",
+    ("P5", False): "75b7d5507737e209", ("P5", True): "aef9c3615b093dc2",
 }
 
 

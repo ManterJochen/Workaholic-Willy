@@ -311,7 +311,10 @@ class TheUrPathGuardSeesTheRefreshedWorldTests(unittest.TestCase):
         assert origins is not None
         np.testing.assert_allclose(refresh.call_args.kwargs["near_point_mm"], origins[-1], atol=1e-6)
 
-    def test_a_line_refreshes_once_before_the_path_gate_near_the_goal_flange(self) -> None:
+    def test_a_line_refreshes_once_before_the_path_gate_about_its_lower_end(self) -> None:
+        """A line's world is built about the TCP at its lower end, where the hand passes the parts: the goal of a line
+        down, the start of a lift (the grasp bench, 2026-10-06: about the flange of a lift's end, the boxes beside the
+        part it started from merged and the housing stood inside one)."""
         events: list[str] = []
         arm = _ur(_world(_Camera(silent=False)), _Client(joint_names=UR_ARM_JOINT_NAMES), events)
 
@@ -322,10 +325,23 @@ class TheUrPathGuardSeesTheRefreshedWorldTests(unittest.TestCase):
 
         self.assertEqual(events.count("world"), 1, events)
         self.assertLess(events.index("world"), events.index("gate_joint_path"), events)
-        # The tool points down, so the flange stands its 132 mm above the grasp centre.
-        np.testing.assert_allclose(
-            refresh.call_args.kwargs["near_point_mm"], [400.0, 0.0, 432.0], atol=1e-6
-        )
+        start = arm.get_tcp_pose()
+        low = min((np.array([400.0, 0.0, 300.0]), np.asarray(start.position_mm, dtype=np.float64)),
+                  key=lambda point: float(point[2]))
+        np.testing.assert_allclose(refresh.call_args.kwargs["near_point_mm"], low, atol=1e-6)
+
+    def test_a_line_judged_from_a_lower_start_is_built_about_its_start(self) -> None:
+        arm = _ur(_world(_Camera(silent=False)), _Client(joint_names=UR_ARM_JOINT_NAMES), [])
+        start = _pose(x=400.0)
+        up = Pose(position_mm=np.array([400.0, 0.0, 380.0]), quaternion_xyzw=start.quaternion_xyzw, frame=Frame.BASE)
+        seed = [float(v) for v in arm._conn.get_joint_positions()]
+
+        with patch.object(
+            curobo_motion, "refresh_planner_world", wraps=curobo_motion.refresh_planner_world
+        ) as refresh:
+            arm._judge_linear_move(up, command=MotionCommand.MOVE_TO, commanded=False, start=(start, seed))
+
+        np.testing.assert_allclose(refresh.call_args.kwargs["near_point_mm"], [400.0, 0.0, 300.0], atol=1e-6)
 
 
 class TheSimVerbsTests(unittest.TestCase):

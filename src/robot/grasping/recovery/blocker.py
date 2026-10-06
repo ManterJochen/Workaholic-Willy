@@ -110,6 +110,9 @@ SET_DOWN_AIR_MM: Final[float] = 3.0
 
 #: A blocker was gripped, set down and the arm went back to the look and looked again.
 SET_ASIDE = "set_aside"
+#: A blocker was gripped and lifted as the part the pick takes: the caller sets it down where its parts go
+#: (``BinPickingOrchestrator.blocker_is_the_pick``, the owner, 2026-10-06: "direkt weggepackt").
+TAKEN_AS_THE_PICK = "taken_as_the_pick"
 #: Nothing the calculator saw beside the part is a separate object that may be gripped (``not_a_blocker`` says why).
 NO_BLOCKER_SEEN = "no_blocker_seen"
 #: No neighbour's removal frees a grasp of the part or spares one of its refusals, asked of the calculator.
@@ -228,26 +231,50 @@ class BlockerRecord:
 
 def clusters_of(
     points_base_mm: Any, *, voxel_mm: float = CLUSTER_VOXEL_MM, min_points: int = MIN_CLUSTER_POINTS,
+    open_width_mm: Optional[float] = None,
 ) -> tuple[Cluster, ...]:
     """The separate objects among ``points_base_mm``, the largest first: points whose ``voxel_mm`` voxels touch at a
-    face, an edge or a corner are one object, and one of fewer than ``min_points`` points is a speck."""
+    face, an edge or a corner are one object, and one of fewer than ``min_points`` points is a speck.
+
+    With ``open_width_mm`` an object too wide for the hand across its narrow side is asked again on voxels half as
+    large that join at a face alone: two parts whose corners stand a few millimetres apart joined at the coarse voxel
+    and came back one object 54 mm across, which no hand grips (the grasp bench's L of two cubes, 2026-10-05). Where it
+    falls into two or more objects of ``min_points`` each, those stand in its place; where it does not, it stays one.
+    """
     points = np.asarray(points_base_mm, dtype=np.float64).reshape(-1, 3)
     points = points[np.all(np.isfinite(points), axis=1)]
     if points.shape[0] < int(min_points):
         return ()
+    kept = _groups(points, float(voxel_mm), int(min_points), corners=True)
+    if open_width_mm is not None:
+        split: list[np.ndarray] = []
+        for group in kept:
+            if Cluster(points_base_mm=group).widths_mm[0] > float(open_width_mm) - JAW_SLACK_MM:
+                pieces = _groups(group, float(voxel_mm) / 2.0, int(min_points), corners=False)
+                if len(pieces) >= 2:
+                    split.extend(pieces)
+                    continue
+            split.append(group)
+        kept = sorted(split, key=lambda g: -g.shape[0])
+    return tuple(Cluster(points_base_mm=group) for group in kept)
+
+
+def _groups(points: np.ndarray, voxel_mm: float, min_points: int, *, corners: bool) -> list[np.ndarray]:
+    """``points`` grouped by touching ``voxel_mm`` voxels, at a face, an edge or a corner (``corners``) or at a face
+    alone, the largest first; a group of fewer than ``min_points`` points is left out."""
     from scipy import ndimage  # noqa: PLC0415 (only a clearing pays for it)
 
-    keys = np.floor(points / float(voxel_mm)).astype(np.int64)
+    keys = np.floor(points / voxel_mm).astype(np.int64)
     cells, inverse = np.unique(keys, axis=0, return_inverse=True)
     inverse = np.asarray(inverse).reshape(-1)
     low = cells.min(axis=0)
     grid = np.zeros(tuple(int(v) for v in cells.max(axis=0) - low + 1), dtype=bool)
     grid[tuple((cells - low).T)] = True
-    labels, _count = ndimage.label(grid, structure=np.ones((3, 3, 3), dtype=bool))
+    structure = np.ones((3, 3, 3), dtype=bool) if corners else ndimage.generate_binary_structure(3, 1)
+    labels, _count = ndimage.label(grid, structure=structure)
     of_point = labels[tuple((cells - low).T)][inverse]
     groups = [points[of_point == label] for label in np.unique(of_point)]
-    kept = sorted((group for group in groups if group.shape[0] >= int(min_points)), key=lambda g: -g.shape[0])
-    return tuple(Cluster(points_base_mm=group) for group in kept)
+    return sorted((group for group in groups if group.shape[0] >= min_points), key=lambda g: -g.shape[0])
 
 
 def support_seen_round(footprint_xy: Any, table_xy: Any, *, ring_mm: float = FOOT_RING_MM,

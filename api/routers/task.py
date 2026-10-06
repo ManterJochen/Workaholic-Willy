@@ -190,6 +190,8 @@ def _plan(cell: Console, body: TaskIn) -> dict[str, Any]:
         "options": {"multi_view": options.multi_view, "both_faces": options.both_faces, "closing_axis": axis,
                     "push_mm": push_mm, "push_asked": options.push_mm is not None,
                     "critical_parts": options.critical_parts, "record_views": options.record_views,
+                    "rescan": options.rescan, "push": options.push, "clear": options.clear,
+                    "blocker_into_the_place": options.blocker_into_the_place,
                     "rim_air_mm": rim_air, "pick_anything": options.pick_anything, "overlay": options.overlay},
         "command": body.command.model_dump() if body.command is not None else None,
         "first_motion": "look",
@@ -270,13 +272,14 @@ def post_task_stop(cell: Annotated[Console, Depends(console)], run_id: str | Non
     ends ``stopped_after_part``. During the countdown it ends ``cancelled`` with nothing moved.
 
     A Home run is stopped too, before its one move is sent: during its countdown, or after it as long as the move has
-    not gone out, it ends ``cancelled`` with nothing moved; a move already under way runs to its end. Nothing is
-    latched, so no "the cell is clear" is owed, as after a halt."""
+    not gone out, it ends ``cancelled`` with nothing moved; a move already under way runs to its end. A wave is stopped
+    the same way before its next swing, and the arm stands where the last swing left it. Nothing is latched, so no "the
+    cell is clear" is owed, as after a halt."""
     registry = cell.registry
     run = registry.get(run_id) if run_id else registry.active()
     if run is None:
         raise refusal("no_such_run", "no task to stop." if not run_id else f"no run {run_id!r}.")
-    if run.kind is RunKind.HOME:
+    if run.kind in (RunKind.HOME, RunKind.WAVE):
         registry.stop_home(run.id)
         return RunOut(**run.to_dict())
     if run.kind is not RunKind.TASK:

@@ -78,12 +78,17 @@ def _deepest(boxes: Any, poses: "list[tuple[float, np.ndarray]]") -> np.ndarray:
     return last
 
 
-def _world_boxes(depth: np.ndarray, near: np.ndarray, *, allowance: float = 2.0, held: bool = True) -> Any:
+def _world_boxes(depth: np.ndarray, near: np.ndarray, *, allowance: float = 2.0, held: bool = True,
+                 reading: bool = False) -> Any:
+    """The guard's boxes of the look with ``depth`` drawn in. ``reading`` holds the fingers to the support's reading as
+    the shipped cell does (``fingers_to_the_support_reading``, 1 mm over it); off, every link keeps the guard's distance
+    from the whole solid, the allowance's own proof."""
     from src.config.schema.robot import RobotConfig
 
     owner = cell.owner_cell()
     look = cell.look("P1")
-    config = RobotConfig.model_validate(cell.owner_robot(perceived={"support_allowance_mm": allowance}))
+    config = RobotConfig.model_validate(cell.owner_robot(perceived={"support_allowance_mm": allowance,
+                                                                    "fingers_to_the_support_reading": reading}))
     snapshot = owner.world(look, depth, config=config).world_for(
         self_envelope=owner.envelope(np.radians(cell.LOOK_0_DEG)), near_point_mm=near)
     assert snapshot.perceived is not None, snapshot.reason
@@ -129,6 +134,18 @@ class AThinPartOnTheMatKeepsTheGuardsDistanceTests(unittest.TestCase):
                 with self.subTest(thickness_mm=thickness, at=(x, y)):
                     (true,) = _keeps(x, y, (15.0, 15.0, thickness), (0.0,))
                     self.assertGreaterEqual(true, 5.0)
+
+    def test_the_shipped_fingers_come_to_1_mm_of_the_reading_and_meet_what_it_swallowed(self) -> None:
+        """⚠ The owner's choice, 2026-10-06 ("bis auf 1 mm, solange er sie nicht berührt"), on top of "wir müssen tiefer
+        gehen" (2026-10-05): the fingers keep 1 mm over the support's reading and its excess, not the guard's distance
+        from the whole solid. What the band took for the support, a part 2 to 6 mm thick lying flat that no box holds,
+        is the support for them too: the hand meets it, at the worst pressing into its top by the band. A part the
+        detector names stands as a part (its fingers' rule, ``fingers_touch_parts``); a cell whose mat holds thin parts
+        nobody names sets ``perceived.finger_floor_mm`` back to the guard's distance or turns the reading off."""
+        (two,) = _keeps(40.0, -790.0, (15.0, 15.0, 2.0), (0.0,), reading=True)
+        self.assertGreaterEqual(two, 1.0)
+        (six,) = _keeps(40.0, -790.0, (15.0, 15.0, 6.0), (0.0,), reading=True)
+        self.assertEqual(0.0, six)
 
     def test_the_naive_world_lets_the_hand_within_5_mm(self) -> None:
         """The band erased and nothing held: the hazard the solids close, so this test can see it."""

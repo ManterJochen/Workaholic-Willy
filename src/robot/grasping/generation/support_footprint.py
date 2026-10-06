@@ -54,7 +54,7 @@ NumPy scan otherwise, the same answer). BASE millimetres throughout, Z up along 
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Final
 
 from dataclasses import dataclass
@@ -71,6 +71,7 @@ __all__ = [
     "REFUSAL_CAUSES",
     "SIDE_APPROACH_SCORE_WEIGHTS",
     "CorridorSeen",
+    "HandFloor",
     "SupportFootprintCandidate",
     "SupportFootprintJaw",
     "SupportPrism",
@@ -91,6 +92,11 @@ DEFAULT_FLOOR_MARGIN_MM: Final[float] = 2.0
 #: first. ``Scene.grasps`` reads it too: a closing axis it is asked for is chosen before the cap, not after it.
 DEFAULT_MAX_CANDIDATES: Final[int] = 12
 
+#: The cell of the grid that keeps the hand off the neighbours' points where the boxes the camera world builds of them
+#: decide (``seen_envelope``), millimetres, grown by one cell: 4 to 8 mm off a point, under the guard's distance from a
+#: box its margin grew round the same point. A choice: the rigid grid's 4 mm.
+SEEN_POINTS_CELL_MM: Final[float] = 4.0
+
 #: How close two footprint points have to lie to count as one surface, millimetres, for the fragment
 #: trim in :func:`reconstruct_support_prism`. It is the side of a grid cell and two points in touching
 #: cells are joined, so points closer than 6 mm are always one surface and pieces more than
@@ -105,6 +111,21 @@ _FRAGMENT_LINK_MM: Final[float] = 6.0
 #: only 0.15 of that blend, so a tilted candidate from another anchor can still rank first. With side
 #: approaches every tilt that fits is a candidate, and the ladder is the order a tie is broken in.
 _TILTS_DEG = (0.0, 15.0, 30.0, 45.0, 60.0, 75.0, 90.0)
+#: Where the coarse grid finds fewer grasps than this, the search runs again on the fine one (the owner, 2026-10-06:
+#: "die Orientierung feiner ... den kompletten Freiheitsgrad"). A cylinder 12 mm from a wall: its best grasp scores 0.806
+#: on the fine grid against 0.788 on the coarse, at four times the time, which only the parts with few grasps pay.
+_FINE_BELOW: Final[int] = 3
+#: The fine grid's tilts: every 7.5 degrees.
+_FINE_TILTS_DEG: Final[tuple[float, ...]] = tuple(7.5 * k for k in range(13))
+#: The fine grid's closing axes beside each face's, turned this far either way, degrees: inside the friction cone
+#: (26.6 degrees at the shipped 0.5), whose slack the score weighs, so a face's own axis still ranks first.
+_FINE_YAW_DEG: Final[tuple[float, ...]] = (10.0, 20.0)
+#: The fine grid's fan for a round footprint: every 15 degrees.
+_FINE_RADIAL: Final[int] = 12
+#: The fine grid's closing axes tilted out of the horizontal, the hand rolled about its binormal so one finger stands
+#: higher than the other, degrees either way (the owner, 2026-10-06: "die geneigte Schliessachse"): a pad on a
+#: vertical face then closes off its normal by the roll, inside the friction cone, whose slack the score weighs.
+_FINE_ROLL_DEG: Final[tuple[float, ...]] = (10.0, -10.0, 20.0, -20.0)
 #: Where along the perpendicular extent to place the closing line: the middle and both thirds.
 _FRACS = (0.0, -0.35, 0.35)
 
@@ -131,6 +152,75 @@ _CORRIDOR_CAUSES: Final[Mapping[str, str]] = {"seen": "seen_corridor", "declared
 #: was seen in (the cell-fix plan's contract 5: 5 mm tolerance); SFE never builds one.
 CorridorSeen = Callable[[np.ndarray], np.ndarray]
 
+
+@dataclass(frozen=True)
+class HandFloor:
+    """How low the hand may come over the solids the guard holds under it: each solid's top face and the guard's distance.
+
+    A support's solid stands over the surface's reading by what the reading stands over its plane, the band and the
+    allowance (``support_surfaces.SupportSolid``), and the guard keeps its distance from the box, not from the reading.
+    A hand that cleared the reading by the support clearance alone came within the guard's distance of the box: the
+    calculator's post-hoc filter refused all 12 grasps of a 30 mm cylinder lying on the mat, whose solid stood 7.3 mm
+    over the reading (the grasp bench, 2026-10-06). The caller hands the solids the guard holds; SFE never builds one.
+    Each is read as the guard reads it, a box: ``centre_mm``, ``rotation`` (its axes in BASE, the third its up) and
+    ``half_extents_mm``.
+
+    ``fingers_to_the_reading``: a finger keeps the distance from each solid's top less its band and its allowance
+    (``band_mm``, ``allowance_mm``), the reading and its excess, as the guard holds it
+    (``perceived.fingers_to_the_support_reading``, the owner's "wir müssen tiefer gehen" of 2026-10-05); every other
+    part of the hand from the whole solid. Ask :meth:`at` and :meth:`under` with ``fingers=True`` for a finger's points.
+    """
+
+    solids: tuple[Any, ...]
+    distance_mm: float
+    fingers_to_the_reading: bool = False
+    #: How much nearer than ``distance_mm`` a finger comes to the reading (``scene_obstacles.finger_floor_drop_mm``).
+    finger_floor_drop_mm: float = 0.0
+
+    def _drop(self, solid: Any, fingers: bool) -> float:
+        """How far under ``solid``'s top a finger keeps the distance from: its band, its allowance and the finger
+        floor's drop where the fingers go to the reading, nothing otherwise."""
+        if not (fingers and self.fingers_to_the_reading):
+            return 0.0
+        return (float(getattr(solid, "band_mm", 0.0) or 0.0) + float(getattr(solid, "allowance_mm", 0.0) or 0.0)
+                + max(0.0, float(self.finger_floor_drop_mm)))
+
+    @property
+    def highest_mm(self) -> float:
+        """No point stands under the floor at or above this height, millimetres; ``-inf`` with no solid."""
+        tops = [float(np.asarray(solid.centre_mm, dtype=np.float64)[2]
+                      + (np.abs(np.asarray(solid.rotation, dtype=np.float64).reshape(3, 3))
+                         @ np.asarray(solid.half_extents_mm, dtype=np.float64))[2]) for solid in self.solids]
+        return max(tops) + float(self.distance_mm) if tops else -math.inf
+
+    def at(self, xy: np.ndarray, *, fingers: bool = False) -> np.ndarray:
+        """The floor over each of ``(N, 2)`` BASE points, millimetres: the highest top face over it and the distance, a
+        finger's (``fingers``) the top less the solid's drop (:meth:`_drop`); ``-inf`` where no solid's top face lies
+        over it."""
+        points = np.asarray(xy, dtype=np.float64).reshape(-1, 2)
+        out = np.full(points.shape[0], -math.inf)
+        for solid in self.solids:
+            centre = np.asarray(solid.centre_mm, dtype=np.float64).reshape(3)
+            turn = np.asarray(solid.rotation, dtype=np.float64).reshape(3, 3)
+            half = np.asarray(solid.half_extents_mm, dtype=np.float64).reshape(3)
+            up = turn[:, 2]
+            if up[2] <= 1e-6:
+                continue   # a box on its side has no top face to stand over
+            offset = points - centre[:2]
+            # Where the top face's plane, local z at its half extent, stands over each point.
+            z = centre[2] + (half[2] - offset @ up[:2]) / up[2]
+            local = np.column_stack([offset, z - centre[2]]) @ turn
+            over = np.all(np.abs(local[:, :2]) <= half[:2] + 1e-9, axis=1)
+            drop = self._drop(solid, fingers) / up[2]
+            out[over] = np.maximum(out[over], z[over] - drop)
+        return out + float(self.distance_mm)
+
+    def under(self, points: np.ndarray, *, fingers: bool = False) -> bool:
+        """Whether any of ``(N, 3)`` BASE points stands under the floor, a finger's where ``fingers``."""
+        pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+        pts = pts[pts[:, 2] < self.highest_mm]
+        return bool(pts.shape[0]) and bool((pts[:, 2] < self.at(pts[:, :2], fingers=fingers)).any())
+
 #: How the five margins are blended with side approaches on, in the order of ``_SCORE_WEIGHTS``: friction-cone slack
 #: 0.35, aperture left 0.20, clearance 0.35, upright 0, centred 0.10. Upright weighs nothing, because the owner wants the
 #: approaches equal by geometry (2026-10-01); clearance takes its weight and is the room the grasp keeps, the smaller of
@@ -142,6 +232,11 @@ SIDE_APPROACH_SCORE_WEIGHTS: Final[tuple[float, float, float, float, float]] = (
 _CLEARANCE_FULL_MM: Final[float] = 20.0
 #: A candidate tilted this far off vertical or more is offered, with side approaches, only through space a depth ray saw.
 _SEEN_FROM_TILT_DEG: Final[float] = 15.0
+#: Scores this near the best of a run are equal by geometry, and the run is ranked vertical first. A face's normal read
+#: off a noisy footprint moves the contact angle by hundredths of a degree from one anchor to the next, 0.0008 of score
+#: on the straight-down cube of ``tests/test_a_tilted_view_grasps_on_the_part.py``; rounded to 0.001 the two sat either
+#: side of a rounding edge, and a 15 degree tilt took the rank from the vertical grasp.
+_TIE_SCORE: Final[float] = 0.001
 
 
 @dataclass(frozen=True, slots=True)
@@ -253,6 +348,17 @@ class SupportFootprintJaw:
             palm_width_mm=j.palm_width_mm,
             outer_margin_mm=geometry.outer_margin_mm,
         )
+        # Where the guard holds the jaw: past the TCP by as much as the registry and the plates put it
+        # (``planning.hand.hand_past_the_tcp_mm``), as the cell's calculator plans it (``build_gripper_geometry``).
+        from src.robot.safety.planning.hand import hand_past_the_tcp_mm  # noqa: PLC0415 (config side only)
+
+        past = hand_past_the_tcp_mm(robot_config)
+        if past > 0.0:
+            from dataclasses import replace as _replace  # noqa: PLC0415
+
+            model = _replace(model, finger_length_mm=float(model.finger_length_mm) - past,
+                             fingertip_depth_mm=float(model.fingertip_depth_mm) + past,
+                             pad_ahead_mm=float(model.pad_ahead_mm) + past)
         return cls.from_model(
             model,
             aperture_mm=float(robot_config.gripper.max_width_mm),
@@ -567,14 +673,23 @@ def reconstruct_support_prism(
     return prism
 
 
-def closing_axes(prism: SupportPrism, *, radial: int = 6) -> list[np.ndarray]:
+def closing_axes(prism: SupportPrism, *, radial: int = 6,
+                 yaw_offsets_deg: Sequence[float] = ()) -> list[np.ndarray]:
     """The closing directions the reconstruction admits, enumerated rather than searched.
 
     A vertical prism's antipodal side-face pairs are the min-area rectangle's two axes; a round
     footprint admits every radial direction, so it gets a fan of ``radial`` directions on top of
-    those two.
+    those two. ``yaw_offsets_deg`` turns each of the two axes that far either way as well: a jaw
+    closing a little off a face's normal still holds inside the friction cone, which ``_build``
+    asks, and may fit between neighbours where the face's own axis does not.
     """
     axes = [np.array([prism.u[0], prism.u[1], 0.0]), np.array([prism.v[0], prism.v[1], 0.0])]
+    for base in (prism.u, prism.v):
+        across = np.array([-base[1], base[0]])
+        for offset in yaw_offsets_deg:
+            for turned in (np.radians(offset), -np.radians(offset)):
+                d = np.cos(turned) * base + np.sin(turned) * across
+                axes.append(np.array([d[0], d[1], 0.0]))
     if prism.roundness < 0.88:
         for k in range(radial):
             angle = np.pi * k / radial
@@ -779,6 +894,22 @@ class _Side:
     room: _Room
 
 
+def _upright_first(found: list["SupportFootprintCandidate"]) -> list["SupportFootprintCandidate"]:
+    """``found`` by score, each run within :data:`_TIE_SCORE` of its best ranked vertical first: the owner's approaches
+    equal by geometry (2026-10-01), so vertical wins a tie. ``approach[2]`` is -cos(tilt) and rises with it; rounded, so
+    float noise cannot reorder one rung of the ladder."""
+    by_score = sorted(found, key=lambda c: -c.score)
+    ranked: list[SupportFootprintCandidate] = []
+    start = 0
+    while start < len(by_score):
+        end = start
+        while end < len(by_score) and by_score[end].score >= by_score[start].score - _TIE_SCORE:
+            end += 1
+        ranked.extend(sorted(by_score[start:end], key=lambda c: round(float(c.approach[2]), 9)))
+        start = end
+    return ranked
+
+
 def _refused(refusals: dict[str, int] | None, cause: str) -> "SupportFootprintCandidate | None":
     """Count one refused build under ``cause`` where the caller counts; always ``None``, the refused build's answer."""
     if refusals is not None:
@@ -812,6 +943,11 @@ def _pad_contacts(prism: SupportPrism, anchor: np.ndarray, axis: np.ndarray,
     pos, neg = (~par) & (a > 0), (~par) & (a < 0)
     hi = np.nanmin(np.where(pos[None, :], t, np.inf), axis=1) if pos.any() else np.full(9, np.inf)
     lo = np.nanmax(np.where(neg[None, :], t, -np.inf), axis=1) if neg.any() else np.full(9, -np.inf)
+    az = float(axis[2])
+    if abs(az) > 1e-12:
+        # A closing axis tilted out of the horizontal leaves the part through its top or its foot as well as a side.
+        t1, t2 = (prism.z0 - origins[:, 2]) / az, (prism.z1 - origins[:, 2]) / az
+        lo, hi = np.maximum(lo, np.minimum(t1, t2)), np.minimum(hi, np.maximum(t1, t2))
     ok &= (lo <= hi) & (origins[:, 2] >= prism.z0) & (origins[:, 2] <= prism.z1)
     if not ok.any():
         return None
@@ -834,8 +970,54 @@ def _finger_points(contact: np.ndarray, approach: np.ndarray, binormal: np.ndarr
     return grid.reshape(-1, 3)
 
 
+def _rolled(axis: np.ndarray, approach: np.ndarray, roll_deg: float) -> tuple[np.ndarray, np.ndarray]:
+    """``axis`` and ``approach`` turned ``roll_deg`` about the hand's binormal (``approach x axis``): the closing axis
+    tilted out of the horizontal, one finger higher than the other, the approach leaning along the closing axis. No
+    roll returns them as they are."""
+    if roll_deg == 0.0:
+        return axis, approach
+    binormal = np.cross(approach, axis)
+    binormal /= max(float(np.linalg.norm(binormal)), _EPS)
+    angle = math.radians(roll_deg)
+    turned_axis = _rodrigues(axis, binormal, angle)
+    turned_approach = _rodrigues(approach, binormal, angle)
+    return (turned_axis / max(float(np.linalg.norm(turned_axis)), _EPS),
+            turned_approach / max(float(np.linalg.norm(turned_approach)), _EPS))
+
+
+def _on_the_axis(contact: np.ndarray, anchor: np.ndarray, axis: np.ndarray) -> np.ndarray:
+    """Where a finger closing on ``contact`` stands: the anchor, moved along the closing axis as far as the contact."""
+    return anchor + float((contact - anchor) @ axis) * axis
+
+
+def _seated(prism: "SupportPrism", anchor: np.ndarray, approach: np.ndarray, jaw: SupportFootprintJaw) -> float:
+    """How well a grasp at ``anchor`` sits on the part, 0 to 1: half how much of the pad's height lies on the part, half
+    how near the anchor stands to the part's middle height. A grasp at the very top holds the part with the pad's lower
+    half alone and far from its middle; the owner saw the hand grip only the top sixth of the parts (2026-10-05)."""
+    down = -float(approach[2])
+    upper = float(anchor[2]) + jaw.pad_behind_mm * down
+    lower = float(anchor[2]) - jaw.pad_ahead_mm * down
+    reach = upper - lower
+    covered = (max(0.0, min(upper, prism.z1) - max(lower, prism.z0)) / reach) if reach > _EPS else 0.0
+    half = (prism.z1 - prism.z0) / 2.0
+    middle = 1.0 - min(1.0, abs(float(anchor[2]) - (prism.z0 + half)) / half) if half > _EPS else 0.0
+    return 0.5 * covered + 0.5 * middle
+
+
+def _palm_corners(anchor: np.ndarray, axis: np.ndarray, approach: np.ndarray, binormal: np.ndarray,
+                  jaw: SupportFootprintJaw) -> np.ndarray:
+    """The open palm box's eight corners in BASE, anchored at the grasp centre as ``collision_boxes`` anchors it: across
+    the open fingers' outer faces, its width along the binormal, ``finger_behind`` to ``finger_behind + palm_depth``
+    back up the approach."""
+    half_x = jaw.aperture_mm / 2.0 + jaw.finger_thickness_mm
+    half_y = jaw.palm_width_mm / 2.0
+    backs = (-jaw.finger_behind_mm, -(jaw.finger_behind_mm + jaw.palm_depth_mm))
+    return np.array([anchor + sx * half_x * axis + sy * half_y * binormal + back * approach
+                     for sx in (-1.0, 1.0) for sy in (-1.0, 1.0) for back in backs])
+
+
 def _palm_low_mm(anchor: np.ndarray, approach: np.ndarray, binormal: np.ndarray,
-                 jaw: SupportFootprintJaw) -> float:
+                 jaw: SupportFootprintJaw, axis: "np.ndarray | None" = None) -> float:
     """Lowest point of the palm box, anchored at the grasp centre exactly as the envelope anchors it.
 
     Mirrors ``ParallelJawGripperModel.collision_boxes``' palm: it spans ``-finger_length`` to
@@ -844,9 +1026,10 @@ def _palm_low_mm(anchor: np.ndarray, approach: np.ndarray, binormal: np.ndarray,
     (``axis[2] == 0``), so it contributes nothing to a height.
     """
     back = float(approach[2])
+    across = 0.0 if axis is None else (jaw.aperture_mm / 2.0 + jaw.finger_thickness_mm) * abs(float(axis[2]))
     return (float(anchor[2])
             + min(back * -jaw.finger_behind_mm, back * -(jaw.finger_behind_mm + jaw.palm_depth_mm))
-            - (jaw.palm_width_mm / 2.0) * abs(float(binormal[2])))
+            - (jaw.palm_width_mm / 2.0) * abs(float(binormal[2])) - across)
 
 
 def _build(prism: SupportPrism, anchor: np.ndarray, axis: np.ndarray, approach: np.ndarray,
@@ -854,14 +1037,14 @@ def _build(prism: SupportPrism, anchor: np.ndarray, axis: np.ndarray, approach: 
            support_height_mm: float, *, palm_aware: bool = False,
            score_weights: tuple[float, float, float, float, float] | None = None,
            refusals: dict[str, int] | None = None, side: _Side | None = None, tilt_deg: float = 0.0,
-           seen: Any = None,
+           seen: Any = None, floor: HandFloor | None = None,
            ) -> SupportFootprintCandidate | None:
     binormal = np.cross(approach, axis)
     binormal /= max(float(np.linalg.norm(binormal)), _EPS)
     contacts = _pad_contacts(prism, anchor, axis, approach, binormal, jaw)
     if contacts is None:
         return _refused(refusals, "span")
-    t_enter, t_exit, contact_b, contact_a, low_pad_z = contacts
+    t_enter, t_exit, contact_b, contact_a, _low_pad_z = contacts
     span = t_exit - t_enter
     if not (t_enter - 2.0 <= 0.0 <= t_exit + 2.0):
         return _refused(refusals, "span")
@@ -875,22 +1058,25 @@ def _build(prism: SupportPrism, anchor: np.ndarray, axis: np.ndarray, approach: 
         return _refused(refusals, "cone")
 
     half_thickness = jaw.finger_thickness_mm / 2.0
+    # Each finger stands where the hand puts it: at the anchor, moved along the closing axis to its contact. The pad's
+    # sample that touched may lie a pad's length up or down the approach, and a finger hung from it stood a full
+    # ``finger_ahead`` under the real one: every grasp was planned 10.45 mm higher than the hand needs, and parts under
+    # 28 mm got none (the grasp bench and the owner, 2026-10-05: "wir müssen tiefer gehen"). The width tips the tip
+    # further down where the approach is tilted, which the finger's own samples carry.
     closed = np.concatenate([
-        _finger_points(contact_a + half_thickness * axis, approach, binormal, jaw),
-        _finger_points(contact_b - half_thickness * axis, approach, binormal, jaw)])
-    # Deliberately the worst case: the pad may touch anywhere on its face, so the fingertip can end
-    # up a full ``finger_ahead`` below the lowest pad point that reaches the object, and the finger's
-    # own width tips further down when the approach is tilted.
-    low = min(float(closed[:, 2].min()),
-              low_pad_z - jaw.finger_ahead_mm * max(0.0, -float(approach[2]))
-              - (jaw.finger_width_mm / 2.0) * abs(float(binormal[2])))
+        _finger_points(_on_the_axis(contact_a, anchor, axis) + half_thickness * axis, approach, binormal, jaw),
+        _finger_points(_on_the_axis(contact_b, anchor, axis) - half_thickness * axis, approach, binormal, jaw)])
+    low = float(closed[:, 2].min())
     if palm_aware:
-        # Taken as a minimum against the finger reasoning above, never as a replacement for it: the
-        # finger term is deliberately worst-case (the pad may touch anywhere on its face) and is the
-        # stricter of the two on a straight-down grasp. Adding the palm can only lower ``low``, so
-        # this can refuse a candidate and can never admit one that was refused before.
-        low = min(low, _palm_low_mm(anchor, approach, binormal, jaw))
+        # Taken as a minimum against the fingers, never as a replacement for them: adding the palm can only lower
+        # ``low``, so this can refuse a candidate and can never admit one that was refused before.
+        low = min(low, _palm_low_mm(anchor, approach, binormal, jaw, axis))
     if low < support_height_mm + jaw.table_clearance_mm:
+        return _refused(refusals, "table")
+    # The solid the guard holds under the hand: every finger point over its top by the guard's distance, and the palm,
+    # which the guard holds whether or not ``palm_aware`` plans it against the reading.
+    if floor is not None and (floor.under(closed, fingers=True)
+                              or floor.under(_palm_corners(anchor, axis, approach, binormal, jaw))):
         return _refused(refusals, "table")
 
     # A real jaw arrives open and closes at the end, so the corridor is checked at the aperture, not
@@ -902,6 +1088,10 @@ def _build(prism: SupportPrism, anchor: np.ndarray, axis: np.ndarray, approach: 
         _finger_points(anchor + open_half * axis, approach, binormal, jaw, reach, 8.0),
         _finger_points(anchor - open_half * axis, approach, binormal, jaw, reach, 8.0)])
     swept = swept[swept[:, 2] >= support_height_mm]
+    # The open fingers come down beside the closed ones, wider: over a tilted solid or one beside the part's they may
+    # stand where the closed ones do not.
+    if floor is not None and floor.under(swept, fingers=True):
+        return _refused(refusals, "table")
     # The way in is asked before the closed fingers, so a refusal counts where the hand meets something
     # first: a part boxed in by its neighbours counts its corridor. A candidate needs both clear and the
     # checks change nothing, so the order decides only what a refusal is counted under.
@@ -936,7 +1126,7 @@ def _build(prism: SupportPrism, anchor: np.ndarray, axis: np.ndarray, approach: 
     # shadow. A vertical grasp is not asked, as it never was.
     room = math.inf
     if side is not None:
-        if side.seen is not None and tilt_deg >= _SEEN_FROM_TILT_DEG and swept.shape[0]:
+        if side.seen is not None and tilt_deg >= _SEEN_FROM_TILT_DEG - 1e-6 and swept.shape[0]:
             seen = np.asarray(side.seen(swept), dtype=bool).reshape(-1)
             if seen.shape[0] != swept.shape[0]:
                 raise ValueError(f"corridor_seen answered {seen.shape[0]} verdict(s) for {swept.shape[0]} point(s)")
@@ -944,14 +1134,18 @@ def _build(prism: SupportPrism, anchor: np.ndarray, axis: np.ndarray, approach: 
                 return _refused(refusals, "unseen_corridor")
         room = side.room.least_mm(swept)
 
-    # Rank on measured margins only. The weights and their measurement are at ``_SCORE_WEIGHTS``; with
-    # side approaches at ``SIDE_APPROACH_SCORE_WEIGHTS``, where the third term is the room the grasp keeps.
+    # Rank on measured margins. The weights and their measurement are at ``_SCORE_WEIGHTS``; with side approaches at
+    # ``SIDE_APPROACH_SCORE_WEIGHTS``. The third term is how the grasp sits on the part (``_seated``), and with side
+    # approaches as much the room it keeps from every obstacle. A fingertip high over the support scored in full until
+    # 2026-10-05 and drove every grasp to the part's top; the table check keeps the clearance, the term no longer pays
+    # for more of it.
     cone_slack = 1.0 - worst / cone                                 # depth inside the friction cone
     width_margin = 1.0 - span / jaw.aperture_mm                     # aperture left over
+    seated = _seated(prism, anchor, approach, jaw)
     if side is None:
-        table_margin = min(1.0, (low - support_height_mm) / 20.0)   # fingertip off the table
+        table_margin = seated
     else:
-        table_margin = min(1.0, min(low - support_height_mm, room) / _CLEARANCE_FULL_MM)
+        table_margin = 0.5 * seated + 0.5 * min(1.0, room / _CLEARANCE_FULL_MM)
     upright = max(0.0, float(-approach @ np.array([0.0, 0.0, 1.0])))
     centred = 1.0 - min(1.0, abs(t_enter + t_exit) / max(span, 1.0))
     if score_weights is not None:
@@ -983,6 +1177,7 @@ def generate_support_footprint_grasps(
     side_approaches: bool = False,
     corridor_seen: CorridorSeen | None = None,
     seen_envelope: Any = None,
+    hand_floor: HandFloor | None = None,
 ) -> list[SupportFootprintCandidate]:
     """Ranked candidates in BASE, from a masked target cloud and the rest of the scene as obstacles.
 
@@ -1006,12 +1201,16 @@ def generate_support_footprint_grasps(
 
     ``side_approaches`` offers every tilt the hand fits at instead of the first, and ranks by
     :data:`SIDE_APPROACH_SCORE_WEIGHTS` (upright weighs nothing; clearance is the room the grasp keeps,
-    to the support and to every obstacle point), sorted by score to 0.001 and then by tilt, so
+    to the support and to every obstacle point), sorted by score and each run within 0.001 of its best by tilt, so
     vertical wins a tie. A candidate tilted 15 degrees or more whose open corridor passes a point
     ``corridor_seen`` says no depth ray reached is refused (``unseen_corridor``). Without
     ``corridor_seen`` no tilt past the first that fits is offered: the candidates are the ones the
     generator offers with side approaches off, ranked as above. Off, the default, is byte-identical
     to the generator before side approaches.
+
+    ``hand_floor`` (:class:`HandFloor`) holds the solids the guard holds under the hand: no point of the hand comes
+    nearer their top than the guard's distance (``table``), and the height solve starts from it, so a grasp sits as low
+    as the guard admits and no lower. ``None`` holds the support clearance over the reading alone, as before.
 
     Returns an empty list when the cloud is too sparse to reconstruct or admits no legal grasp,
     which is a real answer and not a failure. Refusing beats proposing a grasp that goes under the
@@ -1029,8 +1228,15 @@ def generate_support_footprint_grasps(
     if prism.trimmed.shape[0]:
         rigid = (prism.trimmed if rigid is None or np.size(rigid) == 0
                  else np.vstack([np.asarray(rigid, dtype=np.float64).reshape(-1, 3), prism.trimmed]))
+    # Where the boxes the camera world builds of the neighbours are known (``seen_envelope``), the guard's own distance
+    # from them decides (``seen_fingers`` below): every point is inside its box, the world's margin from its sides. The
+    # sparse grid then keeps the hand off the points alone, on a fine grid: grown 12 mm on 12 mm cells it refused every
+    # finger within 12 to 24 mm of a neighbour, twice what the guard keeps, and lost 1100 of 1250 builds of a cylinder
+    # whose posts stood 15 mm clear of its fingers (the grasp bench, 2026-10-05). Without the boxes it stands in for
+    # them as it always did.
     obstacles = _ObstacleSet(
-        _Obstacles(obstacle_points_base_mm),
+        _Obstacles(obstacle_points_base_mm) if seen_envelope is None
+        else _Obstacles(obstacle_points_base_mm, cell_mm=SEEN_POINTS_CELL_MM, margin_mm=SEEN_POINTS_CELL_MM),
         _Obstacles(rigid, cell_mm=4.0, margin_mm=0.0),
     )
     if refusals is not None:
@@ -1040,65 +1246,93 @@ def generate_support_footprint_grasps(
     every_tilt = side is not None and side.seen is not None
     found: list[SupportFootprintCandidate] = []
 
-    for raw_axis in closing_axes(prism):
-        a2 = raw_axis[:2] / max(float(np.linalg.norm(raw_axis[:2])), _EPS)
-        axis = np.array([a2[0], a2[1], 0.0])
-        perp = np.array([-a2[1], a2[0]])
-        ext_perp = float((prism.hull @ perp).max() - (prism.hull @ perp).min())
-        for frac in _FRACS:
-            base_xy = prism.centre + frac * (ext_perp / 2.0) * perp
-            mid_z = (prism.z0 + prism.z1) / 2.0
-            span_xy = prism.line_span(np.array([base_xy[0], base_xy[1], mid_z]), axis)
-            if span_xy is None:
-                continue
-            mid = base_xy + ((span_xy[0] + span_xy[1]) / 2.0) * a2
-            heights = [prism.z1 - dz for dz in height_offsets_mm]
-            # Solve for the height at which the gripper still clears the support, per tilt. This is
-            # the step the silhouette generator has no equivalent of: it anchors first and is
-            # filtered afterwards, and a filter cannot move a grasp somewhere legal.
-            for tilt in _TILTS_DEG:
-                c, s = np.cos(np.radians(tilt)), np.sin(np.radians(tilt))
-                # The solve has to know what the check knows: teaching ``_build`` about the palm
-                # without teaching this would only make SFE lose candidates, and the stage exists
-                # because it can move a grasp somewhere legal where a filter can only refuse. The
-                # palm's own requirement is (palm_width/2)*sin - finger_behind*cos: it is far below
-                # the finger term when the approach is vertical (the palm sits behind the fingers)
-                # and overtakes it as the grasp tilts. At 90 deg the two are 35.0 and 27.0 mm, the
-                # 8 mm the envelope rejects candidates by.
-                need_mm = 2.0 * jaw.finger_ahead_mm * c + jaw.finger_width_mm * s
-                if palm_aware:
-                    need_mm = max(need_mm, (jaw.palm_width_mm / 2.0) * s - jaw.finger_behind_mm * c)
-                need = support_height_mm + jaw.table_clearance_mm + need_mm
-                if support_height_mm + 2.0 < need <= prism.z1 - 2.0:
-                    heights.append(need + 0.5)
-            # A height is only worth trying once; the solve often lands on the same millimetre.
-            heights = sorted({round(z, 1) for z in heights
-                              if support_height_mm + 2.0 < z < prism.z1}, reverse=True)[:4]
-            for z in heights:
-                anchor = np.array([mid[0], mid[1], z])
-                for tilt in _TILTS_DEG:
-                    signs = (1.0,) if tilt == 0.0 else (1.0, -1.0)
-                    hit = False
-                    for sign in signs:
-                        approach = _rodrigues(np.array([0.0, 0.0, -1.0]), axis,
-                                              sign * np.radians(tilt))
-                        approach /= float(np.linalg.norm(approach))
-                        candidate = _build(prism, anchor, axis, approach, jaw, obstacles,
-                                           support_height_mm, palm_aware=palm_aware,
-                                           score_weights=score_weights, refusals=refusals,
-                                           side=side, tilt_deg=tilt, seen=seen_envelope)
-                        if candidate is not None:
-                            found.append(candidate)
-                            hit = True
-                    if hit and not every_tilt:
-                        break   # tilts are in preference order: the first that works is the one
+    def search(axes: Sequence[np.ndarray], tilts: Sequence[float], counted: "dict[str, int] | None",
+               rolls: Sequence[float] = (0.0,)) -> None:
+        """Every anchor, height, tilt and roll along ``axes``, each grasp that builds into ``found``."""
+        reach_across = jaw.aperture_mm / 2.0 + jaw.finger_thickness_mm
+        for raw_axis in axes:
+            a2 = raw_axis[:2] / max(float(np.linalg.norm(raw_axis[:2])), _EPS)
+            axis = np.array([a2[0], a2[1], 0.0])
+            perp = np.array([-a2[1], a2[0]])
+            ext_perp = float((prism.hull @ perp).max() - (prism.hull @ perp).min())
+            for frac in _FRACS:
+                base_xy = prism.centre + frac * (ext_perp / 2.0) * perp
+                mid_z = (prism.z0 + prism.z1) / 2.0
+                span_xy = prism.line_span(np.array([base_xy[0], base_xy[1], mid_z]), axis)
+                if span_xy is None:
+                    continue
+                mid = base_xy + ((span_xy[0] + span_xy[1]) / 2.0) * a2
+                # Where the guard's solid under the grasp lets the hand come down to (``hand_floor``).
+                floor_fingers = -math.inf if hand_floor is None else float(hand_floor.at(mid[None, :], fingers=True)[0])
+                floor_palm = -math.inf if hand_floor is None else float(hand_floor.at(mid[None, :])[0])
+                # Near the top, and at the part's middle height, where a grasp sits best (``_seated``).
+                heights = [prism.z1 - dz for dz in height_offsets_mm] + [(prism.z0 + prism.z1) / 2.0]
+                # Solve for the height at which the gripper still clears the support, per tilt. This is
+                # the step the silhouette generator has no equivalent of: it anchors first and is
+                # filtered afterwards, and a filter cannot move a grasp somewhere legal.
+                for tilt in tilts:
+                    c, s = np.cos(np.radians(tilt)), np.sin(np.radians(tilt))
+                    # The solve has to know what the check knows: teaching ``_build`` about the palm
+                    # without teaching this would only make SFE lose candidates, and the stage exists
+                    # because it can move a grasp somewhere legal where a filter can only refuse. The
+                    # palm's own requirement is (palm_width/2)*sin - finger_behind*cos: it is far below
+                    # the finger term when the approach is vertical (the palm sits behind the fingers)
+                    # and overtakes it as the grasp tilts. The finger's own: its tip ``finger_ahead`` down the
+                    # approach, and half its width further where the approach tilts (``_build``'s fingers).
+                    base = support_height_mm + jaw.table_clearance_mm
+                    need = max(base, floor_fingers) + jaw.finger_ahead_mm * c + (jaw.finger_width_mm / 2.0) * s
+                    if palm_aware or hand_floor is not None:
+                        # Over the held solid the palm is checked whatever ``palm_aware`` says (``_build``), against the
+                        # whole solid where a finger keeps the distance from the reading.
+                        need = max(need, max(base, floor_palm)
+                                   + (jaw.palm_width_mm / 2.0) * s - jaw.finger_behind_mm * c)
+                    # A rolled hand stands its lower open finger lower by its reach across the axis.
+                    for roll in rolls:
+                        rolled_need = need + reach_across * abs(math.sin(math.radians(roll)))
+                        if support_height_mm + 2.0 < rolled_need <= prism.z1 - 2.0:
+                            heights.append(rolled_need + 0.5)
+                # A height is only worth trying once; the solve often lands on the same millimetre.
+                heights = sorted({round(z, 1) for z in heights
+                                  if support_height_mm + 2.0 < z < prism.z1}, reverse=True)[:6]
+                for z in heights:
+                    anchor = np.array([mid[0], mid[1], z])
+                    for tilt in tilts:
+                        signs = (1.0,) if tilt == 0.0 else (1.0, -1.0)
+                        hit = False
+                        for sign in signs:
+                            tilted = _rodrigues(np.array([0.0, 0.0, -1.0]), axis, sign * np.radians(tilt))
+                            tilted /= float(np.linalg.norm(tilted))
+                            for roll in rolls:
+                                rolled_axis, approach = _rolled(axis, tilted, roll)
+                                # The ladder's own tilt where nothing rolls: read back off the approach, 15 degrees came
+                                # out 14.999999, and the space the tilt sweeps went unasked.
+                                off_vertical = (float(tilt) if roll == 0.0 else
+                                                math.degrees(math.acos(max(-1.0, min(1.0, -float(approach[2]))))))
+                                candidate = _build(prism, anchor, rolled_axis, approach, jaw, obstacles,
+                                                   support_height_mm, palm_aware=palm_aware,
+                                                   score_weights=score_weights, refusals=counted,
+                                                   side=side, tilt_deg=off_vertical, seen=seen_envelope,
+                                                   floor=hand_floor)
+                                if candidate is not None:
+                                    found.append(candidate)
+                                    hit = True
+                        if hit and not every_tilt:
+                            break   # tilts are in preference order: the first that works is the one
+
+    search(closing_axes(prism), _TILTS_DEG, refusals)
+    if len(found) < _FINE_BELOW:
+        # Few grasps on the coarse grid: the finer one, every 7.5 degrees of tilt, each face's closing axis turned
+        # inside the friction cone, a round part's fan every 15 degrees (the owner, 2026-10-06: "die Orientierung
+        # feiner"). Its refusals are not counted, so a count stays the coarse grid's, whichever part it is asked of.
+        search(closing_axes(prism, radial=_FINE_RADIAL, yaw_offsets_deg=_FINE_YAW_DEG), _FINE_TILTS_DEG, None)
+        # And each face's closing axis tilted out of the horizontal, one finger higher than the other, on the coarse
+        # ladder of tilts (the owner, 2026-10-06: "die geneigte Schliessachse").
+        search(closing_axes(prism), _TILTS_DEG, None, rolls=_FINE_ROLL_DEG)
 
     if side is None:
         found.sort(key=lambda c: -c.score)
     else:
-        # Equal by geometry: the score to 0.001, then the tilt, so vertical wins a tie. ``approach[2]`` is
-        # -cos(tilt) and rises with it; rounded, so float noise cannot reorder one rung of the ladder.
-        found.sort(key=lambda c: (-round(c.score, 3), round(float(c.approach[2]), 9)))
+        found = _upright_first(found)
     kept: list[SupportFootprintCandidate] = []
     for candidate in found:
         duplicate = any(

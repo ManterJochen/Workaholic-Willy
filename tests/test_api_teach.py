@@ -344,8 +344,19 @@ class AJawsCheckAndATeachNeverGoOnTogetherTests(LayerCell):
 
 
 class AChainWithNoLayerOfItsOwnRefusesATeachTests(LayerCell):
+    """Over the shipped tree, whose ``robot.yaml`` every cell reads; the scratch tree stands for it here. A customer's
+    own tree outside the repository takes the pose in its ``robot.yaml`` (2026-10-05, ``test_api_poses.py``)."""
+
     PROFILE = None
     LAYER = None
+
+    def setUp(self) -> None:
+        from unittest.mock import patch
+
+        shipped = patch("src.config.edit._is_shipped_tree", return_value=True)
+        shipped.start()
+        self.addCleanup(shipped.stop)
+        super().setUp()
 
     def test_no_layer(self) -> None:
         self.connect_arm(TeachArm())

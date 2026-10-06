@@ -300,14 +300,17 @@ class TheNextGraspOfTheSameLookTests(unittest.TestCase):
         self.assertEqual([0], cell.policy.executed)
         self.assertIs(PickOutcome.EXECUTION_FAILED, report.outcome)
 
-    def test_never_more_than_four_grasps_an_attempt(self) -> None:
-        cell = _Cell(dict.fromkeys(range(6), REFUSED), count=6)
+    def test_never_more_than_twelve_grasps_an_attempt(self) -> None:
+        """Twelve since 2026-10-06, every candidate the calculator offers; four before: a grasp refused at the hand on
+        its line down is refused before its route is planned, so the more cost little
+        (``pick_loop.GRASPS_TRIED_PER_ATTEMPT``)."""
+        cell = _Cell(dict.fromkeys(range(14), REFUSED), count=14)
 
         report = cell.run()
 
-        self.assertEqual([0, 1, 2, 3], cell.policy.executed)
+        self.assertEqual(list(range(12)), cell.policy.executed)
         (attempt,) = report.attempts
-        self.assertEqual(4, len(attempt.tries))
+        self.assertEqual(12, len(attempt.tries))
 
 
 class AStopWinsBetweenTwoGraspsTests(unittest.TestCase):
@@ -369,7 +372,7 @@ class _RefusingArm(LookingArm):
 
 
 class AToggleHandAcrossTheTriesTests(unittest.TestCase):
-    def test_four_refused_grasps_change_tool_do0_not_once_and_ask_nobody(self) -> None:
+    def test_six_refused_grasps_change_tool_do0_not_once_and_ask_nobody(self) -> None:
         """The owner's Hand-E on tool DO0: the real policy asks the toggle before every try, and never switches it."""
         events: list[Any] = []
         jaws = _toggle(events, Person("open"))
@@ -390,7 +393,7 @@ class AToggleHandAcrossTheTriesTests(unittest.TestCase):
 
         report = orchestrator.run()
 
-        self.assertEqual(4, arm.refused, "four grasps, one refused standoff each")
+        self.assertEqual(6, arm.refused, "six grasps, one refused standoff each")
         self.assertEqual([], _changes(events[connected:]), "DO0 changed")
         self.assertEqual([], nobody.asked)
         self.assertFalse(jaws.jaws_closed)

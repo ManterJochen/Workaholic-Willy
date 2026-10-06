@@ -193,13 +193,42 @@ with no tuned constants:
 ```
 cone_slack   = 1 - worst_contact_angle / cone_half_angle       depth inside the friction cone
 width_margin = 1 - span / jaw.aperture_mm                      aperture left over
-table_margin = min(1, (lowest_point - support_height) / 20)    fingertip off the table
+seated       = 0.5 * pad_on_part + 0.5 * near_mid_height       how the grasp sits on the part
 upright      = max(0, dot(-approach, z_hat))                   how top-down the approach is
 centred      = 1 - min(1, abs(t_enter + t_exit) / max(span, 1))  anchor centred in the span
 
-score = 0.35 * cone_slack + 0.20 * width_margin + 0.20 * table_margin
+score = 0.35 * cone_slack + 0.20 * width_margin + 0.20 * seated
       + 0.15 * upright    + 0.10 * centred
 ```
+
+`seated` is half how much of the pad's height lies on the part and half how near the anchor stands to the
+part's middle height. Until 2026-10-05 the third term paid for the fingertip's height over the table, and every
+grasp went to the part's top: the owner saw the hand grip only the top sixth of the parts. The support clearance
+is a check, and pays for nothing more. With side approaches the term is half `seated`, half the room the grasp
+keeps from every obstacle.
+
+The height solve places each anchor as low as the hand may come: the fingertip, and with a tilted approach half
+the finger's width, over the support by `support.min_clearance_mm`. Where the camera world holds the support as a
+solid ([`support_surfaces.py`](../src/robot/safety/planning/support_surfaces.py)), its top stands over the
+reading by what the reading stands over its plane, the band and the allowance, about 7 mm on the owner's mat, and
+the guard keeps its distance from that top. So the hand's floor is the solid's top and the guard's distance
+(`support_footprint.HandFloor`): every finger point, open or closed, and the palm's corners stay over it, and the
+solve starts from it. Planned on the reading alone, a 30 mm cylinder lying on the mat had all 12 of its grasps
+refused afterwards by the filter that holds what the guard holds (the grasp bench, 2026-10-06).
+
+The search is a grid: the footprint's two face axes (a round footprint adds a fan every 30 degrees), three
+anchors across the part, up to six heights, and the approach tilted every 15 degrees up to 90, either way. Where
+that grid finds fewer than three grasps, a finer one runs after it (the owner, 2026-10-06: "die Orientierung
+feiner"): every 7.5 degrees of tilt, each face axis turned 10 and 20 degrees either way, and a round part's fan
+every 15 degrees, and each face axis tilted 10 and 20 degrees out of the horizontal on the coarse tilts, the hand
+rolled about its binormal so one finger stands higher than the other (the owner: "die geneigte Schließachse"). A
+turned or tilted axis closes off the face's normal by the turn, inside the friction cone (26.6 degrees at the shipped
+0.5), and its `cone_slack` pays for that, so a face's own axis still ranks first. A tilted line leaves the part through
+its top or its foot as well as a side, and its pads end there; a contact on the top meets the cone and is refused. A cylinder 12 mm from
+a wall: the best grasp scores 0.806 on the fine grid against 0.788 on the coarse; a folding rule between declared
+walls the coarse grid fits nothing beside gets two grasps turned 20 degrees. The fine grid costs about four times
+the coarse one's time, which only a part with few grasps pays, and its refusals are not counted, so a refusal count
+stays the coarse grid's.
 
 These candidates are deliberately not re-ranked by the geometric scorer of section 9. The breakdowns
 are built with this stage's own score as `total_score` directly, and `stability_score` and
@@ -277,6 +306,16 @@ the fingertip reaches `fingertip_depth_mm` (default 28.72 mm) below the anchor, 
 `support.min_clearance_mm` (default 5.0 mm) needs an object at least 33.72 mm tall for a top-down
 grasp, even with the grasp sitting on its very top edge. That is gripper geometry rather than a
 threshold: shorter parts need suction or a different end effector.
+
+The boxes stand where the guard holds the hand. The guard places the hand's meshes by the registry's grasp
+centre and the coupling plates, and the arm puts the TCP where the tool frame says; where the TCP is declared
+short of that grasp centre, by no more than the tool frame's tolerance, the whole jaw stands that much further
+along the approach (`planning.hand.hand_past_the_tcp_mm`, `builders.build_gripper_geometry`). On the owner's cell
+the TCP is declared 157 mm out and the grasp centre stands at 23 + 136.2 = 159.2 mm, and grasps were refused 2.3
+to 2.96 mm from a neighbour against the guard's 3 until the jaw stood 2.2 mm further out. The palm box is as wide
+as the registry's housing along the closing axis (`palm_thickness_mm`, 75 mm on the Hand-E), not only as the
+open fingers' outer faces (71.6 mm). The preflight's `grasp centre` row names the difference; a cell measures
+its flange to grasp centre once and corrects whichever number is wrong.
 
 Code: [`src/robot/grasping/collision/gripper_model.py`](../src/robot/grasping/collision/gripper_model.py) and
 [`src/robot/grasping/collision/table_collision.py`](../src/robot/grasping/collision/table_collision.py)

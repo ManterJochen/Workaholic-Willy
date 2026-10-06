@@ -10,9 +10,11 @@ import numpy as np
 from willy import SafetyPreflight, create_arm, load_tree
 
 # The base tree with a hand named, in memory: an exact mesh guard reads the hand, and the base tree names none on
-# purpose. Put your own hand's registry name here. A second copy also declares a bench under the arm.
+# purpose. Put your own hand's registry name here. A second copy also declares a bench under the arm, and keeps 10 mm
+# from it: what the camera sees within 5 mm of a declared fixture is the fixture's, so a tree that declares one keeps
+# at least 10 mm from it (the config refuses less while the planning world includes its fixtures).
 cell = load_tree(None).with_values({"robot.gripper.model": "robotiq_2f85"})
-bench = cell.with_values({"robot.safety.self_collision.fixtures": [
+bench = cell.with_values({"robot.safety.self_collision.min_distance_mm": 10.0, "robot.safety.self_collision.fixtures": [
     {"name": "bench", "center_mm": [500.0, 0.0, -75.0], "half_extents_mm": [300.0, 300.0, 50.0]}]})
 
 # The arm the guards place their link meshes on and read joint limits from. Nothing connects.
