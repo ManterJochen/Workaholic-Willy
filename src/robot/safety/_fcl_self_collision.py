@@ -48,6 +48,7 @@ resolves on this box.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -197,6 +198,12 @@ class _EngineAdapter:
             turn = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
         return m.CollisionObject(m.Box(*size), self._transform(turn, np.asarray(center, dtype=np.float64)))
 
+    def cylinder_object(self, radius: float, length: float, center: np.ndarray) -> Any:
+        """A solid cylinder about base Z, ``length`` long, centred on ``center``: a robot's base (``base_near_mm``)."""
+        m = self._m
+        return m.CollisionObject(m.Cylinder(float(radius), float(length)),
+                                 self._transform(np.eye(3), np.asarray(center, dtype=np.float64)))
+
     def distance(self, a: Any, b: Any) -> float:
         m = self._m
         return float(m.distance(a, b, m.DistanceRequest(), m.DistanceResult()))
@@ -269,6 +276,8 @@ class MeshSelfCollisionBackend:
                        if self.checks(self._names[i], self._names[j])]
         # The engine objects of the fixture tuples judged last, by the tuple itself (``_probes``).
         self._probe_cache: dict[int, tuple[tuple, _Probes]] = {}
+        # A robot base's solid, by its radius and top (``base_near_mm``).
+        self._bases: dict[tuple[float, float], Any] = {}
 
     def checks(self, part_a: str, part_b: str) -> bool:
         """Whether :meth:`evaluate` judges ``part_a`` against ``part_b``: its pair rule, asked of one pair.
@@ -316,6 +325,42 @@ class MeshSelfCollisionBackend:
             row = (rotation @ placed[:3, :3])[2]
             low = min(low, float((self._hull[name] @ row).min() + (rotation @ placed[:3, 3])[2]))
         return low
+
+    def base_near_mm(
+        self, transforms_dh_mm: list[np.ndarray], yaw_deg: float, *, radius_mm: float, top_mm: float, within_mm: float,
+        from_frame: int = 2,
+    ) -> tuple[str, float]:
+        """The part hanging from DH frame ``from_frame`` or past it that comes nearest the robot's base, and how near:
+        the base a solid cylinder about base Z, ``radius_mm`` round, from the mounting face (base z 0) up to ``top_mm``.
+
+        Exact for every part within ``within_mm`` of the base: the engine's distance from the part's mesh to the solid,
+        0 where they touch or overlap. A part whose bounding sphere keeps more than ``within_mm`` from the cylinder is
+        passed over, which can never pass over one within it; where every part is passed over, ``("", inf)``. The
+        default leaves out the shoulder, which stands on the base. Read beside a base only the planner holds
+        (``mesh_first``), never as a verdict of its own.
+        """
+        radius, top = float(radius_mm), float(top_mm)
+        base = self._bases.get((radius, top))
+        if base is None:
+            base = self._bases[(radius, top)] = self._a.cylinder_object(radius, top, np.array([0.0, 0.0, top / 2.0]))
+        rotation = _yaw_matrix(yaw_deg)
+        nearest, near = "", float("inf")
+        for row, name in enumerate(self._names):
+            frame = self._frame[name]
+            if frame < from_frame:
+                continue
+            placed = transforms_dh_mm[frame]
+            turn, at = rotation @ placed[:3, :3], rotation @ placed[:3, 3]
+            centre = turn @ self._centre_rows[row] + at
+            beside = max(0.0, math.hypot(float(centre[0]), float(centre[1])) - radius)
+            above = max(0.0, float(centre[2]) - top, -float(centre[2]))
+            if math.hypot(beside, above) - float(self._radius_row[row]) > float(within_mm):
+                continue
+            self._a.set_transform(self._models[name], turn, at)
+            gap = max(0.0, self._a.distance(self._models[name], base))
+            if gap < near:
+                nearest, near = name, gap
+        return nearest, near
 
     def evaluate(
         self,

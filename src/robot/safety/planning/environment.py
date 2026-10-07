@@ -47,6 +47,7 @@ __all__ = [
     "ENV_CUROBO_VOXEL_GRID",
     "ENV_CUROBO_STDERR",
     "ENV_CUROBO_MAX_ATTEMPTS",
+    "ENV_CUROBO_JOINT_MAX_ATTEMPTS",
     "ENV_CUROBO_GRAPH_FROM_ATTEMPT",
     "ENV_COAL_PREFIX",
     "COLLISION_MESH_DIR",
@@ -92,7 +93,8 @@ ENV_CUROBO_CUBOID_CACHE = "WILLY_CUROBO_CUBOID_CACHE"  #: reserved collision-wor
 ENV_CUROBO_MESH_CACHE = "WILLY_CUROBO_MESH_CACHE"      #: reserved collision-world mesh slots
 ENV_CUROBO_VOXEL_GRID = "WILLY_CUROBO_VOXEL_GRID"      #: live-scene grid, ``x,y,z,voxel`` in metres
 ENV_CUROBO_STDERR = "WILLY_CUROBO_STDERR"             #: optional server-stderr log file
-ENV_CUROBO_MAX_ATTEMPTS = "WILLY_CUROBO_MAX_ATTEMPTS"  #: sidecar: plan attempts (seed batches)
+ENV_CUROBO_MAX_ATTEMPTS = "WILLY_CUROBO_MAX_ATTEMPTS"  #: sidecar: Cartesian plan attempts (seed batches)
+ENV_CUROBO_JOINT_MAX_ATTEMPTS = "WILLY_CUROBO_JOINT_MAX_ATTEMPTS"  #: sidecar: joint plan attempts
 ENV_CUROBO_GRAPH_FROM_ATTEMPT = "WILLY_CUROBO_GRAPH_FROM_ATTEMPT"  #: sidecar: first graph-seeded attempt
 
 _DEFAULT_CUROBO_ROBOT = "ur5e.yml"

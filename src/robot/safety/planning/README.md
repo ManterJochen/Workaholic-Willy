@@ -325,7 +325,8 @@ that refuses everything looks the same.
 | `WILLY_CUROBO_MESH_CACHE` | `0` | client | mesh slots |
 | `WILLY_CUROBO_VOXEL_GRID` | unset, no grid | client | the live-scene grid, `x,y,z,voxel` in metres |
 | `WILLY_CUROBO_STDERR` | unset, discarded | client | a file for the sidecar's stderr |
-| `WILLY_CUROBO_MAX_ATTEMPTS` | `16` | sidecar | plan attempts, each a fresh seed batch |
+| `WILLY_CUROBO_MAX_ATTEMPTS` | `16` | sidecar | Cartesian plan attempts (the sim's), each a fresh seed batch |
+| `WILLY_CUROBO_JOINT_MAX_ATTEMPTS` | `4` | sidecar | joint plan attempts, the way round a straight line the guard refused; cuRobo has no time limit, so a failing plan runs them all |
 | `WILLY_CUROBO_GRAPH_FROM_ATTEMPT` | `1` | sidecar | the first graph-seeded attempt |
 | `WILLY_CUROBO_ATTACH_SPHERES` | unset, as `0` | sidecar | spheres for a carried payload; the client sets it from the cell's reservation |
 | `WILLY_CUROBO_SELF_COLLISION_MARGIN_MM` | unset, as `0` | sidecar | the guard's clearance, raised into the descriptor's link buffers |

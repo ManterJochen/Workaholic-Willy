@@ -108,6 +108,12 @@ ROBOT = sys.argv[1] if len(sys.argv) > 1 else "ur5e.yml"
 # every attempt. Both are overridable through the environment.
 _PLAN_MAX_ATTEMPTS = int(os.environ.get("WILLY_CUROBO_MAX_ATTEMPTS", "16"))
 _PLAN_GRAPH_FROM = int(os.environ.get("WILLY_CUROBO_GRAPH_FROM_ATTEMPT", "1"))
+# A joint plan is how the UR driver goes round a straight line the exact guard refused, and cuRoboV2 has no time limit:
+# a failing plan_cspace runs every attempt, about 1.2 s each on the owner's cell PC (18.4 to 19.0 s at 16, 2026-10-07),
+# for up to three goals in a row. On the bench 93 of 94 of them found nothing in 16. Four, the first trajopt alone and
+# three seeded by the graph, give up in a quarter of the time, and a plan found within four is the plan sixteen found:
+# the attempts run one after another from the same seed. The Cartesian plan (the sim's) keeps WILLY_CUROBO_MAX_ATTEMPTS.
+_JOINT_PLAN_MAX_ATTEMPTS = max(1, int(os.environ.get("WILLY_CUROBO_JOINT_MAX_ATTEMPTS", "4")))
 # How many planning passes warm the planner before it says ready: the first compiles the kernels and captures the CUDA
 # graphs, the second runs them warm. Each further pass costs seconds of every start, and a cell starts its planner at
 # every connect (2026-10-07: 39 to 103 s a start on the owner's cell PC; on the desk 28 to 31 s at 5 passes, 20 s at
@@ -286,7 +292,12 @@ try:
         compose_for_cell,
     )
     from _curobo_margin import ENV_SELF_COLLISION_MARGIN_MM  # type: ignore[import-not-found]
-    from _curobo_pairs import SphereLayout, deepest_pairs, refused_rows  # type: ignore[import-not-found]
+    from _curobo_pairs import (  # type: ignore[import-not-found]
+        SphereLayout,
+        collision_pair_rows,
+        deepest_pairs,
+        refused_rows,
+    )
     from _curobo_perceived import (  # type: ignore[import-not-found]
         WorldRestoreError,
         judged_world,
@@ -315,6 +326,32 @@ try:
         WHERE_PATH,
         WHERE_START,
     )
+    from curobo._src.robot.types.self_collision_params import (  # type: ignore[import-not-found]
+        SelfCollisionKinematicsCfg,
+    )
+
+    def _self_collision_pairs(sphere_pair_distances: Any, sphere_padding: Any) -> Any:
+        """cuRobo's ``create_from_sphere_pair_distances``, its pair rows built in one array operation.
+
+        cuRobo lists the sphere pairs its self collision checks in a Python loop over every pair, once per robot load,
+        and this sidecar loads the robot three times (the planner, the Kinematics, the checker): 4.8 s of a 24 s start
+        on the desk, 2026-10-07. The same rows in the same order (``collision_pair_rows``), the same refusals of a
+        malformed input, so every check judges exactly the pairs it judged before.
+        """
+        if sphere_padding.ndim != 1:
+            raise ValueError(f"sphere_padding shape {tuple(sphere_padding.shape)} should be (num_spheres)")
+        count = int(sphere_padding.shape[0])
+        if tuple(sphere_pair_distances.shape) != (count, count):
+            raise ValueError(f"sphere_pair_distances shape {tuple(sphere_pair_distances.shape)} should be "
+                             f"{(count, count)}")
+        matrix = sphere_pair_distances.detach().cpu()
+        if matrix.dtype == torch.bfloat16:  # numpy has no bfloat16; float32 holds every value of it exactly
+            matrix = matrix.float()
+        rows = torch.from_numpy(collision_pair_rows(matrix.numpy()))
+        return SelfCollisionKinematicsCfg(num_spheres=count, sphere_padding=sphere_padding,
+                                          collision_pairs=rows.to(device=sphere_pair_distances.device))
+
+    SelfCollisionKinematicsCfg.create_from_sphere_pair_distances = staticmethod(_self_collision_pairs)
 
     # The one config this planner loads. The descriptor is read once, with cuRobo's own
     # loader, and composed in memory by _curobo_body_links: body links, then the guard's
@@ -521,7 +558,10 @@ try:
         the cost it was read from is not one.
         """
         bound, self_hit, world_hit, spheres = _terms(rows, clearance_m)
-        pairs = _named_pairs(spheres, len(rows))
+        # Named only where the self term refused one: a block names its pair only then, and naming is pairwise arithmetic
+        # over every sphere on the CPU (76 ms a pose at 841 spheres on the desk).
+        pairs = (_named_pairs(spheres, len(rows)) if bool((self_hit > 0.0).any())
+                 else [None] * len(rows))
         found: list = []
         for index, row in enumerate(rows):
             joints = [float(value) for value in row]
@@ -667,7 +707,7 @@ for _line in sys.stdin:
             # same plan, so a move a person watched once is the move it makes again.
             _planner.reset_seed()
             result = _planner.plan_cspace(
-                goal, start, max_attempts=_PLAN_MAX_ATTEMPTS, enable_graph_attempt=_PLAN_GRAPH_FROM,
+                goal, start, max_attempts=_JOINT_PLAN_MAX_ATTEMPTS, enable_graph_attempt=_PLAN_GRAPH_FROM,
             )
             ok = result is not None and bool(result.success.any())
             print(f"[plan_js] goal={[round(x, 3) for x in req['goal_joints']]} -> "

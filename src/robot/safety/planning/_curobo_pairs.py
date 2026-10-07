@@ -14,14 +14,15 @@ order; only a box run naming a pair a probe measured the same way can.
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
-__all__ = ["NAMED_WITHIN_MM", "PairDepth", "PairOverlap", "SphereLayout", "SphereLayoutError", "deepest_pairs",
-           "overlapping_pairs", "refused_rows"]
+__all__ = ["NAMED_WITHIN_MM", "PairDepth", "PairOverlap", "SphereLayout", "SphereLayoutError", "collision_pair_rows",
+           "deepest_pairs", "overlapping_pairs", "refused_rows"]
 
 #: How close to touching a pair of links is still named by :func:`overlapping_pairs`, in millimetres. The kernel judges
 #: in float32 and this in float64 over the same spheres, which differ by about a millionth of a millimetre here; a pair
@@ -127,6 +128,51 @@ class SphereLayout:
         return cls(owners=tuple(owners), pads_m=tuple(pads), ignored=frozenset(ignored))
 
 
+def collision_pair_rows(distances: Any) -> np.ndarray:
+    """The sphere pairs cuRobo's self collision checks, as ``(pairs, 2)`` int16 rows, from its pair distance matrix.
+
+    The rows ``SelfCollisionKinematicsCfg.create_from_sphere_pair_distances`` builds, in its order, from one array
+    operation: every ``(i, j)`` with ``i < j`` whose distance is not ``-inf``, except where row ``i``'s largest value
+    is ``-inf`` (a sphere that checks against nothing). cuRobo builds them in a Python loop over every pair, once per
+    robot load, and the sidecar loads the robot three times: 4.8 s of a 24 s start on the desk at 841 spheres, 169,642
+    pairs, against 0.02 s for these (2026-10-07, the same rows on all three loads).
+    """
+    matrix = np.asarray(distances)
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+        raise ValueError(f"a sphere pair distance matrix is square, got {matrix.shape}")
+    count = int(matrix.shape[0])
+    if count > int(np.iinfo(np.int16).max) + 1:
+        raise ValueError(f"{count} spheres do not fit cuRobo's int16 pair indices")
+    if count < 2:
+        return np.zeros((0, 2), dtype=np.int16)
+    # A NaN in a row is that row's largest value, as torch.max reads it, so such a row is kept, as cuRobo keeps it.
+    checks = ~(matrix.max(axis=1) == -np.inf)
+    first, second = np.triu_indices(count, k=1)
+    keep = (matrix[first, second] != -np.inf) & checks[first]
+    return np.ascontiguousarray(np.stack((first[keep], second[keep]), axis=1).astype(np.int16))
+
+
+@functools.lru_cache(maxsize=8)
+def _pair_mask(owners: "tuple[str, ...]", ignored: "frozenset[tuple[str, str]]") -> "tuple[tuple[np.ndarray, np.ndarray], np.ndarray]":
+    """The upper-triangle slot pairs of a layout and which of them are never a self collision: inside one link, or a
+    pair the descriptor ignores. Once per layout (``owners`` and ``ignored`` are its whole say on it); the arrays are
+    read-only, shared by every call."""
+    names = np.asarray(owners)
+    upper = np.triu_indices(len(owners), k=1)
+    links = sorted(set(owners))
+    index = {name: i for i, name in enumerate(links)}
+    ids = np.asarray([index[name] for name in owners], dtype=np.int64)
+    table = np.zeros((len(links), len(links)), dtype=bool)
+    for a, b in ignored:
+        # A pair is asked for sorted, as the layout stores it; an entry stored the other way round matches nothing.
+        if a in index and b in index and a <= b:
+            table[index[a], index[b]] = table[index[b], index[a]] = True
+    skip = (names[upper[0]] == names[upper[1]]) | table[ids[upper[0]], ids[upper[1]]]
+    for array in (*upper, skip):
+        array.setflags(write=False)
+    return upper, skip
+
+
 def deepest_pairs(spheres: Any, layout: SphereLayout) -> "tuple[PairDepth | None, ...]":
     """The deepest overlapping link pair per pose, or ``None`` where a pose holds none.
 
@@ -145,12 +191,7 @@ def deepest_pairs(spheres: Any, layout: SphereLayout) -> "tuple[PairDepth | None
         )
     owners = np.asarray(layout.owners)
     pads = np.asarray(layout.pads_m, dtype=np.float64)
-    upper = np.triu_indices(layout.slots, k=1)
-    same_link = owners[upper[0]] == owners[upper[1]]
-    ignored = np.asarray([
-        (min(a, b), max(a, b)) in layout.ignored for a, b in zip(owners[upper[0]], owners[upper[1]])
-    ], dtype=bool) if layout.slots > 1 else np.zeros(0, dtype=bool)
-    skip = same_link | ignored
+    upper, skip = _pair_mask(layout.owners, layout.ignored)
 
     out: list[PairDepth | None] = []
     for pose in array:

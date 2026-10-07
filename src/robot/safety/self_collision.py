@@ -568,9 +568,25 @@ class SelfCollisionGuard:
                 return None
             return float(lowest_of(transforms, yaw))
 
+        # The robot's own base, which no part of this guard holds (``planning.band``): where its shape is known, how near a
+        # part past the shoulder comes to it.
+        from .planning.self_envelope import ROBOT_BASES
+
+        shape = ROBOT_BASES.get(str(model).lower())
+        near_of = getattr(backend, "base_near_mm", None)
+        within = float(self._min_distance_mm)
+
+        def base(joints: "Sequence[float]") -> "tuple[str, float] | None":
+            transforms = ur_link_transforms_mm(model, np.asarray([float(v) for v in joints], dtype=np.float64))
+            if transforms is None or shape is None or near_of is None:
+                return None
+            part, gap = near_of(transforms, yaw, radius_mm=shape.radius_mm, top_mm=shape.top_mm, within_mm=within)
+            return str(part), float(gap)
+
         return ExactPairs(checks=backend.checks, frames=backend.part_frames,  # type: ignore[attr-defined]
                           distance=distance, min_distance_mm=self._min_distance_mm,
-                          lowest=lowest if callable(lowest_of) else None)
+                          lowest=lowest if callable(lowest_of) else None,
+                          base=base if shape is not None and callable(near_of) else None)
 
     def _evaluate_fcl(self, ctx: SafetyContext) -> SafetyDecision | None:
         """Exact mesh self-collision. ``None`` where it cannot run, which falls back to capsules."""

@@ -135,7 +135,11 @@ class ExactPairs:
     ``frames`` the DH frame of every part it holds, ``distance(joints, part_a, part_b)`` the exact distance of two parts
     at a configuration in millimetres (``None`` where it cannot be placed), and ``min_distance_mm`` what it demands.
     ``lowest(joints)`` is the lowest point of every part past the shoulder at a configuration, z in the base frame in
-    millimetres (``None`` where it cannot be placed); ``None`` itself where the guard does not say.
+    millimetres (``None`` where it cannot be placed); ``None`` itself where the guard does not say. ``base(joints)`` is
+    the part past the shoulder nearest the robot's own base and how near it comes in millimetres, exact within the
+    guard's distance, ``("", inf)`` where none comes that near (``None`` where the arm cannot be placed); ``None`` itself
+    where the guard knows no base for this arm. No guard part holds the base: only the planner's shoulder_link stands
+    for it (see the module's note), so a part near it is the planner's to judge.
     """
 
     checks: Callable[[str, str], bool]
@@ -143,6 +147,7 @@ class ExactPairs:
     distance: "Callable[[Sequence[float], str, str], float | None]"
     min_distance_mm: float
     lowest: "Callable[[Sequence[float]], float | None] | None" = None
+    base: "Callable[[Sequence[float]], tuple[str, float] | None] | None" = None
 
     def held(self, link: str) -> tuple[str, ...]:
         """The guard's parts ``link`` is, where the guard holds every one of them; else ``()``."""

@@ -13,13 +13,17 @@ What this file pins:
   judges refuses it; the motion verb refuses an arm without the capability, by name;
 * mesh first (``safety.planned_motion.mesh_first``): the exact guard alone where it holds what the planner holds, and the
   planner asked beside it where it holds more: the switch off, no exact guard, a mesh in the planner's world, a distance
-  field of the camera's points, a carried part, a planner that cannot say whether it carries one, and the declared
-  support plane wherever a part of the arm or the hand comes within the guard's distance of its top;
+  field of the camera's points, a carried part, a planner that cannot say whether it carries one, the declared
+  support plane wherever a part of the arm or the hand comes within the guard's distance of its top, and the robot's
+  own base, which no guard part holds, wherever a part past the shoulder comes within that distance of it or the guard
+  knows no base for the arm (the base review of 2026-10-07);
 * mesh first beside the bin of ``test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards.py``, on the real exact
   guard: the line the planner's spheres refuse runs without the planner being asked; on a cell that models a carried
   part, a hand not known empty and open asks it, and its refusal stands (the owner, 2026-10-01);
 * how low the arm reaches (``MeshSelfCollisionBackend.lowest_mm``): the lowest point of every part past the shoulder,
-  exact, the shoulder left out.
+  exact, the shoulder left out;
+* how near the robot's base a part comes (``MeshSelfCollisionBackend.base_near_mm``), on the real exact guard: the
+  Hand-E's finger 3.3 mm from the UR10's base mesh is near it, a line beside the bin is not.
 
 Honesty bucket (2): the real UR driver over a mocked controller and the route planner double, the real mesh backend over
 a recording engine adapter.
@@ -176,9 +180,15 @@ class _Glue(RoutePlanner):
 _PLANE = {"height_mm": 0.0, "extent_mm": [900.0, 700.0], "thickness_mm": 50.0}
 
 
-def _pairs(lowest: "float | None" = 400.0, *, says: bool = True) -> ExactPairs:
+#: No part past the shoulder near the robot's base.
+_FAR_FROM_THE_BASE = ("", float("inf"))
+
+
+def _pairs(lowest: "float | None" = 400.0, *, says: bool = True,
+           base: "tuple[str, float] | None" = _FAR_FROM_THE_BASE, knows_base: bool = True) -> ExactPairs:
     return ExactPairs(checks=lambda a, b: True, frames={}, distance=lambda joints, a, b: None, min_distance_mm=3.0,
-                      lowest=(lambda joints: lowest) if says else None)
+                      lowest=(lambda joints: lowest) if says else None,
+                      base=(lambda joints: base) if knows_base else None)
 
 
 def _mesh_first(*, world: "dict[str, Any] | None" = None, pairs: "ExactPairs | None" = None,
@@ -224,6 +234,14 @@ class MeshFirstTests(unittest.TestCase):
         self.assertIn("cannot say how low", _mesh_first(world=world, pairs=_pairs(says=False)) or "")
         self.assertIn("cannot place the arm", _mesh_first(world=world, pairs=_pairs(lowest=None)) or "")
 
+    def test_the_robots_base_asks_the_planner_where_a_part_comes_near_it(self) -> None:
+        said = _mesh_first(pairs=_pairs(base=("rfinger", 1.2))) or ""
+        self.assertIn("rfinger comes 1.2 mm from the robot's base", said)
+        self.assertIn("within the guard's 3 mm, and only the planner holds the base", said)
+        self.assertIsNone(_mesh_first(pairs=_pairs(base=("rfinger", 3.0))), "the guard's distance kept")
+        self.assertIn("cannot place the arm beside its base", _mesh_first(pairs=_pairs(base=None)) or "")
+        self.assertIn("knows no base for this arm", _mesh_first(pairs=_pairs(knows_base=False)) or "")
+
     def test_a_raised_plane_is_read_at_its_height(self) -> None:
         raised = {"enabled": True, "support_plane": {**_PLANE, "height_mm": 398.0}}
         self.assertIn("2.0 mm over", _mesh_first(world=raised, pairs=_pairs(lowest=400.0)) or "")
@@ -266,6 +284,34 @@ class MeshFirstBesideTheBinTests(unittest.TestCase):
         self.assertIs(MotionStatus.SELF_COLLISION_REJECTED, result.status, result.message)
         arm._conn.moveJ.assert_not_called()
         self.assertIn("the hand is not known to be empty and open", result.message or "")
+
+
+class HowNearTheBaseTests(unittest.TestCase):
+    """The real exact guard on the UR10 and the Hand-E (``test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards``)
+    asked how near the robot's base a part past the shoulder comes."""
+
+    def _base(self) -> Any:
+        from tests.test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards import _cell
+
+        arm, _ = _cell(mesh_first=True)
+        pairs = arm._preflight.exact_pairs(arm)
+        self.assertIsNotNone(pairs.base, "the guard knows the UR10's base")
+        return pairs.base
+
+    def test_the_finger_the_band_review_found_at_the_base_is_near_it(self) -> None:
+        from tests.test_a_pose_only_the_planners_spheres_refuse_is_the_exact_guards import BASE_NEAR
+
+        part, gap = self._base()(BASE_NEAR)
+        self.assertIn("finger", part)
+        self.assertLess(gap, 3.0, "the Hand-E's finger 3.3 mm from the base mesh, inside the base's cylinder")
+
+    def test_a_line_beside_the_bin_keeps_far_from_it(self) -> None:
+        from tests.test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards import OFF, OFF_ON
+
+        base = self._base()
+        for joints in (OFF, OFF_ON):
+            part, gap = base(joints)
+            self.assertGreaterEqual(gap, 3.0, f"{part} at {joints}")
 
 
 class _Adapter:

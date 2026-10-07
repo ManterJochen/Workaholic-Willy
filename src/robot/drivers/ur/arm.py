@@ -2012,8 +2012,10 @@ class URRobotArm(RobotArm):
         asked: a mesh its world declares, a distance field of the camera's points (``perceived.voxel_field_mm``), a
         carried part (attached by the arm, the jaws closed on one where the cell models it, or a planner that carries
         one or cannot say), on a cell that models a carried part a hand not known empty and open, which may hold one
-        (the owner, 2026-10-01), and the declared support plane, wherever a part of the arm or the hand past the
-        shoulder comes within the guard's ``min_distance_mm`` of its top on the exact meshes. The caller has run the
+        (the owner, 2026-10-01), the declared support plane, wherever a part of the arm or the hand past the
+        shoulder comes within the guard's ``min_distance_mm`` of its top on the exact meshes, and the robot's own base,
+        which no guard part holds and the planner's shoulder_link stands for (``planning.band``), wherever such a part
+        comes within that distance of it, and on an arm whose base the guard does not know. The caller has run the
         exact guard on the samples already.
         """
         motion = getattr(self.config.safety, "planned_motion", None)
@@ -2056,6 +2058,18 @@ class URRobotArm(RobotArm):
                     return (f"a part of the arm or the hand comes {low - top:.1f} mm over the declared support plane, "
                             f"within the guard's {float(pairs.min_distance_mm):g} mm, and only the planner holds that "
                             "plane")
+        # The robot's own base: no guard part holds it, the planner's shoulder_link stands for it (review of F1,
+        # 2026-09-30, the Hand-E admitted touching it), so a line that brings a part near it stays the planner's too.
+        if pairs.base is None:
+            return "the exact guard knows no base for this arm, and only the planner's shoulder_link stands for it"
+        for q in configs:
+            near = pairs.base(q)
+            if near is None:
+                return "the exact guard cannot place the arm beside its base, which only the planner holds"
+            part, gap = near
+            if gap < float(pairs.min_distance_mm):
+                return (f"{part} comes {gap:.1f} mm from the robot's base, within the guard's "
+                        f"{float(pairs.min_distance_mm):g} mm, and only the planner holds the base")
         return None
 
     def _world_set_aside(
