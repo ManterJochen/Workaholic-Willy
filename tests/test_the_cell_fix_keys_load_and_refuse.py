@@ -115,7 +115,8 @@ class EveryShippedProfileStillLoadsTests(unittest.TestCase):
             raise unittest.SkipTest("the owner's tree is not on this machine")
         data = yaml.safe_load(_OWNER_TREE.read_text(encoding="utf-8"))["robot"]
         robot = RobotConfig.model_validate(data)
-        self.assertEqual(robot.safety.self_collision.min_distance_mm, 5.0)
+        # 3 mm for everything since the owner's decision of 2026-10-05; 5 mm before.
+        self.assertEqual(robot.safety.self_collision.min_distance_mm, 3.0)
         self.assertIs(robot.safety.planning_world.perceived.support_surfaces, True)
         self.assertIs(robot.grasping.side_approaches, True)
 

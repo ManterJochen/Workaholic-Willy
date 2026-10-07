@@ -560,8 +560,17 @@ class SelfCollisionGuard:
                 return None
             return float(backend.distance_mm(transforms, yaw, part_a, part_b))  # type: ignore[attr-defined]
 
+        lowest_of = getattr(backend, "lowest_mm", None)
+
+        def lowest(joints: "Sequence[float]") -> "float | None":
+            transforms = ur_link_transforms_mm(model, np.asarray([float(v) for v in joints], dtype=np.float64))
+            if transforms is None or lowest_of is None:
+                return None
+            return float(lowest_of(transforms, yaw))
+
         return ExactPairs(checks=backend.checks, frames=backend.part_frames,  # type: ignore[attr-defined]
-                          distance=distance, min_distance_mm=self._min_distance_mm)
+                          distance=distance, min_distance_mm=self._min_distance_mm,
+                          lowest=lowest if callable(lowest_of) else None)
 
     def _evaluate_fcl(self, ctx: SafetyContext) -> SafetyDecision | None:
         """Exact mesh self-collision. ``None`` where it cannot run, which falls back to capsules."""

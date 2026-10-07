@@ -1642,6 +1642,15 @@ class URRobotArm(RobotArm):
         for group in groups:
             admissible: list[NearestGoal] = []
             for candidate in group:
+                if self._mesh_first_refusal(planner, [list(candidate.joints)]) is None:
+                    # Mesh first: the endpoint gate below judges the goal on the exact meshes; the spheres are not asked.
+                    refused_end = self._gate_planned_config(pose, JointPositions(candidate.joints))
+                    if refused_end is not None:
+                        tried.append(f"{names[candidate]} refused by the endpoint gate: {refused_end.status.value}")
+                        end_refusals.append(refused_end)
+                        continue
+                    admissible.append(candidate)
+                    continue
                 verdict = planner.check_joint_path([list(candidate.joints)], refresh=False)
                 # A goal only the planner's padded spheres refuse, on pairs the exact guard judges and accepts (the owner,
                 # 2026-09-30), or only the boxes the camera saw refuse on its world with a hand known empty and open
@@ -1992,6 +2001,61 @@ class URRobotArm(RobotArm):
         if why:
             return (f"the hand is not known to be empty and open ({why}), so the boxes the camera saw are not set aside "
                     "and the planner's world stands")
+        return None
+
+    def _mesh_first_refusal(self, planner: object, configs: "Sequence[Sequence[float]]") -> "str | None":
+        """Why the exact guard may not judge these samples alone (``safety.planned_motion.mesh_first``), or ``None``.
+
+        ``None`` where the switch is on, an exact mesh guard runs, and it holds everything the planner would judge the
+        samples against. The arm, the hand, the wrist cameras and the declared fixtures both hold; the camera's boxes
+        the guard holds from the same refresh the planner's world was built from. What only the planner holds keeps it
+        asked: a mesh its world declares, a distance field of the camera's points (``perceived.voxel_field_mm``), a
+        carried part (attached by the arm, the jaws closed on one where the cell models it, or a planner that carries
+        one or cannot say), on a cell that models a carried part a hand not known empty and open, which may hold one
+        (the owner, 2026-10-01), and the declared support plane, wherever a part of the arm or the hand past the
+        shoulder comes within the guard's ``min_distance_mm`` of its top on the exact meshes. The caller has run the
+        exact guard on the samples already.
+        """
+        motion = getattr(self.config.safety, "planned_motion", None)
+        if motion is None or not bool(getattr(motion, "mesh_first", False)):
+            return "safety.planned_motion.mesh_first is off"
+        # A preflight that offers no exact pairs runs no exact guard (a double built for the planner's verdict alone).
+        exact = getattr(self._preflight, "exact_pairs", None) if self._preflight is not None else None
+        pairs = exact(self) if callable(exact) else None
+        if pairs is None:
+            return "no exact mesh guard runs on this arm"
+        world = getattr(self.config.safety, "planning_world", None)
+        on = world is not None and bool(getattr(world, "enabled", False))
+        if on and tuple(getattr(world, "meshes", None) or ()):
+            return "the planner's world declares meshes the exact guard does not hold"
+        perceived = getattr(world, "perceived", None) if on else None
+        if perceived is not None and float(getattr(perceived, "voxel_field_mm", 0.0) or 0.0) > 0.0:
+            return ("the planner holds a distance field of the camera's points (perceived.voxel_field_mm), which the "
+                    "exact guard does not")
+        carried = getattr(planner, "carries_part", None)
+        unmodelled = self._attached_payload is None and self._payload_config_declined() is not None
+        if self._attached_payload is not None or (self._closed_on_part and not unmodelled) or carried is True:
+            return "a part is carried, and the carried part is the planner's alone"
+        if carried is not False:
+            return "the planner cannot say whether it carries a part"
+        # The owner, 2026-10-01: on a cell that models a carried part, jaws nobody knows empty and open may hold one.
+        why = why_not_known_open(self._hand) if not unmodelled else ""
+        if why:
+            return f"the hand is not known to be empty and open ({why})"
+        plane = getattr(world, "support_plane", None) if on else None
+        if plane is not None and configs:
+            if pairs.lowest is None:
+                return ("the exact guard cannot say how low the arm and the hand reach, and only the planner holds the "
+                        "declared support plane")
+            top = float(getattr(plane, "height_mm", 0.0) or 0.0)
+            for q in configs:
+                low = pairs.lowest(q)
+                if low is None:
+                    return "the exact guard cannot place the arm over the declared support plane, which only the planner holds"
+                if low < top + float(pairs.min_distance_mm):
+                    return (f"a part of the arm or the hand comes {low - top:.1f} mm over the declared support plane, "
+                            f"within the guard's {float(pairs.min_distance_mm):g} mm, and only the planner holds that "
+                            "plane")
         return None
 
     def _world_set_aside(
@@ -2368,6 +2432,14 @@ class URRobotArm(RobotArm):
         from src.robot.safety.path_samples import waypoint_path_samples
 
         samples = waypoint_path_samples(waypoints, reach_mm=reach, max_step_mm=step)
+        why_not = self._mesh_first_refusal(planner, samples.configs)
+        if why_not is None:
+            # Mesh first: the exact guard just accepted every sample (gate_planned_path); the spheres are not asked.
+            self.logger.info("mesh first: the exact guard alone judged %d sample(s) of %s clear; cuRobo was not asked",
+                             len(samples.configs), "this straight joint line" if len(waypoints) == 2 else "these legs")
+            return None
+        self.logger.info("mesh first does not apply to %s (%s): cuRobo judges beside the exact guard",
+                         "this straight joint line" if len(waypoints) == 2 else "these legs", why_not)
         try:
             verdict = planner.check_joint_path(samples.configs, refresh=False, clearance_mm=clearance_mm)
         except CuroboUnavailableError as exc:
@@ -3407,6 +3479,106 @@ class URRobotArm(RobotArm):
             velocity=velocity, acceleration=acceleration,
         )
 
+    def move_through_joints_on_the_line(
+        self,
+        waypoints: "Sequence[JointPositions]",
+        *,
+        velocity: float | None = None,
+        acceleration: float | None = None,
+        camera_world: Maybe[CameraWorldDecline] = UNSET,
+    ) -> MotionResult:
+        """Straight joint lines through every one of ``waypoints``, judged whole before anything is sent, then sent
+        waypoint after waypoint: :class:`~src.robot.core.arm_capabilities.DrivesJointPaths`.
+
+        Judged as :meth:`move_to_joints_on_the_line` judges one line, once for the whole path: one world refresh, every
+        waypoint turned onto the twin nearest the one before it and through the destination guards, every leg by the
+        exact guard (mesh first, ``safety.planned_motion.mesh_first``) and, where that does not apply, the planner at
+        ``line_clearance_mm``. A leg that is not clear refuses the whole path, nothing sent and nothing planned around
+        it. The path then runs as a judged cuRobo plan runs, one ``moveJ`` per waypoint with nothing judged between
+        them, so the arm turns at each and runs on; a halt ends it where it is. No blend: a blended corner leaves the
+        legs the guard judged.
+        """
+        last = waypoints[-1] if waypoints else None
+        stamp = self._move_camera_world(camera_world)
+        refused = self._refused_for_camera_world(stamp, MotionCommand.MOVE_JOINTS, target_joints=last)
+        if refused is not None:
+            return refused
+        before = self._planner_refresh()
+        unstamped = self._drive_joint_path(list(waypoints), velocity=velocity, acceleration=acceleration)
+        after = self._planner_refresh()
+        held = self._held_world_reason is not None
+        vouched = after.camera_world() if after is not None and (after is not before or held) else None
+        return stamp_result(unstamped, self._move_camera_world(camera_world, planned=vouched))
+
+    def _drive_joint_path(
+        self, waypoints: "list[JointPositions]", *, velocity: float | None, acceleration: float | None,
+    ) -> MotionResult:
+        """The body of :meth:`move_through_joints_on_the_line`: judge the whole path, then send it."""
+        command = MotionCommand.MOVE_JOINTS
+        if not waypoints:
+            return MotionResult.failed(MotionStatus.INVALID_TARGET, command,
+                                       message="a joint path needs at least one waypoint; nothing was sent")
+        last = waypoints[-1]
+        if self._preflight is None or self._motion_planner != "curobo":
+            return MotionResult.failed(
+                MotionStatus.UNSUPPORTED, command, target_joints=last,
+                message=(f"a joint path only runs where every leg is judged, and nobody judges the paths of this arm "
+                         f"(robot.ur.motion_planner {self._motion_planner!r}"
+                         f"{', no safety preflight' if self._preflight is None else ''}); nothing was sent"),
+            )
+        if not self._conn.is_connected:
+            return MotionResult.failed(MotionStatus.CONNECTION_ERROR, command, target_joints=last,
+                                       message="a judged joint path starts at the current configuration, which needs "
+                                               "an open connection.")
+        try:
+            here = [float(v) for v in self._conn.get_joint_positions()]
+        except (RobotConnectionError, RuntimeError, OSError) as exc:
+            return MotionResult.failed(
+                MotionStatus.CONNECTION_ERROR, command, target_joints=last,
+                message=(f"a judged joint path starts at the current configuration, and the controller's joint "
+                         f"positions could not be read ({type(exc).__name__}: {exc}); nothing was sent"),
+                exception=exc,
+            )
+        targets: list[JointPositions] = []
+        previous = here
+        for waypoint in waypoints:
+            if waypoint.dof != self.capabilities.dof:
+                return MotionResult.failed(
+                    MotionStatus.INVALID_TARGET, command, target_joints=waypoint,
+                    message=f"a joint path waypoint has {waypoint.dof} DoF, the arm {self.capabilities.dof}; nothing was "
+                            "sent")
+            target, _turned = self._twin_near_the_arm(waypoint, previous)
+            targets.append(target)
+            previous = target.tolist()
+        refused = self._refresh_before_the_path_gate(
+            near_point_mm=self._flange_mm(targets[-1]), command=command, target_joints=targets[-1],
+            goal_tcp_mm=self._tcp_at_joints_mm(targets[-1]),
+        )
+        if refused is not None:
+            return refused
+        for target in targets:
+            refused = self._preflight.gate_joint_target(target, arm=self)
+            if refused is not None:
+                return dataclasses.replace(refused, command=command)
+        try:
+            planner = self._curobo_ur_planner()
+        except CuroboUnavailableError as exc:
+            return MotionResult.failed(MotionStatus.CONTROLLER_REJECTED, command, target_joints=last,
+                                       message=f"cuRobo planner unavailable: {exc}", exception=exc)
+        path = [here] + [t.tolist() for t in targets]
+        refused = self._judge_legs(planner, path, command=command, target_joints=targets[-1],
+                                   clearance_mm=self._line_clearance_mm())
+        if refused is not None:
+            return dataclasses.replace(
+                refused, message=f"{refused.message}; a joint path only: nothing is planned around it, nothing was sent")
+        self._log_the_route("move_through_joints_on_the_line",
+                            self._route(path, planned=False, how=f"one joint path through {len(targets)} waypoint(s)"))
+        vel, acc = self._motion._clamp(velocity, acceleration)
+        # The executor of a judged plan: one moveJ per waypoint, the halt read before each, a failure saying how far.
+        result = planner.execute([t.tolist() for t in targets], command=command, target_joints=targets[-1],
+                                 vel=vel, acc=acc)
+        return dataclasses.replace(result, message="move_through_joints_on_the_line") if result.ok else result
+
     def move_to_joints_on_the_line(
         self,
         joints: JointPositions,
@@ -4043,6 +4215,19 @@ class URRobotArm(RobotArm):
         refused = self._preflight.gate_joint_path(judged, arm=self, command=command)
         if refused is not None:
             return refused
+        try:
+            asked: "CuroboUrPlanner | None" = self._curobo_ur_planner()
+        except CuroboUnavailableError:
+            asked = None  # the check below says so in its own words
+        why_not = self._mesh_first_refusal(asked, judged.configs) if asked is not None else "no planner to skip"
+        if asked is not None and why_not is None:
+            # Mesh first: the exact guard just accepted every sample of the line; the spheres are not asked.
+            self.logger.info("mesh first: the exact guard alone judged %d sample(s) of the line to %s clear; cuRobo was "
+                             "not asked", len(judged.configs), pose.label or "the goal")
+            return None
+        if asked is not None:
+            self.logger.info("mesh first does not apply to the line to %s (%s): cuRobo judges beside the exact guard",
+                             pose.label or "the goal", why_not)
         try:
             verdict = self._curobo_ur_planner().check_joint_path(judged.configs, refresh=False)
         except CuroboUnavailableError as exc:

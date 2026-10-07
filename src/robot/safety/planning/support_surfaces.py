@@ -333,10 +333,16 @@ class SupportModel:
         """Whether each of ``(N, 3)`` points lies within a support solid up to its erasure top."""
         pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
         out = np.zeros(pts.shape[0], dtype=bool)
+        # Axis by axis over contiguous columns: the same comparisons as over the rows, in about half the time over the
+        # 150,000 pixels a build asks (2026-10-07, the cell's frames: 11 ms of a build before, 6 after).
+        columns = [np.ascontiguousarray(pts[:, axis]) for axis in range(3)]
         for solid in self.support_solids:
             # Only what lies within the box that encloses the solid is asked the solid itself.
             reach = solid.enclosing_half_extents_mm
-            near = np.nonzero(np.all(np.abs(pts - solid.centre_mm) <= reach, axis=1) & ~out)[0]
+            within = ~out
+            for axis in range(3):
+                within &= np.abs(columns[axis] - solid.centre_mm[axis]) <= reach[axis]
+            near = np.nonzero(within)[0]
             if near.size:
                 out[near] = solid.erases(pts[near])
         return out

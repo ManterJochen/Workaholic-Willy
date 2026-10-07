@@ -100,8 +100,10 @@ _SERVER_SCRIPT = str(Path(__file__).with_name("curobo_planner_server.py"))
 logger = create_robot_logger("CuroboPlanClient", CUROBO_CLIENT_LOG_FILE)
 
 # Generous, because the server JIT-warms the cuRobo kernels on first boot: about 25 s
-# cold and about 8 s with a warm kernel cache.
-_READY_TIMEOUT_S = 120.0
+# cold and about 8 s with a warm kernel cache on the dev box. On the owner's cell PC every
+# start took 39 to 103 s (2026-10-07, 23 starts, the more boxes reserved the longer), and two
+# were killed at 120 s that were still coming up, so the cell waits five minutes.
+_READY_TIMEOUT_S = 300.0
 _PLAN_TIMEOUT_S = 30.0
 
 

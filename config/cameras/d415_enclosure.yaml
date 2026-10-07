@@ -1,0 +1,20 @@
+# The owner's RealSense D415 in its printed enclosure (the blue box on the wrist of the UR10 cell), as one box in the
+# colour camera's optical frame (x to the right in the image, y down, z out of the lens), in millimetres.
+#
+# AN ESTIMATE, not a measurement (the owner, 2026-10-07: "mache eine Schätzung aber sei nicht extrem großzügig, weil so
+# hat es gerade auch funktioniert schon"). Measure the enclosure with a calliper and write the numbers here.
+#
+# It is the bare D415 housing (realsense_d415.yaml: 99.15 x 23.15 x 20.15, centre (35.0, 0.0, -8.975)) inside walls of
+# about 6 mm on every side and a back of about 6 mm, with a front lip 2 mm in front of the glass:
+# size_mm: x 99.15 + 2 x 6 = 111.15; y 23.15 + 2 x 6 = 35.15; z 20.15 + 2 + 6 = 28.15, rounded up to 32 for the cable.
+# centre_mm: x and y as the camera's; z: front at 1.1 + 2 = 3.1, back at 3.1 - 32 = -28.9, centre -12.9.
+camera:
+  model: d415_enclosure
+  source: >-
+    An estimate of the owner's printed enclosure around an Intel RealSense D415, 2026-10-07, not measured: the D415
+    housing of realsense_d415.yaml (Intel RealSense D400 Series Datasheet, document 337029-017, revision 019) inside
+    walls of about 6 mm, a back of about 6 mm and room for the cable, with a 2 mm front lip
+  optical_frame: color
+  housing:
+    size_mm: [111.15, 35.15, 32.0]
+    centre_mm: [35.0, 0.0, -12.9]

@@ -108,6 +108,11 @@ ROBOT = sys.argv[1] if len(sys.argv) > 1 else "ur5e.yml"
 # every attempt. Both are overridable through the environment.
 _PLAN_MAX_ATTEMPTS = int(os.environ.get("WILLY_CUROBO_MAX_ATTEMPTS", "16"))
 _PLAN_GRAPH_FROM = int(os.environ.get("WILLY_CUROBO_GRAPH_FROM_ATTEMPT", "1"))
+# How many planning passes warm the planner before it says ready: the first compiles the kernels and captures the CUDA
+# graphs, the second runs them warm. Each further pass costs seconds of every start, and a cell starts its planner at
+# every connect (2026-10-07: 39 to 103 s a start on the owner's cell PC; on the desk 28 to 31 s at 5 passes, 20 s at
+# 2). Overridable through the environment.
+_WARMUP_ITERATIONS = max(1, int(os.environ.get("WILLY_CUROBO_WARMUP_ITERATIONS", "2")))
 # How many obstacles of each kind this planner can ever hold. cuRobo allocates its
 # collision storage once, at construction, and `collision_cache` is the supported way to
 # say how much: the alternative this replaced was booting fifteen far-away placeholder
@@ -414,7 +419,7 @@ try:
     print(f"[cache] {_collision_cache}", file=sys.stderr, flush=True)
     print("[graph] roadmaps seed from the start and the goal alone, never through the retract",
           file=sys.stderr, flush=True)
-    _planner.warmup(enable_graph=True, num_warmup_iterations=5)
+    _planner.warmup(enable_graph=True, num_warmup_iterations=_WARMUP_ITERATIONS)
     _DT = float(_planner.trajopt_solver.config.interpolation_dt)
     _N = len(_planner.joint_names)
     _kin = Kinematics(KinematicsCfg.from_data_dict(copy.deepcopy(_COMPOSED)))

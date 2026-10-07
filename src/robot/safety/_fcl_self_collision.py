@@ -48,6 +48,7 @@ resolves on this box.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -201,6 +202,33 @@ class _EngineAdapter:
         return float(m.distance(a, b, m.DistanceRequest(), m.DistanceResult()))
 
 
+#: How many fixture tuples' engine objects a backend keeps: the declared fixtures, the boxes a camera saw, and the sets a
+#: judgement asks beside them.
+_PROBE_TUPLES_KEPT = 4
+
+
+#: Below a measured distance less how far a part moved since, how far the bound stays from the limit before an exact query
+#: is skipped, millimetres: the engine's own rounding, nothing more.
+_ADVANCE_EPS_MM = 1e-6
+
+
+@dataclass(frozen=True)
+class _Probes:
+    """The engine objects one fixture tuple is judged as, column by column (``MeshSelfCollisionBackend._probes``), and
+    what the last exact query of each part and column measured: the distance (``nan`` where none was asked) and the
+    part's turn and sphere centre at that query, which bound how near it can have come since."""
+
+    boxes: tuple[Any, ...]
+    surfaces: tuple[Any, ...]
+    readings: tuple[Any, ...]
+    centres: np.ndarray
+    radii: np.ndarray
+    soft: np.ndarray
+    measured: np.ndarray
+    turns: np.ndarray
+    at: np.ndarray
+
+
 class MeshSelfCollisionBackend:
     """Holds the per-link BVH models and runs the exact pairwise and fixture distance checks."""
 
@@ -221,6 +249,8 @@ class MeshSelfCollisionBackend:
         # mesh, so it never changes a verdict.
         self._sph_c: dict[str, np.ndarray] = {}
         self._sph_r: dict[str, float] = {}
+        # The vertices that hold a part's lowest point however it is placed, for :meth:`lowest_mm`.
+        self._hull: dict[str, np.ndarray] = {}
         for name, (verts, faces, frame) in meshes.items():
             self._models[name] = adapter.build_object(verts, faces)
             self._frame[name] = int(frame)
@@ -228,7 +258,17 @@ class MeshSelfCollisionBackend:
             c = v.mean(axis=0)
             self._sph_c[name] = c
             self._sph_r[name] = float(np.linalg.norm(v - c, axis=1).max())
+            self._hull[name] = _hull_vertices(v)
         self._names = list(self._models)
+        # The broadphase's spheres as arrays, in the order of ``_names``; the arm's own pairs the rule checks, listed once
+        # (the rule reads frames, which never change); the finger rows, which a named part's surface holds at no distance.
+        self._radius_row = np.asarray([self._sph_r[name] for name in self._names], dtype=np.float64)
+        self._centre_rows = np.asarray([self._sph_c[name] for name in self._names], dtype=np.float64).reshape(-1, 3)
+        self._finger_rows = np.asarray([name in FINGER_PARTS for name in self._names], dtype=bool)
+        self._pairs = [(i, j) for i in range(len(self._names)) for j in range(i + 1, len(self._names))
+                       if self.checks(self._names[i], self._names[j])]
+        # The engine objects of the fixture tuples judged last, by the tuple itself (``_probes``).
+        self._probe_cache: dict[int, tuple[tuple, _Probes]] = {}
 
     def checks(self, part_a: str, part_b: str) -> bool:
         """Whether :meth:`evaluate` judges ``part_a`` against ``part_b``: its pair rule, asked of one pair.
@@ -259,6 +299,24 @@ class MeshSelfCollisionBackend:
             self._a.set_transform(self._models[name], rotation @ frame[:3, :3], rotation @ frame[:3, 3])
         return self._a.distance(self._models[part_a], self._models[part_b])
 
+    def lowest_mm(self, transforms_dh_mm: list[np.ndarray], yaw_deg: float, *, from_frame: int = 2) -> float:
+        """The lowest point of every part hanging from DH frame ``from_frame`` or past it, at one placement: z in the
+        system base frame, mm, exact (the lowest vertex of each part's hull; ``inf`` where no part hangs there).
+
+        The default leaves out the shoulder, which turns about Z on the base and stands where it stands whatever the
+        joints do. Read beside a support plane only the planner holds (``mesh_first``), never as a verdict of its own.
+        """
+        rotation = _yaw_matrix(yaw_deg)
+        low = float("inf")
+        for name in self._names:
+            frame = self._frame[name]
+            if frame < from_frame:
+                continue
+            placed = transforms_dh_mm[frame]
+            row = (rotation @ placed[:3, :3])[2]
+            low = min(low, float((self._hull[name] @ row).min() + (rotation @ placed[:3, 3])[2]))
+        return low
+
     def evaluate(
         self,
         transforms_dh_mm: list[np.ndarray],
@@ -283,65 +341,138 @@ class MeshSelfCollisionBackend:
         """
         a = self._a
         Rb = _yaw_matrix(yaw_deg)
-        wc: dict[str, np.ndarray] = {}  # world-frame sphere centroids, broadphase only
+        centres = np.empty((len(self._names), 3), dtype=np.float64)  # world-frame sphere centroids, broadphase only
+        turns = np.empty((len(self._names), 3, 3), dtype=np.float64)  # world-frame turns, broadphase only
         # Place every link mesh in the system base frame: R_base @ T_dh[frame].
-        for name in self._names:
+        for row, name in enumerate(self._names):
             T = transforms_dh_mm[self._frame[name]]
             R = Rb @ T[:3, :3]
             t = Rb @ T[:3, 3]
             a.set_transform(self._models[name], R, t)
             if broadphase:
-                wc[name] = R @ self._sph_c[name] + t
+                centres[row] = R @ self._centre_rows[row] + t
+                turns[row] = R
         # ---- link against link, skipping frames within 1 of each other, which are the
         # adjacent joints and the rigid wrist and gripper cluster ----
         # A wrist camera's part is skipped only on its own frame, so against wrist_2, one frame in, it
         # stays checked.
-        for i in range(len(self._names) if arm_pairs else 0):
-            ni = self._names[i]
-            for j in range(i + 1, len(self._names)):
-                nj = self._names[j]
-                if not self.checks(ni, nj):
-                    continue
-                if broadphase and (float(np.linalg.norm(wc[ni] - wc[nj]))
-                                   - self._sph_r[ni] - self._sph_r[nj] > min_distance_mm):
+        if arm_pairs and self._pairs:
+            near_pairs: "list[bool] | None" = None
+            if broadphase:
+                first = np.fromiter((i for i, _ in self._pairs), dtype=np.int64, count=len(self._pairs))
+                second = np.fromiter((j for _, j in self._pairs), dtype=np.int64, count=len(self._pairs))
+                gaps = (np.linalg.norm(centres[first] - centres[second], axis=1)
+                        - self._radius_row[first] - self._radius_row[second])
+                near_pairs = (gaps <= min_distance_mm).tolist()
+            for index, (i, j) in enumerate(self._pairs):
+                if near_pairs is not None and not near_pairs[index]:
                     continue  # the spheres are too far apart to violate, so skip the exact query
+                ni, nj = self._names[i], self._names[j]
                 d = a.distance(self._models[ni], self._models[nj])
                 if d < min_distance_mm:
                     return (f"{ni}|{nj}", d)
         # ---- link against fixture: the box as it stands, turned or tilted where it is; the sphere about its
         # enclosure, which holds the turned or tilted box too, so the broadphase never culls a box the exact query
         # would refuse ----
-        for fx in fixtures:
-            fc = np.asarray(fx.center_mm, dtype=np.float64)
-            fr = float(np.linalg.norm(np.asarray(fx.half_extents_mm, dtype=np.float64)))
-            turned = getattr(fx, "turned", None)
-            if turned is None:
-                box = a.box_object(np.asarray(fx.half_extents_mm, dtype=np.float64), fc)
-            else:
-                box = a.box_object(np.asarray(turned.half_extents_mm, dtype=np.float64), fc, float(turned.yaw_rad),
-                                   getattr(turned, "rotation", None))
-            # A box of a part the detector named holds the fingers to its measured surface: the box less ``soft_mm`` on
-            # its sides and its top, its foot where it stands, at no distance (the owner, 2026-10-05).
-            soft = float(getattr(fx, "soft_mm", 0.0) or 0.0)
-            surface = _surface_of(a, fx, soft) if soft > 0.0 else None
-            # A support's solid holds the fingers to its reading and excess, at the distance (the owner, 2026-10-05).
-            drop = float(getattr(fx, "finger_top_mm", 0.0) or 0.0)
-            reading = _finger_top_of(a, fx, drop) if drop > 0.0 and surface is None else None
-            for name in self._names:
+        if not fixtures:
+            return None
+        probes = self._probes(fixtures)
+        near: "np.ndarray | None" = None
+        if broadphase:
+            # A finger against a named part's measured surface keeps no distance, every other pair the limit.
+            limits = np.where(self._finger_rows[:, None] & probes.soft[None, :], 0.0, float(min_distance_mm))
+            gaps = (np.linalg.norm(centres[:, None, :] - probes.centres[None, :, :], axis=2)
+                    - self._radius_row[:, None] - probes.radii[None, :])
+            near = gaps <= limits
+            # Where a part was measured against a box before: it can have come no nearer than that distance less how
+            # far any point of it moved since, its sphere's centre plus its radius times the chord of its turn.
+            known = ~np.isnan(probes.measured)
+            if near.any() and known.any():
+                chord = np.sqrt(np.clip(3.0 - np.einsum("rcij,rij->rc", probes.turns, turns), 0.0, None))
+                moved = (np.linalg.norm(centres[:, None, :] - probes.at, axis=2)
+                         + self._radius_row[:, None] * chord)
+                near &= ~(known & (probes.measured - moved - _ADVANCE_EPS_MM >= limits))
+            if not near.any():
+                return None
+        columns = range(len(fixtures)) if near is None else np.flatnonzero(near.any(axis=0)).tolist()
+        for column in columns:
+            fx = fixtures[column]
+            box, surface, reading = probes.boxes[column], probes.surfaces[column], probes.readings[column]
+            for row, name in enumerate(self._names):
+                if near is not None and not near[row, column]:
+                    continue
                 if surface is not None and name in FINGER_PARTS:
                     probe, limit = surface, 0.0
                 elif reading is not None and name in FINGER_PARTS:
                     probe, limit = reading, min_distance_mm
                 else:
                     probe, limit = box, min_distance_mm
-                if broadphase and (float(np.linalg.norm(wc[name] - fc))
-                                   - self._sph_r[name] - fr > limit):
-                    continue
                 d = a.distance(self._models[name], probe)
+                if broadphase:
+                    probes.measured[row, column] = d
+                    probes.turns[row, column] = turns[row]
+                    probes.at[row, column] = centres[row]
                 if d < limit:
                     fname = getattr(fx, "name", "") or "fixture"
                     return (f"{name}|fixture:{fname}", d)
         return None
+
+    def _probes(self, fixtures: tuple) -> "_Probes":
+        """The engine objects ``fixtures`` are judged as, and the spheres about their enclosures, built once per tuple.
+
+        The box as it stands, turned or tilted where it is; for the fingers, a part the detector named as its measured
+        surface (the box less ``soft_mm`` on its sides and its top, its foot where it stands, at no distance) and a
+        support's solid at its reading and excess (``finger_top_mm``), the owner's rules of 2026-10-05. The guard hands
+        the same tuple for every sample until its world changes, so the objects of the last few tuples are kept, by the
+        tuple itself; any other sequence is built for the one call.
+        """
+        if isinstance(fixtures, tuple):
+            cached = self._probe_cache.get(id(fixtures))
+            if cached is not None and cached[0] is fixtures:
+                return cached[1]
+        a = self._a
+        boxes: list[Any] = []
+        surfaces: list[Any] = []
+        readings: list[Any] = []
+        centres = np.zeros((len(fixtures), 3), dtype=np.float64)
+        radii = np.zeros(len(fixtures), dtype=np.float64)
+        soft_columns = np.zeros(len(fixtures), dtype=bool)
+        for column, fx in enumerate(fixtures):
+            fc = np.asarray(fx.center_mm, dtype=np.float64)
+            centres[column] = fc
+            radii[column] = float(np.linalg.norm(np.asarray(fx.half_extents_mm, dtype=np.float64)))
+            turned = getattr(fx, "turned", None)
+            if turned is None:
+                boxes.append(a.box_object(np.asarray(fx.half_extents_mm, dtype=np.float64), fc))
+            else:
+                boxes.append(a.box_object(np.asarray(turned.half_extents_mm, dtype=np.float64), fc,
+                                          float(turned.yaw_rad), getattr(turned, "rotation", None)))
+            soft = float(getattr(fx, "soft_mm", 0.0) or 0.0)
+            surface = _surface_of(a, fx, soft) if soft > 0.0 else None
+            surfaces.append(surface)
+            soft_columns[column] = surface is not None
+            drop = float(getattr(fx, "finger_top_mm", 0.0) or 0.0)
+            readings.append(_finger_top_of(a, fx, drop) if drop > 0.0 and surface is None else None)
+        shape = (len(self._names), len(fixtures))
+        probes = _Probes(boxes=tuple(boxes), surfaces=tuple(surfaces), readings=tuple(readings), centres=centres,
+                         radii=radii, soft=soft_columns, measured=np.full(shape, np.nan),
+                         turns=np.zeros((*shape, 3, 3)), at=np.zeros((*shape, 3)))
+        if isinstance(fixtures, tuple):
+            while len(self._probe_cache) >= _PROBE_TUPLES_KEPT:
+                self._probe_cache.pop(next(iter(self._probe_cache)))
+            self._probe_cache[id(fixtures)] = (fixtures, probes)
+        return probes
+
+
+def _hull_vertices(vertices: np.ndarray) -> np.ndarray:
+    """The vertices of the convex hull of ``vertices``, which hold the part's lowest point however it is placed; every
+    vertex where no hull is computed (no scipy, a flat part), which is as exact and slower."""
+    try:
+        from scipy.spatial import ConvexHull  # noqa: PLC0415
+
+        return np.asarray(vertices[ConvexHull(vertices).vertices], dtype=np.float64)
+    except Exception:  # noqa: BLE001 - a part qhull cannot hull is kept whole
+        return np.asarray(vertices, dtype=np.float64)
 
 
 def mesh_backend_status(

@@ -43,7 +43,14 @@ from typing import Any
 
 from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Frame, Pose
-from src.robot.core.arm_capabilities import DrivesJointLines, HomesTyped, LineMotion, LineReading, line_motion_of
+from src.robot.core.arm_capabilities import (
+    DrivesJointLines,
+    DrivesJointPaths,
+    HomesTyped,
+    LineMotion,
+    LineReading,
+    line_motion_of,
+)
 from src.robot.core.camera_world import (
     CameraWorldDecline,
     CameraWorldStamp,
@@ -75,6 +82,7 @@ __all__ = [
     "move",
     "move_joints",
     "move_joints_on_the_line",
+    "move_through_joints_on_the_line",
     "route_of",
     "steady_timeout_of",
 ]
@@ -338,6 +346,33 @@ def move_joints_on_the_line(arm: Any, joints: JointPositions) -> MotionReport:
             "joint line only runs judged against the camera world or not at all; nothing was sent",
             verb._stamp_before(route)))
     return verb.run(lambda: arm.move_to_joints_on_the_line(joints))
+
+
+def move_through_joints_on_the_line(arm: Any, waypoints: list[JointPositions]) -> MotionReport:
+    """Move ``arm`` through ``waypoints`` (radians) on straight joint lines, judged whole before anything is sent and
+    then sent without a pause between them, through its ``move_through_joints_on_the_line`` (``DrivesJointPaths``).
+
+    As :func:`move_joints_on_the_line` for every leg at once: a leg the arm's judge refuses refuses the path, nothing
+    sent and nothing planned around it. It takes no decline, for the reason that verb gives. An arm that does not
+    implement the capability has no such motion and is refused before any command, UNSUPPORTED, by name.
+    """
+    last = waypoints[-1] if waypoints else None
+    verb = _Motion(arm, MotionVerb.MOVE_JOINTS, UNSET, target_joints=last)
+    if not isinstance(arm, DrivesJointPaths):
+        route = route_of(arm)
+        return MotionReport(MotionVerb.MOVE_JOINTS, MotionOutcome.REFUSED, route, verb._failed(
+            MotionStatus.UNSUPPORTED,
+            f"{type(arm).__name__} does not run a judged joint path as one motion (DrivesJointPaths); nothing was sent",
+            verb._stamp_before(route)))
+    declined = active_decline(arm)
+    if declined is not None:
+        route = route_of(arm)
+        return MotionReport(MotionVerb.MOVE_JOINTS, MotionOutcome.REFUSED, route, verb._failed(
+            MotionStatus.UNSUPPORTED,
+            f"the camera world is declined for this arm ({declined.reason}), and a joint path runs judged against the "
+            "camera world or not at all; nothing was sent",
+            verb._stamp_before(route)))
+    return verb.run(lambda: arm.move_through_joints_on_the_line(list(waypoints)))
 
 
 def home(arm: Any, *, decline: Maybe[CameraWorldDecline] = UNSET) -> MotionReport:

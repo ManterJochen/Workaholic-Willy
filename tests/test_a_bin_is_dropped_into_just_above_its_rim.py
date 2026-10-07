@@ -21,10 +21,14 @@ The drop (``drop_plan``) is ``SetDown.onto`` the bin, then four rules, in order:
 * the part, turned as it will hang, must fit the opening (or the top), else it does not fit.
 
 A taught place pose (``pose_drop``) says where the part's BOTTOM is let go: the tool goes to the taught pose raised in
-BASE Z by the part's hang, the grasp's Z less the part's declared support, or the declared ``payload.length_mm`` where
-the pick reports no grasp; turned as taught about the vertical, and tilted as the grasp was (the taught turn whole only
-where the pick reports no grasp), then screened the same way. So the part's lowest point never ends below the taught
-point, however the tool was tilted at the grasp.
+BASE Z by the part's hang, the grasp's Z less the part's declared support, or, where the pick reports no grasp, the
+fingertips' reach below the tool and the declared ``payload.length_mm`` past them; turned as taught about the vertical,
+and tilted as the grasp was (the taught turn whole only where the pick reports no grasp), then screened the same way.
+So the part's lowest point never ends below the taught point, however the tool was tilted at the grasp.
+
+The drop a task screens once it has found its bin (``nominal_drop``) hangs the part below the tool by the same worst
+hang, the fingertips' reach past the TCP and the length past them (the cell, 2026-10-07: with the length alone the
+fingers stood 0.35 mm over the rim, inside the camera's boxes about it, and nine task runs ended before a pick).
 
 The opening is read from the rim band alone, the walls' tops, across the middle half of the band's own extent, so a bin
 seen at a slant (its far wall's inner face filling the view) still shows its inside: within a few millimetres of the
@@ -416,6 +420,15 @@ class TheDropAtATaughtPoseTests(unittest.TestCase):
         np.testing.assert_allclose(PLACE_TCP.position_mm + (0.0, 0.0, 60.0), plan.pose.position_mm)
         self.assertEqual(60.0, plan.hang_mm)
 
+    def test_without_a_grasp_pose_the_fingertips_reach_comes_first(self) -> None:
+        from src.robot.execution.place_target import pose_drop
+
+        plan = pose_drop(TaskArm([]), PLACE_JOINTS, None, part_bottom_mm=0.0, length_mm=1.0, standoff_mm=80.0,
+                         fingertips_mm=12.65)
+        assert plan.pose is not None
+        np.testing.assert_allclose(PLACE_TCP.position_mm + (0.0, 0.0, 13.65), plan.pose.position_mm)
+        self.assertAlmostEqual(13.65, plan.hang_mm or 0.0)
+
     def test_with_neither_the_hang_is_unknown_and_nothing_is_set_down_blind(self) -> None:
         from src.robot.execution.place_target import pose_drop
 
@@ -457,6 +470,81 @@ class TheDropAtATaughtPoseTests(unittest.TestCase):
         plan = pose_drop(_NoFk(), PLACE_JOINTS, _grasp(), part_bottom_mm=0.0, length_mm=None, standoff_mm=80.0)
         self.assertEqual("unreachable", plan.refusal)
         self.assertIn("FK failed", plan.reason)
+
+
+class _RefusesBelow:
+    """An arm whose endpoint gate refuses every drop below ``below_mm`` (the boxes about a bin's walls) and screens
+    every other configuration clear, as ``arm`` does."""
+
+    def __init__(self, arm: Any, *, below_mm: float) -> None:
+        self.arm = arm
+        self.below_mm = below_mm
+
+    def nearest_configuration(self, pose: Pose) -> JointPositions:
+        if float(pose.position_mm[2]) < self.below_mm:
+            raise RobotKinematicsError("refused by the endpoint gate: rfinger|fixture:seen_03: mesh distance -0.2 mm")
+        return self.arm.nearest_configuration(pose)
+
+    def screen_configuration(self, joints: JointPositions, *, ask_planner: bool = True) -> Any:
+        return self.arm.screen_configuration(joints, ask_planner=ask_planner)
+
+
+class TheWorstHangBelowTheToolTests(unittest.TestCase):
+    """The owner's cell: a Hand-E on a 23 mm plate, its TCP declared 157 mm out; its grasp centre stands 2.2 mm past the
+    TCP and its fingertips 10.45 mm past that."""
+
+    def _tree(self) -> Any:
+        from src.config.schema.robot import RobotConfig
+
+        return RobotConfig.model_validate({
+            "vendor": "ur", "ur": {"model": "ur10", "motion_planner": "curobo"},
+            "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "hand_adapter", "thickness_mm": 23.0}],
+                        "tool_frame": {"source": "polyscope", "offset_mm": [0.0, 0.0, 157.0],
+                                       "rotation_quat_xyzw": [0.0, 0.0, -0.7071068, 0.7071068]}},
+        })
+
+    def test_the_fingertips_reach_past_the_tcp(self) -> None:
+        from src.robot.execution.task import _fingertips_past_the_tcp_mm
+
+        self.assertAlmostEqual(12.65, _fingertips_past_the_tcp_mm(self._tree()), places=2)
+        self.assertEqual(0.0, _fingertips_past_the_tcp_mm(SimpleNamespace()), "a tree that is no robot config")
+        self.assertEqual(0.0, _fingertips_past_the_tcp_mm(None))
+
+    def test_a_drop_refused_at_its_lowest_is_screened_higher_and_costs_no_pick(self) -> None:
+        """The owner, 2026-10-07: the real drop stands at least 5 cm over the rim, so the screen at the lowest, among the
+        boxes about the walls, must not end a task the real drop would run."""
+        from src.robot.execution.place_target import NOMINAL_RAISE_MM, KeptTarget, nominal_drop
+
+        kept = KeptTarget.of(bin_object(), camera="wrist", look=None, seen_at=12.5)
+        assert kept is not None
+        lowest = kept.rim_mm + 13.65 + 13.0
+        arm = TaskArm([], unreachable_above_mm=None)
+        refusing = _RefusesBelow(arm, below_mm=lowest + 1.0)
+        plan = nominal_drop(refusing, kept, hang_mm=13.65, air_mm=13.0)
+        self.assertTrue(plan.ok, plan.reason)
+        assert plan.pose is not None
+        self.assertAlmostEqual(lowest + NOMINAL_RAISE_MM, float(plan.pose.position_mm[2]), places=6)
+        self.assertAlmostEqual(13.0 + NOMINAL_RAISE_MM, plan.air_mm or 0.0)
+        self.assertIn("screened 50 mm higher", plan.detail)
+
+        blocked = nominal_drop(_RefusesBelow(arm, below_mm=lowest + 2.0 * NOMINAL_RAISE_MM), kept, hang_mm=13.65,
+                               air_mm=13.0)
+        self.assertEqual("unreachable", blocked.refusal)
+        self.assertIn("at its lowest or 50 mm higher", blocked.reason)
+
+    def test_the_drop_over_the_bin_keeps_the_rim_air_under_the_fingertips(self) -> None:
+        from src.robot.execution.place_target import KeptTarget, nominal_drop, rim_clearance_mm
+        from src.robot.execution.task import _fingertips_past_the_tcp_mm
+
+        tree = self._tree()
+        kept = KeptTarget.of(bin_object(), camera="wrist", look=None, seen_at=12.5)
+        assert kept is not None
+        air = rim_clearance_mm(tree)
+        reach = _fingertips_past_the_tcp_mm(tree)
+        plan = nominal_drop(TaskArm([]), kept, hang_mm=reach + 1.0, air_mm=air)
+        assert plan.pose is not None
+        fingertips_z = float(plan.pose.position_mm[2]) - reach
+        self.assertAlmostEqual(kept.rim_mm + 1.0 + air, fingertips_z, places=6)
 
 
 class ABinSeenThroughACameraTests(unittest.TestCase):

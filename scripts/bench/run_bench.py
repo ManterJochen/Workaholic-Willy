@@ -77,7 +77,7 @@ _LAYER = {
 
 
 def copy_the_tree(tree: Path, work: Path, calibration: Optional[Path], *, no_planner: bool = False,
-                  ip: str = "127.0.0.1") -> Path:
+                  ip: str = "127.0.0.1", margin_mm: Optional[float] = None) -> Path:
     """``tree`` copied to ``<work>/config`` with the bench's layer, and the camera layer naming ``calibration``.
     ``no_planner`` runs the arm on its controller's IK, no cuRobo: a wiring check that needs no GPU, not a result.
     ``ip`` is the controller's address, which nothing dials (the instant controller answers every address) and which
@@ -86,6 +86,9 @@ def copy_the_tree(tree: Path, work: Path, calibration: Optional[Path], *, no_pla
     shutil.copytree(tree, copied)
     layer = json.loads(json.dumps(_LAYER))
     layer["robot"]["ur"]["ip"] = str(ip)
+    if margin_mm is not None:
+        # An A/B of how far the camera world grows its boxes past the points (``--margin``); the owner's 8 otherwise.
+        layer["robot"]["safety"]["planning_world"]["perceived"]["margin_mm"] = float(margin_mm)
     if no_planner:
         layer["robot"]["ur"]["motion_planner"] = "ik"
     text = ("# The bench's layer (scripts/bench/run_bench.py): the owner's numbers of 2026-10-05 over the tree, and the\n"
@@ -207,7 +210,8 @@ class Bench:
         self.work = Path(args.work)
         self.work.mkdir(parents=True, exist_ok=True)
         copied = copy_the_tree(Path(args.tree), self.work, None if args.no_calibration else Path(args.calibration),
-                               no_planner=bool(args.no_planner), ip=str(args.ip))
+                               no_planner=bool(args.no_planner), ip=str(args.ip),
+                               margin_mm=getattr(args, "margin", None))
         chain = f"{args.profile},{BENCH_LAYER}" if args.profile else BENCH_LAYER
         self.tree = load_tree(chain, root=copied)
         robot = self.tree.robot
@@ -220,7 +224,9 @@ class Bench:
         static = ms.StaticScene.from_crop(Path(args.crop))
         static.whole_bench = True
         self.static = static
-        self.scene = ms.Scene(static)
+        # The depth the stand-in camera hands the stack: the cell's D415 as its frames read it, unless a run asks for
+        # the clean render (``--noise clean``).
+        self.scene = ms.Scene(static, depth_model=str(getattr(args, "noise", "real")))
         self.jaws_closed = False
         self.state.on_tool_output = self._tool_output
         self.results: list[dict[str, Any]] = []
@@ -318,7 +324,8 @@ class Bench:
         from src.contracts import UNSET  # noqa: PLC0415
 
         motion: Any = UNSET if self.args.standoff is None else GraspMotion(standoff_mm=float(self.args.standoff))
-        summary: dict[str, Any] = {"started": time.strftime("%Y-%m-%d %H:%M:%S"), "scenes": {}}
+        summary: dict[str, Any] = {"started": time.strftime("%Y-%m-%d %H:%M:%S"), "scenes": {},
+                                   "noise": str(getattr(self.args, "noise", "real"))}
         try:
             with ExitStack() as stack:
                 stack.enter_context(mock.patch.object(camera_module, "create_streamer", create_streamer))
@@ -548,8 +555,23 @@ def main(argv: Optional[list[str]] = None) -> int:
                     help="the approach's standoff in mm; the console's own (the policy's 80 mm) where not given")
     ap.add_argument("--no-planner", action="store_true",
                     help="a wiring check with no cuRobo (no GPU): the arm on IK alone; its rates mean nothing")
+    ap.add_argument("--noise", choices=ms.DEPTH_MODELS, default="real",
+                    help="the camera's depth: real, the cell's D415 as its frames of 2026-10-07 read it (noise, holes, "
+                         "shadows, blurred edges); harsh, worse than that, to stress the stack; clean, the render as it "
+                         "was")
+    ap.add_argument("--margin", type=float, default=None,
+                    help="an A/B of how far the camera world grows its boxes past the points "
+                         "(safety.planning_world.perceived.margin_mm), millimetres; the owner's 8 where not given")
+    ap.add_argument("--slack", type=float, default=None,
+                    help="an A/B of the calculator's slack past the guard's distance (scene_obstacles.WHOLE_SLACK_MM), "
+                         "millimetres; the shipped value where not given")
     ap.add_argument("--work", default=str(_REPO / "logs" / "bench" / time.strftime("%Y%m%d_%H%M%S")))
     args = ap.parse_args(argv)
+    if args.slack is not None:
+        from src.robot.grasping.generation import scene_obstacles  # noqa: PLC0415
+
+        scene_obstacles.WHOLE_SLACK_MM = float(args.slack)
+        print(f"the calculator plans the hand {args.slack:g} mm past the guard's distance (--slack)", flush=True)
     names = scene_names(args.scenes)
     bench = Bench(args)
     summary = bench.run(names)

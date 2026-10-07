@@ -57,6 +57,7 @@ __all__ = [
     "ChoosesConfigurations",
     "DigitalIOPort",
     "DrivesJointLines",
+    "DrivesJointPaths",
     "HALT_BRAKE_OUTCOMES",
     "HaltState",
     "HoldsItsWorld",
@@ -77,6 +78,7 @@ __all__ = [
     "SupportsRobotStatus",
     "Wrench",
     "brakes_in_motion_of",
+    "chose_no_carried_part",
     "end_pulse",
     "halt_state_of",
     "halted_refusal",
@@ -473,6 +475,19 @@ class CarriesPayload(Protocol):
         ...
 
 
+def chose_no_carried_part(arm: object) -> bool:
+    """Whether ``arm``'s cell chose to model no carried part: ``safety.planning_world.payload.enabled`` is false.
+
+    A closed hand is then judged as an empty one, by the exact guard at full stroke, and the part by nobody (the owner,
+    2026-10-05: "wir nehmen das, wo wir uns sicherer sind, dass wir mehr erhalten ... Also mehr Griffe"). A task and
+    the console accept that choice (the owner, 2026-10-07). A cell that leaves the model on and cannot model the part,
+    a length it never declared or a hand nothing places, chose nothing, and is refused where a part would be carried.
+    """
+    world = getattr(getattr(getattr(arm, "config", None), "safety", None), "planning_world", None)
+    payload = getattr(world, "payload", None)
+    return payload is not None and getattr(payload, "enabled", True) is False
+
+
 class LineMotion(StrEnum):
     """What a ``move(pose, linear=True)`` on an arm keeps of the line it was asked for."""
 
@@ -575,6 +590,24 @@ class DrivesJointLines(Protocol):
 
     def move_to_joints_on_the_line(self, joints: "JointPositions") -> "MotionResult":
         """Move to ``joints`` on the straight joint line from where the arm stands; refused, nothing sent, if not clear."""
+        ...
+
+
+@runtime_checkable
+class DrivesJointPaths(Protocol):
+    """Capability extension: the arm runs straight joint lines through several waypoints as ONE motion, judged whole.
+
+    Every leg is judged before anything is sent, as :class:`DrivesJointLines` judges one line, against the world one
+    refresh built; a leg that is not clear refuses the whole path, nothing sent and nothing planned around it. A path
+    that passes is sent waypoint after waypoint with nothing judged or planned between them, so the arm turns at each
+    and runs on: the wave at a greeting (the owner, 2026-10-07: "das muss eine konsistente Bewegung sein"), whose
+    swings stood five seconds apart while each was judged on its own. Not a member of
+    :class:`~src.robot.core.RobotArm`, for the reason :class:`HomesTyped` gives.
+    """
+
+    def move_through_joints_on_the_line(self, waypoints: "Sequence[JointPositions]") -> "MotionResult":
+        """Run the straight joint lines through ``waypoints`` as one motion, judged whole first; refused, nothing sent,
+        if a leg is not clear."""
         ...
 
 

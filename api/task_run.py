@@ -496,7 +496,8 @@ def _wave_stopped(run: "Run") -> bool:
 
 def drive_wave(console: "Console", run: "Run") -> StopCode:
     """The body of a wave run: Willy waves back at a greeting (``src.robot.execution.gestures.wave``), the second
-    wrist joint swung out and back twice, each swing a straight joint line the exact guard judges before it is sent.
+    wrist joint swung out and back twice, judged by the exact guard before it is sent: on the UR as one motion, judged
+    whole and sent without a pause at the turns, elsewhere each swing a straight joint line of its own.
 
     Before it, as Home: a cell taken down, a halt or a part still held ends it with nothing sent, and so does the
     operator's stop, which ends it ``cancelled``. The stop, the halt and the cell are read again before every swing, and
@@ -535,7 +536,9 @@ def drive_wave(console: "Console", run: "Run") -> StopCode:
         console.hub.publish(run.id, "wave.done", severity=Severity.SUCCESS, human="Waved.",
                             swings=gestures.WAVE_SWINGS)
         return StopCode.FINISHED
-    ran = sum(1 for report in waved.reports if report.ok)
+    ran = waved.swings_ran
+    # A wave sent as one motion ran whole or ended somewhere along it; swing by swing it ended after a count.
+    after = "part of the way along, sent as one motion" if waved.as_one and waved.moved else f"after {ran} swing(s)"
     if waved.ended == "stopped":
         if run.abandoned:
             run.error = f"{run.abandoned} The wave ended after {ran} swing(s)."
@@ -555,19 +558,20 @@ def drive_wave(console: "Console", run: "Run") -> StopCode:
         run.error = f"{run.abandoned} The wave said: {message}"
         return StopCode.DISCONNECTED
     if run.halt_requested or readiness.halt_reason(arm):
-        run.error = _halted_error(console, run, f"the wave ended after {ran} swing(s) ({status})")
+        run.error = _halted_error(console, run, f"the wave ended {after} ({status})")
         return StopCode.HALTED
     stopped = readiness.controller_gate(arm)
     if stopped:
-        run.error = f"the wave was refused after {ran} swing(s) ({status}: {message}); {stopped}"
+        run.error = f"the wave was refused {after} ({status}: {message}); {stopped}"
         return StopCode.CONTROLLER_STOPPED
     if not waved.moved:
         # Nothing moved: the arm stands where the greeting found it, and the cell stays ready.
         run.error = f"refused before anything moved ({status}): {message}"
         logger.warning("Wave run %s refused before its first swing: %s", run.id, run.error)
         return StopCode.CANCELLED
-    run.error = (f"the wave was refused after {ran} swing(s) ({status}: {message}), and the arm stays where it stands, "
-                 "a swing off where it started; a person decides what happens next")
+    off = "off where it started" if waved.as_one else "a swing off where it started"
+    run.error = (f"the wave was refused {after} ({status}: {message}), and the arm stays where it stands, {off}; a "
+                 "person decides what happens next")
     return StopCode.RETURN_FAILED
 
 

@@ -69,6 +69,7 @@ from src.robot.safety._capsule import AxisAlignedBox, TurnedBox
 from src.robot.safety.planning.perceived import (
     DeclaredBody,
     DepthView,
+    FrameProjections,
     PerceivedWorld,
     PerceptionGeometryError,
     SelfBody,
@@ -405,6 +406,16 @@ class LivePlannerWorld:
     _pick_frames_not_kept: set[tuple[str, float | None]] = field(default_factory=set, init=False, repr=False)
     #: When this world last said that the bare bench reads lower than declared, on its own clock, or `None`.
     _bench_warned_at: float | None = field(default=None, init=False, repr=False)
+    #: The frames the latest world was built from, read and thinned, so the next world built from one of them does not
+    #: read it again (``perceived.FrameProjections``): the frames a pick holds, above all.
+    _projections: FrameProjections = field(default_factory=FrameProjections, init=False, repr=False)
+    #: The latest world built and everything it was built from (:class:`_BuiltWorld`), or `None`.
+    _built: "_BuiltWorld | None" = field(default=None, init=False, repr=False)
+    #: How many worlds were built, and how many questions were answered with the world built before.
+    _worlds_built: int = field(default=0, init=False, repr=False)
+    _worlds_served: int = field(default=0, init=False, repr=False)
+    #: How long the latest question waited for the cameras' readings, milliseconds (:attr:`last_grab_ms`).
+    _grab_ms: float = field(default=0.0, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.tuning.voxel_field_mm > 0.0:
@@ -507,8 +518,11 @@ class LivePlannerWorld:
         else:
             self._held.discard(name)
         self._targets.pop(name, None)
-        self._named[name] = tuple((str(label), np.asarray(points, dtype=np.float64).reshape(-1, 3))
+        # Copies: a world built from them is served again while the offer stands (:class:`_BuiltWorld`), and the pick
+        # loop's own arrays are its own.
+        self._named[name] = tuple((str(label), np.array(points, dtype=np.float64, copy=True).reshape(-1, 3))
                                   for label, points in named_points_base_mm)
+        self._built = None
         if target_points_base_mm is not None:
             box = target_keep_out_box(
                 target_points_base_mm, name=f"target_{target_label or name}", limits=self.limits, tuning=self.tuning,
@@ -522,15 +536,41 @@ class LivePlannerWorld:
         The cache exists so two plans inside one perception cycle share one reading. A caller that
         knows the scene changed, which in practice means a probe or a test rather than a cell, says
         so here rather than by waiting out the age limit. The frames a pick holds are not a cache
-        and stay (:meth:`forget_pick_views`).
+        and stay (:meth:`forget_pick_views`). The world built last and every frame read for it go too, a pick's held
+        frames among them: they are read again by the next world that holds them.
         """
         self._frames.clear()
         self._frame_bodies.clear()
+        self._forget_builds()
 
     def drop_cached_frame(self, camera: str) -> None:
         """Forget one camera's cached reading, so the next question reaches that camera and no other."""
         self._frames.pop(str(camera), None)
         self._frame_bodies.pop(str(camera), None)
+        self._forget_builds()
+
+    def _forget_builds(self) -> None:
+        """Forget the world built last and the frames read for it: the next question builds its world afresh."""
+        self._built = None
+        self._projections.clear()
+
+    @property
+    def worlds_built(self) -> int:
+        """How many worlds this live world has built: each question that was not answered with the world before."""
+        return self._worlds_built
+
+    @property
+    def worlds_served(self) -> int:
+        """How many questions were answered with the world built for the question before, asked of the same frames,
+        the same body, the same goal and the same offers (:class:`_BuiltWorld`)."""
+        return self._worlds_served
+
+    @property
+    def last_grab_ms(self) -> float:
+        """How long the latest question (:meth:`world_for`) waited for the cameras to answer, milliseconds: 0 where
+        every frame was served from the cache. A wrist camera throws its warm-up frames away inside that
+        (``depth_source.WRIST_WARMUP_GRABS``), so it is a share of every refresh's time that no build can shorten."""
+        return self._grab_ms
 
     def forget_segmentation(self) -> None:
         """Drop every offer and every cached frame. Called when a pick ends.
@@ -581,12 +621,14 @@ class LivePlannerWorld:
         """
         self._pick_frames = []
         self._pick_frames_not_kept.clear()
+        self._built = None
         return any(camera.camera_to_tool is not None for camera in self.cameras)
 
     def forget_pick_views(self) -> None:
         """Drop every frame the pick holds and hold no more: the pick ended."""
         self._pick_frames = None
         self._pick_frames_not_kept.clear()
+        self._forget_builds()
 
     @property
     def held_view_count(self) -> int:
@@ -639,6 +681,7 @@ class LivePlannerWorld:
             none, which the snapshot keeps.
         """
         clock = time.time() if now is None else float(now)
+        self._grab_ms = 0.0
         declared = tuple(dict(box) for box in self.declared)
         meshes = tuple(dict(mesh) for mesh in self.declared_meshes)
         goal = None if near_point_mm is None else np.asarray(near_point_mm, dtype=np.float64).reshape(-1)
@@ -757,34 +800,51 @@ class LivePlannerWorld:
         region = goal_keep_out.region if chosen(goal_keep_out) else None
         if region is not None:
             keep_out = keep_out + (region,)
+        all_views = views + self._held_views(earlier)
+        # Around the targets held out, and not around the goal's jaw region, which is not padded.
+        cut_around = tuple(self._targets[key] for key in held_keys)
 
-        try:
-            perceived = build_perceived_boxes(
-                views=views + self._held_views(earlier),
-                limits=self.limits,
-                tuning=self.tuning,
-                self_body=SelfBody.from_frames(
-                    self_envelope.frames_mm, self_envelope.capsules,
-                    padding_mm=float(self.tuning.margin_mm),
-                ),
-                near_point_mm=near_point_mm,
-                keep_out=keep_out,
-                # Where the robot's body can be, not where its TCP may go: the links, the hand and
-                # a wrist camera swing past the workspace box, and an obstacle there is one they meet.
-                reach=self_envelope.reach(padding_mm=float(self.tuning.margin_mm)),
-                declared=self._declared_bodies,
-                # Around the targets held out, and not around the goal's jaw region, which is not padded.
-                cut_around=tuple(self._targets[key] for key in held_keys),
-                # No support is found over the robot's own base.
-                base=self_envelope.base,
-                # The parts the frame's detector named, in BASE: their boxes are named from every pose.
-                named_points_base_mm=named,
-            )
-        except PerceptionGeometryError as exc:
-            return PlannerWorldSnapshot(
-                verdict=WorldVerdict.UNUSABLE, cuboids=declared, perceived=None, age_ms=oldest,
-                reason=str(exc), meshes=meshes, declared_count=len(declared),
-            )
+        # The same question of the same frames is answered with the world built for it (:class:`_BuiltWorld`).
+        inputs = self._build_inputs(frames, all_views, earlier, self_envelope, near_point_mm, keep_out, cut_around,
+                                    named)
+        if self._built is not None and self._built.inputs.same_as(inputs):
+            perceived = self._built.perceived
+            self._worlds_served += 1
+        else:
+            self._built = None
+            try:
+                perceived = build_perceived_boxes(
+                    views=all_views,
+                    limits=self.limits,
+                    tuning=self.tuning,
+                    self_body=SelfBody.from_frames(
+                        self_envelope.frames_mm, self_envelope.capsules,
+                        padding_mm=float(self.tuning.margin_mm),
+                    ),
+                    near_point_mm=near_point_mm,
+                    keep_out=keep_out,
+                    # Where the robot's body can be, not where its TCP may go: the links, the hand and
+                    # a wrist camera swing past the workspace box, and an obstacle there is one they meet.
+                    reach=self_envelope.reach(padding_mm=float(self.tuning.margin_mm)),
+                    declared=self._declared_bodies,
+                    cut_around=cut_around,
+                    # No support is found over the robot's own base.
+                    base=self_envelope.base,
+                    # The parts the frame's detector named, in BASE: their boxes are named from every pose.
+                    named_points_base_mm=named,
+                    # A frame a build read before is not read again (``perceived.FrameProjections``).
+                    projections=self._projections,
+                )
+            except PerceptionGeometryError as exc:
+                return PlannerWorldSnapshot(
+                    verdict=WorldVerdict.UNUSABLE, cuboids=declared, perceived=None, age_ms=oldest,
+                    reason=str(exc), meshes=meshes, declared_count=len(declared),
+                )
+            finally:
+                # Only this build's frames stay read.
+                self._projections.retain_used()
+            self._built = _BuiltWorld(inputs=inputs, perceived=perceived)
+            self._worlds_built += 1
         # Held only now that a world was built from them (:meth:`_hold_frames_of`).
         self._hold_frames_of(frames, self_envelope)
         self._say_how_the_bench_reads(perceived, clock)
@@ -824,6 +884,48 @@ class LivePlannerWorld:
     # -----------------------------------------------------------------------------------------
     # Internals
     # -----------------------------------------------------------------------------------------
+
+    def _build_inputs(
+        self,
+        frames: dict[str, DepthSnapshot],
+        views: Sequence[DepthView],
+        earlier: Sequence["_EarlierView"],
+        envelope: SelfEnvelope,
+        near_point_mm: Sequence[float] | None,
+        keep_out: Sequence[KeepOutBox],
+        cut_around: Sequence[KeepOutBox],
+        named: Sequence[tuple[str, np.ndarray]],
+    ) -> "_BuildInputs":
+        """Everything :func:`build_perceived_boxes` reads to answer this question (:class:`_BuildInputs`)."""
+        near = None if near_point_mm is None else np.asarray(near_point_mm, dtype=np.float64)
+        same = (
+            self._declared_bodies, *self.cameras,
+            *(frames[camera.name] for camera in self.cameras),
+            *(item for held in earlier for item in (held.camera, held.frame, held.envelope)),
+            *(item for view in views for item in (view.surface_depth_mm, view.exclude_masks, view.labelled_masks)),
+            *named,
+            *(capsule.surface for capsule in envelope.capsules),
+        )
+        equal = (
+            self.limits, self.tuning,
+            tuple(
+                (view.name, None if view.timestamp is None else float(view.timestamp), float(view.placement_error_mm),
+                 float(view.placement_error_rad), np.shape(view.surface_depth_mm),
+                 np.asarray(view.camera_to_base, dtype=np.float64).tobytes(),
+                 np.asarray(view.intrinsics, dtype=np.float64).tobytes())
+                for view in views
+            ),
+            tuple(np.asarray(frame, dtype=np.float64).tobytes() for frame in envelope.frames_mm),
+            tuple(
+                (int(capsule.frame), tuple(float(v) for v in capsule.start_mm), tuple(float(v) for v in capsule.end_mm),
+                 float(capsule.radius_mm))
+                for capsule in envelope.capsules
+            ),
+            envelope.base,
+            None if near is None else (near.shape, near.tobytes()),
+            tuple(keep_out), tuple(cut_around),
+        )
+        return _BuildInputs(same=same, equal=equal)
 
     def _say_how_the_bench_reads(self, perceived: PerceivedWorld, clock: float) -> None:
         """A WARNING, at most once a minute, where the bare bench reads lower than declared by more than the support
@@ -866,7 +968,12 @@ class LivePlannerWorld:
                 cached is not None and cached_age is not None and cached_age <= self.max_age_ms
                 and self._body_still(camera.name, body)
             )
-            frame = cached if reused else camera.depth_source.grab_surface_depth()
+            if reused:
+                frame = cached
+            else:
+                asked_at = time.perf_counter()
+                frame = camera.depth_source.grab_surface_depth()
+                self._grab_ms += (time.perf_counter() - asked_at) * 1000.0
             if frame is None:
                 return (
                     frames,
@@ -1172,6 +1279,45 @@ class _HeldFrame:
 
 
 @dataclass(frozen=True, slots=True, eq=False)
+class _BuildInputs:
+    """Everything one question asks :func:`build_perceived_boxes` to build a world from, in two halves.
+
+    ``same`` is compared by identity, and held here so that no other object can come by one of its identities: what the
+    live world holds and never writes into, the cameras, the frames served now, the frames a pick holds with the bodies
+    they were taken in, every view's depth and masks, the parts the offers in force name (copied when offered), the
+    declared bodies and the link surfaces the body carries. A camera's next reading is a new frame, so no world is ever
+    served across a newer frame. ``equal`` is compared by value: every view's name, shutter time, placement error,
+    placement and intrinsics, the robot's body now to the bit, the goal, the keep-out boxes, the tuning and the limits.
+    """
+
+    same: tuple[Any, ...]
+    equal: tuple[Any, ...]
+
+    def same_as(self, other: "_BuildInputs") -> bool:
+        """Whether ``other`` asks for the very world this asked for."""
+        return (
+            len(self.same) == len(other.same)
+            and all(mine is theirs for mine, theirs in zip(self.same, other.same))
+            and self.equal == other.equal
+        )
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _BuiltWorld:
+    """The latest world :meth:`LivePlannerWorld.world_for` built, and what it was built from.
+
+    The build is pure: the same inputs build the same world, box for box and bit for bit. So a question whose inputs are
+    the same as the last one's (:meth:`_BuildInputs.same_as`) is answered with that world, and only the world: its age,
+    its stamp and what a pick holds are said afresh for every question. It is let go wherever something the inputs do
+    not show may have changed: when the cached frames are dropped, on every offer, and when a pick starts or stops
+    holding its frames (``LivePlannerWorld._forget_builds``).
+    """
+
+    inputs: _BuildInputs
+    perceived: PerceivedWorld
+
+
+@dataclass(frozen=True, slots=True, eq=False)
 class _EarlierView:
     """A frame the pick holds from an earlier pose, as one world uses it: named, and placed where it was taken."""
 
@@ -1414,6 +1560,9 @@ class WorldRefresh:
     #: The surfaces the world found the parts standing on and how the bare bench reads
     #: (``support_surfaces.SupportModel.render``); empty where it did not look for them.
     supports: str = ""
+    #: How much of :attr:`build_ms` was spent waiting for the cameras' readings, every attempt counted
+    #: (``LivePlannerWorld.last_grab_ms``); the rest is the world's own build.
+    grab_ms: float = 0.0
 
     @property
     def ok(self) -> bool:
@@ -1455,7 +1604,10 @@ class WorldRefresh:
         age = "unstamped" if self.age_ms is None else f"{self.age_ms:.0f} ms old"
         line = (
             f"planner world refreshed: {self.registered} box(es), frame {age}, "
-            f"{self.build_ms:.1f} ms to build, {self.register_ms:.1f} ms to register"
+            f"{self.build_ms:.1f} ms to build"
+            # The cameras' share, which no build can shorten: a wrist camera throws its warm-up frames away in it.
+            + (f" ({self.grab_ms:.1f} ms of it reading the camera)" if self.grab_ms > 0.0 else "")
+            + f", {self.register_ms:.1f} ms to register"
         )
         if self.voxels_registered:
             line += f", live scene {self.voxels_registered} voxel(s)"
@@ -1484,6 +1636,7 @@ class WorldRefresh:
             "sent": int(self.sent),
             "registered": int(self.registered),
             "build_ms": round(float(self.build_ms), 3),
+            "grab_ms": round(float(self.grab_ms), 3),
             "register_ms": round(float(self.register_ms), 3),
             "total_ms": round(float(self.total_ms), 3),
             "age_ms": self.age_ms,
@@ -1537,18 +1690,20 @@ def refresh_planner_world(
         self_envelope=self_envelope, near_point_mm=near_point_mm, now=now, goal_keep_out=goal_keep_out
     )
     readings = 1
+    grab_ms = _grab_ms_of(source)
     while snapshot.verdict in _CAMERA_FAILURES and readings <= max(0, int(source.fresh_frame_attempts)):
         source.drop_cached_frame(snapshot.camera)
         snapshot = source.world_for(
             self_envelope=self_envelope, near_point_mm=near_point_mm, now=now, goal_keep_out=goal_keep_out
         )
         readings += 1
+        grab_ms += _grab_ms_of(source)
     build_ms = (time.perf_counter() - started) * 1000.0
     dropped = snapshot.perceived.dropped_obstacle_count if snapshot.perceived is not None else 0
 
     if snapshot.verdict in _CAMERA_FAILURES:
         refused = WorldRefresh(
-            verdict=snapshot.verdict, sent=0, registered=0, build_ms=build_ms, register_ms=0.0,
+            verdict=snapshot.verdict, sent=0, registered=0, build_ms=build_ms, register_ms=0.0, grab_ms=grab_ms,
             age_ms=snapshot.age_ms, dropped_obstacles=dropped, reason=snapshot.reason,
         )
         raise CameraWorldUnavailable(
@@ -1558,7 +1713,7 @@ def refresh_planner_world(
 
     if not snapshot.usable:
         return WorldRefresh(
-            verdict=snapshot.verdict, sent=0, registered=0, build_ms=build_ms, register_ms=0.0,
+            verdict=snapshot.verdict, sent=0, registered=0, build_ms=build_ms, register_ms=0.0, grab_ms=grab_ms,
             age_ms=snapshot.age_ms, dropped_obstacles=dropped, reason=snapshot.reason,
         )
 
@@ -1617,7 +1772,7 @@ def refresh_planner_world(
     reason = "; and ".join(reasons)
     return WorldRefresh(
         verdict=snapshot.verdict, sent=expected, registered=registered,
-        build_ms=build_ms, register_ms=register_ms, age_ms=snapshot.age_ms,
+        build_ms=build_ms, register_ms=register_ms, age_ms=snapshot.age_ms, grab_ms=grab_ms,
         dropped_obstacles=dropped, reason=reason,
         guard_boxes=() if reason else _guard_boxes(snapshot.perceived),
         voxels_registered=voxels,
@@ -1640,6 +1795,13 @@ def refresh_planner_world(
             else snapshot.perceived.supports.render()
         ),
     )
+
+
+def _grab_ms_of(source: Any) -> float:
+    """How long ``source``'s latest question waited for its cameras (``LivePlannerWorld.last_grab_ms``), 0 for a
+    source that does not say."""
+    value = getattr(source, "last_grab_ms", 0.0)
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
 
 
 def _guard_boxes(perceived: PerceivedWorld | None) -> tuple[AxisAlignedBox, ...]:

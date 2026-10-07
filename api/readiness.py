@@ -400,9 +400,10 @@ def refuse_unless(console: "Console", gates: Sequence[str], *, record: "Recovery
                 raise refusal(gate, (f"this arm's place and return go through no planner that judges them, so a part "
                                      f"picked here could not be set down: {route.reason}"))
         elif gate == "carried_part_not_modelled":
-            from src.robot.core.arm_capabilities import CarriesPayload  # noqa: PLC0415
+            from src.robot.core.arm_capabilities import CarriesPayload, chose_no_carried_part  # noqa: PLC0415
 
-            if isinstance(arm, CarriesPayload):
+            # A cell that chose to model no carried part carries its parts as an empty hand (the owner, 2026-10-07).
+            if isinstance(arm, CarriesPayload) and not chose_no_carried_part(arm):
                 try:
                     declined = arm.payload_declined_reason()
                 except Exception as exc:  # noqa: BLE001 (a model nobody can read models nothing)
@@ -521,11 +522,16 @@ def _gripper_light(console: "Console", hand: HandOut, waiting: bool) -> LightOut
 
 
 def _carried_part_light(console: "Console") -> LightOut:
-    from src.robot.core.arm_capabilities import CarriesPayload  # noqa: PLC0415
+    from src.robot.core.arm_capabilities import CarriesPayload, chose_no_carried_part  # noqa: PLC0415
 
     arm = console.session.arm
     if arm is None or not isinstance(arm, CarriesPayload):
         return _light("carried_part", "ok", "not_applicable", "this arm carries nothing real (a desk arm)")
+    if chose_no_carried_part(arm):
+        # A grey fact, no block: the cell chose it (the owner, 2026-10-05 and 2026-10-07).
+        return _light("carried_part", "info", "not_modelled", (
+            "safety.planning_world.payload.enabled is false: a closed hand is judged as an empty one, by the exact "
+            "guard at full stroke, and the part it holds by nobody"), blocks=False)
     try:
         declined = arm.payload_declined_reason()
     except Exception as exc:  # noqa: BLE001

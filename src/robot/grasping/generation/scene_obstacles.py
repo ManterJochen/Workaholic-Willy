@@ -446,7 +446,10 @@ SOFT_SLACK_MM = 1.0
 #: How far past the guard's distance the calculator plans the open hand from a whole box, millimetres, for the same
 #: reason: the guard's boxes, built from every frame the pick kept and merged to fit its slots, stand a little apart
 #: from the calculator's. On a tray the guard refused the line down to four grasps in a row 0.18 to 0.68 mm short of
-#: its 3 mm (the grasp bench, 2026-10-06), and every refused grasp took a try.
+#: its 3 mm (the grasp bench, 2026-10-06), and at 1 mm of slack still lines down 2.82 to 2.99 mm from a box, the hand
+#: planned 4 mm off it (the bench on the cell's tree, 2026-10-07), each a try. 2 mm was measured against it on the ten
+#: tightest scenes with the cell's own depth (2026-10-07): 4 picked against 5, the tray's 30 mm cube lost, so 1 mm
+#: stays: a refused try costs a quarter of a second now, a grasp never offered costs the pick.
 WHOLE_SLACK_MM = 1.0
 
 

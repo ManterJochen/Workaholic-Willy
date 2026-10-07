@@ -134,12 +134,15 @@ class ExactPairs:
     and not a copy of it. ``checks(part_a, part_b)`` is whether the guard judges the two parts against one another,
     ``frames`` the DH frame of every part it holds, ``distance(joints, part_a, part_b)`` the exact distance of two parts
     at a configuration in millimetres (``None`` where it cannot be placed), and ``min_distance_mm`` what it demands.
+    ``lowest(joints)`` is the lowest point of every part past the shoulder at a configuration, z in the base frame in
+    millimetres (``None`` where it cannot be placed); ``None`` itself where the guard does not say.
     """
 
     checks: Callable[[str, str], bool]
     frames: Mapping[str, int]
     distance: "Callable[[Sequence[float], str, str], float | None]"
     min_distance_mm: float
+    lowest: "Callable[[Sequence[float]], float | None] | None" = None
 
     def held(self, link: str) -> tuple[str, ...]:
         """The guard's parts ``link`` is, where the guard holds every one of them; else ``()``."""

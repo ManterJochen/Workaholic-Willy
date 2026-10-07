@@ -83,13 +83,16 @@ def _needs_the_engine() -> None:
         raise unittest.SkipTest("no exact mesh backend on this box")
 
 
-def _arm(fixtures: "list[dict[str, Any]] | None" = None, *, carried_part_mm: "float | None" = None) -> Any:
+def _arm(fixtures: "list[dict[str, Any]] | None" = None, *, carried_part_mm: "float | None" = None,
+         mesh_first: bool = False) -> Any:
     """The owner-like UR10 with the Hand-E standing at Q, built as ``owner_like_arm`` builds it, ``fixtures`` declared where given.
 
     It keeps the distances this file's scenes were measured at: 10 mm from the arm and a declared fixture, 5 mm from a
     seen box, a 10 mm line clearance. The owner ships 3, 3 and 3 since 2026-10-05; the mechanism is the same.
     ``carried_part_mm`` declares how far a carried part hangs past the fingertips: the cell then models a carried part
-    (``safety.planning_world.payload.length_mm``); the owner's models none."""
+    (``safety.planning_world.payload.length_mm``); the owner's models none. These scenes pin Option 1, which mesh first
+    (``safety.planned_motion.mesh_first``, on as shipped) never reaches where it applies, so it is off unless
+    ``mesh_first``: its own scene beside this bin is ``test_a_joint_path_is_judged_whole_and_sent_without_a_pause.py``."""
     _needs_the_engine()
     from src.config.schema.robot import RobotConfig
     from src.robot.drivers.ur.arm import URRobotArm
@@ -103,7 +106,8 @@ def _arm(fixtures: "list[dict[str, Any]] | None" = None, *, carried_part_mm: "fl
         "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}],
                     "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 155.75],
                                    "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
-        "safety": {"payload": {"enforce": False}, "planned_motion": {"line_clearance_mm": _LINE_MM},
+        "safety": {"payload": {"enforce": False},
+                   "planned_motion": {"line_clearance_mm": _LINE_MM, "mesh_first": bool(mesh_first)},
                    "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "perceived_min_distance_mm": 5.0,
                                       "kinematics_model": "ur10", "planner_margin_mm": 4.0,
                                       "fixtures": list(fixtures or [])},
@@ -255,10 +259,10 @@ class SeenWorldPlanner(BandPlanner):
 def _cell(real_mm: float = 30.0, *, yaw_deg: float = 30.0, world: "tuple[AxisAlignedBox, ...] | None" = None,
           seen: "tuple[AxisAlignedBox, ...] | None" = None, fixtures: "list[dict[str, Any]] | None" = None,
           planner_cls: "type[SeenWorldPlanner]" = SeenWorldPlanner, carried_part_mm: "float | None" = None,
-          **kwargs: Any) -> "tuple[Any, SeenWorldPlanner]":
+          mesh_first: bool = False, **kwargs: Any) -> "tuple[Any, SeenWorldPlanner]":
     """The arm at Q with a bin ``real_mm`` from its meshes the camera saw, held by both authorities, carrying a hand
-    known empty and open (:data:`KNOWN_OPEN`); ``carried_part_mm`` as :func:`_arm` takes it."""
-    arm = _arm(fixtures, carried_part_mm=carried_part_mm)
+    known empty and open (:data:`KNOWN_OPEN`); ``carried_part_mm`` and ``mesh_first`` as :func:`_arm` takes them."""
+    arm = _arm(fixtures, carried_part_mm=carried_part_mm, mesh_first=mesh_first)
     boxes = _seen(real_mm, yaw_deg) if seen is None else seen
     arm._preflight.set_perceived_obstacles(boxes)
     planner = planner_cls(arm, (_BENCH, *boxes) if world is None else world, **kwargs)

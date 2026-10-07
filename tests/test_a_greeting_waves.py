@@ -12,6 +12,9 @@ What this file pins:
 * the gesture: wrist 2 out 15 degrees to each side, twice, and back, every other joint as it stood, each swing a
   straight joint line the arm judges; a refused swing or a stop ends it where the arm stands, and nothing is sent to
   make up for it;
+* one motion (the owner, 2026-10-07: "das muss eine konsistente Bewegung sein"): an arm that runs judged joint paths
+  (``DrivesJointPaths``, the UR) gets the whole wave as one path and no swing of its own; refused, nothing moved; ended
+  by the controller part of the way, the arm moved; a stop before it is sent sends nothing; on the route the same;
 * the route: ``POST /v1/cell/wave`` is a moving run of kind ``wave`` with its events, refused as a new task is (bar a
   carried part), stopped before its next swing by ``POST /v1/task/stop``; a swing refused before the first one ran ends
   it ``cancelled`` with nothing moved and no stop record, after one ran ``return_failed`` with the record written.
@@ -24,6 +27,7 @@ from __future__ import annotations
 
 import typing
 import unittest
+from collections.abc import Sequence
 from typing import Any
 
 from src.config.schema.runtime import GreetingConfig, GreetingWave, RuntimeConfig
@@ -113,6 +117,31 @@ class _LineArm(TaskArm):
         return self._motion("joints", joints, MotionCommand.MOVE_JOINTS, joints=joints)
 
 
+class _PathArm(_LineArm):
+    """The scripted arm, running a judged joint path as one motion as the UR does (``DrivesJointPaths``). ``refuse`` is
+    asked of the path as ``("path", index, waypoints)``; ``stop_at`` ends a sent path before that waypoint, as a
+    controller that stops it part of the way along."""
+
+    def __init__(self, log: list[Any], *, stop_at: int | None = None, **kwargs: Any) -> None:
+        super().__init__(log, **kwargs)
+        self.paths: list[list[JointPositions]] = []
+        self.stop_at = stop_at
+
+    def move_through_joints_on_the_line(self, waypoints: Sequence[JointPositions]) -> MotionResult:
+        self.paths.append(list(waypoints))
+        refused = self.refuse("path", len(self.paths) - 1, waypoints) if self.refuse is not None else None
+        if refused is not None:
+            return MotionResult.failed(refused, MotionCommand.MOVE_JOINTS, target_joints=waypoints[-1],
+                                       message="scripted refusal of the path; nothing was sent")
+        for index, joints in enumerate(waypoints):
+            if self.stop_at is not None and index == self.stop_at:
+                return MotionResult.failed(MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_JOINTS,
+                                           target_joints=waypoints[-1], message="scripted stop part of the way")
+            self.log.append(("path_joints", _key(joints)))
+            self._joints = joints
+        return MotionResult.executed(MotionCommand.MOVE_JOINTS, target_joints=waypoints[-1], message="path")
+
+
 def _swung(joints: JointPositions) -> float:
     """How far wrist 2 stands from where it stands at Home, degrees."""
     return round(joints.degrees()[gestures.WAVE_JOINT] - HOME_JOINTS.degrees()[gestures.WAVE_JOINT], 6)
@@ -158,6 +187,39 @@ class TheGestureTests(unittest.TestCase):
         self.assertEqual([], [entry for entry in log if entry and entry[0] == "joints"])
 
 
+class TheWaveAsOneMotionTests(unittest.TestCase):
+    def test_an_arm_that_runs_joint_paths_gets_the_whole_wave_at_once(self) -> None:
+        log: list[Any] = []
+        arm = _PathArm(log)
+        waved = gestures.wave(arm)
+        self.assertTrue(waved.ok, waved.render())
+        self.assertEqual((True, 1, 5, True), (waved.as_one, len(arm.paths), waved.swings_ran, waved.moved))
+        self.assertEqual([15.0, -15.0, 15.0, -15.0, 0.0], [_swung(j) for j in arm.paths[0]])
+        self.assertEqual([], [entry for entry in log if entry and entry[0] == "joints"], "a swing of its own was sent")
+        self.assertEqual(_key(HOME_JOINTS), _key(arm.get_joint_positions()))
+        self.assertIn("as one motion", waved.render())
+
+    def test_a_refused_path_moves_nothing(self) -> None:
+        arm = _PathArm([], refuse=lambda kind, _i, _t: MotionStatus.SELF_COLLISION_REJECTED if kind == "path" else None)
+        waved = gestures.wave(arm)
+        self.assertEqual(("refused", False, False, 0), (waved.ended, waved.moved, waved.ok, waved.swings_ran))
+        self.assertIs(MotionStatus.SELF_COLLISION_REJECTED, waved.refusal.status)  # type: ignore[union-attr]
+        self.assertEqual(_key(HOME_JOINTS), _key(arm.get_joint_positions()))
+        self.assertIn("nothing moved", waved.render())
+
+    def test_a_path_the_controller_ended_part_of_the_way_moved_the_arm(self) -> None:
+        arm = _PathArm([], stop_at=2)
+        waved = gestures.wave(arm)
+        self.assertEqual(("refused", True, False, 0), (waved.ended, waved.moved, waved.ok, waved.swings_ran))
+        self.assertEqual(-15.0, _swung(arm.get_joint_positions()))
+        self.assertIn("part of the way", waved.render())
+
+    def test_a_stop_before_it_is_sent_sends_nothing(self) -> None:
+        arm = _PathArm([])
+        waved = gestures.wave(arm, should_stop=lambda: True)
+        self.assertEqual(("stopped", False, []), (waved.ended, waved.moved, arm.paths))
+
+
 class TheWaveRouteTests(ConsoleCase):
     def _line_arm(self, cell: Any) -> list[JointPositions]:
         """The scripted cell's arm drives a judged joint line; the lines it was asked for."""
@@ -169,6 +231,54 @@ class TheWaveRouteTests(ConsoleCase):
 
         cell.arm.move_to_joints_on_the_line = on_the_line
         return lines
+
+    def _path_arm(self, cell: Any, *, stop_at: int | None = None,
+                  refused: MotionStatus | None = None) -> list[list[JointPositions]]:
+        """The scripted cell's arm runs a judged joint path as one motion; the paths it was asked for."""
+        paths: list[list[JointPositions]] = []
+
+        def through(waypoints: Sequence[JointPositions]) -> MotionResult:
+            paths.append(list(waypoints))
+            if refused is not None:
+                return MotionResult.failed(refused, MotionCommand.MOVE_JOINTS, target_joints=waypoints[-1],
+                                           message="scripted: the path is not clear; nothing was sent")
+            for index, joints in enumerate(waypoints):
+                if stop_at is not None and index == stop_at:
+                    return MotionResult.failed(MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_JOINTS,
+                                               target_joints=waypoints[-1], message="scripted stop part of the way")
+                cell.arm._motion("joints", joints, MotionCommand.MOVE_JOINTS, joints=joints)  # noqa: SLF001
+            return MotionResult.executed(MotionCommand.MOVE_JOINTS, target_joints=waypoints[-1], message="path")
+
+        cell.arm.move_through_joints_on_the_line = through
+        return paths
+
+    def test_on_a_cell_that_runs_joint_paths_the_wave_is_one_motion(self) -> None:
+        cell = self.scripted()
+        paths = self._path_arm(cell)
+        body = self.finished(self.client.post("/v1/cell/wave").json()["id"])
+        self.assertEqual("finished", body["stop_code"], body)
+        self.assertEqual(1, len(paths))
+        self.assertEqual([15.0, -15.0, 15.0, -15.0, 0.0], [_swung(j) for j in paths[0]])
+        self.assertEqual(("joints", _key(HOME_JOINTS)), cell.motions()[-1])
+
+    def test_a_wave_refused_as_one_motion_ends_cancelled_with_nothing_moved(self) -> None:
+        cell = self.scripted()
+        self._path_arm(cell, refused=MotionStatus.SELF_COLLISION_REJECTED)
+        body = self.finished(self.client.post("/v1/cell/wave").json()["id"])
+        self.assertEqual(("cancelled", "cancelled"), (body["state"], body["stop_code"]), body)
+        self.assertFalse(wait_for_event(self.cell, body["id"], "wave.refused").data["moved"])
+        self.assertIsNone(self.cell.recovery)
+        self.assertEqual([], cell.motions())
+
+    def test_a_wave_ended_part_of_the_way_ends_return_failed_where_the_arm_stands(self) -> None:
+        cell = self.scripted()
+        self._path_arm(cell, stop_at=2)
+        body = self.finished(self.client.post("/v1/cell/wave").json()["id"])
+        self.assertEqual(("failed", "return_failed", "problem"), (body["state"], body["stop_code"], body["stop_class"]))
+        self.assertTrue(wait_for_event(self.cell, body["id"], "wave.refused").data["moved"])
+        self.assertEqual(body["id"], self.cell.recovery.run_id)  # type: ignore[union-attr]
+        self.assertIn("part of the way along, sent as one motion", body["error"])
+        self.assertEqual(2, len(cell.motions()))
 
     def test_a_wave_on_console_dummy(self) -> None:
         self.build_dummy()

@@ -104,6 +104,19 @@ class TheReadyBarTests(ConsoleCase):
         self.assertIn("length_mm", light["message"])
         self.assertFalse(answer["ready"])
 
+    def test_a_cell_that_chose_no_carried_part_says_so_and_blocks_nothing(self) -> None:
+        """The owner, 2026-10-07: payload off must drive. A grey fact on the bar, no blocker, no refusal."""
+        from types import SimpleNamespace
+
+        cell = self.scripted()
+        cell.arm.declined = "safety.planning_world.payload.enabled is false"
+        cell.arm.config = SimpleNamespace(safety=SimpleNamespace(planning_world=SimpleNamespace(payload=SimpleNamespace(enabled=False))))
+        answer = self.client.get("/v1/cell/readiness").json()
+        light = next(light for light in answer["lights"] if light["id"] == "carried_part")
+        self.assertEqual(("info", "not_modelled", False), (light["state"], light["code"], light["blocks"]))
+        self.assertIn("judged as an empty one", light["message"])
+        self.assertNotIn("carried_part_not_modelled", [blocker["code"] for blocker in answer["blockers"]])
+
     def test_the_planner_light(self) -> None:
         cell = self.scripted(arm_keywords={"planner": "off"})
         self.assertEqual(("blocked", "off"), lights(self.client.get("/v1/cell/readiness").json())["planner"][:2])

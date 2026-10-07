@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import unittest
+from types import SimpleNamespace
 from typing import Any
 
 from src.contracts import UNSET
@@ -125,6 +126,19 @@ class RefusedBeforeAnythingMovesTests(unittest.TestCase):
 
         self.assertIn("length_mm", str(refused))
         self.assertEqual([], motions(log))
+
+    def test_a_cell_that_chose_no_carried_part_runs_its_task(self) -> None:
+        """The owner, 2026-10-07: "er lässt mich nicht fahren, wenn ich payload nicht aktiviert habe". A cell whose
+        ``payload.enabled`` is false judges a closed hand as an empty one (2026-10-05), and its task carries so."""
+        from src.robot.execution.task import TaskStop
+
+        log: list[Any] = []
+        arm = TaskArm(log, declined="safety.planning_world.payload.enabled is false, so neither the planner nor the "
+                                    "self filter models a part in the gripper")
+        arm.config = SimpleNamespace(safety=SimpleNamespace(planning_world=SimpleNamespace(payload=SimpleNamespace(enabled=False))))  # type: ignore[attr-defined]
+        ran = run(["part"], arm=arm)
+        self.assertIs(TaskStop.FINISHED, ran.report.stop, ran.report.sentence)
+        self.assertEqual(1, ran.report.picks)
 
     def test_an_arm_whose_place_and_return_cannot_run_is_refused_before_it_picks(self) -> None:
         """``Robot.place`` and ``Robot.home`` refuse an arm whose motions no planner judges (``route_of``), so a part

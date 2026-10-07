@@ -3,7 +3,9 @@
 Owner decisions: one box per camera model, written down the way the grippers are, first for the RealSense D435i,
 D435, D405 and D415, every number from the vendor drawing and its revision; and the repository's registry is the one
 authority, as it is for grippers, so a deployment tree may repeat a file and nothing else. The registry refuses what
-it cannot resolve instead of guessing, and a tree's own validator opens it.
+it cannot resolve instead of guessing, and a tree's own validator opens it. The D415 in the printed enclosure the
+owner's cell carries is an estimate the owner asked for (2026-10-07), until it is measured: it holds the D415's
+housing, and its source says it is an estimate.
 """
 
 from __future__ import annotations
@@ -25,7 +27,9 @@ from src.config.schema.cameras import CameraBodySpec
 
 _REPO = Path(__file__).resolve().parents[1]
 _DATA = _REPO / "config"
-_SHIPPED = ("realsense_d405", "realsense_d415", "realsense_d435", "realsense_d435i")
+_SHIPPED = ("d415_enclosure", "realsense_d405", "realsense_d415", "realsense_d435", "realsense_d435i")
+#: The cameras whose numbers come from the vendor's drawing.
+_VENDOR = ("realsense_d405", "realsense_d415", "realsense_d435", "realsense_d435i")
 
 
 def _spec(**changes: object) -> dict:
@@ -36,11 +40,11 @@ def _spec(**changes: object) -> dict:
 
 
 class TheShippedCamerasTests(unittest.TestCase):
-    def test_the_four_cameras_the_owner_named_are_shipped(self) -> None:
+    def test_the_cameras_the_owner_named_are_shipped(self) -> None:
         self.assertEqual(tuple(available_cameras()), _SHIPPED)
 
-    def test_every_shipped_file_names_a_drawing_and_its_revision(self) -> None:
-        for model in _SHIPPED:
+    def test_every_vendor_file_names_a_drawing_and_its_revision(self) -> None:
+        for model in _VENDOR:
             with self.subTest(model=model):
                 source = load_camera(model).source
                 self.assertIn("337029-017", source)
@@ -69,6 +73,19 @@ class TheShippedCamerasTests(unittest.TestCase):
 
     def test_the_d435i_is_the_d435_housing(self) -> None:
         self.assertEqual(load_camera("realsense_d435i").housing, load_camera("realsense_d435").housing)
+
+    def test_the_enclosure_holds_the_d415_and_says_it_is_an_estimate(self) -> None:
+        enclosure, bare = load_camera("d415_enclosure"), load_camera("realsense_d415")
+        self.assertIn("estimate", enclosure.source)
+        self.assertIn("not measured", enclosure.source)
+        for axis in range(3):
+            with self.subTest(axis=axis):
+                low = enclosure.housing.centre_mm[axis] - enclosure.housing.size_mm[axis] / 2.0
+                high = enclosure.housing.centre_mm[axis] + enclosure.housing.size_mm[axis] / 2.0
+                self.assertLessEqual(low, bare.housing.centre_mm[axis] - bare.housing.size_mm[axis] / 2.0)
+                self.assertGreaterEqual(high, bare.housing.centre_mm[axis] + bare.housing.size_mm[axis] / 2.0)
+                # Not extremely generous (the owner, 2026-10-07): at most 15 mm more than the bare camera a side.
+                self.assertLessEqual(enclosure.housing.size_mm[axis] - bare.housing.size_mm[axis], 30.0)
 
 
 class TheSchemaTests(unittest.TestCase):

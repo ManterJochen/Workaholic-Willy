@@ -513,6 +513,10 @@ class _Task:
         self.tree = tree
         self.part_bottom_mm = _declared_support_mm(tree)
         self.length_mm = _declared_length_mm(tree)
+        # How far below the tool a part's bottom hangs at least (the fingertips' reach past the TCP), and at most where
+        # the cell declares its longest part's length past the fingertips.
+        self.fingertips_mm = _fingertips_past_the_tcp_mm(tree)
+        self.hang_mm = self.fingertips_mm + (self.length_mm or 0.0)
         place = plan.place
         self.air_mm = float(place.air_mm) if place.air_mm is not None else rim_clearance_mm(tree)
         self.locators: list[Any] = []
@@ -656,7 +660,7 @@ class _Task:
                 raise TaskRefused("closing_axis_refused", str(exc)) from None
 
     def _refuse_what_this_cell_cannot_do(self) -> None:
-        from src.robot.core.arm_capabilities import CarriesPayload  # noqa: PLC0415
+        from src.robot.core.arm_capabilities import CarriesPayload, chose_no_carried_part  # noqa: PLC0415
         from src.robot.execution.motion import route_of  # noqa: PLC0415
 
         route = route_of(self.arm)
@@ -665,7 +669,9 @@ class _Task:
             raise TaskRefused("route_refused", (
                 "a task sets down and returns from every part it picks, and the place and the return refuse this arm "
                 f"before any command, so a part picked here would stay in the jaws: {route.reason}"))
-        if isinstance(self.arm, CarriesPayload):
+        # A cell that chose to model no carried part judges a closed hand as an empty one (the owner, 2026-10-05), and
+        # carries its parts so (the owner, 2026-10-07): only a model left on that cannot model the part is refused.
+        if isinstance(self.arm, CarriesPayload) and not chose_no_carried_part(self.arm):
             declined = self.arm.payload_declined_reason()
             if declined is not None:
                 raise TaskRefused("carried_part_not_modelled", (
@@ -755,9 +761,10 @@ class _Task:
                                                    f"{type(exc).__name__}: {exc}")
         else:
             self.place_tcp = at
-            # Where the tool stands for the longest part the cell declares: the taught pose raised by its hang, and the
-            # configuration the arm would choose for it (the place goes to a pose, not to the taught joints).
-            rise = self.length_mm or 0.0
+            # Where the tool stands for the longest part the cell declares: the taught pose raised by its hang below the
+            # tool (the fingertips' reach and the declared length past them), and the configuration the arm would choose
+            # for it (the place goes to a pose, not to the taught joints).
+            rise = self.hang_mm
             position = np.asarray(at.position_mm, dtype=np.float64) + np.array([0.0, 0.0, rise])
             raised = Pose(position_mm=position, quaternion_xyzw=np.asarray(at.quaternion_xyzw, dtype=np.float64),
                           frame=Frame.BASE, label=f"pose {name}, raised")
@@ -1061,7 +1068,7 @@ class _Task:
             said += f"; {found.parts_seen} {self.plan.object}(s) seen outside it"
         self._say(TaskEvent.TARGET_FOUND, said + ".", target=kept.to_dict(), look=kept.look_label,
                   parts_seen=found.parts_seen, image_png=kept.image_png)
-        nominal = nominal_drop(self.arm, kept, hang_mm=self.length_mm or 0.0, air_mm=self.air_mm,
+        nominal = nominal_drop(self.arm, kept, hang_mm=self.hang_mm, air_mm=self.air_mm,
                                standoff_mm=self.standoff_mm, natural_axis=self.natural)
         if not nominal.ok:
             self._finish(TaskStop.TARGET_UNREACHABLE, f"{nominal.reason}; nothing was picked")
@@ -1107,7 +1114,7 @@ class _Task:
         if self.plan.place.pose is not None:
             name = self.plan.place.pose
             drop = pose_drop(self.arm, self.poses[name], report.grasp_pose, part_bottom_mm=self.part_bottom_mm,
-                             length_mm=self.length_mm, standoff_mm=self.standoff_mm)
+                             length_mm=self.length_mm, standoff_mm=self.standoff_mm, fingertips_mm=self.fingertips_mm)
             self._said_drop(drop)
             if not drop.ok:
                 self._put_back_and_ask(report, TaskStop.POSE_REFUSED, f"the part was not set down at pose {name!r}: "
@@ -1169,7 +1176,7 @@ class _Task:
             drop = drop_plan(self.arm, kept, grasp, part_bottom_mm=self.part_bottom_mm, air_mm=self.air_mm,
                              standoff_mm=self.standoff_mm, natural_axis=self.natural, part_cloud_mm=cloud)
         elif self.length_mm is not None:
-            drop = nominal_drop(self.arm, kept, hang_mm=self.length_mm, air_mm=self.air_mm,
+            drop = nominal_drop(self.arm, kept, hang_mm=self.hang_mm, air_mm=self.air_mm,
                                 standoff_mm=self.standoff_mm, natural_axis=self.natural)
         else:
             drop = DropPlan(kind="camera", pose=None, standoff_mm=self.standoff_mm, rim_mm=kept.rim_mm,
@@ -1383,6 +1390,24 @@ def _declared_support_mm(tree: Any) -> float:
     floor = _number(getattr(getattr(support, "container", None), "floor_height_mm", None))
     declared = [value for value in (table, floor) if value is not None]
     return min(declared) if declared else 0.0
+
+
+def _fingertips_past_the_tcp_mm(tree: Any) -> float:
+    """How far the fingertips reach below the tool, past the TCP along the approach, millimetres: the named hand's
+    ``finger_ahead_mm`` past its grasp centre and that centre past the TCP (``hand_past_the_tcp_mm``). A part's bottom
+    hangs at least this far below the tool, and ``payload.length_mm`` is measured past it. 0 where no hand resolves."""
+    from src.config.schema.robot import RobotConfig  # noqa: PLC0415
+    from src.robot.safety.planning.hand import hand_past_the_tcp_mm, planner_hand  # noqa: PLC0415
+
+    if not isinstance(tree, RobotConfig):
+        return 0.0
+    try:
+        hand = planner_hand(tree)
+    except Exception:  # noqa: BLE001 (a hand nobody can resolve hangs nothing past the TCP; its refusal is said elsewhere)
+        return 0.0
+    if not chosen(hand):
+        return 0.0
+    return float(hand.jaw.finger_ahead_mm) + float(hand_past_the_tcp_mm(tree))
 
 
 def _declared_length_mm(tree: Any) -> "float | None":

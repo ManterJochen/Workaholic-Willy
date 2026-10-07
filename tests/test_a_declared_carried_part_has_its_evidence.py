@@ -48,7 +48,8 @@ class TheOwnersCombinationIsAdmittedTests(unittest.TestCase):
 
     def test_every_measured_attach_file_proves_the_same_robot_as_its_empty_hand_sibling(self) -> None:
         files = sorted(EVIDENCE_DIR.glob("ur10_*_a16.json"))
-        self.assertEqual(len(files), 6)
+        # The six measured with the Hand-E's and the 2F-85's plates at 4 mm, and the owner's cell at 3 mm (2026-10-07).
+        self.assertEqual(len(files), 7)
         for path in files:
             with self.subTest(file=path.name):
                 carried = json.loads(path.read_text(encoding="utf-8"))

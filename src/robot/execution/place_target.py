@@ -945,11 +945,23 @@ def drop_plan(arm: Any, kept: KeptTarget, grasp: Pose, *, part_bottom_mm: float,
     return replace(plan, fit=fit, reason=said)
 
 
+#: How much higher than its lowest a drop over a bin is screened where the lowest is refused (:func:`nominal_drop`). The
+#: real drop hangs the part from the declared support, which no part stood below, and stood 85 to 92 mm over the rim on
+#: the owner's cell (2026-10-07: "er ist immer Minimum 5cm darüber"), while the lowest put the open fingers among the
+#: boxes the camera grew about the bin's walls and ended nine tasks before their first pick.
+NOMINAL_RAISE_MM = 50.0
+
+
 def nominal_drop(arm: Any, kept: KeptTarget, *, hang_mm: float, air_mm: float, standoff_mm: float = 80.0,
                  natural_axis: "ClosingAxis | None" = None) -> DropPlan:
     """The drop over ``kept`` a part hanging ``hang_mm`` below the tool would take, straight down, turned along
     ``natural_axis`` where the cell names one: what a task screens once it has found its bin, before its first pick,
-    with the worst hang the cell declares. No fit is judged."""
+    with the worst hang the cell declares. The hang is below the tool, the TCP: the fingertips' reach past it and the
+    declared length past them, never the length alone, which would put the fingers into the rim. No fit is judged.
+
+    Refused there, the drop is screened :data:`NOMINAL_RAISE_MM` higher, where the real drop stands at the least: a bin
+    reachable from there costs no pick, and the drop each place takes is screened again with the grasp it holds. Only a
+    bin refused at both heights is unreachable."""
     x, y = _rim_middle(kept.points_base_mm, kept.rim_mm)
     z = kept.rim_mm + max(0.0, float(hang_mm)) + float(air_mm)
     heading = 0.0
@@ -960,23 +972,35 @@ def nominal_drop(arm: Any, kept: KeptTarget, *, hang_mm: float, air_mm: float, s
             heading = 0.0
     pose = Pose.tool_down(x, y, z, yaw_deg=heading, label=f"drop over {kept.label}")
     screen = screen_pose(arm, pose)
+    raised = 0.0
+    lowest = screen
+    if screen.is_error:
+        higher = Pose.tool_down(x, y, z + NOMINAL_RAISE_MM, yaw_deg=heading, label=f"drop over {kept.label}")
+        again = screen_pose(arm, higher)
+        if not again.is_error:
+            pose, screen, raised = higher, again, NOMINAL_RAISE_MM
+    detail = screen.detail if not raised else (
+        f"{screen.detail} (screened {raised:g} mm higher, where the real drop stands at the least: at the lowest, "
+        f"{lowest.detail})")
     plan = DropPlan(kind="camera", pose=pose, standoff_mm=float(standoff_mm), rim_mm=kept.rim_mm,
-                    hang_mm=float(hang_mm), air_mm=float(air_mm), verdict=screen.verdict, detail=screen.detail,
+                    hang_mm=float(hang_mm), air_mm=float(air_mm) + raised, verdict=screen.verdict, detail=detail,
                     joints=screen.joints, nearby_deg=screen.nearby_deg, turned=natural_axis is not None)
     if screen.is_error:
-        return replace(plan, refusal="unreachable",
-                       reason=f"no move goes to a drop over the {kept.label}: {screen.detail}")
+        return replace(plan, refusal="unreachable", reason=(
+            f"no move goes to a drop over the {kept.label}, at its lowest or {NOMINAL_RAISE_MM:g} mm higher: "
+            f"{screen.detail}"))
     return plan
 
 
 def pose_drop(arm: Any, taught: "JointPositions", grasp: "Pose | None", *, part_bottom_mm: float,
-              length_mm: "float | None", standoff_mm: float = 80.0) -> DropPlan:
+              length_mm: "float | None", standoff_mm: float = 80.0, fingertips_mm: float = 0.0) -> DropPlan:
     """Where the part the tool gripped at ``grasp`` is let go at the pose ``taught``, which says where the part's bottom
     is let go: the tool at ``taught`` (``arm.fk``) raised in BASE Z by the part's hang.
 
     The hang is the grasp's Z less ``part_bottom_mm`` (the declared support, which no part stood below, so the hang is
     an upper bound and every error goes toward more air); where the pick reported no grasp pose, ``length_mm``, the
-    declared ``payload.length_mm``. With neither nothing is set down blind. The drop is turned about the vertical as
+    declared ``payload.length_mm``, past the fingertips, which reach ``fingertips_mm`` below the tool. With neither
+    nothing is set down blind. The drop is turned about the vertical as
     taught and tilted as the grasp was: the hang bounds the part only while it hangs as it was gripped, and a taught
     tilt the grasp did not have would swing a part held off its middle below the taught point (``SetDown``'s rule, its
     heading the taught one). Where the pick reported no grasp pose the taught turn is taken whole. The raised drop is
@@ -996,7 +1020,7 @@ def pose_drop(arm: Any, taught: "JointPositions", grasp: "Pose | None", *, part_
                             reason=f"the grasp at Z {float(grasp.position_mm[2]):.1f} mm does not stand above the "
                                    f"part's bottom ({float(part_bottom_mm):.1f} mm), so its hang is unknown")
     elif length_mm is not None and math.isfinite(float(length_mm)) and float(length_mm) > 0.0:
-        hang = float(length_mm)
+        hang = max(0.0, float(fingertips_mm)) + float(length_mm)
     else:
         return DropPlan(kind="pose", pose=None, standoff_mm=float(standoff_mm), refusal="unreachable",
                         reason="the pick reported no grasp pose and safety.planning_world.payload.length_mm is "

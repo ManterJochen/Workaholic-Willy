@@ -91,6 +91,7 @@ __all__ = [
     "DeclaredBody",
     "DepthView",
     "DropReason",
+    "FrameProjections",
     "LinkCapsule",
     "PerceivedBox",
     "PerceivedWorld",
@@ -1147,6 +1148,7 @@ def build_perceived_boxes(
     cut_around: "Sequence[KeepOutBox] | None" = None,
     base: "BaseShape | None" = None,
     named_points_base_mm: Sequence[tuple[str, np.ndarray]] = (),
+    projections: "FrameProjections | None" = None,
 ) -> PerceivedWorld:
     """Turn what the cameras see into the obstacles a planner should route around.
 
@@ -1205,6 +1207,9 @@ def build_perceived_boxes(
     base
         The robot's base about the BASE axis (``SelfEnvelope.base``), where ``tuning.support_surfaces`` looks for
         supports: none is found over it.
+    projections
+        The frames an earlier build read (:class:`FrameProjections`), served again for the very same frame instead of
+        reading it a second time; ``None`` reads every frame. It changes nothing a build makes, only what it costs.
 
     Where ``tuning.support_surfaces`` is on, the surfaces the parts stand on are found in the pixels the self filters
     left (``support_surfaces.detect``) and held as solids, the declared bench among them. Each pixel the world reads
@@ -1239,11 +1244,15 @@ def build_perceived_boxes(
     per_view_index: list[np.ndarray] = []
     per_view_band: list[np.ndarray] = []
     per_view_read: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    per_view_projection: list[_Projection] = []
     lookups: list[list[tuple[str, np.ndarray]]] = []
     clearance = float(limits.plane_clearance_mm)
 
     for index, view in enumerate(views):
-        depth = np.asarray(view.surface_depth_mm, dtype=np.float64)
+        # Taken into double precision where the frame is read (``_project_view``), so a frame served again
+        # (``FrameProjections``) is not converted again: a pick's held frames are single precision.
+        source = view.surface_depth_mm
+        depth = source if isinstance(source, np.ndarray) else np.asarray(source, dtype=np.float64)
         where = view.name or f"view {index}"
         if depth.ndim != 2 or depth.size == 0:
             raise PerceptionGeometryError(
@@ -1262,35 +1271,22 @@ def build_perceived_boxes(
                 f"{error_rad!r} rad"
             )
 
-        keep_mask = np.ones(depth.shape, dtype=bool)
-        for mask in view.exclude_masks:
-            excluded = np.asarray(mask).astype(bool)
-            if excluded.shape != depth.shape:
-                raise PerceptionGeometryError(
-                    f"{where}: an exclude mask is {excluded.shape} and the depth map is "
-                    f"{depth.shape}"
-                )
-            keep_mask &= ~excluded
-        excluded_pixels = int(np.count_nonzero(~keep_mask))
-        if excluded_pixels:
+        # The frame read and thinned (``_project_view``), or as the latest build read this very frame.
+        projection = (_project_view(view, depth, transform, tuning, where) if projections is None
+                      else projections.of(view, depth, transform, tuning, where))
+        if projection.excluded:
             dropped_points[DropReason.EXCLUDED] = (
-                dropped_points.get(DropReason.EXCLUDED, 0) + excluded_pixels
+                dropped_points.get(DropReason.EXCLUDED, 0) + projection.excluded
             )
-
-        # Holes are counted on the full frame, whatever the stride, so the count and the share
-        # describe the image the camera took rather than the pixels this pass happened to read.
-        asked = int(np.count_nonzero(keep_mask))
-        measured = int(np.count_nonzero(keep_mask & has_depth(depth)))
+        asked, measured = projection.asked, projection.measured
         if asked - measured:
             dropped_points[DropReason.NO_DEPTH] = (
                 dropped_points.get(DropReason.NO_DEPTH, 0) + asked - measured
             )
         depth_coverage[where] = measured / asked if asked else 0.0
 
-        points, pixels, ranges, read = _base_points(
-            depth, view.intrinsics, transform, keep_mask, tuning.voxel_size_mm,
-            stride=int(tuning.pixel_stride),
-        )
+        points, pixels, ranges, read = projection.points, projection.pixels, projection.ranges, projection.read
+        per_view_projection.append(projection)
         band = clearance + np.minimum(error_mm + error_rad * ranges, MAX_DECLARED_BAND_MM)
         if band.size:
             bench_band_mm[where] = (float(band.min()), float(band.max()))
@@ -1385,6 +1381,7 @@ def build_perceived_boxes(
             views, per_view_read, [points.shape[0] for points in per_view_points], per_view_band, alive, read_as,
             points_base, pixels, band_of, limits=limits, tuning=tuning, base=base,
             keep_out=tuple(keep_out if cut_around is None else cut_around),
+            in_base=[projection.in_base() for projection in per_view_projection],
         )
         supports = erasure.model
         solids = _solid_boxes(erasure.model, reference,
@@ -1507,15 +1504,18 @@ def build_perceived_boxes(
         if self_body is not None else np.full(points.shape[0], np.inf)
     )
 
-    # The parts a detector named in BASE (``named_points_base_mm``): a box no mask names is named by its own points.
+    # The parts a detector named in BASE (``named_points_base_mm``): a box no mask names is named by its own points,
+    # each point asked once which parts it lies on (``_on_named_parts``).
     named_trees = _named_trees(named_points_base_mm)
+    named_labels = [label for label, _ in named_trees]
+    on_named = _on_named_parts(named_trees, points)
     candidates: list[PerceivedBox] = []
     for chosen_points, part_yaw, columns in mapped:
         for column in columns:
             held = chosen_points[column.members]
             centre, dims = column.placed(part_yaw)
             label = (_dominant_label(lookups, kept_pixels[held], kept_view[held])
-                     or _named_by_points(named_trees, points[held]))
+                     or _named_by_points(named_labels, on_named[held]))
             candidates.append(
                 PerceivedBox(
                     name="",  # named once the survivors are known, so the numbering has no holes
@@ -1740,6 +1740,126 @@ def build_voxel_field(
 # ---------------------------------------------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True, eq=False)
+class _Projection:
+    """One view's frame as every world built from it reads it (:func:`_project_view`): what depends on the frame, its
+    intrinsics, its placement, the masks that leave its pixels out, the stride and the thinning voxel, and on nothing a
+    motion changes. :class:`FrameProjections` keeps it for the next world built from the same frame."""
+
+    #: The thinned points in BASE, their pixels in the full frame and their ranges from the camera (:func:`_base_points`).
+    points: np.ndarray
+    pixels: np.ndarray
+    ranges: np.ndarray
+    #: Every pixel read, as its row and column in the strided frame and the point that stands for it after the thinning.
+    read: "tuple[np.ndarray, np.ndarray, np.ndarray]"
+    #: CAMERA to BASE, 4x4, millimetres: where the frame was placed.
+    camera_to_base: np.ndarray
+    #: Over the full frame: the pixels the masks left out, the pixels asked, and those of them that held a depth.
+    excluded: int = 0
+    asked: int = 0
+    measured: int = 0
+    #: Every pixel read, in the order read: CAMERA millimetres until a support stage asks for them in BASE
+    #: (:meth:`in_base`), and from then on in BASE with their ranges from the camera. One of the two is kept, not both: a
+    #: pick holds a dozen frames at most, and each of them at 1280 x 720 is about 10 MB read.
+    _pixels_read: list = field(default_factory=list, repr=False)
+
+    def in_base(self) -> "tuple[np.ndarray, np.ndarray]":
+        """Every pixel read as a BASE point with its range from the camera, computed as :func:`_pixels_in_base`
+        computes it from the frame, once."""
+        held = self._pixels_read[0]
+        if isinstance(held, np.ndarray):
+            transform = self.camera_to_base
+            xyz, ranges = held @ transform[:3, :3].T + transform[:3, 3], np.linalg.norm(held, axis=1)
+            xyz.setflags(write=False)
+            ranges.setflags(write=False)
+            self._pixels_read[0] = (xyz, ranges)
+        return self._pixels_read[0]
+
+
+def _project_view(view: DepthView, depth: np.ndarray, transform: np.ndarray, tuning: WorldBuildTuning,
+                  where: str) -> _Projection:
+    """``view``'s frame read as :func:`build_perceived_boxes` reads it: its masks laid over the frame, the full frame's
+    holes counted, and its kept pixels back-projected and thinned (:func:`_project_frame`). ``depth`` is the frame,
+    ``transform`` its CAMERA to BASE, both as the build checked them; the frame is read in double precision."""
+    depth = np.asarray(depth, dtype=np.float64)
+    keep_mask = np.ones(depth.shape, dtype=bool)
+    for mask in view.exclude_masks:
+        excluded = np.asarray(mask).astype(bool)
+        if excluded.shape != depth.shape:
+            raise PerceptionGeometryError(
+                f"{where}: an exclude mask is {excluded.shape} and the depth map is "
+                f"{depth.shape}"
+            )
+        keep_mask &= ~excluded
+    # Holes are counted on the full frame, whatever the stride, so the count and the share
+    # describe the image the camera took rather than the pixels this pass happened to read.
+    asked = int(np.count_nonzero(keep_mask))
+    return _project_frame(
+        depth, view.intrinsics, transform, keep_mask, tuning.voxel_size_mm, stride=int(tuning.pixel_stride),
+        excluded=int(keep_mask.size) - asked, asked=asked,
+        measured=int(np.count_nonzero(keep_mask & has_depth(depth))),
+    )
+
+
+class FrameProjections:
+    """The frames the latest world was built from, read and thinned, kept for the next world built from the same frames.
+
+    Every world a pick builds reads each frame the pick holds of its earlier poses again (``live_world``), and the same
+    frame is read again wherever the world is asked twice before the camera is: on the cell of 2026-10-07 half the
+    refreshes held a frame, each about 360 ms of the build. What is kept depends on the frame alone (:class:`_Projection`)
+    and is served again only for the very same frame: the same depth array, which the entry holds so no other array can
+    come by its identity, the same shutter time, intrinsics, placement and masks (the masks by identity too, and held),
+    read at the same stride into the same voxel. What a motion changes, the robot's body, the targets and the goal, is
+    asked of every world afresh. A frame is never written into once a world was built from it: a :class:`DepthView`'s
+    depth is a camera's reading, which the live world holds as it arrived or copies, and never changes.
+
+    :meth:`retain_used` lets go of every frame the latest build did not read, so a cache holds no more than one world's
+    frames; :meth:`clear` of all of them.
+    """
+
+    def __init__(self) -> None:
+        self._kept: dict[tuple[Any, ...], tuple[_Projection, Any, tuple[Any, ...]]] = {}
+        self._used: set[tuple[Any, ...]] = set()
+        #: How many frames were read, and how many were served again, since this was made: for a report and a test.
+        self.read = 0
+        self.served = 0
+
+    def __len__(self) -> int:
+        return len(self._kept)
+
+    def of(self, view: DepthView, depth: np.ndarray, transform: np.ndarray, tuning: WorldBuildTuning,
+           where: str) -> _Projection:
+        """``view``'s frame as :func:`_project_view` reads it: the one kept where this very frame was read before."""
+        source = view.surface_depth_mm
+        masks = tuple(view.exclude_masks)
+        key = (
+            id(source), None if view.timestamp is None else float(view.timestamp), tuple(depth.shape),
+            np.asarray(view.intrinsics, dtype=np.float64).tobytes(), np.asarray(transform, dtype=np.float64).tobytes(),
+            tuple(id(mask) for mask in masks), int(tuning.pixel_stride), float(tuning.voxel_size_mm),
+        )
+        self._used.add(key)
+        kept = self._kept.get(key)
+        # The entry holds the array and the masks it was read from, so no other object can come by their identities.
+        if kept is not None and kept[1] is source and all(mine is theirs for mine, theirs in zip(kept[2], masks)):
+            self.served += 1
+            return kept[0]
+        projection = _project_view(view, depth, transform, tuning, where)
+        self._kept[key] = (projection, source, masks)
+        self.read += 1
+        return projection
+
+    def retain_used(self) -> None:
+        """Keep only the frames read since the last call: the latest build's."""
+        for gone in set(self._kept) - self._used:
+            del self._kept[gone]
+        self._used = set()
+
+    def clear(self) -> None:
+        """Keep no frame."""
+        self._kept.clear()
+        self._used = set()
+
+
 def _base_points(
     depth: np.ndarray,
     intrinsics: np.ndarray,
@@ -1756,13 +1876,32 @@ def _base_points(
     range from the camera, millimetres, travels too, because the bench band grows with it. And every
     pixel read, as its row and column in the strided image with the point that stands for it after the
     thinning, so what the self filter says of that point can be said of every pixel it stands for
-    (``_RobotShadow``).
+    (``_RobotShadow``). :func:`_project_frame` is the same with what else a build keeps of the frame.
+    """
+    projection = _project_frame(depth, intrinsics, camera_to_base, keep_mask, voxel_size_mm, stride=stride)
+    return projection.points, projection.pixels, projection.ranges, projection.read
+
+
+def _project_frame(
+    depth: np.ndarray,
+    intrinsics: np.ndarray,
+    camera_to_base: np.ndarray,
+    keep_mask: np.ndarray,
+    voxel_size_mm: float,
+    *,
+    stride: int = 1,
+    excluded: int = 0,
+    asked: int = 0,
+    measured: int = 0,
+) -> _Projection:
+    """:func:`_base_points`, with every pixel read in CAMERA millimetres beside it (:class:`_Projection`).
 
     The back-projection and the voxel thinning are written out here rather than taken from the
     grasping package's point-cloud helpers, which do the same two things. The dependency stack runs
     downward and grasping sits above safety, so a safety module that reached up into it would invert
     the one edge the whole layering rests on. Eight lines of arithmetic is the cheaper price.
     """
+    transform = np.array(camera_to_base, dtype=np.float64, copy=True)
     matrix = np.asarray(intrinsics, dtype=np.float64)
     if matrix.shape != (3, 3) or not np.all(np.isfinite(matrix)):
         raise PerceptionGeometryError(f"intrinsics must be a finite 3x3, got shape {matrix.shape}")
@@ -1781,8 +1920,11 @@ def _base_points(
     rows, cols = np.nonzero(valid)
     if rows.size == 0:
         none = np.empty((0,), dtype=np.int64)
-        return (np.empty((0, 3), dtype=np.float64), np.empty((0, 2), dtype=np.int32), np.empty((0,), dtype=np.float64),
-                (none, none, none))
+        return _Projection(
+            points=np.empty((0, 3), dtype=np.float64), pixels=np.empty((0, 2), dtype=np.int32),
+            ranges=np.empty((0,), dtype=np.float64), read=(none, none, none), camera_to_base=transform,
+            excluded=excluded, asked=asked, measured=measured, _pixels_read=[np.zeros((0, 3))],
+        )
 
     z = sampled_depth[rows, cols]
     read = (rows, cols)
@@ -1792,7 +1934,6 @@ def _base_points(
         (rows.astype(np.float64) - cy) * z / fy,
         z,
     ))
-    pixels = np.column_stack((rows, cols)).astype(np.int32)
 
     # Voxel thinning: one point per occupied cell, the first one seen. Deterministic, because the
     # same frame has to yield the same world twice.
@@ -1805,17 +1946,41 @@ def _base_points(
     cells -= cells.min(axis=0)
     span = cells.max(axis=0) + 1
     keys = (cells[:, 0] * span[1] + cells[:, 1]) * span[2] + cells[:, 2]
-    _, first, voxel = np.unique(keys, return_index=True, return_inverse=True)
+    first, voxel = _first_and_place(keys)
     order = np.argsort(first, kind="stable")
     keep = first[order]
     # Which kept point stands for each pixel read: the kept points are in the order their first pixel was read.
     rank = np.empty_like(order)
     rank[order] = np.arange(order.size)
-    camera, pixels = camera[keep], pixels[keep]
+    kept = camera[keep]
+    pixels = np.column_stack((rows[keep], cols[keep])).astype(np.int32)
 
-    homogeneous = np.column_stack((camera, np.ones(camera.shape[0], dtype=np.float64)))
-    base = (np.asarray(camera_to_base, dtype=np.float64) @ homogeneous.T).T[:, :3]
-    return base, pixels, np.linalg.norm(camera, axis=1), (read[0], read[1], rank[np.asarray(voxel).reshape(-1)])
+    homogeneous = np.column_stack((kept, np.ones(kept.shape[0], dtype=np.float64)))
+    base = (transform @ homogeneous.T).T[:, :3]
+    projection = _Projection(
+        points=base, pixels=pixels, ranges=np.linalg.norm(kept, axis=1), read=(read[0], read[1], rank[voxel]),
+        camera_to_base=transform, excluded=excluded, asked=asked, measured=measured, _pixels_read=[camera],
+    )
+    # Read, never written into: a projection is served again to every world built from the same frame.
+    for array in (projection.points, projection.pixels, projection.ranges, *projection.read, camera, transform):
+        array.setflags(write=False)
+    return projection
+
+
+def _first_and_place(keys: np.ndarray) -> "tuple[np.ndarray, np.ndarray]":
+    """``np.unique(keys, return_index=True, return_inverse=True)[1:]``: where each distinct key is first met, the keys
+    sorted, and each key's place among them; sorting only the first key of each run of equal keys.
+
+    The pixels are read row by row, and the neighbours along a row mostly fall into one voxel: no key is met first
+    anywhere but at the start of a run, so the distinct keys, where each is first met and the place of every key come out
+    of the runs' first keys alone. On the cell's frames of 2026-10-07, 190,000 keys in about 60,000 runs.
+    """
+    change = np.empty(keys.size, dtype=bool)
+    change[0] = True
+    np.not_equal(keys[1:], keys[:-1], out=change[1:])
+    starts = np.flatnonzero(change)
+    _, first_of_run, place_of_run = np.unique(keys[starts], return_index=True, return_inverse=True)
+    return starts[first_of_run], np.asarray(place_of_run).reshape(-1)[np.cumsum(change) - 1]
 
 
 def _pixels_in_base(view: DepthView, stride: int, rows: np.ndarray, cols: np.ndarray) -> "tuple[np.ndarray, np.ndarray]":
@@ -1846,6 +2011,11 @@ def _first_pixel(owner: np.ndarray, which: np.ndarray, count: int) -> np.ndarray
         starts = np.concatenate(([True], sorted_owners[1:] != sorted_owners[:-1]))
         out[sorted_owners[starts]] = index[order][starts]
     return out
+
+
+def _joined(parts: Sequence[np.ndarray]) -> np.ndarray:
+    """``np.concatenate(parts)``, and the one part itself where there is one: for a caller that only reads it."""
+    return parts[0] if len(parts) == 1 else np.concatenate(parts)
 
 
 def _first_reads(owner: np.ndarray) -> np.ndarray:
@@ -1897,12 +2067,15 @@ def _support_stage(
     tuning: WorldBuildTuning,
     base: "BaseShape | None",
     keep_out: Sequence[KeepOutBox],
+    in_base: "Sequence[tuple[np.ndarray, np.ndarray]] | None" = None,
 ) -> _Erasure:
     """The supports of the pixels the self filters left, and what each point still in the world becomes.
 
     ``read`` is each view's pixels read and the point each stands for, as :func:`_base_points` gives them, ``counts``
     how many points each view kept, ``view_bands`` each view's points' bench bands, ``alive`` which of all the points
-    read the self filters left and ``read_as`` which of those each point in ``points_mm`` is.
+    read the self filters left and ``read_as`` which of those each point in ``points_mm`` is. ``in_base`` is each view's
+    pixels read in BASE with their ranges (:meth:`_Projection.in_base`), or ``None`` to compute them here
+    (:func:`_pixels_in_base`), which gives the same numbers.
 
     Each pixel is judged on its own: under its bench band, or within a support's solid up to the band, it is the
     surface's. A point all of whose pixels are leaves; one with a pixel neither holds stands at its first such pixel.
@@ -1912,12 +2085,14 @@ def _support_stage(
     clearance = float(limits.plane_clearance_mm)
     plane = float(limits.support_plane_top_mm)  # type: ignore[arg-type]
     offsets = np.cumsum([0, *[int(count) for count in counts]])[:-1]
-    xyz_parts, owner_parts, band_parts, sampled_parts, view_parts, pixel_parts = [], [], [], [], [], []
+    xyz_parts, owner_parts, band_parts, sampled_parts, view_parts = [], [], [], [], []
+    rows_parts: list[np.ndarray] = []
+    cols_parts: list[np.ndarray] = []
     first_parts: list[np.ndarray] = []
     band_of_view: list[float] = []
     read_before = 0
     for index, (view, (rows, cols, owner), band) in enumerate(zip(views, read, view_bands)):
-        xyz, ranges = _pixels_in_base(view, stride, rows, cols)
+        xyz, ranges = _pixels_in_base(view, stride, rows, cols) if in_base is None else in_base[index]
         error = float(view.placement_error_mm) + float(view.placement_error_rad) * ranges
         xyz_parts.append(xyz)
         first_parts.append(_first_reads(np.asarray(owner, dtype=np.int64)) + read_before)
@@ -1926,14 +2101,16 @@ def _support_stage(
         band_parts.append(clearance + np.minimum(error, MAX_DECLARED_BAND_MM))
         sampled_parts.append((rows % step == 0) & (cols % step == 0))
         view_parts.append(np.full(xyz.shape[0], index, dtype=np.int64))
-        pixel_parts.append(np.column_stack((rows * stride, cols * stride)).astype(np.int32))
+        rows_parts.append(rows)
+        cols_parts.append(cols)
         band_of_view.append(float(np.max(band)) if np.size(band) else clearance)
-    xyz = np.concatenate(xyz_parts)
-    owner = np.concatenate(owner_parts)
-    pixel_band = np.concatenate(band_parts)
+    # One view's parts are its own arrays: only read below, never written into, so they are not copied.
+    xyz = _joined(xyz_parts)
+    owner = _joined(owner_parts)
+    pixel_band = _joined(band_parts)
     alive_pixel = alive[owner]
-    sampled = alive_pixel & np.concatenate(sampled_parts)
-    model = detect(xyz[sampled], np.concatenate(view_parts)[sampled], band_of_view, limits=limits, tuning=tuning,
+    sampled = alive_pixel & _joined(sampled_parts)
+    model = detect(xyz[sampled], _joined(view_parts)[sampled], band_of_view, limits=limits, tuning=tuning,
                    base=base, keep_out=keep_out)
 
     banded = xyz[:, 2] <= plane + pixel_band
@@ -1945,7 +2122,7 @@ def _support_stage(
     free = alive_pixel & ~erasable
     free_count = np.bincount(owner[free], minlength=total)
     every_banded = np.bincount(owner[alive_pixel & ~banded], minlength=total) == 0
-    first_read = np.concatenate(first_parts) if first_parts else np.zeros(0, dtype=np.int64)
+    first_read = _joined(first_parts) if first_parts else np.zeros(0, dtype=np.int64)
 
     erased = free_count[read_as] == 0
     # A point that stays though the pixel it was taken from is the surface's stands at its first pixel that is not.
@@ -1958,7 +2135,9 @@ def _support_stage(
         to = _first_pixel(owner, free & asked_points[owner], total)[read_as[moved]]
         points_now, pixels_now, band_now = points_mm.copy(), pixels.copy(), band_of.copy()
         points_now[moved] = xyz[to]
-        pixels_now[moved] = np.concatenate(pixel_parts)[to]
+        # The full frame's pixels of those it moves to alone, as every pixel's would be.
+        pixels_now[moved] = np.column_stack((_joined(rows_parts)[to] * stride,
+                                             _joined(cols_parts)[to] * stride)).astype(np.int32)
         band_now[moved] = pixel_band[to]
     return _Erasure(model=model, points_mm=points_now, pixels=pixels_now, band_mm=band_now, erased=erased,
                     banded=every_banded[read_as], free_pixels=free_count[read_as])
@@ -2049,18 +2228,62 @@ def _the_moving_robot(body: SelfBody) -> "Callable[[np.ndarray], np.ndarray]":
     return on
 
 
-def _cluster(points_mm: np.ndarray, cell_mm: float) -> np.ndarray:
-    """Label points by connectivity on a voxel grid, 26-neighbour, iteratively.
+#: The 13 of a cell's 26 neighbours that lie after it in key order: each pair of touching cells is met once.
+_LATER_NEIGHBOURS = tuple(
+    (dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1) if (dx, dy, dz) > (0, 0, 0)
+)
 
-    A grid rather than a distance graph because the cost has to be predictable in front of a plan:
-    this is one pass to bin the points, then a walk over the occupied cells, and the walk cannot
-    visit more cells than there are points. No recursion, so a wall spanning the frame cannot end
-    the run with a stack overflow.
+
+def _cluster(points_mm: np.ndarray, cell_mm: float) -> np.ndarray:
+    """Label points by connectivity on a voxel grid, 26-neighbour.
+
+    A grid rather than a distance graph because the cost has to be predictable in front of a plan: one pass to bin the
+    points into one integer key per occupied cell, a sorted search of each cell's later neighbours among those keys, and
+    the connected components of what touches. The clusters are numbered as the walk over the occupied cells numbered
+    them, which is what this was until 2026-10-07 (:func:`_cluster_walk`): in the order of each cluster's first point,
+    so the same points give the same labels. On the cell's frames of that day the walk cost 7.5 ms of a build on this
+    desk, and this costs one. A grid too wide for one integer key is walked as before.
     """
-    if points_mm.shape[0] == 0:
+    count = points_mm.shape[0]
+    if count == 0:
         return np.empty((0,), dtype=np.int64)
 
     cells = np.floor(points_mm / float(cell_mm)).astype(np.int64)
+    # One cell of room on every side, so a neighbour's key is the cell's key and a fixed step, and never wraps.
+    low = cells.min(axis=0) - 1
+    span = cells.max(axis=0) - low + 2
+    if float(np.prod(span.astype(np.float64))) >= 2.0 ** 62:
+        return _cluster_walk(cells)
+    shifted = cells - low
+    keys = (shifted[:, 0] * span[1] + shifted[:, 1]) * span[2] + shifted[:, 2]
+    unique, first, inverse = np.unique(keys, return_index=True, return_inverse=True)
+    from scipy.sparse import coo_matrix  # noqa: PLC0415 (kept out of import time)
+    from scipy.sparse.csgraph import connected_components  # noqa: PLC0415
+
+    here, there = [], []
+    for dx, dy, dz in _LATER_NEIGHBOURS:
+        wanted = unique + (dx * span[1] + dy) * span[2] + dz
+        at = np.searchsorted(unique, wanted)
+        found = at < unique.size
+        found[found] = unique[at[found]] == wanted[found]
+        here.append(np.nonzero(found)[0])
+        there.append(at[found])
+    rows, cols = np.concatenate(here), np.concatenate(there)
+    clusters, cluster_of_cell = connected_components(
+        coo_matrix((np.ones(rows.size), (rows, cols)), shape=(unique.size, unique.size)), directed=False,
+    )
+    # Numbered as the walk reached them: by the first point read in each.
+    first_point = np.full(clusters, count, dtype=np.int64)
+    np.minimum.at(first_point, cluster_of_cell, first)
+    number = np.empty(clusters, dtype=np.int64)
+    number[np.argsort(first_point, kind="stable")] = np.arange(clusters)
+    return number[cluster_of_cell][np.asarray(inverse).reshape(-1)]
+
+
+def _cluster_walk(cells: np.ndarray) -> np.ndarray:
+    """:func:`_cluster` over ``(N, 3)`` integer cells, as a walk over the occupied cells: iteratively, no recursion, so
+    a wall spanning the frame cannot end the run with a stack overflow. The walk cannot visit more cells than there are
+    points."""
     occupied: dict[tuple[int, int, int], list[int]] = {}
     for index, cell in enumerate(map(tuple, cells)):
         occupied.setdefault(cell, []).append(index)  # type: ignore[arg-type]
@@ -2070,7 +2293,7 @@ def _cluster(points_mm: np.ndarray, cell_mm: float) -> np.ndarray:
         for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)
         if (dx, dy, dz) != (0, 0, 0)
     ]
-    labels = np.full(points_mm.shape[0], -1, dtype=np.int64)
+    labels = np.full(cells.shape[0], -1, dtype=np.int64)
     current = 0
     for seed in occupied:
         if labels[occupied[seed][0]] != -1:
@@ -2482,17 +2705,45 @@ def _named_trees(named: Sequence[tuple[str, np.ndarray]]) -> "list[tuple[str, An
     return trees
 
 
-def _named_by_points(trees: "Sequence[tuple[str, Any]]", points_mm: np.ndarray) -> str | None:
-    """The named part most of ``points_mm`` lie on (:data:`_ON_A_NAMED_PART_MM`, :data:`_NAMED_SHARE`), or ``None``."""
-    if not trees or points_mm.shape[0] == 0:
+#: How much further than :data:`_ON_A_NAMED_PART_MM` past a named part's bounding box a point is still asked its tree,
+#: millimetres: a point further out lies further than the reach from every point of the part, by more than any rounding
+#: of the box, and the tree would only have said so.
+_NAMED_BOX_SLACK_MM = 1e-3
+
+
+def _on_named_parts(trees: "Sequence[tuple[str, Any]]", points_mm: np.ndarray) -> np.ndarray:
+    """Per point of ``points_mm``, which of the named parts ``trees`` holds it lies on (:data:`_ON_A_NAMED_PART_MM`):
+    ``(N, parts)`` boolean, the parts in the order of ``trees``.
+
+    Asked once for the whole cloud a world keeps, each part's tree asked only by the points within its bounding box
+    grown by the reach and :data:`_NAMED_BOX_SLACK_MM`; each box then counts its own rows (:func:`_named_by_points`).
+    Each box used to ask every part's tree for its own points: on the cell's frames of 2026-10-07, about 120 boxes and
+    fifty parts standing in for the detector's, those 6,000 queries were half of the whole build, 113 of 226 ms on this
+    desk. A point's answer is its own: the same query of the same tree, asked with other points beside it.
+    """
+    points = np.asarray(points_mm, dtype=np.float64).reshape(-1, 3)
+    on = np.zeros((points.shape[0], len(trees)), dtype=bool)
+    reach = _ON_A_NAMED_PART_MM + _NAMED_BOX_SLACK_MM
+    for index, (_, tree) in enumerate(trees):
+        low, high = np.asarray(tree.mins, dtype=np.float64) - reach, np.asarray(tree.maxes, dtype=np.float64) + reach
+        near = np.nonzero(np.all((points >= low) & (points <= high), axis=1))[0]
+        if near.size:
+            distance, _ = tree.query(points[near], k=1, distance_upper_bound=_ON_A_NAMED_PART_MM)
+            on[near, index] = np.isfinite(distance)
+    return on
+
+
+def _named_by_points(labels: Sequence[str], on: np.ndarray) -> str | None:
+    """The named part most of a box's points lie on (:data:`_ON_A_NAMED_PART_MM`, :data:`_NAMED_SHARE`), or ``None``.
+
+    ``on`` is, per point of the box, which of the parts ``labels`` names it lies on (:func:`_on_named_parts`). A part's
+    share is the count of its points over theirs; the first part, as the parts were handed over, of the largest share.
+    """
+    if not labels or on.shape[0] == 0:
         return None
-    best, share = None, 0.0
-    for label, tree in trees:
-        near, _ = tree.query(points_mm, k=1, distance_upper_bound=_ON_A_NAMED_PART_MM)
-        on = float(np.mean(np.isfinite(near)))
-        if on > share:
-            best, share = label, on
-    return best if share >= _NAMED_SHARE else None
+    shares = np.count_nonzero(on, axis=0) / float(on.shape[0])
+    best = int(np.argmax(shares))
+    return labels[best] if float(shares[best]) >= _NAMED_SHARE else None
 
 
 def _label_lookup(

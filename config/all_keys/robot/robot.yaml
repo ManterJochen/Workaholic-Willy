@@ -937,6 +937,14 @@ robot:
       # [default: 45.0]
       max_detour_deg: 45.0
 
+      # Mesh first: a straight joint line, a Cartesian line and a goal configuration the exact mesh guard
+      # accepts run without cuRobo's sphere check, where the guard holds everything the planner would judge
+      # them against (no mesh or distance field in the planner's world, no carried part, on a cell that models
+      # one a hand known empty and open, and every part of the arm and the hand past the shoulder at least the
+      # guard's distance over the declared support plane). cuRobo plans only where the guard refuses the line.
+      # [default: true]
+      mesh_first: true
+
     # Post-Stop dwell + steady-state gating.
     dwell:
 

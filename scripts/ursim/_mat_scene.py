@@ -20,10 +20,17 @@ world read one depth, placed by the arm's own TCP and the rig's own calibration:
 * With ``StaticScene.whole_bench`` (2026-10-03), the mat, its four sides, the bench and the floor round it are ray cast
   from wherever the camera stands, the mat's top on the plane P1 reads, so a look from any pose sees the whole table
   and not only what P1 saw; the recorded look is kept for the yellow bin alone (:data:`RECORDED_FROM_X_MM` on).
+* With ``Scene(depth_model="real")`` (2026-10-07), the clean render is read the way the cell's D415 reads the cell
+  (:func:`d415_depth`, its numbers in :class:`D415`, measured on the cell's own frames of that day): an error growing
+  with the depth on every surface, most of it the same at every grab from one pose; the band at the left no second
+  imager sees and the shadow left of every nearer surface; a small step blurred and a large one kept; holes at edges,
+  on grazing and shiny surfaces; whole millimetres. A fix the bench judges then meets the depth the cell hands it, not
+  a drawing. ``clean`` keeps the render as it was (:data:`DEPTH_MODEL`).
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
 import threading
 import time
@@ -61,6 +68,97 @@ FLOOR_Z_MM = -750.0
 RECORDED_FROM_X_MM = 117.0
 #: Depth noise of the cast mat and bench, one sigma, millimetres.
 BENCH_NOISE_MM = 1.0
+#: The depths a :class:`Scene` renders, by name. ``clean``: the render as it stood until 2026-10-07, the parts with
+#: :data:`PART_NOISE_MM` and the cast bench with :data:`BENCH_NOISE_MM` of noise drawn afresh per pixel, no hole but out
+#: of range. ``real``: the clean render read through :func:`d415_depth`, the cell's D415 as its own frames show it.
+DEPTH_MODELS = ("clean", "real", "harsh")
+#: The depth a scene renders unless it names one: ``clean``, so the URSim probe and every render a test pins keep theirs.
+#: The bench renders ``real`` (``scripts/bench/run_bench.py --noise``).
+DEPTH_MODEL = "clean"
+#: What a pixel of a render shows, for :func:`d415_depth`: nothing, the room's floor, the bare bench, the mat's top, a side
+#: of the mat, a point of the recorded look (the yellow bin), a part, a fixed part (a bin's or a tray's wall or floor).
+_NOTHING, _FLOOR, _BENCH, _MAT, _MAT_SIDE, _RECORDED, _PART, _FIXED = range(8)
+
+
+@dataclass(frozen=True)
+class D415:
+    """The cell's D415 as its own frames read it, for :func:`d415_depth`: 1280x720 aligned to colour, the spatial and the
+    temporal filter on, no hole filling (the cell's ``cam.yaml``). Measured on the 30 looks the cell recorded on
+    2026-10-07 (``D:/helper_cell/logs/robot/views``: four look poses, the mat 550 to 1000 mm away), each number with what
+    it was fitted to. Distances in pixels are at :attr:`fx_px` and scale with the focal length."""
+
+    #: The focal length the pixel numbers were measured at.
+    fx_px: float = 913.7
+    #: The depth's 1/z, as ``fx * baseline_mm`` pixel millimetres: the band at the left the second imager never sees is
+    #: ``fx * baseline_mm / z + band_offset_px`` wide (fitted over 5 494 rows: 105 px at 600-700 mm, 95 px at 700-800,
+    #: 89 px at 800-1000, 58 px past a metre), and a nearer surface hides what lies that much left of it from it.
+    baseline_mm: float = 57.0
+    band_offset_px: float = 23.0
+    #: How much of a shadow reads no depth; the rest reads what lies there, blurred like any edge. Left of the parts on
+    #: the mat a third to two fifths of the pixels next to the part read nothing, falling to 6 % five pixels out.
+    shadow_lost: float = 0.4
+    #: How coherent a shadow's holes are, pixels: the scale of the field they are cut from.
+    shadow_hole_px: float = 3.0
+    #: The spatial filter, as a domain transform in disparity (``cv2.ximgproc.dtFilter``): how far it reaches along a
+    #: surface and how large a disparity step it reads as an edge (pixels), and how often it runs; a step is eased in full
+    #: up to ``keep_from_px`` of disparity and not at all from ``keep_px`` on, by the largest within ``smooth_reach_px``.
+    #: At a 25 to 45 mm part's hidden edge on the mat (about 4 px) the depth eases from its top to the mat over some eight
+    #: pixels each side of the half-height line: 33 % of the step one pixel out, 12 % four out, 3 % eight out, and 29 %,
+    #: 14 % and 4.5 % in; beside a 45 to 60 mm part two thirds of that, beside a taller one a third, and beside a bin's
+    #: 110 mm wall (16 px) and the mat's own edge (8 px) on the bench next to nothing.
+    smooth_px: float = 4.0
+    smooth_disparity_px: float = 20.0
+    smooth_iterations: int = 3
+    smooth_reach_px: float = 12.0
+    keep_from_px: float = 5.0
+    keep_px: float = 11.0
+    #: The depth error, one sigma at :attr:`noise_at_mm`, growing as the depth to ``noise_power`` (a stereo camera's
+    #: disparity error grows as its square; the cell's mat between 600 and 900 mm a little slower). On the mat 25 px
+    #: from any part, edge or hole: ``temporal_mm`` drawn afresh at every grab (the frames of one look differ by 0.64 mm
+    #: at 600-700 mm, 0.81 at 700-800, 0.88 at 800-900, correlated over about ten pixels), and two parts that stay the
+    #: same at every grab from one pose, as the cell's do: ``static_mm`` over about ``static_px`` (a frame less its own
+    #: 31 px mean: 0.70 mm at 600-700 mm, 1.04 at 800-900) and ``warp_mm`` over about ``warp_px`` (a frame about one
+    #: plane: 1.9 mm at 600-700 mm, 1.6 to 2.0 by look, 2.0 at 700-800; P1's mat of 2026-10-01 2.3 mm).
+    noise_at_mm: float = 650.0
+    noise_power: float = 1.5
+    temporal_mm: float = 0.58
+    temporal_px: float = 5.0
+    static_mm: float = 0.98
+    static_px: float = 8.0
+    warp_mm: float = 1.85
+    warp_px: float = 60.0
+    #: Holes away from edges, the share of a surface's pixels: the mat 0.00 %, a part's top 0.03 %, the bare aluminium
+    #: bench 2.4 %, the plastic bins 0.6 % (by :data:`_NOTHING` .. :data:`_FIXED`; the recorded look keeps its own holes
+    #: and its own error). Holes come in blobs (on the bench a median 5 px, 86 % of what is lost in holes of 20 px and
+    #: more): cut from a field of about ``hole_px``.
+    surface_lost: tuple[float, ...] = (0.0, 0.01, 0.024, 0.0, 0.0, 0.0, 0.0003, 0.006)
+    hole_px: float = 2.0
+    #: Holes on a surface the camera sees at a grazing angle: the share lost at an incidence angle (degrees), over what
+    #: any surface loses (the cell's frames: 0.9 % below 30 deg, 3.8 % at 60-70, 6.1 % at 70-75, 7.5 % at 75-80, 11.9 %
+    #: at 80-85, 20.6 % past 85).
+    grazing_deg: tuple[float, ...] = (55.0, 65.0, 72.5, 77.5, 82.5, 87.5, 90.0)
+    grazing_lost: tuple[float, ...] = (0.0, 0.029, 0.052, 0.066, 0.11, 0.2, 0.2)
+    #: Holes on the far side of a step, other than its shadow: ``edge_lost + edge_lost_per_px * step`` (disparity
+    #: pixels), at most ``edge_lost_max``, next to the step, falling over ``edge_lost_px``. Below a part on the mat 20 %
+    #: one pixel out, 6 % three out; right of it 3 %; beside a bin's 110 mm wall 16 to 24 % one to three pixels out, 10 %
+    #: at five, 3 % at ten. A step is a disparity jump of more than ``edge_px`` between two neighbouring pixels.
+    edge_px: float = 0.6
+    edge_lost: float = 0.02
+    edge_lost_per_px: float = 0.012
+    edge_lost_max: float = 0.25
+    edge_lost_px: float = 2.5
+    #: How far past a step its holes reach, pixels.
+    edge_reach_px: int = 12
+
+
+#: A harsher D415 than the cell's own frames show, to stress the stack (``depth_model="harsh"``, the owner, 2026-10-07:
+#: "die Tiefe bisschen schlechter ... sodass wir wirklich richtig viel abdecken"): twice the error at every scale, three
+#: times the holes on every surface (the bare bench a tenth lost, as the cell's worst look read it), a stereo shadow
+#: three fifths lost, twice the holes past a step and half as many again on a grazing surface.
+HARSH = D415(temporal_mm=1.16, static_mm=1.96, warp_mm=2.8, shadow_lost=0.6,
+             surface_lost=(0.0, 0.03, 0.10, 0.005, 0.005, 0.0, 0.001, 0.018),
+             grazing_lost=(0.0, 0.044, 0.078, 0.099, 0.165, 0.3, 0.3),
+             edge_lost=0.04, edge_lost_per_px=0.024, edge_lost_max=0.4)
 
 
 def _unit(v: Any) -> np.ndarray:
@@ -268,6 +366,28 @@ class StaticScene:
         mat's top on its plane and its four sides down to the bench within :data:`MAT_OUTLINE`, the bench at z = 0
         within :data:`BENCH_OUTLINE`, the floor at :data:`FLOOR_Z_MM` round it, each with :data:`BENCH_NOISE_MM` of
         noise, and the recorded look from :data:`RECORDED_FROM_X_MM` on."""
+        best, _ = self._cast_clean(cam_to_base)
+        seen = np.isfinite(best)
+        best[seen] += rng.normal(0.0, BENCH_NOISE_MM, int(seen.sum()))
+        recorded = self.points[self.points[:, 0] >= RECORDED_FROM_X_MM]
+        return np.minimum(best, _project_static(recorded, cam_to_base, self.intrinsics, self.shape))
+
+    def surfaces(self, cam_to_base: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """What the camera at ``cam_to_base`` sees of the cell with no noise at all, CAMERA z millimetres per pixel
+        (``inf`` where nothing is hit), and which surface each pixel shows (:data:`_FLOOR` .. :data:`_RECORDED`): the
+        whole bench as :meth:`cast` casts it, the recorded look from :data:`RECORDED_FROM_X_MM` on; or, off the whole
+        bench, the recorded look alone. What ``depth_model="real"`` reads through :func:`d415_depth`."""
+        if not self.whole_bench:
+            depth = _project_static(self.points, cam_to_base, self.intrinsics, self.shape)
+            return depth, np.where(np.isfinite(depth), _RECORDED, _NOTHING).astype(np.int8)
+        best, surface = self._cast_clean(cam_to_base)
+        recorded = _project_static(self.points[self.points[:, 0] >= RECORDED_FROM_X_MM], cam_to_base, self.intrinsics,
+                                   self.shape)
+        nearer = recorded < best
+        return np.where(nearer, recorded, best), np.where(nearer, _RECORDED, surface).astype(np.int8)
+
+    def _cast_clean(self, cam_to_base: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """:meth:`cast` before its noise and the recorded look: the depth, and the surface each pixel shows."""
         h, w = self.shape
         k = self.intrinsics
         r, origin = cam_to_base[:3, :3], cam_to_base[:3, 3]
@@ -277,21 +397,25 @@ class StaticScene:
         ox, oy, oz = (float(v) for v in origin)
         a, b, c = (float(v) for v in self.mat_plane)
         best = np.full(d.shape[0], np.inf)
+        surface = np.full(d.shape[0], _NOTHING, dtype=np.int8)
         mx0, mx1, my0, my1 = MAT_OUTLINE
         bx0, bx1, by0, by1 = BENCH_OUTLINE
         with np.errstate(divide="ignore", invalid="ignore"):
             s = (FLOOR_Z_MM - oz) / d[:, 2]
             x, y = ox + s * d[:, 0], oy + s * d[:, 1]
             hit = (s > 0) & ~((x > bx0) & (x < bx1) & (y > by0) & (y < by1))
+            surface[hit & (s < best)] = _FLOOR
             best = np.where(hit, np.minimum(best, s), best)
             s = (0.0 - oz) / d[:, 2]
             x, y = ox + s * d[:, 0], oy + s * d[:, 1]
             hit = (s > 0) & (x > bx0) & (x < bx1) & (y > by0) & (y < by1) & ~((x > mx0) & (x < mx1) & (y > my0)
                                                                                & (y < my1))
+            surface[hit & (s < best)] = _BENCH
             best = np.where(hit, np.minimum(best, s), best)
             s = (a + b * ox + c * oy - oz) / (d[:, 2] - b * d[:, 0] - c * d[:, 1])
             x, y = ox + s * d[:, 0], oy + s * d[:, 1]
             hit = (s > 0) & (x > mx0) & (x < mx1) & (y > my0) & (y < my1)
+            surface[hit & (s < best)] = _MAT
             best = np.where(hit, np.minimum(best, s), best)
             for axis, at in ((0, mx0), (0, mx1), (1, my0), (1, my1)):
                 s = (at - (ox, oy)[axis]) / d[:, axis]
@@ -299,12 +423,9 @@ class StaticScene:
                 along = y if axis == 0 else x
                 low, high = (my0, my1) if axis == 0 else (mx0, mx1)
                 hit = (s > 0) & (along > low) & (along < high) & (z > 0.0) & (z < a + b * x + c * y)
+                surface[hit & (s < best)] = _MAT_SIDE
                 best = np.where(hit, np.minimum(best, s), best)
-        best = best.reshape(h, w)
-        seen = np.isfinite(best)
-        best[seen] += rng.normal(0.0, BENCH_NOISE_MM, int(seen.sum()))
-        recorded = self.points[self.points[:, 0] >= RECORDED_FROM_X_MM]
-        return np.minimum(best, _project_static(recorded, cam_to_base, k, (h, w)))
+        return best.reshape(h, w), surface.reshape(h, w)
 
 
 def _project_static(points: np.ndarray, cam_to_base: np.ndarray, k: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
@@ -325,24 +446,170 @@ def _project_static(points: np.ndarray, cam_to_base: np.ndarray, k: np.ndarray, 
     return zbuf.reshape(h, w)
 
 
+def d415_depth(depth_mm: np.ndarray, surface: np.ndarray, intrinsics: np.ndarray, *, static_rng: np.random.Generator,
+               temporal_rng: Optional[np.random.Generator], model: D415 = D415()) -> np.ndarray:
+    """``depth_mm``, a clean render (CAMERA z millimetres, ``inf`` where nothing is hit), as the cell's D415 reads it:
+    millimetres, ``nan`` where it reads nothing, before the range and the whole millimetres :meth:`Scene.render` keeps.
+
+    In the camera's own order: what the second imager cannot see, the band at the left and the shadow a nearer surface
+    throws to its left, part of that shadow lost; the spatial filter, which eases a small step in disparity and keeps a
+    large one; the error, one sigma growing with the depth, mostly the pose's (``static_rng``: the same at every grab
+    from one pose) and partly the grab's (``temporal_rng``); and the holes, in blobs, by the surface each pixel shows
+    (``surface``, :data:`_NOTHING` .. :data:`_FIXED`), on a grazing surface and just past a step. Every random number
+    is drawn as a whole frame, so one seed and one pose give one frame, whatever the scene holds. ``temporal_rng`` None
+    leaves the grab's own error out, for a caller that adds it at every grab (:func:`d415_temporal`)."""
+    import cv2  # noqa: PLC0415 (the clean depth needs neither)
+    from scipy import ndimage, special  # noqa: PLC0415
+
+    h, w = depth_mm.shape
+    k = np.asarray(intrinsics, dtype=np.float64)
+    scale = float(k[0, 0]) / model.fx_px
+    kb = float(k[0, 0]) * model.baseline_mm
+    seen = np.isfinite(depth_mm) & (depth_mm > 0.0)
+    disp = np.where(seen, kb / np.where(seen, depth_mm, 1.0), 0.0)
+    cols = np.arange(w, dtype=np.float64)[None, :]
+    # The second imager sees a pixel at its column less its disparity: nothing left of its frame (the band), nothing a
+    # nearer pixel right of it lands over (the shadow).
+    band = seen & (cols < disp + model.band_offset_px * scale)
+    lands = cols - disp
+    over = np.full((h, w), np.inf)
+    over[:, :-1] = np.minimum.accumulate(lands[:, ::-1], axis=1)[:, ::-1][:, 1:]
+    shadow = seen & ~band & (over < lands - 0.25)
+    lost = ~seen | band | (shadow & (_field(static_rng, (h, w), model.shadow_hole_px * scale)
+                                     < special.ndtri(model.shadow_lost)))
+    # The spatial filter, in disparity, guided by the scene's own steps and normalised over what is read, so it eases
+    # toward what was read and never toward a hole's zero; a step in full up to ``keep_from_px``, not at all from
+    # ``keep_px`` on, by the largest step within its reach.
+    guide = disp.astype(np.float32)
+    read = np.where(lost, 0.0, disp).astype(np.float32)
+    weight = (~lost).astype(np.float32)
+    filtered = [cv2.ximgproc.dtFilter(guide, src, model.smooth_px * scale, model.smooth_disparity_px,
+                                      mode=cv2.ximgproc.DTF_RF, numIters=model.smooth_iterations).astype(np.float64)
+                for src in (read, weight)]
+    eased = filtered[0] / np.maximum(filtered[1], 1e-6)
+    jump = np.zeros((h, w))
+    for first, second in (((slice(None, -1), slice(None)), (slice(1, None), slice(None))),
+                          ((slice(None), slice(None, -1)), (slice(None), slice(1, None)))):
+        step = np.where(~lost[first] & ~lost[second], np.abs(disp[second] - disp[first]), 0.0)
+        jump[first] = np.maximum(jump[first], step)
+        jump[second] = np.maximum(jump[second], step)
+    reach = 2 * int(math.ceil(model.smooth_reach_px * scale)) + 1
+    largest = ndimage.maximum_filter(jump, size=reach)
+    ease = np.clip((model.keep_px - largest) / (model.keep_px - model.keep_from_px), 0.0, 1.0)
+    ease = ndimage.gaussian_filter(ease, reach / 8.0)  # no square seam where the largest step changes
+    eased = np.where(lost, 0.0, disp + ease * (eased - disp))
+    ok = ~lost & (eased > 0.0)
+    out = np.where(ok, kb / np.where(ok, eased, 1.0), np.nan)
+    grow = np.where(surface == _RECORDED, 0.0,
+                    (np.where(ok, out, model.noise_at_mm) / model.noise_at_mm) ** model.noise_power)
+    if temporal_rng is not None:
+        out += grow * model.temporal_mm * _field(temporal_rng, (h, w), model.temporal_px * scale)
+    out += grow * (model.static_mm * _field(static_rng, (h, w), model.static_px * scale)
+                   + model.warp_mm * _field(static_rng, (h, w), model.warp_px * scale))
+    # Holes: the surface's own share, a grazing surface's, and the far side of a step's.
+    share = np.asarray(model.surface_lost, dtype=np.float64)[np.clip(surface, 0, len(model.surface_lost) - 1)]
+    nearer = np.zeros((h, w), dtype=bool)  # the near side of a step: a read neighbour lies more than a step farther
+    for first, second in (((slice(None, -1), slice(None)), (slice(1, None), slice(None))),
+                          ((slice(None), slice(None, -1)), (slice(None), slice(1, None)))):
+        both = seen[first] & seen[second]
+        rise = disp[second] - disp[first]
+        nearer[first] |= both & (rise < -model.edge_px)
+        nearer[second] |= both & (rise > model.edge_px)
+    on_step = nearer.copy()
+    if nearer.any():
+        far, (ir, ic) = ndimage.distance_transform_edt(~nearer, return_indices=True)
+        rise = disp[ir, ic] - disp
+        beside = seen & ~nearer & (far <= model.edge_reach_px * scale) & (rise > model.edge_px)
+        share += np.where(beside, np.minimum(model.edge_lost + model.edge_lost_per_px * rise, model.edge_lost_max)
+                          * np.exp(-(far - 1.0) / (model.edge_lost_px * scale)), 0.0)
+        on_step |= beside & (far <= 1.5)
+    # A grazing surface away from the steps (at a step the depth's own neighbours say nothing of the surface).
+    flat = seen & ~ndimage.binary_dilation(on_step)
+    grazing = np.interp(-_incidence_cos(depth_mm, k), -np.cos(np.radians(model.grazing_deg)), model.grazing_lost)
+    share += np.where(flat, grazing, 0.0)
+    holes = _field(static_rng, (h, w), model.hole_px * scale)
+    some = share > 0.0
+    out[some] = np.where(holes[some] < special.ndtri(np.minimum(share[some], 1.0)), np.nan, out[some])
+    return out
+
+
+def d415_temporal(depth_mm: np.ndarray, surface: np.ndarray, intrinsics: np.ndarray, rng: np.random.Generator,
+                  model: D415 = D415()) -> np.ndarray:
+    """The part of the D415's error a new grab draws afresh, over a frame :func:`d415_depth` read without it: one sigma
+    ``temporal_mm`` at :attr:`D415.noise_at_mm`, growing with the depth as the rest, none on the recorded look."""
+    h, w = depth_mm.shape
+    scale = float(np.asarray(intrinsics, dtype=np.float64)[0, 0]) / model.fx_px
+    ok = np.isfinite(depth_mm)
+    grow = np.where(surface == _RECORDED, 0.0,
+                    (np.where(ok, depth_mm, model.noise_at_mm) / model.noise_at_mm) ** model.noise_power)
+    return grow * model.temporal_mm * _field(rng, (h, w), model.temporal_px * scale)
+
+
+def _incidence_cos(depth_mm: np.ndarray, k: np.ndarray) -> np.ndarray:
+    """The cosine of the angle between each pixel's ray and the surface it meets, from the depth's own neighbours (1 where
+    nothing is hit). For a pinhole camera the normal at ``z(u, v)`` is ``(-fx z_u, -fy z_v, fx z_u x + fy z_v y + z)``,
+    ``x, y`` the ray's own slopes, and its dot product with the ray ``(x, y, 1)`` is ``z``."""
+    h, w = depth_mm.shape
+    z = np.where(np.isfinite(depth_mm) & (depth_mm > 0.0), depth_mm, np.nan)
+    z_v, z_u = np.gradient(z)
+    x = ((np.arange(w) - k[0, 2]) / k[0, 0])[None, :]
+    y = ((np.arange(h) - k[1, 2]) / k[1, 1])[:, None]
+    a, b = k[0, 0] * z_u, k[1, 1] * z_v
+    c = a * x + b * y + z
+    with np.errstate(invalid="ignore", divide="ignore"):
+        cos = z / (np.sqrt(a * a + b * b + c * c) * np.sqrt(x * x + y * y + 1.0))
+    return np.where(np.isfinite(cos), cos, 1.0)
+
+
+def _field(rng: np.random.Generator, shape: tuple[int, int], scale_px: float) -> np.ndarray:
+    """A smooth field over ``shape``, standard normal at every pixel: white noise blurred by a Gaussian of ``scale_px``,
+    drawn on a grid 2.5 pixels of scale apart where the scale allows it and brought to the frame bilinearly. Its size
+    depends on ``shape`` and ``scale_px`` alone, so the numbers drawn never depend on what a frame shows."""
+    from scipy import ndimage  # noqa: PLC0415
+
+    h, w = shape
+    step = max(1, int(scale_px // 2.5))
+    grid = rng.standard_normal((h // step + 4, w // step + 4), dtype=np.float32)
+    smooth = ndimage.gaussian_filter(grid, max(scale_px / step, 0.5), mode="wrap")
+    if step > 1:
+        smooth = ndimage.zoom(smooth, step, order=1)
+    smooth = smooth[:h, :w]
+    return smooth / max(float(np.std(smooth)), 1e-12)
+
+
 @dataclass
 class Render:
     depth_mm: np.ndarray
     masks: dict[str, np.ndarray]
     cam_to_base: np.ndarray
     seconds: float
+    #: A D415 render read without the grab's own error: the depth before the range and the whole millimetres, and what
+    #: each pixel shows, for the camera to add that error at every grab (:func:`d415_temporal`). ``None`` otherwise.
+    unrounded_mm: Optional[np.ndarray] = None
+    surface: Optional[np.ndarray] = None
+    #: The masks of such a render before the range clipped them to what reads, for each grab to clip again.
+    masks_before: Optional[dict[str, np.ndarray]] = None
 
 
 class Scene:
-    """The parts on the recorded mat, and the only things that move them: the jaws and a push."""
+    """The parts on the recorded mat, and the only things that move them: the jaws and a push.
 
-    def __init__(self, static: StaticScene, *, target: str = "", seed: int = 7) -> None:
+    ``depth_model`` says how a render reads its depth (:data:`DEPTH_MODELS`); ``seed`` seeds every number it draws, so
+    one seed and one sequence of renders give one sequence of frames."""
+
+    def __init__(self, static: StaticScene, *, target: str = "", seed: int = 7, depth_model: str = DEPTH_MODEL) -> None:
+        if depth_model not in DEPTH_MODELS:
+            raise ValueError(f"depth_model is one of {DEPTH_MODELS}, got {depth_model!r}")
         self.static = static
         self.parts: dict[str, Part] = {}
         self.target = target
         self.version = 0
         self.events: list[dict[str, Any]] = []
+        self.depth_model = depth_model
+        #: The D415's numbers a ``real`` render reads with, a ``harsh`` one with :data:`HARSH`.
+        self.d415 = HARSH if depth_model == "harsh" else D415()
         self._lock = threading.RLock()
+        self._seed = int(seed)
         self._rng = np.random.default_rng(seed)
 
     def set_parts(self, parts: Sequence[Part], *, target: str) -> None:
@@ -447,11 +714,18 @@ class Scene:
             self.events.append({"t": time.time(), "event": "pushed", "part": part.name, "moved_mm": round(moved, 1),
                                 "to_mm": [round(float(v), 1) for v in foot]})
 
-    def render(self, cam_to_base: np.ndarray, tcp: Optional[np.ndarray]) -> Render:
+    def render(self, cam_to_base: np.ndarray, tcp: Optional[np.ndarray], *, temporal: bool = True) -> Render:
+        """The scene from ``cam_to_base``. A D415 render (``real``, ``harsh``) with ``temporal`` false leaves the grab's
+        own error out and keeps what :func:`d415_temporal` needs to add it (:attr:`Render.unrounded_mm`)."""
         started = time.perf_counter()
         st = self.static
         k, (h, w) = st.intrinsics, st.shape
-        depth = st.cast(cam_to_base, self._rng) if st.whole_bench else _project_static(st.points, cam_to_base, k, (h, w))
+        real = self.depth_model in ("real", "harsh")
+        if real:
+            depth, surface = st.surfaces(cam_to_base)
+        else:
+            depth = (st.cast(cam_to_base, self._rng) if st.whole_bench
+                     else _project_static(st.points, cam_to_base, k, (h, w)))
         r, t = cam_to_base[:3, :3], cam_to_base[:3, 3]
         masks: dict[str, np.ndarray] = {}
         hits: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
@@ -484,14 +758,46 @@ class Scene:
             mask = np.zeros((h, w), dtype=bool)
             mask[vv[mine], uu[mine]] = True
             masks[name] = mask
-        noisy = nearest.copy()
-        if masks:
-            on_parts = np.any(np.stack(list(masks.values())), axis=0)
-            noisy[on_parts] += self._rng.normal(0.0, PART_NOISE_MM, int(on_parts.sum()))
-        valid = np.isfinite(noisy) & (noisy >= MIN_Z_MM) & (noisy <= MAX_Z_MM)
+        if real:
+            fixed = {name for name, part, _ in parts if part.fixed}
+            for name, mask in masks.items():
+                surface[mask] = _FIXED if name in fixed else _PART
+            noisy = d415_depth(nearest, surface, k, static_rng=self._pose_rng(cam_to_base),
+                               temporal_rng=self._rng if temporal else None, model=self.d415)
+        else:
+            noisy = nearest.copy()
+            if masks:
+                on_parts = np.any(np.stack(list(masks.values())), axis=0)
+                noisy[on_parts] += self._rng.normal(0.0, PART_NOISE_MM, int(on_parts.sum()))
+        with np.errstate(invalid="ignore"):
+            valid = np.isfinite(noisy) & (noisy >= MIN_Z_MM) & (noisy <= MAX_Z_MM)
         out = np.where(valid, np.rint(noisy), 0.0).astype(np.uint16)
-        masks = {name: mask & valid for name, mask in masks.items()}
-        return Render(out, masks, cam_to_base, time.perf_counter() - started)
+        kept = {name: mask & valid for name, mask in masks.items()}
+        if real and not temporal:
+            return Render(out, kept, cam_to_base, time.perf_counter() - started, unrounded_mm=noisy,
+                          surface=surface, masks_before=masks)
+        return Render(out, kept, cam_to_base, time.perf_counter() - started)
+
+    def with_grab_error(self, rendered: Render) -> Render:
+        """``rendered`` (read without the grab's own error) with a fresh draw of it: what a new grab from the same pose
+        reads, its fixed error and its holes kept, as the cell's camera does."""
+        assert rendered.unrounded_mm is not None and rendered.surface is not None
+        noisy = rendered.unrounded_mm + d415_temporal(rendered.unrounded_mm, rendered.surface,
+                                                      self.static.intrinsics, self._rng, self.d415)
+        with np.errstate(invalid="ignore"):
+            valid = np.isfinite(noisy) & (noisy >= MIN_Z_MM) & (noisy <= MAX_Z_MM)
+        out = np.where(valid, np.rint(noisy), 0.0).astype(np.uint16)
+        before = rendered.masks_before if rendered.masks_before is not None else rendered.masks
+        return Render(out, {name: mask & valid for name, mask in before.items()}, rendered.cam_to_base,
+                      rendered.seconds)
+
+    def _pose_rng(self, cam_to_base: np.ndarray) -> np.random.Generator:
+        """What the camera's error keeps at a pose (:func:`d415_depth`'s ``static_rng``): seeded by the scene's seed and
+        the pose to a thousandth, so every grab from one pose meets the same static error and holes, as the cell's
+        camera does, and another pose others."""
+        pose = np.round(np.asarray(cam_to_base, dtype=np.float64)[:3, :4], 3) + 0.0  # + 0.0: a -0.0 seeds as 0.0
+        digest = hashlib.blake2b(pose.tobytes(), digest_size=8).digest()
+        return np.random.default_rng([self._seed, int.from_bytes(digest, "little")])
 
 
 def colour_of(depth: np.ndarray, masks: dict[str, np.ndarray], target: str) -> np.ndarray:
@@ -548,13 +854,18 @@ class StandInD415:
         held = self.scene.held()
         key = (np.round(tcp, 3), self.scene.version, None if held is None else held.name)
         cached = self._cache
+        # A D415 render is cached without the grab's own error, which every grab draws afresh, as on the cell (two grabs
+        # from one pose differ by about 0.6 mm there); a clean one is handed back as it was.
+        d415 = self.scene.depth_model in ("real", "harsh")
         if (cached is not None and np.array_equal(cached[0], key[0]) and cached[1] == key[1] and cached[2] == key[2]):
             rendered = cached[3]
         else:
-            rendered = self.scene.render(tcp @ self.camera_to_tool, tcp)
+            rendered = self.scene.render(tcp @ self.camera_to_tool, tcp, temporal=not d415)
             self._cache = (key[0], key[1], key[2], rendered)
             self.renders += 1
             self.render_s += rendered.seconds
+        if d415:
+            rendered = self.scene.with_grab_error(rendered)
         self.last = rendered
         self.grabs += 1
         colour = colour_of(rendered.depth_mm, rendered.masks, self.scene.target)

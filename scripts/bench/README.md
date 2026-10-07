@@ -21,11 +21,21 @@ python scripts/bench/run_bench.py --scenes bin,clutter_L_15 --looks first   # a 
 python scripts/bench/run_bench.py --scenes pile --ip 127.0.0.2              # a second bench beside the first
 python scripts/bench/run_bench.py --scenes bin --standoff 10                # a short standoff instead of the 80 mm
 python scripts/bench/run_bench.py --no-planner --scenes clutter_one_30      # wiring only: no GPU, no result
+python scripts/bench/run_bench.py --scenes pile --noise clean               # the render without the D415's depth
 ```
 
 The pick moves as the console's does: the policy's own 80 mm standoff, unless `--standoff` names another. `--ip` is
 the cell's lock key (nothing dials it): two benches at once need two. After every pick the jaws open and the arm forgets
 the part, as a place's release does, so the next scene is not judged as if a part were still carried.
+
+The camera reads depth as the cell's D415 does (`--noise real`, the default): noise growing with the depth, most of it
+fixed per camera pose, the invalid band on the left, the stereo shadow, blurred small steps and holes, measured on the
+cell's frames of 2026-10-07 (`scripts/ursim/_mat_scene.py`, `D415`). `--noise clean` gives the render as it was.
+
+Since 2026-10-07 the bench runs in WSL (Smart App Control refuses `rtde_control` on Windows):
+`gpu_aurora/bench_wsl.sh <name> <ip> <tree> "<profile>" <scenes>` beside the handover. The sidecar there loads the
+descriptor and the URDF from its own cuRobo content, which must be the repository's built ones, byte for byte: the
+evidence names their hashes.
 
 ## The scenes
 

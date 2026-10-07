@@ -349,10 +349,22 @@ class PlannedMotionSafetyConfig(StrictModel):
     is left the move is refused naming the joint. 45 degrees admits a plan that bends a joint around a bin wall and
     refuses the plan that swings the base or a wrist the long way round, which is what twisted a cable-carrying arm on
     the owner's cell (2026-09-24).
+
+    ``mesh_first`` (on) lets the exact mesh guard judge a straight line and a goal configuration alone (the owner,
+    2026-10-07: "einfach mit den meshes prüfen und nicht mit kugeln"): where it accepts every sample, at its own
+    distances, the line runs and cuRobo's spheres are not asked; cuRobo plans only where the guard refuses the straight
+    line, and the guard judges every sample of that plan. It applies only where the guard holds everything the planner
+    would judge the motion against: the arm, the hand, the wrist cameras and the declared fixtures both hold, and the
+    camera's boxes the guard holds from the same refresh. Where the planner holds more, both authorities judge, as
+    before: a mesh its world declares, a distance field of the camera's points, a carried part, on a cell that models
+    one a hand not known empty and open, and the declared support plane wherever a part of the arm or the hand past
+    the shoulder comes within the guard's ``min_distance_mm`` of its top on the exact meshes. On the real cell the spheres refused lines the meshes kept
+    18 mm clear, and every refusal cost a report over thousands of sphere pairs before the guard could decide.
     """
 
     line_clearance_mm: float = Field(default=3.0, ge=0.0, le=100.0)
     max_detour_deg: float = Field(default=45.0, gt=0.0, le=360.0)
+    mesh_first: bool = Field(default=True)
 
 
 class DwellSafetyConfig(StrictModel):

@@ -712,7 +712,8 @@
       },
       "planned_motion": {
         "line_clearance_mm": 3.0,
-        "max_detour_deg": 45.0
+        "max_detour_deg": 45.0,
+        "mesh_first": true
       },
       "dwell": {
         "require_steady_before_motion": false,

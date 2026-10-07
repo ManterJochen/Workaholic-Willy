@@ -6,7 +6,8 @@ frame it judged, so the two stand a little apart. On a tray the guard refused th
 to 0.68 mm short of its 3 mm, and every refused grasp took one of the pick's tries. ``SeenEnvelope`` now keeps the
 guard's distance and ``WHOLE_SLACK_MM`` from a whole box, as it keeps a finger ``SOFT_SLACK_MM`` off a named part's
 surface. And it asks the hand at every place of its way in, from the grasp back to the standoff, in one distance: the
-hand's boxes stand square to the approach, so the way each sweeps is a box again.
+hand's boxes stand square to the approach, so the way each sweeps is a box again. 2 mm was measured against the 1 mm
+on the ten tightest scenes with the cell's own depth (2026-10-07) and picked one part fewer; the tests read the constant.
 """
 
 from __future__ import annotations
