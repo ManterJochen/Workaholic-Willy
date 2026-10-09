@@ -1024,7 +1024,7 @@
       "geometry": {
         "stage": "support_footprint",
         "inflate_mm": 0.0,
-        "footprint_rim_mm": 0.0,
+        "footprint_rim_mm": 2.0,
         "grasp_depth_reference": "centre",
         "grasp_top_penetration_mm": 0.0,
         "grasp_top_quantile": 10.0,

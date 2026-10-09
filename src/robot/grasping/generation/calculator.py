@@ -35,6 +35,7 @@ from src.robot.grasping.generation._support_footprint_stage import (
     support_footprint_breakdowns,
 )
 from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps
+from src.robot.grasping.generation.footprint_hull import hull_points, unread_pixels
 from src.robot.grasping.generation.footprint_rim import footprint_rim
 from src.robot.grasping.generation.scene_obstacles import (
     NO_GRASP_SAID,
@@ -47,7 +48,12 @@ from src.robot.grasping.generation.scene_obstacles import (
     scene_obstacle_points,
     why_no_grasp,
 )
-from src.robot.grasping.generation.support_footprint import DEFAULT_FLOOR_MARGIN_MM, HandFloor, SupportFootprintJaw
+from src.robot.grasping.generation.support_footprint import (
+    DEFAULT_FLOOR_MARGIN_MM,
+    HandFloor,
+    SupportFootprintJaw,
+    reconstruct_support_prism,
+)
 from src.robot.grasping.contacts import (
     ContactPair,
     dense_surface_samples,
@@ -247,8 +253,10 @@ class GraspCalculator:
         # part's far edge into a ramp of depths the mask's outer ~3 px lie on, and SFE's hull follows the ramp: on 23 of
         # the cell's recorded grey cubes the centre lay 2.53 mm off at the median, 0.77 mm with a 2 mm rim and
         # ``support_footprint_inflate_mm`` at 1.25 giving the faces back. The pick loop reads it here and cuts the same
-        # rim off the looks it fuses (``compute(footprint_points_base_mm=...)``). 0.0, the default, is SFE's input of
-        # before, byte for byte.
+        # rim off the looks it fuses (``compute(footprint_points_base_mm=...)``). With a rim, every mask pixel SFE does not
+        # read is placed in the part's visual hull (footprint_hull.py, ``_with_the_hull``), and ``inflate_mm`` 0.0 is
+        # right: 0.58 mm on those cubes. 0.0, the default here (a cell's tree gives 2.0), is SFE's input of before, byte
+        # for byte.
         support_footprint_rim_mm: float = 0.0,
         # Keep the silhouette candidates when SFE produced nothing (``reconstruct_support_prism`` in
         # support_footprint.py gives up below 20 cloud points), instead of letting its empty list
@@ -704,6 +712,46 @@ class GraspCalculator:
         telemetry["support_footprint_rim_points"] = off
         self.logger.info("footprint rim: %s; %d point(s) off SFE's input", rim.said(), off)
         return cut, off > 0
+
+    def _read_for_the_footprint(
+        self, mask: np.ndarray, sfe_mask: np.ndarray, depth_mm: np.ndarray, intrinsics: CameraIntrinsics,
+        max_depth_mm: float | None, *, fused: bool,
+    ) -> np.ndarray:
+        """The pixels of ``mask`` whose depth SFE reads for its footprint: ``sfe_mask`` (the mask less its depth steps,
+        and here less its rim), less its rim too where the footprint comes fused from the pick loop's looks, which cut
+        it there (``fused``), where the depth is one the cloud keeps (1 mm and over, and within the depth band)."""
+        read = sfe_mask
+        if fused:
+            read = read & footprint_rim(mask, depth_mm, intrinsics.fx, self._support_footprint_rim_mm).mask
+        with np.errstate(invalid="ignore"):
+            kept = np.isfinite(depth_mm) & (depth_mm >= 1.0)
+            if max_depth_mm is not None:
+                kept &= depth_mm <= max_depth_mm
+        return read & kept
+
+    def _with_the_hull(
+        self, target_base: np.ndarray, mask: np.ndarray, read: np.ndarray, intrinsics: CameraIntrinsics,
+        camera_to_base: np.ndarray, support_mm: float, telemetry: dict,
+    ) -> np.ndarray:
+        """``target_base`` and a point for every pixel of ``mask`` this look's footprint does not read, placed in the
+        part's visual hull (``footprint_hull``): the rim, the depth steps and the holes, from the mask, the support and
+        the top of the prism ``target_base`` gives. How many were placed is stamped (``support_footprint_hull_points``)
+        and said in the log, every compute; where ``target_base`` gives no prism, none is placed."""
+        floor = (DEFAULT_FLOOR_MARGIN_MM if self._support_footprint_floor_margin_mm is None
+                 else float(self._support_footprint_floor_margin_mm))
+        prism = reconstruct_support_prism(target_base, support_mm, floor_margin_mm=floor)
+        if prism is None:
+            telemetry["support_footprint_hull_points"] = 0
+            self.logger.info("footprint hull: none placed, the points read give the part no prism")
+            return target_base
+        matrix = np.array([[intrinsics.fx, 0.0, intrinsics.cx], [0.0, intrinsics.fy, intrinsics.cy], [0.0, 0.0, 1.0]])
+        unread = unread_pixels(mask, read)
+        placed = hull_points(unread, mask, matrix, camera_to_base, support_mm, prism.z1, floor_margin_mm=floor)
+        telemetry["support_footprint_hull_points"] = int(placed.shape[0])
+        self.logger.info("footprint hull: %d of %d mask pixel(s) the footprint does not read placed in the part's "
+                         "visual hull (support %.1f mm, top %.1f mm)", int(placed.shape[0]),
+                         int(np.count_nonzero(unread)), support_mm, prism.z1)
+        return np.vstack([target_base, placed]) if placed.shape[0] else target_base
 
     def _fused_footprint(self, fused: np.ndarray, footprint: Any, telemetry: dict) -> np.ndarray:
         """What SFE builds its footprint from where a fused cloud comes with its rim cut (``footprint_points_base_mm``,
@@ -1318,6 +1366,9 @@ class GraspCalculator:
                 # it; at a 45-degree view that is 40 mm behind a 40 mm part. See depth_steps.py. Only
                 # SFE's input is trimmed, and a mask with no step inside it gives the same cloud.
                 sfe_cloud = cloud
+                # The pixels of this look whose depth SFE reads for the footprint, where the cell cuts a rim: every
+                # other pixel of the mask is placed in the part's visual hull below (``footprint_hull``).
+                hull_read: np.ndarray | None = None
                 if not cloud.is_empty:
                     depth_mm = depth_arr * scale
                     behind = pixels_behind_depth_steps(mask_bool, depth_mm)
@@ -1331,6 +1382,10 @@ class GraspCalculator:
                     if self._support_footprint_rim_mm > 0.0 and geometry_points_base_mm is None:
                         sfe_mask, rimmed = self._without_the_rim(
                             mask_bool, sfe_mask, depth_mm, intrinsics, cloud_max_depth_mm, telemetry)
+                    if self._support_footprint_rim_mm > 0.0:
+                        hull_read = self._read_for_the_footprint(
+                            mask_bool, sfe_mask, depth_mm, intrinsics, cloud_max_depth_mm,
+                            fused=geometry_points_base_mm is not None)
                     if self._support_footprint_full_resolution or behind.any() or rimmed:
                         sfe_cloud = masked_point_cloud(
                             sfe_mask, depth_arr, intrinsics, unit=unit, min_depth_mm=1.0,
@@ -1340,8 +1395,12 @@ class GraspCalculator:
                         )
                 if geometry_points_base_mm is not None:
                     target_base = np.asarray(geometry_points_base_mm, dtype=np.float64).reshape(-1, 3)
+                    whole_cloud = target_base
                     if footprint_points_base_mm is not None:
                         target_base = self._fused_footprint(target_base, footprint_points_base_mm, telemetry)
+                    if target_base is whole_cloud:
+                        # The fused cloud is read whole, its rim with it: no pixel of this look went unread.
+                        hull_read = None
                 else:
                     target_base = (transform[:3, :3] @ np.asarray(
                         sfe_cloud.points_mm, dtype=np.float64).reshape(-1, 3).T).T + transform[:3, 3]
@@ -1364,6 +1423,9 @@ class GraspCalculator:
                 sfe_jaw = self._support_footprint_jaw(gripper_model, min_table_clearance_mm)
                 sfe_support_mm = (float(support_plane.offset_mm) if scene_support_mm is None
                                   else max(float(support_plane.offset_mm), scene_support_mm))
+                if hull_read is not None:
+                    target_base = self._with_the_hull(
+                        target_base, mask_bool, hull_read, intrinsics, transform, sfe_support_mm, telemetry)
                 # Only space this frame's depth saw counts as clear for a tilted approach (the fix plan's contract 5).
                 sfe_side: dict[str, Any] = {}
                 if self._side_approaches:

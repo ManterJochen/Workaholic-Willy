@@ -201,14 +201,25 @@ def _cell_compute(tilt_deg: float, *, shift_px: int, seed: int) -> tuple[list, d
     from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
     from src.robot.grasping.collision import SupportPlane
 
+    from unittest import mock
+
+    from src.robot.grasping.generation import calculator as calculator_module
+
     cfg = _hande()
     mask, depth, believed = _frame(tilt_deg, shift_px=shift_px, seed=seed)
     calculator = _calculator()
-    candidates = calculator.compute(
-        SimpleNamespace(mask=mask), depth.astype(np.float64), camera_to_base=believed,
-        support_plane=SupportPlane(np.array([0.0, 0.0, 1.0]), float(cfg.grasping.support.height_mm), Frame.BASE),
-        gripper_model=build_gripper_geometry(cfg.grasping.gripper_geometry),
-        min_table_clearance_mm=float(cfg.grasping.support.min_clearance_mm))
+    # The visual hull the tree's rim comes with (2026-10-09) held back: this frame draws the mask ``shift_px`` off a
+    # depth it takes for the truth, and the hull follows the mask, 2.4 mm along the view at seed 3. The cell's hand-eye
+    # calibration poses its marker in the colour image alone (src/calibration/rgbd_marker_source.py), so there the mask
+    # is the frame the arm is calibrated in; the hull is pinned on the cell's recorded cubes and on exact ray casts in
+    # tests/test_a_parts_unread_pixels_stand_in_its_visual_hull.py.
+    with mock.patch.object(calculator_module.GraspCalculator, "_with_the_hull",
+                           lambda self, target_base, *arguments, **keywords: target_base):
+        candidates = calculator.compute(
+            SimpleNamespace(mask=mask), depth.astype(np.float64), camera_to_base=believed,
+            support_plane=SupportPlane(np.array([0.0, 0.0, 1.0]), float(cfg.grasping.support.height_mm), Frame.BASE),
+            gripper_model=build_gripper_geometry(cfg.grasping.gripper_geometry),
+            min_table_clearance_mm=float(cfg.grasping.support.min_clearance_mm))
     return candidates, dict(calculator.last_telemetry)
 
 

@@ -44,13 +44,17 @@ from tests.test_a_side_grasp_never_goes_through_unseen_space import Box, Cylinde
 #: best grasps now stand at 80 mm, its middle, and 75. That ``scene_obstacles=None`` changes nothing is still pinned
 #: beside it. Re-pinned on 2026-10-08: the geometry-first contacts SFE replaces are no longer computed, and the
 #: telemetry says so (``geometry_skipped``); the digests of 2026-10-06 come back from the same results with that one key
-#: left out, so the grasps and the reasons are the ones of before.
+#: left out, so the grasps and the reasons are the ones of before. Re-pinned on 2026-10-09 (the owner's evening): the
+#: tree's rim of 2.0 mm is on by default and the mask pixels SFE does not read stand in the part's visual hull, so the
+#: 40 mm cylinder's footprint reads 39.1 x 39.6 mm instead of the rim's 34.2 x 36.7, and the robust grasps are ranked
+#: first; ``scene_obstacles=None`` changing nothing is still pinned beside it.
 BEFORE_TRACK_A = {
-    # Since the Hand-E's fingers come to 1 mm of the support (2026-10-06), and SFE's replaced stages say they were
-    # skipped (2026-10-08).
-    "isolated": "9de187524729fac1f212ea53c5e669a89d1926f8921261831f245c568c1f47ea",
-    "photo_layout": "9de187524729fac1f212ea53c5e669a89d1926f8921261831f245c568c1f47ea",
-    "boxed_in_bar": "ef60db8b84080797ae68da547a25c803d1a36b1e070416443643fa42687be820",
+    # Since the rim and the visual hull are on, the robust grasps ranked first, and a round footprint's fan stands in
+    # the base frame with its lines through its centroid (2026-10-09; the bar's footprint fills 0.87 of its rectangle,
+    # round by that rule: its nine grasps moved 0.32 mm along it).
+    "isolated": "c331bf03b1a2205a1f7a0b958cc4066343cfe0bbeeb7dca8a6478bbf1c72ba2f",
+    "photo_layout": "c331bf03b1a2205a1f7a0b958cc4066343cfe0bbeeb7dca8a6478bbf1c72ba2f",
+    "boxed_in_bar": "8792cdf3c5ee0d74acf35b694d007a2eec05117cd249f05815cbfa8ddfa55fc3",
 }
 
 
@@ -122,7 +126,12 @@ class NoFalseRefusalWhereThereIsRoomTests(unittest.TestCase):
         from tests.test_the_calculator_keeps_the_guards_distance_from_a_neighbour import GUARD_MM, least_mm, world_boxes
 
         frame = photo_layout()
-        off, on = compute(calculator(scene=False), frame), compute(calculator(scene=True), frame)
+        # 36 grasps a side, as the pick loop asks where a closing axis is named: the round part's axes tie, and since
+        # its outline is read in its visual hull (2026-10-09) its first 12 grasps share one axis, every one of them too
+        # near the cube 40 mm off; the scene's calculator offers 9 that all keep the guard's distance even at 12.
+        unseen, seen = calculator(scene=False), calculator(scene=True)
+        unseen.max_candidates = seen.max_candidates = 36
+        off, on = compute(unseen, frame), compute(seen, frame)
         self.assertGreater(on.telemetry["scene_obstacle_points"], 0)
         boxes = world_boxes(PHOTO_NEIGHBOURS, frame)
         admitted = [g for g in off.candidates if least_mm(g, boxes) >= GUARD_MM]

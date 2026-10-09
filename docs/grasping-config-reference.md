@@ -175,11 +175,13 @@ The always-on tunings are a separate family and are not gated by mode:
 * `deep_generator` sizes and points that learned generator; it is inert while `calculator` is
   `geometric`.
 * `geometry.stage` chooses which stage proposes candidates, `support_footprint` or `silhouette`.
-  `geometry.footprint_rim_mm` (**0.0**; the owner's "Ja, für Montag", 2026-10-09) cuts a rim of that many
+  `geometry.footprint_rim_mm` (**2.0**, on since the owner's evening of 2026-10-09) cuts a rim of that many
   millimetres off every mask for the cloud the support-footprint stage builds its footprint from, and for
-  nothing else: the D415 smears a part's far edge into a ramp the hull follows. Pair it with
-  `geometry.inflate_mm` (**0.0**), which gives the faces back: 2.0 with 1.25 took the grasp centre on 23
-  recorded cubes from 2.53 to 0.77 mm off at the median ([05](guide/05-pick-loop.md), section 2).
+  nothing else: the D415 smears a part's far edge into a ramp the hull follows. With it, every mask pixel the
+  stage does not read, the rim, the depth steps and the holes, is placed in the part's visual hull, so
+  `geometry.inflate_mm` stays **0.0**: on 23 recorded cubes the grasp centre went from 2.53 to 0.58 mm off at
+  the median, and stayed at 0.59 with 35 % of the depth knocked out ([05](guide/05-pick-loop.md), section 2).
+  0.0 is the input of before, no rim and no hull.
 * `support` says where the world's floor is, and the bin or tray is `support.container`, not
   `grasping.container`.
 * `fusion.geometry` is per-object multi-camera geometry fusion, and it needs `fusion.enabled` too: that

@@ -186,6 +186,39 @@ class TheCalculatorsBoxesCoverTheWorldsTests(unittest.TestCase):
                                                   "the calculator's")
 
 
+class TheCalculatorsBoxesStartWhereTheWorldsDoTests(unittest.TestCase):
+    """The boxes the calculator keeps the guard's distance from hold every point the camera world keeps of the frame,
+    thinned in the world's order (2026-10-09). Thinned after the mask's rim and the depth steps were taken out alone,
+    the near side of the cube 15 mm off the cylinder lost its face's pixels and its box came 2.9 mm short of the
+    world's."""
+
+    def test_the_near_faces_of_the_cubes_15_mm_off_are_the_worlds(self) -> None:
+        from unittest import mock
+
+        from src.robot.grasping.generation import calculator as calculator_module
+
+        neighbours = on_x(15.0)
+        frame = Frame_((BENCH, MAT, *neighbours), PART)
+        world = world_boxes(neighbours, frame)
+        seen: dict[str, Any] = {}
+        real = calculator_module.scene_obstacle_points
+
+        def keeping(*args: Any, **kwargs: Any) -> Any:
+            seen["scene"] = real(*args, **kwargs)
+            return seen["scene"]
+
+        with mock.patch.object(calculator_module, "scene_obstacle_points", keeping):
+            compute(calculator(scene=True), frame)
+        for side in (1.0, -1.0):
+            with self.subTest(side=side):
+                theirs = min(side * (b.center_mm[0] - side * b.dims_mm[0] / 2.0) for b in world
+                             if side * b.center_mm[0] > 20.0)
+                mine = min(side * (b.centre_mm[0] - side * b.half_extents_mm[0]) for b in seen["scene"].boxes
+                           if side * b.centre_mm[0] > 20.0)
+                self.assertLessEqual(mine, theirs + 0.5, "the calculator's box starts further off than the world's")
+
+
+
 def _grid(box: Any, n: int = 5) -> np.ndarray:
     """``n`` points along each axis of a world box, its faces included, BASE millimetres."""
     half = np.asarray(box.dims_mm, dtype=np.float64) / 2.0

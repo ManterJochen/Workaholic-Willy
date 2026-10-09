@@ -35,10 +35,12 @@ def _cfg(**overrides: object) -> SimpleNamespace:
 
 
 class TheDefaultsForwardNothingTests(unittest.TestCase):
-    def test_an_untouched_block_adds_no_argument_at_all(self) -> None:
-        """Not "adds the default value": adds no key. The calculator is constructed exactly as it
-        was, so nothing that was measured against it moved."""
-        self.assertEqual({}, _depth_kwargs(_cfg(), {}))
+    def test_an_untouched_block_adds_only_the_rim_it_ships_with(self) -> None:
+        """Not "adds the default value": adds no depth lever's key. The one key an untouched block
+        forwards is the rim, 2.0 mm since the owner's evening of 2026-10-09 (the rim and the visual
+        hull beside it, ``tests/test_a_parts_unread_pixels_stand_in_its_visual_hull.py``)."""
+        self.assertEqual({"support_footprint_rim_mm": 2.0}, _depth_kwargs(_cfg(), {}))
+        self.assertEqual({}, _depth_kwargs(_cfg(footprint_rim_mm=0.0), {}), "no rim: the calculator of before")
 
     def test_the_inert_values_ARE_the_schema_defaults(self) -> None:
         """The two lists live in different files and would drift apart silently. If a schema default
@@ -55,7 +57,8 @@ class TheDefaultsForwardNothingTests(unittest.TestCase):
         for cells that do not make one."""
         supplied = {"grasp_depth_reference": "centre"}
 
-        self.assertEqual({}, _depth_kwargs(_cfg(grasp_depth_reference="top"), supplied))
+        self.assertEqual({"support_footprint_rim_mm": 2.0},
+                         _depth_kwargs(_cfg(grasp_depth_reference="top"), supplied))
 
     def test_a_config_without_the_block_is_not_an_error(self) -> None:
         self.assertEqual({}, _depth_kwargs(SimpleNamespace(grasping=SimpleNamespace(geometry=None)), {}))
@@ -76,7 +79,8 @@ class TheKeysForwardWhenSetTests(unittest.TestCase):
 
         forwarded = _depth_kwargs(_cfg(**non_default), {})
 
-        self.assertEqual(non_default, forwarded)
+        self.assertEqual({**non_default, "support_footprint_rim_mm": 2.0}, forwarded,
+                         "the five, and the rim every block ships with")
 
 
 class TheyChangeWhatTheCalculatorDoesTests(unittest.TestCase):

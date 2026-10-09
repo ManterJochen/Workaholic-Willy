@@ -6,7 +6,10 @@ stage's hull follows it. Offline on 23 of the cell's recorded grey cubes the cen
 at the median, 2.5 mm of it away from the camera; with a 3 px rim (about 2 mm) and ``inflate_mm`` 1.25, 0.98 mm. The
 rim is cut, ``ceil(rim * fx / z)`` px and never more than 30 % of the mask, off a look's own SFE input in the
 calculator and off the footprint cloud the pick loop fuses beside the looks' surfaces; the jaw faces, the association,
-the planner world's hold-out and the neighbours keep the whole mask. 0.0, the default, is the input of before.
+the planner world's hold-out and the neighbours keep the whole mask. 2.0 is the default since the owner's evening of
+2026-10-09, and with it every mask pixel SFE does not read is placed in the part's visual hull
+(``tests/test_a_parts_unread_pixels_stand_in_its_visual_hull.py``); the tests of the rim's own rule here hold that
+hull back (:func:`_no_hull`). 0.0 is the input of before.
 
 The part is ray-cast as ``tests/test_a_tilted_view_grasps_on_the_part.py`` casts it: a 40 mm cube on a table at
 z = 0, the owner's D415 colour lens (fx 913.7, 1280 x 720) 680 mm away, tilted 36 or 45 degrees, the far edge at the
@@ -129,6 +132,12 @@ def _compute(calculator: Any, mask: np.ndarray, depth: np.ndarray, camera_to_bas
     return candidates, dict(calculator.last_telemetry), cloud
 
 
+def _no_hull() -> Any:
+    """The calculator with the visual hull its rim comes with held back: the rim's own rule, as it was measured."""
+    return mock.patch.object(calculator_module.GraspCalculator, "_with_the_hull",
+                             lambda self, target_base, *arguments, **keywords: target_base)
+
+
 def _footprint(cloud: np.ndarray, inflate_mm: float) -> tuple[float, float, float]:
     """``(centre off the cube's along the view, far face off the cube's, near face off the cube's)``, millimetres, of
     the prism SFE builds from ``cloud``: positive away from the camera, outside the part."""
@@ -224,11 +233,15 @@ class TheCalculatorCutsTheRimOffSfesInputTests(unittest.TestCase):
                 self.assertGreater(centre, 2.0, "away from the camera, as on the cell")
 
     def test_a_2_mm_rim_brings_the_footprint_and_its_centre_back_to_the_part(self) -> None:
+        """The rim alone, its hull held back: this scene's colour mask reaches 2 px past the cube, which the hull would
+        follow, where the cell's recorded cubes showed the colour right and the depth off."""
         for tilt in (36.0, 45.0):
             mask, depth, camera_to_base = _ramped(tilt)
             _c, _t, before = _compute(_calculator(support_footprint_inflate_mm=1.25), mask, depth, camera_to_base)
-            _c, telemetry, after = _compute(_calculator(support_footprint_inflate_mm=1.25, support_footprint_rim_mm=2.0),
-                                            mask, depth, camera_to_base)
+            with _no_hull():
+                _c, telemetry, after = _compute(
+                    _calculator(support_footprint_inflate_mm=1.25, support_footprint_rim_mm=2.0), mask, depth,
+                    camera_to_base)
             centre_before, far_before, _n = _footprint(before, 1.25)
             centre, far, near = _footprint(after, 1.25)
             with self.subTest(tilt=tilt):
@@ -242,7 +255,7 @@ class TheCalculatorCutsTheRimOffSfesInputTests(unittest.TestCase):
     def test_the_rim_and_the_points_it_took_are_stamped_and_said_every_compute(self) -> None:
         mask, depth, camera_to_base = _ramped(45.0)
         calculator = _calculator(support_footprint_rim_mm=2.0)
-        with self.assertLogs(calculator.logger, level=logging.INFO) as said:
+        with self.assertLogs(calculator.logger, level=logging.INFO) as said, _no_hull():
             _c, telemetry, cloud = _compute(calculator, mask, depth, camera_to_base)
         _c, _t, whole = _compute(_calculator(), mask, depth, camera_to_base)
         self.assertEqual(whole.shape[0] - cloud.shape[0], telemetry["support_footprint_rim_points"])
@@ -294,7 +307,8 @@ class TheCalculatorCutsTheRimOffSfesInputTests(unittest.TestCase):
         mask, depth, camera_to_base = _ramped(45.0)
         holed = depth.copy()
         holed[footprint_rim(mask, depth, _F, 0.5).mask] = 0.0  # a 1 px rim keeps its depth, nothing inside it does
-        _c, telemetry, cloud = _compute(_calculator(support_footprint_rim_mm=2.0), mask, holed, camera_to_base)
+        with _no_hull():
+            _c, telemetry, cloud = _compute(_calculator(support_footprint_rim_mm=2.0), mask, holed, camera_to_base)
         _c, _t, whole = _compute(_calculator(), mask, holed, camera_to_base)
         self.assertEqual(0, telemetry["support_footprint_rim_px"])
         np.testing.assert_array_equal(whole, cloud)
@@ -317,7 +331,10 @@ class AFusedCloudComesWithItsRimCutTests(unittest.TestCase):
         with self.assertLogs(calculator.logger, level=logging.INFO) as said:
             _c, telemetry, cloud = _compute(calculator, mask, depth, camera_to_base, geometry_points_base_mm=whole,
                                             footprint_points_base_mm=foot)
-        np.testing.assert_array_equal(foot, cloud)
+        np.testing.assert_array_equal(foot, cloud[:foot.shape[0]])
+        self.assertEqual(cloud.shape[0] - foot.shape[0], telemetry["support_footprint_hull_points"],
+                         "this look's unread pixels placed in the part's visual hull beside the footprint")
+        self.assertGreater(telemetry["support_footprint_hull_points"], 0)
         self.assertEqual(whole.shape[0] - foot.shape[0], telemetry["support_footprint_rim_points"])
         self.assertNotIn("support_footprint_rim_px", telemetry, "the looks' rims were cut where they were seen")
         self.assertTrue(any("reads the looks' surfaces less their rim" in line for line in said.output), said.output)
@@ -348,12 +365,13 @@ class AFusedCloudComesWithItsRimCutTests(unittest.TestCase):
 
 
 class TheKeyTests(unittest.TestCase):
-    def test_none_is_the_default_of_the_schema_and_of_the_repositorys_tree(self) -> None:
+    def test_two_millimetres_is_the_default_of_the_schema_and_of_the_repositorys_tree(self) -> None:
+        """On since the owner's evening of 2026-10-09, the visual hull giving the faces back: inflate_mm stays 0."""
         from src.config.loader import load_robot_section
         from src.config.schema.robot.grasping_schema import GraspingGeometryStageConfig
 
-        self.assertEqual(0.0, GraspingGeometryStageConfig().footprint_rim_mm)
-        self.assertEqual(0.0, load_robot_section().grasping.geometry.footprint_rim_mm)
+        self.assertEqual(2.0, GraspingGeometryStageConfig().footprint_rim_mm)
+        self.assertEqual(2.0, load_robot_section().grasping.geometry.footprint_rim_mm)
         self.assertEqual(0.0, load_robot_section().grasping.geometry.inflate_mm, "inflate_mm's default stays")
 
     def test_a_negative_rim_or_one_past_ten_millimetres_is_refused(self) -> None:
@@ -373,13 +391,14 @@ class TheKeyTests(unittest.TestCase):
         def tree(**geometry: Any) -> Any:
             return SimpleNamespace(grasping=SimpleNamespace(geometry=GraspingGeometryStageConfig(**geometry)))
 
-        self.assertEqual({}, _depth_kwargs(tree(), {}))
-        self.assertEqual({"support_footprint_rim_mm": 2.0}, _depth_kwargs(tree(footprint_rim_mm=2.0), {}))
+        self.assertEqual({"support_footprint_rim_mm": 2.0}, _depth_kwargs(tree(), {}), "the default reaches it")
+        self.assertEqual({}, _depth_kwargs(tree(footprint_rim_mm=0.0), {}))
+        self.assertEqual({"support_footprint_rim_mm": 3.0}, _depth_kwargs(tree(footprint_rim_mm=3.0), {}))
         self.assertEqual({}, _depth_kwargs(tree(footprint_rim_mm=2.0), {"support_footprint_rim_mm": 0.0}),
                          "a construction site's own value wins")
-        cfg = _replace(_hande(), "grasping.geometry.footprint_rim_mm", 2.0)
-        self.assertEqual(2.0, build_calculator(cfg, camera_matrix=_K).support_footprint_rim_mm)
-        self.assertEqual(0.0, build_calculator(_hande(), camera_matrix=_K).support_footprint_rim_mm)
+        cfg = _replace(_hande(), "grasping.geometry.footprint_rim_mm", 0.0)
+        self.assertEqual(0.0, build_calculator(cfg, camera_matrix=_K).support_footprint_rim_mm)
+        self.assertEqual(2.0, build_calculator(_hande(), camera_matrix=_K).support_footprint_rim_mm)
 
     def test_a_deep_cell_says_it_ignores_the_rim_and_does_not_refuse_over_it(self) -> None:
         from src.robot.grasping.calculator_factory import _IGNORED_BY_DEEP
@@ -396,9 +415,9 @@ class TheKeyTests(unittest.TestCase):
 
         text = (Path(__file__).resolve().parents[1] / "config" / "all_keys" / "robot" / "robot.yaml").read_text(
             encoding="utf-8")
-        before, _, after = text.partition("      footprint_rim_mm: 0.0\n")
+        before, _, after = text.partition("      footprint_rim_mm: 2.0\n")
         self.assertTrue(after, "robot.grasping.geometry.footprint_rim_mm is not in config/all_keys/robot/robot.yaml")
-        self.assertIn("# [default: 0.0]", before.splitlines()[-1])
+        self.assertIn("# [default: 2.0]", before.splitlines()[-1])
 
 
 if __name__ == "__main__":  # pragma: no cover

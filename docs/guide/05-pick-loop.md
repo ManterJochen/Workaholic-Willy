@@ -124,18 +124,41 @@ by cause and by what it met (`seen_fingers`, `seen_corridor`, `declared_fingers`
 recorded looks of a folding rule in a pile (2026-10-02) the calculator had offered three grasps each, every
 one with an open finger in a neighbour; with the rule on it offers none and says `all_collided`.
 
-**The part's rim, for its footprint** (`grasping.geometry.footprint_rim_mm`, 0.0 as shipped; the owner's "Ja,
-für Montag", 2026-10-09). The D415 smears a part's far edge into a ramp of depths, the outer ~3 px of the
+**The part's rim, for its footprint** (`grasping.geometry.footprint_rim_mm`, 2.0 as shipped since the owner's
+evening of 2026-10-09). The D415 smears a part's far edge into a ramp of depths, the outer ~3 px of the
 colour mask lie on it, the depth-step rule keeps it, and the support-footprint search's hull follows it: on 23
 grey cubes the owner's cell recorded on 2026-10-07 the centre a grasp closes on lay 2.53 mm off at the median,
 2.5 mm of it away from the camera. Set, every mask loses a rim of that many millimetres at the part
 (`ceil(rim * fx / z)` px at its median depth, never more than 30 % of the mask) for the cloud the search builds
 its footprint from, a look's own and the looks fused alike. The jaw faces, the association of looks, the kept
-scene, the colour check, the planner world's hold-out and the neighbours keep the whole mask. Pair it with
-`geometry.inflate_mm`, which gives the faces back: through the calculator on those cubes, 2.0 with 1.25 left
-the centre 0.77 mm off at the median and the footprint's sides within 0.8 mm. `robot.log` says every compute
-`footprint rim: a 3 px rim (2 mm at ... mm): ...; N point(s) off SFE's input`, and every look of a wrist pick
-says what its rim took.
+scene, the colour check, the planner world's hold-out and the neighbours keep the whole mask. With the rim,
+every mask pixel the search does not read, the rim, the depth steps and the holes the D415 leaves on dark or
+shiny surfaces, is placed in the part's visual hull (`generation/footprint_hull.py`): where its ray meets the
+part's top, or just over its support, wherever that point's vertical projects into the mask, so the footprint
+never grows past what the mask shows and `geometry.inflate_mm` stays 0.0. Through the calculator on those
+cubes the centre lay 0.58 mm off at the median and 1.79 at the 90th percentile (the rim with 1.25 of inflate:
+0.77 and 2.26), and with 35 % of the parts' depth knocked out 0.59 and 1.87. `robot.log` says every compute
+`footprint rim: a 3 px rim (2 mm at ... mm): ...; N point(s) off SFE's input` and `footprint hull: N of M mask
+pixel(s) ... placed`, and every look of a wrist pick says what its rim took.
+
+**Robust grasps first** (on, no key; the owner, 2026-10-09: "Griffe robust ordnen"). Of the grasps the
+support-footprint search keeps, those that still hold with the hand 4 mm off across the table come first: each
+open finger 4 mm clear of the face it closes on, and the closing line, moved 4 mm either way, still on the part
+within the stroke and the friction cone. A real cell's hand stands 3 to 5 mm off the grasp it was sent to.
+On the desk it changed the grasp ranked first nowhere, on 273 simulated object views and the 23 recorded cubes:
+the best grasps already held. It orders the ones after it, which the loop takes where the guard refuses the
+first. `robot.log`'s telemetry says `support_footprint_robust`, the robust grasps kept.
+
+**A round part through its middle, a neighbour where the guard sees it** (on, no key; 2026-10-09). A round
+footprint's closing axes are a fan every 30 degrees in the base frame, and its lines pass through its centroid:
+the smallest rectangle about a round outline turns with the noise on it, and on a 40 mm cylinder it lay 0.64 mm
+off the axis and 15 degrees turned, enough to lose the one grasp between two cubes 16 to 18 mm off. And the
+boxes the search keeps the guard's distance from now hold every point the camera world keeps of the frame,
+thinned in the world's order: thinned after the mask's rim and the depth steps were taken out alone, a cube 15
+mm off a cylinder lost its face's pixels and its box came 2.9 mm short of the guard's, so the search offered
+grasps the guard then refused. Both boxes now start at the same millimetre: the search's own boxes and the
+world's are built apart, the world's cut around the part as the live world cuts them. On the 30 looks the cell
+recorded that day, the grasps the guard would refuse for a neighbour fell from 42 of 243 to 11 of 255.
 
 **Side grasps** (`grasping.side_approaches`, on; the owner, 2026-10-01: equal by geometry). The
 support-footprint search offers every tilt the hand fits at, scored by the room each keeps from what the
@@ -973,7 +996,7 @@ third column is what the cell then runs, the fourth what was checked before.
 | `robot.grasping.first_good_part`, `good_part_score`, `fine_pass_waits` | `true`, `0.75`, `true` | the defaults | tests on stand-in calculators and a ray-cast bench |
 | `robot.grasping.colour_check` | `on` | `on` | nine home views of the cell, offline |
 | `robot.grasping.colour_check_clipped` | `exclude` | `exclude`, the owner's choice (2026-10-09) | the cell's 31 recorded looks through `judge_colour`, offline; no red part among them |
-| `robot.grasping.geometry.footprint_rim_mm` with `inflate_mm` | `0.0` with `0.0` | `2.0` with `1.25`, if its block on 2026-10-12 passes | 23 of the cell's recorded cubes through the calculator, offline; ray-cast tests |
+| `robot.grasping.geometry.footprint_rim_mm` with `inflate_mm` | `2.0` with `0.0`, the visual hull beside the rim | the defaults (the owner, 2026-10-09 evening) | 23 of the cell's recorded cubes through the calculator, offline, with and without knocked-out depth; ray-cast tests |
 | `robot.grasping.weak_look_trigger` | `false` | `true`, after a bench run (the owner, 2026-10-08) | tests on the loop's doubles |
 | `robot.grasping.hide_own_places` | `false` | `false` as delivered; not yet chosen | tests on ray-cast wrist views |
 | `robot.grasping.workers` | `0` | `auto` | the same answer to the bit on a pool of workers, at the desk and in WSL |
@@ -1152,7 +1175,10 @@ refused ahead.
 nehmen, was im Weg liegt"). Where the push below may run (the same gate: `nudge_target` allowed in
 `dense_clutter`), a part has a neighbour taken away: a separate object among what the calculator saw
 beside it, on what the part stands on (where no look saw its foot, the support seen round it says so: a
-look from almost straight above leaves a block's sides out), narrower than the hand opens, whose removal
+look from almost straight above leaves a block's sides out; inside a pile on a mat, where the camera reads no mat
+under it and the bench reads instead, a foot within 15 mm over what the part stands on stands on that, and the
+blocker's grasps are planned on it: 40 of the 420 neighbours on the 30 looks the cell recorded on 2026-10-07 were
+no blocker before), narrower than the hand opens, whose removal
 the calculator, asked again with its pixels left out, says frees a grasp of the part or spares one of its
 refusals. Where no one removal frees a grasp, the calculator is asked once with every candidate left out,
 and where that frees one, the nearest goes first. Its grasps are tried best first, each judged from the

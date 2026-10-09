@@ -56,7 +56,10 @@ class TheSideGraspWinsWhereItKeepsMoreRoomTests(unittest.TestCase):
     def test_beside_a_wall_rank_zero_leans_away_and_a_vertical_stays_listed(self) -> None:
         """⭐ Red before: there was no side-approach switch, and the vertical grasp was rank 0 (the prototype's
         "shipped" row). Now rank 0 is tilted, its hand leaning away from the wall: 30 degrees until 2026-10-05, 75 since
-        the score pays for how a grasp sits on the part and the side grasp at the part's middle sits best."""
+        the score pays for how a grasp sits on the part and the side grasp at the part's middle sits best, 30 again since
+        the round footprint's fan stands in the base frame (2026-10-09): it closes exactly along the wall, 30, 45 and 60
+        degrees tie and the most upright wins the tie. The vertical grasp stays listed by rule since then
+        (``support_footprint._with_a_vertical``): by its score alone it ranked 13th, 0.009 behind."""
         found = _side(12.0)
         self.assertTrue(found)
         self.assertGreaterEqual(tilt_deg(found[0]), 15.0, [round(tilt_deg(c)) for c in found])
@@ -135,8 +138,9 @@ def stage_runs(**switches: Any) -> dict[str, tuple[list[Any], dict]]:
 
 def _telemetry(points: int, z: float | None = None, anchor: float | None = None,
                clearance: float | None = None, candidates: int = 12) -> dict[str, Any]:
+    # Every grasp these blocks are offered holds with the hand 4 mm off it (``support_footprint_robust``, 2026-10-09).
     out: dict[str, Any] = {"support_footprint_candidates": candidates, "support_footprint_kept": candidates,
-                           "support_footprint_points": points}
+                           "support_footprint_points": points, "support_footprint_robust": candidates}
     if z is not None:
         out["support_footprint_cloud_z_min_mm"] = z
         out["support_footprint_cloud_z_max_mm"] = z
@@ -165,11 +169,14 @@ HEAD_STAGE: dict[str, tuple[str, dict[str, Any]]] = {
     "top90_palm1": ("12:cc91268c92fbdfe1", _telemetry(256, 90.0, 45.0, 16.28)),
     "top120_palm0": ("12:3cdd339ced7199d3", _telemetry(256, 120.0, 60.0, 31.28)),
     "top120_palm1": ("12:a75f54b2db9e4587", _telemetry(256, 120.0, 60.0, 31.28)),
-    # Since the Hand-E's fingers come to 1 mm of the support (2026-10-06).
-    "hande_cylinder_wall_12": ("12:e439d56f5338f9c1", {
+    # Since the Hand-E's fingers come to 1 mm of the support (2026-10-06), and since a round footprint's fan stands in
+    # the base frame and its lines pass through its centroid (2026-10-09; the golden cylinders of
+    # ``test_sfe_says_why_it_refused``).
+    "hande_cylinder_wall_12": ("12:c902b4a244b50b1e", {
         "support_footprint_candidates": 12, "support_footprint_kept": 12, "support_footprint_points": 5593,
         "support_footprint_cloud_z_min_mm": 1.0, "support_footprint_cloud_z_max_mm": 60.0,
-        "support_footprint_top_anchor_z_mm": 30.0, "support_footprint_best_clearance_mm": 45.55}),
+        "support_footprint_top_anchor_z_mm": 30.0, "support_footprint_best_clearance_mm": 45.55,
+        "support_footprint_robust": 12}),
 }
 
 
@@ -201,8 +208,9 @@ class TheLibraryCallerIsUnchangedTests(unittest.TestCase):
         self.assertTrue(breakdowns)
         self.assertIs(True, telemetry["support_footprint_side_approaches"])
         self.assertIs(True, telemetry["support_footprint_corridor_seen"])
-        # 30 degrees until 2026-10-05; 75 since the score pays for how the grasp sits on the part (see above).
-        self.assertAlmostEqual(75.0, telemetry["support_footprint_top_tilt_deg"], places=1)
+        # 30 degrees until 2026-10-05; 75 since the score pays for how the grasp sits on the part; 30 again since the
+        # round footprint's fan stands in the base frame (2026-10-09, see above).
+        self.assertAlmostEqual(30.0, telemetry["support_footprint_top_tilt_deg"], places=1)
         _none, without = support_footprint_breakdowns(
             cloud, camera_to_base=_FLIPPED, support_height_mm=0.0, jaw=hande_jaw(), obstacle_points_base_mm=wall,
             max_candidates=12, side_approaches=True)

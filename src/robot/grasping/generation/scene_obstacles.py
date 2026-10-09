@@ -317,8 +317,8 @@ def scene_obstacle_points(
     turn, shift = transform[:3, :3], transform[:3, 3]
     part_depth = float(np.median(depth[under]))
     grow = max(1, int(math.ceil(float(rules.mask_growth_mm) * fx / max(part_depth, 1.0))))
-    around = valid & ~_grown(mask, grow)
-    behind = pixels_behind_depth_steps(around, depth)
+    grown = _grown(mask, grow)
+    behind = pixels_behind_depth_steps(valid & ~grown, depth)
 
     # Where the part is: the median of its own pixels in BASE.
     rows_t, cols_t = np.nonzero(under)
@@ -326,18 +326,22 @@ def scene_obstacle_points(
     part = np.column_stack(((cols_t - cx) * z_t / fx, (rows_t - cy) * z_t / fy, z_t)) @ turn.T + shift
     centre = np.median(part[:, :2], axis=0)
 
+    # Every measured pixel the part's own mask leaves, on the stride's grid in the order read: the frame as the camera
+    # world reads it (``perceived._project_view``). The band the mask was grown by is the part's own rim to the
+    # calculator's own reading, which takes no obstacle from it.
     stride = max(1, int(rules.pixel_stride))
     rows, cols = np.mgrid[0:depth.shape[0]:stride, 0:depth.shape[1]:stride]
-    take = around[rows, cols]
+    take = (valid & ~mask)[rows, cols]
     rows, cols = rows[take], cols[take]
     z = depth[rows, cols]
     camera = np.column_stack(((cols - cx) * z / fx, (rows - cy) * z / fy, z))
     points = camera @ turn.T + shift
     near = np.hypot(points[:, 0] - centre[0], points[:, 1] - centre[1]) < float(rules.reach_mm)
-    points, trimmed, camera = points[near], behind[rows[near], cols[near]], camera[near]
+    rows, cols, camera, points = rows[near], cols[near], camera[near], points[near]
+    rim, trimmed = grown[rows, cols], behind[rows, cols]
     on_a_part = (np.zeros(points.shape[0], dtype=bool) if part_mask is None or float(rules.part_soft_mm) <= 0.0
-                 else np.asarray(part_mask).astype(bool)[rows[near], cols[near]])
-    counts: dict[str, int] = {"read": int(points.shape[0])}
+                 else np.asarray(part_mask).astype(bool)[rows, cols])
+    counts: dict[str, int] = {"read": int(np.count_nonzero(~rim))}
 
     # The support rule (contract 7): a surface the model holds decides over its own pixels, the bench and the part's
     # support decide elsewhere.
@@ -363,36 +367,73 @@ def scene_obstacle_points(
     declared = np.zeros(points.shape[0], dtype=bool)
     for body in rules.declared:
         declared |= np.asarray(body.distance_mm(points), dtype=np.float64) <= float(rules.declared_band_mm)
-    counts["support"] = int(surface.sum())
-    counts["below"] = int((below & ~surface).sum())
-    counts["declared"] = int((declared & ~surface & ~below).sum())
+    counts["support"] = int((surface & ~rim).sum())
+    counts["below"] = int((below & ~surface & ~rim).sum())
+    counts["declared"] = int((declared & ~surface & ~below & ~rim).sum())
 
-    world_rule = points[~surface & ~below_bench & ~declared]
-    world_rule_part = on_a_part[~surface & ~below_bench & ~declared]
+    world_rule_at = ~rim & ~surface & ~below_bench & ~declared
+    world_rule, world_rule_part = points[world_rule_at], on_a_part[world_rule_at]
+    # What a support's solid holds up to its erasure top leaves the world as that support's, its noise with it.
+    erased = (np.asarray(support_model.erased_by_support(points), dtype=bool).reshape(-1)
+              if support_model is not None and hasattr(support_model, "erased_by_support") and points.shape[0]
+              else np.zeros(points.shape[0], dtype=bool))
     # The boxes of the neighbours: what stands over the support the part stands on and over what its solids erase, the
     # pixels behind a depth step left out as the obstacles leave them (a mixed pixel at the part's own rim is no
-    # neighbour), thinned to one point a voxel
-    # as the world thins what it reads before it builds a box (``perceived._base_points``): the first pixel read in
-    # each cell of the camera's own frame.
-    beside = ~surface & ~below & ~declared & ~trimmed
-    if support_model is not None and hasattr(support_model, "erased_by_support") and points.shape[0]:
-        # What a support's solid holds up to its erasure top leaves the world as that support's, its noise with it.
-        beside &= ~np.asarray(support_model.erased_by_support(points), dtype=bool).reshape(-1)
-    first = _first_in_each_voxel(camera[beside], float(rules.voxel_size_mm))
-    thinned, thinned_part = points[beside][first], on_a_part[beside][first]
-    wanted = ~surface & ~below & ~declared & ~trimmed
+    # neighbour), thinned to one point a voxel as the world thins what it reads before it builds a box
+    # (``perceived._base_points``): the first pixel read in each cell of the camera's own frame.
+    beside = np.nonzero(~rim & ~surface & ~below & ~declared & ~trimmed & ~erased)[0]
+    first = beside[_first_in_each_voxel(camera[beside], float(rules.voxel_size_mm))]
+    # And the boxes the camera world builds of this frame, of every point it keeps, thinned in its order: in each cell
+    # the first pixel no support holds (``perceived._support_stage``), unless it stands within a declared body's band or
+    # within the box the world keeps out for the part (``perceived.target_keep_out_box``). Thinned after the rim and
+    # the depth steps were taken out alone, the side of a cube 15 mm off a cylinder lost the pixels of its face and its
+    # box came 2.9 mm short of the world's (2026-10-09): the calculator offered grasps the guard refuses. The two sets
+    # make their boxes apart, and both are held: clustered together, one look of the cell's (2026-10-07) bulged where
+    # neither held a box and lost the three grasps the guard admits.
+    free = np.nonzero(~surface & ~below & ~erased)[0]
+    kept_by_the_world = free[_first_in_each_voxel(camera[free], float(rules.voxel_size_mm))]
+    kept_by_the_world = kept_by_the_world[~declared[kept_by_the_world]]
+    keep_out = _the_parts_keep_out(part, rules, support_height_mm) if kept_by_the_world.size else None
+    if keep_out is not None:
+        kept_by_the_world = kept_by_the_world[~np.asarray(keep_out.contains(points[kept_by_the_world]), dtype=bool)]
+    cut_around = () if keep_out is None else (keep_out,)
+    thinned, thinned_part = points[first], on_a_part[first]
+    worlds, worlds_part = points[kept_by_the_world], on_a_part[kept_by_the_world]
+    wanted = ~rim & ~surface & ~below & ~declared & ~trimmed
     candidates, candidates_part = points[wanted], on_a_part[wanted]
     keep, groups = _voxel_groups(candidates, float(rules.cluster_voxel_mm), int(rules.min_points))
     kept, kept_part = candidates[keep], candidates_part[keep]
     counts["speck"] = int(candidates.shape[0] - kept.shape[0])
     counts["kept"] = int(kept.shape[0])
     # A named neighbour's points make its own boxes, soft for the fingers; everything else makes the rest, whole.
-    boxes = seen_boxes(thinned[~thinned_part], rules)
-    if bool(thinned_part.any()):
-        boxes = boxes + soft_boxes(seen_boxes(thinned[thinned_part], rules), float(rules.part_soft_mm))
+    boxes = seen_boxes(thinned[~thinned_part], rules) + seen_boxes(worlds[~worlds_part], rules, cut_around=cut_around)
+    if bool(thinned_part.any()) or bool(worlds_part.any()):
+        boxes = boxes + soft_boxes(seen_boxes(thinned[thinned_part], rules)
+                                   + seen_boxes(worlds[worlds_part], rules, cut_around=cut_around),
+                                   float(rules.part_soft_mm))
     return SceneObstacles(points_base_mm=kept, world_rule_base_mm=world_rule, clusters=groups, counts=counts,
                           grown_px=grow, boxes=boxes, part_points=kept_part,
                           world_rule_part=world_rule_part if bool(world_rule_part.any()) else None)
+
+
+def _the_parts_keep_out(part_base_mm: np.ndarray, rules: SceneObstacleRules, support_height_mm: float | None) -> Any:
+    """The box the camera world keeps out for the part whose points are ``part_base_mm``
+    (``perceived.target_keep_out_box`` by ``rules``: over the bench's band, grown by the margin and carried down to the
+    bench; over the part's support where the cell declares no bench); ``None`` where none can be built, and the world
+    then keeps nothing out."""
+    from src.robot.safety.planning.perceived import (  # noqa: PLC0415 (only the calculator's scene path pays for it)
+        WorldBuildLimits,
+        WorldBuildTuning,
+        target_keep_out_box,
+    )
+
+    plane = rules.bench_top_mm if rules.bench_top_mm is not None else support_height_mm
+    limits = WorldBuildLimits(x_mm=(-1.0e6, 1.0e6), y_mm=(-1.0e6, 1.0e6), z_mm=(-1.0e6, 1.0e6),
+                              support_plane_top_mm=None if plane is None else float(plane),
+                              plane_clearance_mm=float(rules.band_mm))
+    tuning = WorldBuildTuning(cluster_voxel_mm=float(rules.cluster_voxel_mm), voxel_size_mm=float(rules.voxel_size_mm),
+                              margin_mm=float(rules.margin_mm), floor_to_plane=bool(rules.floor_to_plane))
+    return target_keep_out_box(part_base_mm, name="part", limits=limits, tuning=tuning)
 
 
 def _first_in_each_voxel(camera_mm: np.ndarray, voxel_mm: float) -> np.ndarray:
@@ -409,17 +450,21 @@ def _first_in_each_voxel(camera_mm: np.ndarray, voxel_mm: float) -> np.ndarray:
     return np.sort(first)
 
 
-def seen_boxes(points_base_mm: np.ndarray, rules: SceneObstacleRules) -> tuple[Any, ...]:
+def seen_boxes(points_base_mm: np.ndarray, rules: SceneObstacleRules, *,
+               cut_around: Sequence[Any] = ()) -> tuple[Any, ...]:
     """The boxes the camera world builds of the neighbours' points by ``rules`` (``perceived.seen_part_boxes``): each
-    cluster of at least ``min_points`` points a height map of columns, grown by ``margin_mm``, carried down to the bench
-    where the world carries its boxes down. The calculator keeps the guard's distance from them, so it offers no grasp
-    the guard refuses beside a neighbour once the arm has moved (the owner, 2026-10-03)."""
+    cluster of at least ``min_points`` points, cut around ``cut_around`` as the world cuts around the part it holds out,
+    a height map of columns, grown by ``margin_mm``, carried down to the bench where the world carries its boxes down.
+    The calculator keeps the guard's distance from them, so it offers no grasp the guard refuses beside a neighbour once
+    the arm has moved (the owner, 2026-10-03)."""
     from src.robot.safety.planning.perceived import seen_part_boxes  # noqa: PLC0415
 
     floor = rules.bench_top_mm if rules.floor_to_plane else None
     return seen_part_boxes(points_base_mm, margin_mm=float(rules.margin_mm),
                            cluster_voxel_mm=float(rules.cluster_voxel_mm), voxel_size_mm=float(rules.voxel_size_mm),
-                           floor_mm=None if floor is None else float(floor), min_points=int(rules.min_points))
+                           floor_mm=None if floor is None else float(floor), min_points=int(rules.min_points),
+                           cut_around=tuple(cut_around))
+
 
 
 def soft_boxes(boxes: Sequence[Any], soft_mm: float) -> tuple[Any, ...]:

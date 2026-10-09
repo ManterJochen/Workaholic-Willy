@@ -176,9 +176,11 @@ HEAD_DIGESTS: dict[str, str] = {
     "top_face_h90_palm1": "12:f669685fb103d46b",
     "top_face_h120_palm0": "12:2cb5c4c140704070",
     "top_face_h120_palm1": "12:911f06b8144ff459",
-    # The Hand-E's two cylinders since its fingers come to 1 mm of the support (2026-10-06), 3 mm before.
-    "hande_cylinder_wall_12": "12:5aac8dfe7f2d777e",
-    "hande_cylinder_free": "12:3e546b7d75085ab7",
+    # The Hand-E's two cylinders since its fingers come to 1 mm of the support (2026-10-06), 3 mm before; and since a
+    # round footprint's fan stands in the base frame and its lines pass through its centroid (2026-10-09): the same
+    # twelve grasps a side, their lines 0.00 mm off the cylinder's axis (0.02 to 0.04 before), scores within 0.02.
+    "hande_cylinder_wall_12": "12:76916993ef66a89e",
+    "hande_cylinder_free": "12:0f053b1d0f553055",
     "hande_bar_boxed_in_seen": "0:e3b0c44298fc1c14",
     "hande_thin_bar_fragment": "6:63a94c5ac609b13d",
     "hande_cube_declared_wall": "12:2bce7bcef31b0bc3",

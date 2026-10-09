@@ -985,6 +985,21 @@ class _Tried:
     stands_at: str = ""
 
 
+def _plane_at_least(plane: Any, height_mm: "float | None", at_xy_mm: Any) -> Any:
+    """``plane``, or the plane with its normal through ``at_xy_mm`` at ``height_mm`` where that stands higher there: a
+    grasp planned on it never reaches below what its part stands on. ``plane`` itself where no height is given."""
+    if height_mm is None or plane is None:
+        return plane
+    from src.robot.grasping.collision import SupportPlane  # noqa: PLC0415
+
+    normal = np.asarray(plane.normal, dtype=np.float64).reshape(3)
+    point = np.array([float(at_xy_mm[0]), float(at_xy_mm[1]), float(height_mm)])
+    offset = float(normal @ point)
+    if offset <= float(plane.offset_mm):
+        return plane
+    return SupportPlane(normal=normal, offset_mm=offset, frame=plane.frame)
+
+
 @dataclass(frozen=True, slots=True, eq=False)
 class _Blocker:
     """A neighbour as the calculator is asked about it: its mask in the frame the part was judged on, its label."""
@@ -4654,7 +4669,7 @@ class BinPickingOrchestrator:
                    for x, y in self._blockers_refused):
                 said.append(f"({centre[0]:.0f}, {centre[1]:.0f}): a blocker whose grasp this pick saw refused")
                 continue
-            support = self._support_under_points(cluster.points_base_mm, model, judged)
+            support = self._support_under_a_blocker(cluster, model, judged)
             # A foot no look saw (its sides at a grazing angle from straight above) stands on the support where the
             # support is seen round it (the owner, 2026-10-03), as the push's foot does.
             seen_round = False
@@ -4716,7 +4731,7 @@ class BinPickingOrchestrator:
             usable: list[tuple[GraspPoint, "Pose | None", str, tuple[float, float]]] = []
             no_place = False
             long_reach: list[float] = []
-            for grasped in self._blocker_grasps(call, judged, cluster, mask, limit=tries):
+            for grasped in self._blocker_grasps(call, judged, cluster, mask, limit=tries, stands_on_mm=support):
                 # Between the close and the release only the planner holds what the hand carries, and it models a part
                 # this far past the fingertips (the console's rule for every part it carries): a blocker reaching
                 # further is not taken (the lead's review, 2026-10-02). An arm that models none carries it as it carries
@@ -4784,17 +4799,21 @@ class BinPickingOrchestrator:
         return self._closing_along(result, call.camera_id, cap)
 
     def _blocker_grasps(self, call: _Call, judged: _Judgement, cluster: Any, mask: np.ndarray, *,
-                        limit: int) -> "tuple[GraspPoint, ...]":
+                        limit: int, stands_on_mm: float | None = None) -> "tuple[GraspPoint, ...]":
         """The blocker's grasps, BASE, best first, ``limit`` at most, or none where the calculator finds none: the same
         frame and calculator as the part's, the blocker's mask for the part, the part and every other object as its
-        neighbours, the support resolved under the blocker, and the part's own fused cloud left out."""
+        neighbours, the support resolved under the blocker, and the part's own fused cloud left out.
+
+        ``stands_on_mm`` is what the blocker was found to stand on (:meth:`_support_under_a_blocker`): the plane its
+        grasps are planned on is never lower, so a blocker inside a pile on a mat, where the camera reads no mat under
+        it, is never grasped as if it stood on the bench under the mat."""
         seg = _Blocker(mask=mask)
         arguments = dict(call.kwargs)
         arguments.pop("geometry_points_base_mm", None)
         arguments.pop("footprint_points_base_mm", None)
         support = self._resolve_support(seg, judged.frame, judged.camera_to_base, None, judged.support_model)
         if support is not None and "support_plane" in arguments:
-            arguments["support_plane"] = support.plane
+            arguments["support_plane"] = _plane_at_least(support.plane, stands_on_mm, cluster.centre_mm)
         part_mask = getattr(call.seg, "mask", None)
         neighbours = tuple(m for m in (part_mask, *call.neighbours) if m is not None)
         result = self._ask_again(call, seg=seg, drop_near=cluster.points_base_mm, kwargs=arguments,
@@ -4873,6 +4892,25 @@ class BinPickingOrchestrator:
         reach = float(np.max((points - np.asarray(grasp.position, dtype=np.float64).reshape(3)) @ approach))
         ahead = getattr(self.gripper_model, "pad_ahead_mm", 0.0)
         return reach - (float(ahead) if isinstance(ahead, (int, float)) else 0.0)
+
+    def _support_under_a_blocker(self, cluster: Any, model: Any, judged: _Judgement) -> float | None:
+        """What a blocker stands on: the support read under its foot (:meth:`_support_under_points`), and where that
+        leaves its foot more than ``blocker.STANDS_ON_THE_SUPPORT_MM`` over it while the foot stands within that over the
+        support the part's grasp was computed on, that support. Inside a pile on a mat the camera sees no mat under the
+        parts, the mat's solids leave a hole there and the bench reads under them: on the 30 looks the owner's cell
+        recorded on 2026-10-07, 40 of the 420 neighbours standing on the mat read 57 to 63 mm over what they stand on,
+        and none of them was taken away (the owner, 2026-10-09: "Blocker mitten im Haufen", built). Its grasps are
+        planned on that support at the least (:meth:`_blocker_grasps`), and it is set down from it."""
+        from src.robot.grasping.recovery.blocker import STANDS_ON_THE_SUPPORT_MM  # noqa: PLC0415
+
+        support = self._support_under_points(cluster.points_base_mm, model, judged)
+        part = judged.support_height_mm
+        if support is None or part is None or float(part) <= float(support):
+            return support
+        low = float(cluster.low_mm)
+        if low - float(support) > STANDS_ON_THE_SUPPORT_MM and 0.0 <= low - float(part) <= STANDS_ON_THE_SUPPORT_MM:
+            return float(part)
+        return support
 
     def _support_under_points(self, points: np.ndarray, model: Any, judged: _Judgement) -> float | None:
         """What the support reads under ``points``: the model's highest local reading under their foot, else the bench

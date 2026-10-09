@@ -567,6 +567,80 @@ class TheBlockerIsNeverThePartOrTheRobotTests(unittest.TestCase):
         self.assertNotIn("blocker", cell.calculator.calls, "a cluster in the air was asked to be gripped")
 
 
+#: A mat 55 mm tall under the part and the post, as on the owner's cell: no support model reads it, the bench reads under
+#: the post, and the part's grasp is planned on what its own cloud reads (``refine_from_target``), the mat.
+MAT_TOP_MM = 55.0
+MAT = Box((-200.0, -800.0, 0.0), (120.0, -560.0, MAT_TOP_MM), "mat")
+
+
+def _on_the_mat(box: Box, *, over_mm: float = 0.0) -> Box:
+    lift = MAT_TOP_MM + over_mm
+    return Box((box.low[0], box.low[1], box.low[2] + lift), (box.high[0], box.high[1], box.high[2] + lift), box.label)
+
+
+def _mat_cell(**wiring: Any) -> "_Cell":
+    cell = _Cell(**wiring)
+    cell.scene.boxes = [_on_the_mat(CUBE), _on_the_mat(POST), MAT]
+    # No support model reads the mat here, as none reads it under the parts inside a pile: the bench reads under the post.
+    cell.world.tuning = replace(TUNING, support_surfaces=False)
+    cell.orchestrator.support_config = GraspingSupportConfig(height_mm=0.0, refine_from_target=True)
+    return cell
+
+
+class ABlockerInsideAPileOnAMatIsTakenAwayTests(unittest.TestCase):
+    """The owner's piles on the mat (the cell, 2026-10-07; built 2026-10-09: "Blocker mitten im Haufen"): inside a pile
+    the camera sees no mat under the parts, and the bench read under a neighbour put its foot 55 mm and more over what it
+    stands on, so it was never taken away. A neighbour whose foot stands within ``STANDS_ON_THE_SUPPORT_MM`` over what
+    the part stands on stands on that, and its grasps are planned on it."""
+
+    def test_a_post_on_the_mat_with_the_bench_under_it_is_set_aside(self) -> None:
+        """Red before: the bench read under the post put its foot 55 mm over what it stands on: no blocker."""
+        cell = _mat_cell(blocker_place=Pose.tool_down(200.0, -400.0, 20.0))
+
+        report = cell.run()
+
+        self.assertEqual("set_aside", report.attempts[0].blocker, [a.action for a in report.attempts])
+        self.assertEqual(["close", "open", "close"], cell.hand.commands)
+
+    def test_its_grasps_are_planned_on_the_mat_never_on_the_bench(self) -> None:
+        cell = _mat_cell(blocker_place=Pose.tool_down(200.0, -400.0, 20.0))
+        planes: list[Any] = []
+        real = cell.calculator.compute_result
+
+        def noting(seg: Any, depth: Any, *args: Any, **kwargs: Any) -> GraspResult:
+            if str(getattr(seg, "label", "")) == "blocker":
+                planes.append(kwargs.get("support_plane"))
+            return real(seg, depth, *args, **kwargs)
+
+        cell.calculator.compute_result = noting  # type: ignore[method-assign]
+        cell.run()
+
+        self.assertTrue(planes)
+        self.assertTrue(all(plane is not None and float(plane.offset_mm) >= MAT_TOP_MM for plane in planes),
+                        [None if plane is None else float(plane.offset_mm) for plane in planes])
+
+    def test_a_post_over_the_mat_that_does_not_stand_on_it_is_still_no_blocker(self) -> None:
+        cell = _mat_cell(blocker_place=Pose.tool_down(200.0, -400.0, 20.0))
+        cell.scene.boxes = [_on_the_mat(CUBE), _on_the_mat(POST, over_mm=30.0), MAT]
+
+        cell.run()
+
+        self.assertNotIn("blocker", cell.calculator.calls, "a post 30 mm over the mat was asked to be gripped")
+
+    def test_the_plane_a_blocker_s_grasps_are_planned_on_is_never_lower_than_what_it_stands_on(self) -> None:
+        from src.geometry import Frame
+        from src.robot.grasping.collision import SupportPlane
+        from src.robot.grasping.loop.pick_loop import _plane_at_least
+
+        bench = SupportPlane(normal=np.array([0.0, 0.0, 1.0]), offset_mm=0.0, frame=Frame.BASE)
+        raised = _plane_at_least(bench, MAT_TOP_MM, (10.0, -700.0))
+        self.assertAlmostEqual(MAT_TOP_MM, float(raised.offset_mm))
+        self.assertIs(Frame.BASE, raised.frame)
+        higher = SupportPlane(normal=np.array([0.0, 0.0, 1.0]), offset_mm=70.0, frame=Frame.BASE)
+        self.assertIs(higher, _plane_at_least(higher, MAT_TOP_MM, (10.0, -700.0)))
+        self.assertIs(bench, _plane_at_least(bench, None, (10.0, -700.0)))
+
+
 def _models_a_carried_part(arm: Any, length_mm: float) -> None:
     """The arm models a carried part ``length_mm`` past the fingertips, as a UR arm with ``planning_world.payload``."""
     arm.payload_declined_reason = lambda: None

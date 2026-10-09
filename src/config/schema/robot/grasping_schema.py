@@ -1673,12 +1673,13 @@ class GraspingGeometryStageConfig(StrictModel):
             "of a curved surface, so the measured footprint is systematically smaller than the "
             "object and every consequence of that is one-sided (an under-estimated span, a finger "
             "that clips a flank on the way in). Non-zero biases the estimate in the safe direction. "
-            "Default 0.0 = the measurement above, which was taken without it. It gives back the faces "
-            "footprint_rim_mm takes: 1.25 with a 2 mm rim is what the owner's cell was measured with."
+            "Default 0.0 = the measurement above, which was taken without it. With footprint_rim_mm the "
+            "faces the rim takes are given back by the part's visual hull (footprint_hull.py), measured "
+            "with 0.0 here; 1.25 with a 2 mm rim and no hull was the measurement before it."
         ),
     )
     footprint_rim_mm: float = Field(
-        default=0.0,
+        default=2.0,
         ge=0.0,
         le=10.0,
         description=(
@@ -1692,9 +1693,13 @@ class GraspingGeometryStageConfig(StrictModel):
             "them. Measured offline (2026-10-09) on 23 grey cubes the owner's cell recorded from 5 look "
             "poses on 2026-10-07: the centre the grasp closes on lay 2.53 mm off at the median, 2.5 mm of it away "
             "from the camera; through the calculator with 2.0 (3 px, 4 nearer than 609 mm) and inflate_mm 1.25 "
-            "giving the faces back, 0.77 mm, and the footprint's sides within 0.8 mm. Pair it with inflate_mm: "
-            "the rim alone leaves the sides 1.8 and 3.0 mm short. Default 0.0 = SFE's input as before; the "
-            "owner, 2026-10-09: 'Ja, für Montag' (2.0 with inflate_mm 1.25, at the cell's test)."
+            "giving the faces back, 0.77 mm, and the footprint's sides within 0.8 mm. With the rim, every mask "
+            "pixel SFE does not read (the rim, the depth steps, the holes) is placed in the part's visual hull "
+            "(src/robot/grasping/generation/footprint_hull.py), inflate_mm 0.0: on the same cubes 0.58 mm at the "
+            "median and 1.79 at the 90th percentile (the rim with inflate_mm 1.25: 0.77 and 2.26), and with 35 % of "
+            "the part's depth knocked out in blobs 0.59 and 1.87 mm (the rim with inflate_mm 1.25: 0.87 and 2.28). "
+            "Default 2.0, rim and hull (the owner, 2026-10-09 evening: on, without a switch of its own); "
+            "0.0 = SFE's input as before, no rim and no hull."
         ),
     )
     grasp_depth_reference: Literal["centre", "top"] = Field(

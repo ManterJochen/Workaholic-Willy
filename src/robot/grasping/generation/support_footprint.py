@@ -64,6 +64,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Final
 
+import dataclasses
 from dataclasses import dataclass
 
 import numpy as np
@@ -79,6 +80,7 @@ __all__ = [
     "FINE",
     "FINE_SEARCH_DEFERRED",
     "REFUSAL_CAUSES",
+    "ROBUST_ERROR_MM",
     "ROLLED",
     "SIDE_APPROACH_SCORE_WEIGHTS",
     "CorridorSeen",
@@ -96,6 +98,7 @@ __all__ = [
     "plan_support_footprint",
     "rank_found",
     "reconstruct_support_prism",
+    "robust_to",
     "run_units",
 ]
 
@@ -150,6 +153,9 @@ _FINE_RADIAL: Final[int] = 12
 _FINE_ROLL_DEG: Final[tuple[float, ...]] = (10.0, -10.0, 20.0, -20.0)
 #: Where along the perpendicular extent to place the closing line: the middle and both thirds.
 _FRACS = (0.0, -0.35, 0.35)
+#: A footprint whose area fills less of its rectangle than this is round: its closing axes are a fan, and its lines are
+#: placed from its centroid (``SupportPrism.middle``). A disc fills pi/4, 0.785; a square 1.
+_ROUND_BELOW: Final[float] = 0.88
 #: How far inside the part's faces a closing line's span is read where every build on the line is refused for the
 #: aperture at once (:func:`_wider_than_the_hand_closes`), millimetres: a rounding in the two ways the span is measured
 #: never decides a verdict.
@@ -315,6 +321,10 @@ class HandFloor:
 SIDE_APPROACH_SCORE_WEIGHTS: Final[tuple[float, float, float, float, float]] = (0.35, 0.20, 0.35, 0.0, 0.10)
 #: The room that scores the full clearance term, millimetres: the table term's 20 mm, the guard's 5 mm four times over.
 _CLEARANCE_FULL_MM: Final[float] = 20.0
+#: How far across the table the hand may stand off a grasp it is sent to, millimetres, for the grasp to count as robust
+#: (:func:`robust_to`) and be ranked first. The owner, 2026-10-09: 3 to 5 mm is what a real cell gets; the two looks of
+#: the one recorded pick seen from two poses (2026-10-07) lay 5.4 mm apart at the median, about 3.8 mm each.
+ROBUST_ERROR_MM: Final[float] = 4.0
 #: A candidate tilted this far off vertical or more is offered, with side approaches, only through space a depth ray saw.
 _SEEN_FROM_TILT_DEG: Final[float] = 15.0
 #: Scores this near the best of a run are equal by geometry, and the run is ranked vertical first. A face's normal read
@@ -473,6 +483,9 @@ class SupportFootprintCandidate:
     contact_angle_rad: float
     #: Lowest point of the closed gripper above the support, millimetres.
     clearance_mm: float
+    #: Whether the grasp still holds with the hand :data:`ROBUST_ERROR_MM` off it across the table (:func:`robust_to`):
+    #: set where the search ranks it (:func:`rank_found`), which puts these first; ``False`` until then.
+    robust: bool = False
 
     def pose(self) -> Pose:
         """Where the tool goes for this grasp: the BASE pose ``Robot.pick`` takes, with
@@ -541,6 +554,17 @@ def _min_area_rect(hull: np.ndarray) -> tuple:
     return (e, f, w, h, centre) if w <= h else (f, e, h, w, centre)
 
 
+def _poly_centroid(hull: np.ndarray) -> np.ndarray:
+    """The area centroid of the convex polygon ``hull`` (``(N, 2)``, in order); its vertices' mean where it has no area."""
+    x, y = hull[:, 0], hull[:, 1]
+    xn, yn = np.roll(x, -1), np.roll(y, -1)
+    cross = x * yn - xn * y
+    area = float(cross.sum()) / 2.0
+    if abs(area) < 1e-9:
+        return hull.mean(axis=0)
+    return np.array([float(((x + xn) * cross).sum()), float(((y + yn) * cross).sum())]) / (6.0 * area)
+
+
 def _poly_area(hull: np.ndarray) -> float:
     x, y = hull[:, 0], hull[:, 1]
     return float(abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))) / 2.0)
@@ -572,7 +596,7 @@ class SupportPrism:
     """
 
     __slots__ = ("hull", "normals", "offsets", "z0", "z1", "centre", "u", "v",
-                 "ext_u", "ext_v", "roundness", "inflate", "trimmed")
+                 "ext_u", "ext_v", "roundness", "inflate", "trimmed", "middle")
 
     def __init__(self, hull2d: np.ndarray, z0: float, z1: float) -> None:
         self.hull = hull2d
@@ -600,6 +624,11 @@ class SupportPrism:
         self.inflate = 0.0
         self.u, self.v, self.ext_u, self.ext_v, self.centre = _min_area_rect(hull2d)
         self.roundness = _poly_area(hull2d) / max(self.ext_u * self.ext_v, 1e-9)
+        #: Where a closing line across the part is placed from: the rectangle's centre, and for a round footprint the
+        #: footprint's own centroid. A round footprint's rectangle turns with the noise on its outline, and its centre
+        #: with it: a 40 mm cylinder's lay 0.64 mm off the cylinder's axis, and the grasp closing through it came 0.64 mm
+        #: nearer a cube 16 mm off, past the room the guard keeps (2026-10-09).
+        self.middle = _poly_centroid(hull2d) if self.roundness < _ROUND_BELOW else self.centre
 
     def line_span(self, origin: np.ndarray, direction: np.ndarray,
                   margin_mm: float = 0.0) -> tuple[float, float] | None:
@@ -783,11 +812,14 @@ def closing_axes(prism: SupportPrism, *, radial: int = 6,
             for turned in (np.radians(offset), -np.radians(offset)):
                 d = np.cos(turned) * base + np.sin(turned) * across
                 axes.append(np.array([d[0], d[1], 0.0]))
-    if prism.roundness < 0.88:
+    if prism.roundness < _ROUND_BELOW:
+        # The fan stands in the base frame, the table's x and y among it. A round footprint's rectangle has no direction
+        # of its own: its axes turn with the noise on the outline, and a fan turned with them lost the one closing
+        # direction that fits between two neighbours (a 40 mm cylinder with cubes 18 mm off on both sides, its outline
+        # read in its visual hull, 2026-10-09: the fan turned 15 degrees and offered no grasp closing toward them).
         for k in range(radial):
             angle = np.pi * k / radial
-            d = np.cos(angle) * prism.u + np.sin(angle) * prism.v
-            axes.append(np.array([d[0], d[1], 0.0]))
+            axes.append(np.array([np.cos(angle), np.sin(angle), 0.0]))
     return axes
 
 
@@ -1991,7 +2023,7 @@ class SfePlan:
         axis = np.array([a2[0], a2[1], 0.0])
         perp = np.array([-a2[1], a2[0]])
         ext_perp = float((prism.hull @ perp).max() - (prism.hull @ perp).min())
-        base_xy = prism.centre + _FRACS[frac_index] * (ext_perp / 2.0) * perp
+        base_xy = prism.middle + _FRACS[frac_index] * (ext_perp / 2.0) * perp
         mid_z = (prism.z0 + prism.z1) / 2.0
         span_xy = prism.line_span(np.array([base_xy[0], base_xy[1], mid_z]), axis)
         if span_xy is None:
@@ -2191,24 +2223,135 @@ def run_units(plan: SfePlan, units: Sequence[SfeUnit],
     return {unit: _run_unit(plan, unit, refusals if counting and unit[0] == COARSE else None) for unit in units}
 
 
+def _holds_at(prism: SupportPrism, anchor: np.ndarray, axis: np.ndarray, approach: np.ndarray,
+              binormal: np.ndarray, jaw: SupportFootprintJaw) -> bool:
+    """Whether a closing line at ``anchor`` passes the checks a build starts with (:func:`_build`): the pads meet the
+    part, the anchor stands between them, the span fits the stroke, and both contacts lie inside the friction cone."""
+    contacts = _pad_contacts(prism, anchor, axis, approach, binormal, jaw)
+    if contacts is None:
+        return False
+    t_enter, t_exit, contact_b, contact_a, _low = contacts
+    span = t_exit - t_enter
+    if not (t_enter - 2.0 <= 0.0 <= t_exit + 2.0):
+        return False
+    if span > jaw.aperture_mm - jaw.width_safety_mm or span < jaw.min_width_mm:
+        return False
+    worst = max(float(np.arccos(np.clip(prism.normal_at(contact_a) @ axis, -1.0, 1.0))),
+                float(np.arccos(np.clip(prism.normal_at(contact_b) @ -axis, -1.0, 1.0))))
+    return worst <= jaw.cone_rad
+
+
+def robust_to(prism: SupportPrism, jaw: SupportFootprintJaw, candidate: SupportFootprintCandidate,
+              error_mm: float = ROBUST_ERROR_MM) -> bool:
+    """Whether ``candidate`` still holds with the hand ``error_mm`` off it across the table.
+
+    Two ways a hand that stands off its grasp loses it. Along the closing axis an open finger comes down on the part:
+    each must stand ``error_mm`` clear of the part's face it closes on, half the stroke beyond the contact. Across the
+    closing axis the line slides along the faces: moved ``error_mm`` either way, level, it must still meet the part
+    within the stroke and the friction cone (:func:`_holds_at`). The neighbours are not asked again: the guard keeps
+    its distance from them at the grasp, and the build kept the open hand off them.
+
+    Args:
+        prism (SupportPrism): The part's prism, as the search built its grasps on it.
+        jaw (SupportFootprintJaw): The hand the search planned for.
+        candidate (SupportFootprintCandidate): The grasp, BASE millimetres.
+        error_mm (float): How far off across the table the hand may stand, millimetres; default
+            :data:`ROBUST_ERROR_MM`.
+
+    Returns:
+        bool: ``True`` where both hold, ``False`` where either does not or the grasp meets the part nowhere.
+    """
+    anchor = np.asarray(candidate.position_mm, dtype=np.float64)
+    axis = np.asarray(candidate.closing_axis, dtype=np.float64)
+    approach = np.asarray(candidate.approach, dtype=np.float64)
+    binormal = _cross3(approach, axis)
+    binormal /= max(float(np.linalg.norm(binormal)), _EPS)
+    contacts = _pad_contacts(prism, anchor, axis, approach, binormal, jaw)
+    if contacts is None:
+        return False
+    t_enter, t_exit = contacts[0], contacts[1]
+    if jaw.aperture_mm / 2.0 - max(-t_enter, t_exit) < error_mm:
+        return False
+    across = np.array([-axis[1], axis[0], 0.0])
+    length = float(np.linalg.norm(across))
+    if length < _EPS:
+        return False
+    across /= length
+    return all(_holds_at(prism, anchor + side * error_mm * across, axis, approach, binormal, jaw)
+               for side in (1.0, -1.0))
+
+
 def rank_found(plan: SfePlan, found: Sequence[SupportFootprintCandidate]) -> list[SupportFootprintCandidate]:
     """The search's end: ``found`` ranked, by score or with side approaches each run within :data:`_TIE_SCORE` of its
-    best vertical first (:func:`_upright_first`), a grasp near one kept before it left out, ``max_candidates`` at most.
+    best vertical first (:func:`_upright_first`), then the robust grasps first (:func:`robust_to`), each in that order,
+    a grasp near one kept before it left out, ``max_candidates`` at most; each kept says whether it is robust
+    (:attr:`SupportFootprintCandidate.robust`).
+
+    Robust first, the owner's "Griffe robust ordnen" (2026-10-09): at a real cell the hand stands 3 to 5 mm off the
+    grasp it was sent to, and among the grasps SFE finds valid the order barely mattered without that error (+0.29
+    points on the reference, ``_SCORE_WEIGHTS``). MEASURED on the desk the same day: on the held-out Isaac shard (273
+    object views with a grasp ranked first, a gripper opening 150 mm) and on the 23 cubes the owner's cell recorded
+    (the Hand-E's 49.99 mm), it changed the grasp ranked first in none; it reorders the grasps after it, which the pick
+    loop takes where the guard refuses the first. 1.7 ms a search on a cube.
     """
     ranked = sorted(found, key=lambda c: -c.score) if not plan.inputs.side_approaches else _upright_first(list(found))
+    most = plan.inputs.max_candidates
     kept: list[SupportFootprintCandidate] = []
+    fragile: list[SupportFootprintCandidate] = []
+    # Each grasp is asked as it comes, and none once the robust ones fill the list: the same list as asking every grasp
+    # first, and where a part's best grasps all hold (a cube's, nearly always) a dozen are asked instead of hundreds.
     for candidate in ranked:
-        duplicate = any(
-            float(np.linalg.norm(candidate.position_mm - k.position_mm)) < 4.0
-            and abs(float(candidate.closing_axis @ k.closing_axis)) > 0.995
-            and float(candidate.approach @ k.approach) > 0.995
-            for k in kept
-        )
-        if not duplicate:
-            kept.append(candidate)
-        if len(kept) >= plan.inputs.max_candidates:
+        if len(kept) >= most:
             break
+        if robust_to(plan.prism, plan.jaw, candidate):
+            candidate = dataclasses.replace(candidate, robust=True)
+            if not _near_one_of(candidate, kept):
+                kept.append(candidate)
+        else:
+            fragile.append(candidate)
+    for candidate in fragile:
+        if len(kept) >= most:
+            break
+        if not _near_one_of(candidate, kept):
+            kept.append(candidate)
+    if plan.inputs.side_approaches:
+        kept = _with_a_vertical(plan, kept, ranked)
     return kept
+
+
+#: A grasp whose approach stands within 1 degree of straight down is vertical (``approach[2]`` is -cos(tilt)).
+_VERTICAL_APPROACH_Z: Final[float] = -float(np.cos(np.radians(1.0)))
+
+
+def _with_a_vertical(plan: SfePlan, kept: list[SupportFootprintCandidate],
+                     ranked: Sequence[SupportFootprintCandidate]) -> list[SupportFootprintCandidate]:
+    """``kept`` with the best vertical grasp of ``ranked`` among them: where none made the list, it takes the last place.
+
+    A tilt the arm cannot take is often refused with every other tilt of its line (the wrist, its camera, the reach),
+    and the grasp straight down is the one the pick loop then still has to try. The prototype beside a wall (2026-10-01)
+    ranked a grasp tilted away from it first with a vertical one still listed, and the list kept it by its score alone
+    until the fan of a round footprint stood in the base frame (2026-10-09): the cylinder 12 mm off a wall then filled
+    its twelve places with tilts 30 to 75 degrees of the line closing along the wall, and the vertical grasp ranked 13th
+    by 0.009 of score, the noise of the cylinder's sampled facets. Rank 0 never changes.
+    """
+    if not kept or any(float(c.approach[2]) <= _VERTICAL_APPROACH_Z for c in kept):
+        return kept
+    best = next((c for c in ranked if float(c.approach[2]) <= _VERTICAL_APPROACH_Z and not _near_one_of(c, kept)), None)
+    if best is None:
+        return kept
+    best = dataclasses.replace(best, robust=robust_to(plan.prism, plan.jaw, best))
+    most = plan.inputs.max_candidates
+    return (kept[:most - 1] if len(kept) >= most else kept) + [best]
+
+
+def _near_one_of(candidate: SupportFootprintCandidate, kept: Sequence[SupportFootprintCandidate]) -> bool:
+    """Whether ``candidate`` is a grasp near one of ``kept``: within 4 mm, its closing axis and approach the same."""
+    return any(
+        float(np.linalg.norm(candidate.position_mm - k.position_mm)) < 4.0
+        and abs(float(candidate.closing_axis @ k.closing_axis)) > 0.995
+        and float(candidate.approach @ k.approach) > 0.995
+        for k in kept
+    )
 
 
 def _merged(by_unit: Mapping[SfeUnit, Sequence[SupportFootprintCandidate]]) -> list[SupportFootprintCandidate]:

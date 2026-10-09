@@ -169,6 +169,8 @@ def support_footprint_breakdowns(
                 "contact_angle_deg": float(np.degrees(candidate.contact_angle_rad)),
                 "support_clearance_mm": float(candidate.clearance_mm),
                 "grip_width_mm": float(candidate.grip_width_mm),
+                # Whether it holds with the hand ROBUST_ERROR_MM off it across the table; SFE ranks these first.
+                "robust": bool(candidate.robust),
             }},
             metadata={
                 "geometry_stage": "support_footprint",
@@ -193,6 +195,8 @@ def support_footprint_breakdowns(
     if stages.get("fine") == FINE_SEARCH_DEFERRED:
         # The coarse grid's grasps alone: a reader that takes the part asks again in full first.
         telemetry[FINE_SEARCH_KEY] = FINE_SEARCH_DEFERRED
+    # How many of the grasps kept still hold with the hand ROBUST_ERROR_MM off them; they come first.
+    telemetry["support_footprint_robust"] = sum(1 for candidate in candidates if candidate.robust)
     # What the stage was looking at, and what it planned: both in BASE, both millimetres.
     #
     # SFE plans the table clearance and the calculator's collision filter re-checks it against the
