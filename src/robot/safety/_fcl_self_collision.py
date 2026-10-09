@@ -208,6 +208,22 @@ class _EngineAdapter:
         m = self._m
         return float(m.distance(a, b, m.DistanceRequest(), m.DistanceResult()))
 
+    def convex_object(self, vertices: np.ndarray) -> Any:
+        """The convex hull of ``vertices`` as an engine object, or ``None`` where the engine builds none.
+
+        Coal's ``Convex.convexHull``, for the whole-path judge's hull layer (:meth:`MeshSelfCollisionBackend.
+        first_suspect`): the hull holds every triangle of the part, so its distance is never more than the mesh's.
+        python-fcl computes no hull, and there every distance the layer would bound is measured on the meshes.
+        """
+        m = self._m
+        hull_of = getattr(getattr(m, "Convex", None), "convexHull", None) if self.kind == "coal" else None
+        if hull_of is None:
+            return None
+        points = m.StdVec_Vec3s()
+        for v in np.asarray(vertices, dtype=np.float64):
+            points.append(v)
+        return m.CollisionObject(hull_of(points, False, None), m.Transform3s())
+
 
 #: How many fixture tuples' engine objects a backend keeps: the declared fixtures, the boxes a camera saw, and the sets a
 #: judgement asks beside them.
@@ -217,6 +233,29 @@ _PROBE_TUPLES_KEPT = 4
 #: Below a measured distance less how far a part moved since, how far the bound stays from the limit before an exact query
 #: is skipped, millimetres: the engine's own rounding, nothing more.
 _ADVANCE_EPS_MM = 1e-6
+
+#: How far over its limit a distance the whole-path judge measured has to keep before its sample is passed, millimetres
+#: (``MeshSelfCollisionBackend.first_suspect``): the rounding between a path's parts placed at once and one sample's
+#: placed at a time, and the engine's own, nothing more. A sample nearer than this is left to :meth:`evaluate`.
+_SUSPECT_SLACK_MM = 1e-6
+
+#: How far a part's convex hull is taken to lie nearer than it measures, millimetres, before its distance stands for the
+#: part's mesh unmeasured. The hull holds the mesh, so its distance is never more than the mesh's; GJK on two convex
+#: shapes stops within a millionth of the distance it measures (Coal's default relative tolerance), so a hull measured at
+#: the limit plus this proves the mesh keeps the limit for every limit up to the schema's 500 mm.
+_HULL_SLACK_MM = 1e-3
+
+#: How many hull vertices times configurations one step of :meth:`MeshSelfCollisionBackend.lowest_mm_many` multiplies at
+#: once: about 8 MB of heights, whatever the length of the path.
+_LOWEST_CHUNK = 1_000_000
+
+#: How many later samples the whole-path walk bounds at once after a measurement (``_first_flagged``).
+_WALK_WINDOW = 512
+
+#: One over the square root of two, and what the chord of a turn is padded by for rotations held in floats, which are
+#: rotations to about 1e-15 (``_chord``).
+_HALF_SQRT2 = 1.0 / math.sqrt(2.0)
+_CHORD_PAD = 1e-12
 
 
 @dataclass(frozen=True)
@@ -234,6 +273,73 @@ class _Probes:
     measured: np.ndarray
     turns: np.ndarray
     at: np.ndarray
+
+
+@dataclass(frozen=True)
+class _Placements:
+    """Where every part of a backend stands at every sample of a path, in the system base frame and in the order of its
+    parts: the turn ``(N, P, 3, 3)``, the frame's origin ``(N, P, 3)`` and the bounding sphere's centre ``(N, P, 3)``,
+    each the product :meth:`MeshSelfCollisionBackend.evaluate` forms for one sample."""
+
+    turns: np.ndarray
+    origins: np.ndarray
+    centres: np.ndarray
+
+
+def _chord(turn: np.ndarray, turns: np.ndarray) -> np.ndarray:
+    """``|R1 - R0|``, the largest distance the turn from ``turn`` to each of ``turns`` ``(M, 3, 3)`` moves a point a
+    unit from its centre: the chord ``2 sin(angle / 2)`` of the angle between.
+
+    The difference of two rotations has the chord twice among its singular values and 0 once, so the chord is its
+    Frobenius norm over the square root of two; ``_CHORD_PAD`` covers how far rotations in floats are from rotations.
+    Taken from the difference rather than as ``sqrt(3 - trace(R0^T R1))``, which is the same number in exact arithmetic
+    and nothing at all in floats where a part barely turns: below a few 1e-8 rad the trace rounds to 3 and the chord to
+    0, which on the forearm's 382 mm sphere leaves about 1e-5 mm of travel unbounded, ten times ``_ADVANCE_EPS_MM``."""
+    return np.linalg.norm((turns - turn).reshape(len(turns), 9), axis=1) * _HALF_SQRT2 + _CHORD_PAD
+
+
+def _moved_mm(centre: np.ndarray, turn: np.ndarray, centres: np.ndarray, turns: np.ndarray, radius: float) -> np.ndarray:
+    """How far any point of a part can have moved from where it stood, its sphere's centre ``centre`` and its turn
+    ``turn``, to each later placement, ``centres`` ``(M, 3)`` and ``turns`` ``(M, 3, 3)``: the centre's travel plus the
+    sphere's radius times the chord of the turn between (:func:`_chord`), the rule :meth:`MeshSelfCollisionBackend.
+    evaluate` skips a box by. A point ``r`` from the centre moves by the centre's travel plus at most ``r`` times
+    ``|R1 - R0|``."""
+    return np.linalg.norm(centres - centre, axis=1) + float(radius) * _chord(turn, turns)
+
+
+def _first_flagged(
+    near: np.ndarray, until: int, limit: float, measure: Any, moved: Any,
+) -> int:
+    """The first sample before ``until`` at which one pair may come under ``limit``, walking only the samples whose
+    spheres do not clear it (``near``), or ``until`` where there is none.
+
+    The pair is measured at the first of them (``measure(sample)``, a lower bound on its exact distance there), which is
+    flagged where that comes under the limit plus ``_SUSPECT_SLACK_MM``. Otherwise every later sample the distance less
+    how far the pair can have moved since (``moved(sample, later)``) keeps at the limit is passed, and the next one it
+    does not keep is measured. A flagged sample is only ever early: :meth:`MeshSelfCollisionBackend.evaluate` decides it.
+    """
+    open_ = np.flatnonzero(near[:until])
+    if not len(open_):
+        return until
+    sample = int(open_[0])
+    while True:
+        bound = float(measure(sample))
+        if not bound >= limit + _SUSPECT_SLACK_MM:
+            return sample
+        # The later samples a window at a time, so a pair that stays near the limit costs no more than the samples it
+        # walks over, however long the path.
+        start = sample + 1
+        while True:
+            stop = min(until, start + _WALK_WINDOW)
+            later = start + np.flatnonzero(near[start:stop])
+            unproven = (np.flatnonzero(~(bound - moved(sample, later) - _ADVANCE_EPS_MM >= limit)) if len(later)
+                        else later)
+            if len(unproven):
+                break
+            if stop >= until:
+                return until
+            start = stop
+        sample = int(later[unproven[0]])
 
 
 class MeshSelfCollisionBackend:
@@ -278,6 +384,12 @@ class MeshSelfCollisionBackend:
         self._probe_cache: dict[int, tuple[tuple, _Probes]] = {}
         # A robot base's solid, by its radius and top (``base_near_mm``).
         self._bases: dict[tuple[float, float], Any] = {}
+        # For a path judged whole (``first_suspect``): the DH frame of each part and the pairs, as index arrays; each
+        # part's convex hull as an engine object, built the first time a path is judged whole.
+        self._frame_rows = np.asarray([self._frame[name] for name in self._names], dtype=np.int64)
+        self._pair_first = np.asarray([i for i, _ in self._pairs], dtype=np.int64)
+        self._pair_second = np.asarray([j for _, j in self._pairs], dtype=np.int64)
+        self._hulls: "dict[str, Any] | None" = None
 
     def checks(self, part_a: str, part_b: str) -> bool:
         """Whether :meth:`evaluate` judges ``part_a`` against ``part_b``: its pair rule, asked of one pair.
@@ -433,7 +545,10 @@ class MeshSelfCollisionBackend:
             # far any point of it moved since, its sphere's centre plus its radius times the chord of its turn.
             known = ~np.isnan(probes.measured)
             if near.any() and known.any():
-                chord = np.sqrt(np.clip(3.0 - np.einsum("rcij,rij->rc", probes.turns, turns), 0.0, None))
+                # The chord from the difference of the turns, as _chord takes it: the trace form rounds to 0 where a
+                # part barely turns and left up to about 1e-5 mm of travel unbounded (2026-10-09).
+                chord = (np.linalg.norm((probes.turns - turns[:, None]).reshape(*probes.turns.shape[:2], 9), axis=2)
+                         * _HALF_SQRT2 + _CHORD_PAD)
                 moved = (np.linalg.norm(centres[:, None, :] - probes.at, axis=2)
                          + self._radius_row[:, None] * chord)
                 near &= ~(known & (probes.measured - moved - _ADVANCE_EPS_MM >= limits))
@@ -507,6 +622,269 @@ class MeshSelfCollisionBackend:
                 self._probe_cache.pop(next(iter(self._probe_cache)))
             self._probe_cache[id(fixtures)] = (fixtures, probes)
         return probes
+
+    # ------------------------------------------------------------------
+    # A whole path at once (safety.self_collision.whole_path_judge)
+    # ------------------------------------------------------------------
+
+    def first_suspect(
+        self,
+        transforms_dh_mm: np.ndarray,
+        yaw_deg: float,
+        *,
+        declared: tuple,
+        min_distance_mm: float,
+        seen: tuple = (),
+        seen_min_distance_mm: "float | None" = None,
+        until: "int | None" = None,
+    ) -> int:
+        """The first sample of a path :meth:`evaluate` might refuse, never later than the first it does refuse; the
+        path's length, or ``until``, where it refuses none before.
+
+        ``transforms_dh_mm`` is every sample's DH chain at once, ``(N, 7, 4, 4)`` (``ur_link_transforms_mm_many``), and
+        the rest is what the guard hands :meth:`evaluate` at every sample: the arm against itself and the ``declared``
+        fixtures at ``min_distance_mm``, the boxes a camera ``seen`` at ``seen_min_distance_mm``, each part against each
+        box as the probe and the limit :meth:`evaluate` takes for it. It never refuses and never names a pair: the guard
+        judges from the sample it returns on with :meth:`evaluate`, one sample at a time, and says what refused.
+
+        A sample before the one it returns is passed only on a proof that every distance :meth:`evaluate` would measure
+        there keeps its limit: the bounding spheres :meth:`evaluate` culls by, asked of the whole path at once; the
+        parts' convex hulls (a hull holds its mesh, so a hull that keeps the limit plus ``_HULL_SLACK_MM`` proves the
+        mesh does; Coal only); or a distance measured at an earlier sample less how far the pair can have moved since
+        (:func:`_moved_mm`; an arm pair in either part's frame, whichever bounds tighter). Where none proves it, the pair
+        is measured as :meth:`evaluate` measures it, and a distance under the limit plus ``_SUSPECT_SLACK_MM`` flags the
+        sample. ``until`` stops the walk where the caller knows of an earlier sample to start from already.
+        """
+        frames = np.asarray(transforms_dh_mm, dtype=np.float64)
+        total = int(frames.shape[0])
+        first = total if until is None else max(0, min(int(until), total))
+        if first == 0 or not self._names:
+            return first
+        placed = self._placements(frames[:first], yaw_deg)
+        hulls = self._hull_objects()
+        first = self._first_among_pairs(placed, hulls, float(min_distance_mm), first)
+        seen_limit = float(min_distance_mm if seen_min_distance_mm is None else seen_min_distance_mm)
+        for fixtures, limit in ((declared, float(min_distance_mm)), (seen, seen_limit)):
+            if fixtures and first > 0:
+                first = self._first_against(fixtures, placed, hulls, limit, first)
+        return first
+
+    def first_near_base(
+        self, transforms_dh_mm: np.ndarray, yaw_deg: float, *, radius_mm: float, top_mm: float, within_mm: float,
+        from_frame: int = 2,
+    ) -> int:
+        """The first configuration of a path where a part hanging from DH frame ``from_frame`` or past it may come within
+        ``within_mm`` of the robot's base, :meth:`base_near_mm`'s solid cylinder; never later than the first where
+        :meth:`base_near_mm` says one does, and the path's length where none may.
+
+        :meth:`base_near_mm`'s question asked of a whole path at once (the UR driver's mesh first,
+        ``planning.band.ExactPairs.first_near_base``): a part is passed where its sphere keeps more than ``within_mm``
+        from the cylinder, as :meth:`base_near_mm` passes it over, where its hull keeps that much (Coal), or where a
+        distance measured at an earlier configuration less how far the part moved since does; else it is measured, and
+        a distance under ``within_mm`` plus ``_SUSPECT_SLACK_MM`` flags the configuration. :meth:`base_near_mm` asked of
+        that one says which part comes how near.
+        """
+        frames = np.asarray(transforms_dh_mm, dtype=np.float64)
+        total = int(frames.shape[0])
+        if not total or not self._names:
+            return total
+        radius, top, within = float(radius_mm), float(top_mm), float(within_mm)
+        base = self._bases.get((radius, top))
+        if base is None:
+            base = self._bases[(radius, top)] = self._a.cylinder_object(radius, top, np.array([0.0, 0.0, top / 2.0]))
+        placed = self._placements(frames, yaw_deg)
+        hulls = self._hull_objects()
+        centres = placed.centres
+        beside = np.maximum(0.0, np.hypot(centres[..., 0], centres[..., 1]) - radius)
+        above = np.maximum(0.0, np.maximum(centres[..., 2] - top, -centres[..., 2]))
+        near = np.hypot(beside, above) - self._radius_row[None, :] <= within + _SUSPECT_SLACK_MM
+        first = total
+        for row in np.flatnonzero(near.any(axis=0)).tolist():
+            if self._frame[self._names[row]] < from_frame:
+                continue
+
+            def measure(sample: int, row: int = row) -> float:
+                self._place(row, sample, placed, hulls)
+                return max(0.0, self._bound_mm(row, base, base, within, hulls))
+
+            def moved(sample: int, later: np.ndarray, row: int = row) -> np.ndarray:
+                return _moved_mm(centres[sample, row], placed.turns[sample, row], centres[later, row],
+                                 placed.turns[later, row], float(self._radius_row[row]))
+
+            first = _first_flagged(near[:, row], first, within, measure, moved)
+            if first == 0:
+                return 0
+        return first
+
+    def lowest_mm_many(self, transforms_dh_mm: np.ndarray, yaw_deg: float, *, from_frame: int = 2) -> np.ndarray:
+        """:meth:`lowest_mm` of every configuration of a path at once, ``(N,)``: the same hull vertices turned the same
+        way, so each equals what :meth:`lowest_mm` says of that configuration within float rounding (1e-9 mm; the UR
+        driver's mesh first asks :meth:`lowest_mm` of any it would refuse, ``planning.band.ExactPairs.first_low``)."""
+        frames = np.asarray(transforms_dh_mm, dtype=np.float64)
+        rotation = _yaw_matrix(yaw_deg)
+        low = np.full(frames.shape[0], np.inf)
+        for name in self._names:
+            frame = self._frame[name]
+            if frame < from_frame:
+                continue
+            rows = np.matmul(rotation, frames[:, frame, :3, :3])[:, 2]
+            heights = np.matmul(rotation, frames[:, frame, :3, 3:4])[:, 2, 0]
+            hull = self._hull[name]
+            step = max(1, _LOWEST_CHUNK // max(1, len(hull)))
+            for start in range(0, len(rows), step):
+                stop = start + step
+                reached = (hull @ rows[start:stop].T).min(axis=0) + heights[start:stop]
+                low[start:stop] = np.minimum(low[start:stop], reached)
+        return low
+
+    def _placements(self, transforms_dh_mm: np.ndarray, yaw_deg: float) -> _Placements:
+        """Every part at every sample of ``transforms_dh_mm`` ``(N, 7, 4, 4)``: ``R_base(yaw) @ T_dh[frame]``, the
+        product :meth:`evaluate` forms for one sample, and each part's sphere centre."""
+        rotation = _yaw_matrix(yaw_deg)
+        held = np.asarray(transforms_dh_mm, dtype=np.float64)[:, self._frame_rows]
+        turns = np.matmul(rotation, held[..., :3, :3])
+        origins = np.matmul(rotation, held[..., :3, 3:4])[..., 0]
+        centres = np.matmul(turns, self._centre_rows[:, :, None])[..., 0] + origins
+        return _Placements(turns=turns, origins=origins, centres=centres)
+
+    def _hull_objects(self) -> "dict[str, Any]":
+        """Each part's convex hull as an engine object (``_EngineAdapter.convex_object``), built from the hull vertices
+        :meth:`lowest_mm` reads, once, the first time a path is judged whole. None where the engine builds no hull
+        (python-fcl); a part whose hull the engine cannot build has none, and its mesh is measured."""
+        if self._hulls is None:
+            build = getattr(self._a, "convex_object", None)
+            hulls: dict[str, Any] = {}
+            if callable(build):
+                for name in self._names:
+                    try:
+                        hull = build(self._hull[name])
+                    except Exception:  # noqa: BLE001 - a part the engine cannot hull is measured on its mesh
+                        hull = None
+                    if hull is not None:
+                        hulls[name] = hull
+            self._hulls = hulls
+            if hulls:
+                _LOGGER.info("whole-path judge: the convex hulls of %d of %d parts (%s) clear what they can before a "
+                             "mesh is measured", len(hulls), len(self._names), self.engine)
+            else:
+                _LOGGER.info("whole-path judge: the %s engine builds no convex hull, so every distance the spheres and "
+                             "the motion bound leave open is measured on the meshes", self.engine)
+        return self._hulls
+
+    def _place(self, row: int, sample: int, placed: _Placements, hulls: "dict[str, Any]") -> None:
+        """Stand part ``row``'s mesh, and its hull where it has one, where the part stands at ``sample``."""
+        name = self._names[row]
+        turn, origin = placed.turns[sample, row], placed.origins[sample, row]
+        self._a.set_transform(self._models[name], turn, origin)
+        hull = hulls.get(name)
+        if hull is not None:
+            self._a.set_transform(hull, turn, origin)
+
+    def _bound_mm(self, row: int, other: Any, other_hull: Any, limit: float, hulls: "dict[str, Any]") -> float:
+        """A lower bound on the exact distance from part ``row`` to ``other``, both placed.
+
+        Where the part has a hull and ``other_hull`` stands for ``other`` (the other part's hull, or ``other`` itself
+        where it is a box or the base, convex already): the hulls' distance less ``_HULL_SLACK_MM``, if that alone keeps
+        ``limit`` plus ``_SUSPECT_SLACK_MM``. Otherwise the distance :meth:`evaluate` measures, the same query.
+        """
+        name = self._names[row]
+        hull = hulls.get(name)
+        if hull is not None and other_hull is not None:
+            bound = self._a.distance(hull, other_hull) - _HULL_SLACK_MM
+            if bound >= limit + _SUSPECT_SLACK_MM:
+                return bound
+        return self._a.distance(self._models[name], other)
+
+    def _pair_motion(self, placed: _Placements, first: int, second: int) -> Any:
+        """``moved(sample, later)``: how much nearer one another the parts ``first`` and ``second`` can have come since
+        ``sample``, at each of ``later``. In one part's own frame only the other moves, its sphere's centre and its turn
+        there; the smaller of the two ways round bounds it (the turn between is the same both ways)."""
+        turn_first, turn_second = placed.turns[:, first], placed.turns[:, second]
+        turns = np.einsum("nki,nkj->nij", turn_first, turn_second)  # the second's turn in the first's frame
+        second_seen = np.einsum("nki,nk->ni", turn_first, placed.centres[:, second] - placed.origins[:, first])
+        first_seen = np.einsum("nki,nk->ni", turn_second, placed.centres[:, first] - placed.origins[:, second])
+        radius_first, radius_second = float(self._radius_row[first]), float(self._radius_row[second])
+
+        def moved(sample: int, later: np.ndarray) -> np.ndarray:
+            chord = _chord(turns[sample], turns[later])
+            return np.minimum(np.linalg.norm(second_seen[later] - second_seen[sample], axis=1) + radius_second * chord,
+                              np.linalg.norm(first_seen[later] - first_seen[sample], axis=1) + radius_first * chord)
+
+        return moved
+
+    def _first_among_pairs(self, placed: _Placements, hulls: "dict[str, Any]", limit: float, until: int) -> int:
+        """The first sample before ``until`` where two of the arm's own parts may come under ``limit``
+        (:meth:`first_suspect`), else ``until``."""
+        if not self._pairs:
+            return until
+        centres = placed.centres
+        gaps = (np.linalg.norm(centres[:, self._pair_first] - centres[:, self._pair_second], axis=2)
+                - self._radius_row[self._pair_first] - self._radius_row[self._pair_second])
+        near = gaps <= limit + _SUSPECT_SLACK_MM
+        for index in np.flatnonzero(near.any(axis=0)).tolist():
+            if not near[:until, index].any():
+                continue
+            first, second = self._pairs[index]
+            other = self._models[self._names[second]]
+            other_hull = hulls.get(self._names[second])
+
+            def measure(sample: int, first: int = first, second: int = second, other: Any = other,
+                        other_hull: Any = other_hull) -> float:
+                self._place(first, sample, placed, hulls)
+                self._place(second, sample, placed, hulls)
+                return self._bound_mm(first, other, other_hull, limit, hulls)
+
+            until = _first_flagged(near[:, index], until, limit, measure, self._pair_motion(placed, first, second))
+            if until == 0:
+                return 0
+        return until
+
+    def _first_against(
+        self, fixtures: tuple, placed: _Placements, hulls: "dict[str, Any]", limit: float, until: int,
+    ) -> int:
+        """The first sample before ``until`` where a part may come under its limit from one of ``fixtures``
+        (:meth:`first_suspect`), else ``until``: each part against each box with the probe and the limit
+        :meth:`evaluate` takes for it, a finger at no distance from a named part's surface."""
+        probes = self._probes(fixtures)
+        limits = np.where(self._finger_rows[:, None] & probes.soft[None, :], 0.0, float(limit))
+        centres = placed.centres[:until]
+        radius = self._radius_row
+        # Each part's sphere swept over the path, a box about its centres grown by its radius, against each box's sphere:
+        # a box no part's sweep comes near is not looked at again. Never more than the spheres pass.
+        low = centres.min(axis=0) - radius[:, None]
+        high = centres.max(axis=0) + radius[:, None]
+        outside = np.maximum(0.0, np.maximum(low[:, None, :] - probes.centres[None, :, :],
+                                             probes.centres[None, :, :] - high[:, None, :]))
+        maybe = np.linalg.norm(outside, axis=2) <= probes.radii[None, :] + limits + _SUSPECT_SLACK_MM
+        for column in np.flatnonzero(maybe.any(axis=0)).tolist():
+            rows = np.flatnonzero(maybe[:, column])
+            gaps = (np.linalg.norm(centres[:, rows] - probes.centres[column][None, None, :], axis=2)
+                    - radius[rows][None, :] - probes.radii[column])
+            near = gaps <= limits[rows, column][None, :] + _SUSPECT_SLACK_MM
+            box, surface, reading = probes.boxes[column], probes.surfaces[column], probes.readings[column]
+            for slot, row in enumerate(rows.tolist()):
+                if not near[:until, slot].any():
+                    continue
+                name = self._names[row]
+                if surface is not None and name in FINGER_PARTS:
+                    probe, probe_limit = surface, 0.0
+                elif reading is not None and name in FINGER_PARTS:
+                    probe, probe_limit = reading, float(limit)
+                else:
+                    probe, probe_limit = box, float(limit)
+
+                def measure(sample: int, row: int = row, probe: Any = probe, probe_limit: float = probe_limit) -> float:
+                    self._place(row, sample, placed, hulls)
+                    return self._bound_mm(row, probe, probe, probe_limit, hulls)
+
+                def moved(sample: int, later: np.ndarray, row: int = row) -> np.ndarray:
+                    return _moved_mm(placed.centres[sample, row], placed.turns[sample, row], placed.centres[later, row],
+                                     placed.turns[later, row], float(radius[row]))
+
+                until = _first_flagged(near[:, slot], until, probe_limit, measure, moved)
+                if until == 0:
+                    return 0
+        return until
 
 
 def _hull_vertices(vertices: np.ndarray) -> np.ndarray:

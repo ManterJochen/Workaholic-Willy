@@ -1,0 +1,3 @@
+2026-10-12 09:01:56,050 - TaskRun - INFO - Task run run-aaaa000001, part 1, pick 1: succeeded.
+2026-10-12 09:02:31,900 - TaskRun - INFO - Task run run-aaaa000001, part 2, pick 2: no_perception.
+2026-10-12 09:02:31,950 - TaskRun - INFO - Task run run-aaaa000001 ended nothing_left: nothing to pick is left: the part placed last was the only gray cube its pick's first look counted, and the check look from there saw none, or only where the task keeps out; 1 part(s) placed

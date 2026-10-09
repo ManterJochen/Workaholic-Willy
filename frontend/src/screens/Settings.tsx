@@ -1,7 +1,8 @@
 /**
  * Settings (`/settings`, formerly `/config`): the person's preferences for this browser (language, theme, view, voice
- * output, the talk key), and the config explained and its measured values written (the Config screen, unchanged in
- * what it may write: only the keys the server declares writable).
+ * output, the talk key), how a typed task starts ("Auftrag": Enter or the card, the mode, the defaults; the owner,
+ * 2026-10-08), and the config explained and its measured values written (the Config screen, unchanged in what it may
+ * write: only the keys the server declares writable).
  */
 
 import { ScreenHead } from '../components/ui'
@@ -9,6 +10,7 @@ import { useT } from '../i18n'
 import Config from './Config'
 import { SCREENS } from './i18n'
 import Preferences from './Preferences'
+import TaskPrefs from './TaskPrefs'
 import './screens.css'
 
 export default function Settings() {
@@ -17,6 +19,7 @@ export default function Settings() {
     <div className="page">
       <ScreenHead title={t('nav.settings')} lede={t('st.page.lede')} />
       <Preferences />
+      <TaskPrefs />
       <Config />
     </div>
   )

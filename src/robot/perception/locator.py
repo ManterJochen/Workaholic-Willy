@@ -33,6 +33,17 @@ planned against all of them. A fixed camera locates once, where it stands.
 ``Locator.for_cameras(tree, cameras)`` is one locator per camera of a cell over ONE perception backend: the detector
 and the segmenter load their weights once for the cell, not once per camera.
 
+``Locator.measure(points)`` is the quick look at something located before (the owner, 2026-10-08: speed first): one
+frame, taken as a locate takes it but with no detector, and per point of BASE the depth it should read there, the depth
+the frame measured at its pixel and that pixel's colour (:class:`Measured`). It says what the frame reads where the
+points should stand, never what stands there: a task reads a kept bin's rim with it before it asks the detector again.
+``Located.measure(points, image)`` reads the same off the frame a locate placed.
+
+``Locator.locate("yellow bin | blue bin")`` grounds a class list (``src.models.vlm.qwen.class_list_prompt``) in one call:
+each object carries the description its box named, an object no one description claims is ``ambiguous``, and
+``Located.split(prompt)`` says which objects each description located, so one locate finds every bin a task still
+looks for (the sorting package, 2026-10-09).
+
 A locator handed a view (``view=``, a ``LiveView`` of ``src/camera/live_view.py``) gives its camera a window there and
 shows every ``Located`` it produces on it, the masks, labels and centres pinned, with the prompt and the colour image
 the locate segmented: a wrist camera's window holds its masks on that image while the arm moves on. Handing the image
@@ -65,13 +76,15 @@ from src.robot.grasping.geometry.closing_axis import (
 )
 from src.robot.grasping.multiview.scene_geometry import to_base_mm
 from src.robot.grasping.scene import Scene
+from src.robot.perception.colour_check import ColourCheck
 from src.robot.perception.realsense_source import RealSenseVisionPerceptionSource
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.robot import RobotConfig
     from src.robot.execution.looks import Look
 
-__all__ = ["SET_DOWN_AIR_MM", "Located", "LocatedObject", "LocatedOrientation", "Locator", "LocatorRefused", "SetDown"]
+__all__ = ["SET_DOWN_AIR_MM", "Located", "LocatedObject", "LocatedOrientation", "Locator", "LocatorRefused", "Measured",
+           "SetDown"]
 
 #: The locator's own lines, to the robot log and ``locator.log`` (RC6 of the cell-fix plan: they reached no file).
 logger: logging.Logger = create_robot_logger(__name__, "locator.log")
@@ -199,28 +212,26 @@ def _finite_number(value: object, what: str) -> float:
 class SetDown:
     """Where the tool sets a held part down on a located object, and what that was measured from.
 
-    Nothing in it is written in a program. The target's top comes from the camera, the part's hang from the grasp and
-    the part's bottom, the air from the owner. ``pose`` is the TCP pose ``Robot.place`` takes: the grasp's own turn, so
-    the part hangs below the tool as it did when the hand closed, over the middle of the target's top (the surface
-    within 10 mm of the top, halfway across its extent; not ``centre_mm``, which the sides a tilted camera sees pull
-    toward it), at ``top_mm + hang_mm + air_mm``. The part's bottom then stands at least ``air_mm`` over the target's top
-    when the hand opens, and ``Robot.place`` opens it only once its line in arrived.
+    Nothing in it is written in a program: the target's top comes from the camera, the part's hang from the grasp and
+    the part's bottom, the air from the owner (5 mm, released only then, the part never pressed into the target). Build
+    it with :meth:`onto`, or :meth:`Located.set_down`.
 
-    The owner's rule (2026-09-24) is 5 mm of air, released only then, and the part NEVER pressed into the target. A
-    hang too short brings the part down into the target by as much, a hang too long only adds air, so the hang is
-    measured from a LOWER bound on where the part's bottom was: the support the cell declares, lowered to where two or
-    more looks of a wrist camera measured the part's foot only where that lies below it (``Scene.part_bottom_mm``, see
-    :meth:`onto`), and never raised to it. Every error in it goes toward more air; the cost is a larger drop for a part
-    that stood higher than the declared surface.
+    Attributes:
+        target (str): The located object the part goes on, by its label.
+        pose (Pose | None): The TCP pose ``Robot.place`` takes, in BASE: the grasp's own turn, over the middle of the
+            target's top, at ``top_mm + hang_mm + air_mm``; ``None`` where it cannot be measured, ``reason`` saying why.
+            Nothing is set down blind.
+        top_mm (float | None): The target's top in BASE Z, millimetres: the 95th percentile of its surface heights;
+            ``None`` where it could not be read.
+        hang_mm (float): How far the part hangs below the grasp, millimetres: the grasp's Z less the part's bottom.
+        air_mm (float): The gap between the part's bottom and the target's top when the hand opens, millimetres.
+        points (int): How many surface points the top was read from.
+        reason (str): Why there is no pose; empty when there is one (default: "").
 
-    ``pose`` is ``None`` where the target's top cannot be read (no surface under its mask, or too few points) or the
-    grasp did not stand above the part's bottom, and ``reason`` says which: nothing is set down blind.
-
-    What it cannot know. That the part stayed where the fingers closed on it: a hand with no sensor measures nothing,
-    and a part that slipped hangs lower than the grasp planned. That the camera reads the target where it stands: its
-    top is read by the same hand-eye as the grasp, so a camera whose calibration reads the scene low by some
-    millimetres leaves that much less air, which is what the air is for. And a target whose rim stands above its middle
-    is topped at its rim, so a part set down over a lower middle drops the difference.
+    What it cannot know: that the part stayed where the fingers closed (a hand with no sensor measures nothing, and a
+    part that slipped hangs lower), and that the camera reads the target where it stands (a calibration reading the
+    scene low by some millimetres leaves that much less air, which is what the air is for). A target whose rim stands
+    above its middle is topped at its rim.
     """
 
     #: The located object the part goes on, by its label.
@@ -244,28 +255,26 @@ class SetDown:
              air_mm: float = SET_DOWN_AIR_MM) -> "SetDown":
         """Set the part the tool grasped at ``grasp`` down on ``target``, ``air_mm`` over its top when the hand opens.
 
-        ``part_bottom_mm`` is where the part's bottom was when it was grasped, in BASE Z, and it must be a LOWER bound
-        on it: the grasp's Z less it is the hang, and a bottom read too high shortens the hang and brings the part
-        down into the target by as much. Pass the ``part_bottom_mm`` of the scene its grasp came from
-        (``located.scene(i, robot_config)``): the table, or the container floor, the cell declares, which no part
-        stands below, lowered only where two or more looks of a wrist camera measured the part standing below it (see
-        ``Scene.part_bottom_mm``, which never raises it, and keeps the declared value for one view). Its
-        ``declared_support_height_mm`` is the same bound without the measurement. Every error then goes toward more
-        air. The cost, plainly: a part taken off a raised block, or
-        off another part, hangs further below the grasp than that, and it drops the block's height on top of the air
-        (a 30 mm block: 35 mm). A caller that KNOWS where the part stood (a fixture of known height, a part it put
-        there itself) passes that height, and gets the air exactly.
+        Args:
+            target (LocatedObject): What the part goes on: ``located.objects[i]``.
+            grasp (Pose): Where the tool closed on the part, in ``Frame.BASE``.
+            part_bottom_mm (float): Where the part's bottom was when it was grasped, BASE Z in millimetres, and a LOWER
+                bound on it: pass the ``part_bottom_mm`` of the scene the grasp came from. A bottom read too high brings
+                the part down into the target by as much, one too low only adds air. A caller that knows where the part
+                stood (a fixture of known height) passes that, and gets the air exactly.
+            air_mm (float): The gap between the part's bottom and the target's top when the hand opens, millimetres
+                (default: 5.0, the owner's rule).
 
-        Not the scene's ``support_height_mm``. That is the declared support raised to the part's lowest SEEN point,
-        the height the grasp's clearance is planned from, and an UPPER bound on the part's base: a camera never sees
-        below the base, but an occluder in front, a mask that stops short, or a tilted view that misses the foot of the
-        near face leave the lowest seen point above it by as much as they hid. Measured from there (the review of
-        2026-09-24, the real ``Scene`` and this method), 8 mm of the near face unseen set the part down 3 mm INTO the
-        target and 12 mm set it 7 mm in; on the owner's 45 degree wrist view 6 mm hidden shortened the hang by 4.7 to
-        6.2 mm.
+        Returns:
+            SetDown: The set-down; ``pose`` is ``None``, with a ``reason``, where the target's top cannot be read or the
+                grasp did not stand above the part's bottom.
 
-        Raises ``ValueError`` for a programmer's error: a grasp not in BASE, a bottom or an air that is not a finite
-        number, a negative air.
+        Raises:
+            ValueError: A grasp not in BASE, a bottom or an air that is not a finite number, a negative air.
+
+        Not the scene's ``support_height_mm``: that is raised to the part's lowest SEEN point, an upper bound on its
+        base, and a near face the camera missed (8 mm in the review of 2026-09-24) set the part down 3 mm INTO the
+        target.
         """
         if grasp.frame is not Frame.BASE:
             raise ValueError(f"the grasp is in {grasp.frame.value!r}, and a set-down is measured in BASE")
@@ -309,7 +318,11 @@ class SetDown:
         return self.render()
 
     def render(self) -> str:
-        """Describe this to a person, as text, ASCII, no trailing newline."""
+        """The set-down as a person reads it.
+
+        Returns:
+            str: ASCII, no trailing newline.
+        """
         if self.pose is None:
             return _ascii(f"set down on {self.target!r}: NO POSE, {self.reason}")
         x, y, z = (float(v) for v in self.pose.position_mm)
@@ -319,7 +332,11 @@ class SetDown:
             f"air: the tool to ({x:.1f}, {y:.1f}, {z:.1f}) mm, turned as it grasped")
 
     def to_dict(self) -> dict[str, Any]:
-        """Plain data, ``json.dumps`` safe."""
+        """The set-down as plain data.
+
+        Returns:
+            dict[str, Any]: ``json.dumps`` safe; ``pose`` as ``position_mm`` and ``quaternion_xyzw``, or None.
+        """
         return {
             "target": self.target,
             "ok": self.ok,
@@ -345,14 +362,125 @@ class _Frame:
 
 
 @dataclass(frozen=True, slots=True, eq=False)
+class Measured:
+    """What one frame of one camera read where given points of BASE should stand: :meth:`Locator.measure` on a frame it
+    takes, :meth:`Located.measure` on the frame a locate placed. No detector ran: it says what the frame reads there,
+    never what stands there.
+
+    Per point, in the order given: ``in_frame``, whether it lands on a pixel of the frame in front of the camera;
+    ``expected_mm``, the depth the camera reads where the point stands (its CAMERA z, NaN behind the camera);
+    ``measured_mm``, the depth the frame measured at its pixel (NaN outside the frame, and where the sensor measured
+    nothing); ``lab``, the CIE L*a*b* colour of that pixel (D65, L* from 0 to 100; NaN outside the frame, and where no
+    colour image was kept).
+    """
+
+    camera: str
+    captured_at_s: float
+    in_frame: np.ndarray
+    expected_mm: np.ndarray
+    measured_mm: np.ndarray
+    lab: np.ndarray
+
+    @property
+    def points(self) -> int:
+        """How many points were read."""
+        return int(self.expected_mm.shape[0])
+
+    def __str__(self) -> str:
+        """What ``print()`` shows: the text :meth:`render` returns."""
+        return self.render()
+
+    def render(self) -> str:
+        """Describe this to a person, as one line of ASCII, no trailing newline."""
+        measured = int(np.count_nonzero(np.isfinite(self.measured_mm)))
+        return _ascii(f"camera {self.camera!r} read {self.points} point(s) at {self.captured_at_s:.3f} s: "
+                      f"{int(np.count_nonzero(self.in_frame))} in the frame, {measured} with a depth measured")
+
+
+def _lab_of_rgb(rgb: Any) -> np.ndarray:
+    """``(N, 3)`` sRGB colours (0 to 255) as CIE L*a*b* under D65, the standard conversion. No camera profile: it
+    compares two colours one camera saw, and says nothing absolute about either."""
+    values = np.asarray(rgb, dtype=np.float64).reshape(-1, 3) / 255.0
+    linear = np.where(values <= 0.04045, values / 12.92, ((values + 0.055) / 1.055) ** 2.4)
+    to_xyz = np.array([[0.4124564, 0.3575761, 0.1804375],
+                       [0.2126729, 0.7151522, 0.0721750],
+                       [0.0193339, 0.1191920, 0.9503041]])
+    xyz = (linear @ to_xyz.T) / np.array([0.95047, 1.0, 1.08883])
+    epsilon, kappa = 216.0 / 24389.0, 24389.0 / 27.0
+    f = np.where(xyz > epsilon, np.cbrt(xyz), (kappa * xyz + 16.0) / 116.0)
+    return np.column_stack([116.0 * f[:, 1] - 16.0, 500.0 * (f[:, 0] - f[:, 1]), 200.0 * (f[:, 1] - f[:, 2])])
+
+
+def _measured(points_base_mm: Any, *, camera: str, captured_at_s: float, depth_mm: Any, intrinsics: Any,
+              camera_to_base: Any, rgb: "np.ndarray | None") -> Measured:
+    """What a frame (``depth_mm``, CAMERA mm, 0 or NaN where nothing was measured; ``rgb`` its colour, or ``None``) read
+    where each of ``points_base_mm`` should stand, the camera at ``camera_to_base`` through ``intrinsics``: the inverse
+    of how a locate places a pixel (``masked_points``, a pixel's centre at its whole index), so a point placed from a
+    frame lands on the pixel it came from."""
+    points = np.asarray(points_base_mm, dtype=np.float64).reshape(-1, 3)
+    count = points.shape[0]
+    matrix = np.asarray(camera_to_base, dtype=np.float64)
+    if matrix.shape != (4, 4) or not np.all(np.isfinite(matrix)):
+        raise ValueError(f"a frame is read where the camera stood, a finite 4x4 CAMERA to BASE, not {matrix.shape}")
+    lens = np.asarray(intrinsics, dtype=np.float64)
+    depth = np.asarray(depth_mm, dtype=np.float64)
+    # Row by row, R^T (p - t): the point in the camera's own frame.
+    in_camera = (points - matrix[:3, 3]) @ matrix[:3, :3]
+    z = in_camera[:, 2]
+    ahead = np.isfinite(z) & (z > 0.0)
+    safe_z = np.where(ahead, z, 1.0)
+    cols = np.rint(lens[0, 0] * in_camera[:, 0] / safe_z + lens[0, 2])
+    rows = np.rint(lens[1, 1] * in_camera[:, 1] / safe_z + lens[1, 2])
+    height, width = depth.shape[:2]
+    in_frame = ahead & np.isfinite(cols) & np.isfinite(rows) & (cols >= 0) & (cols < width) & (rows >= 0) & \
+        (rows < height)
+    row, col = rows[in_frame].astype(np.int64), cols[in_frame].astype(np.int64)
+    read = depth[row, col]
+    measured = np.full(count, np.nan)
+    measured[in_frame] = np.where(np.isfinite(read) & (read > 0.0), read, np.nan)
+    lab = np.full((count, 3), np.nan)
+    colour = None if rgb is None else np.asarray(rgb)
+    if colour is not None and colour.ndim == 3 and colour.shape[:2] == depth.shape[:2] and colour.shape[2] >= 3:
+        lab[in_frame] = _lab_of_rgb(colour[row, col, :3])
+    return Measured(camera=str(camera), captured_at_s=float(captured_at_s), in_frame=in_frame,
+                    expected_mm=np.where(ahead, z, np.nan), measured_mm=measured, lab=lab)
+
+
+@dataclass(frozen=True, slots=True, eq=False)
 class Located:
     """What one frame of one camera located, stamped at its shutter; or, from :meth:`Locator.look_around` on a camera on
     the wrist, what all its looks located, fused.
 
-    A looked-around ``Located`` is the frame of the last look that saw the part, with every object's surface as all the
-    looks saw it: object 0 is the part the looks kept, its cloud fused over :attr:`looks_fused`, and an object only an
-    earlier look saw is kept too, with no pixels in this frame, so it stays an obstacle to the part's grasps.
-    :attr:`refused` set says nothing may be planned on it: :meth:`scene` and :meth:`set_down` raise ``LocatorRefused``.
+    A looked-around ``Located`` is the frame of the last look that saw the part: object 0 is the part the looks kept,
+    its cloud fused over :attr:`looks_fused`, and an object only an earlier look saw is kept too, with no pixels in this
+    frame, so it stays an obstacle to the part's grasps. With :attr:`refused` set nothing may be planned on it:
+    :meth:`scene` and :meth:`set_down` raise ``LocatorRefused``.
+
+    Attributes:
+        camera (str): The rig id of the camera that took the frame.
+        captured_at_s (float): The frame's shutter, host seconds; for a look around that reached none of its looks, when
+            it ended.
+        mounting (str): ``"eye_to_hand"`` (a fixed camera) or ``"eye_in_hand"`` (on the wrist).
+        tool_to_base_mm (tuple[tuple[float, ...], ...] | None): Where the tool stood at the shutter, a 4 x 4 matrix in
+            millimetres, for a camera on the wrist; ``None`` for a fixed camera.
+        objects (tuple[LocatedObject, ...]): Every object placed in BASE, each with its label, score, box, mask, points
+            (``points_base_mm``, N x 3 millimetres) and centre; object 0 is a look around's part.
+        looks (tuple[str, ...]): The looks a look around located from, in the order the arm reached them; empty for one
+            locate (default: ()).
+        looks_fused (tuple[str, ...]): The looks whose surfaces make up object 0's cloud, this frame's look first; empty
+            for one locate (default: ()).
+        jaw_faces_seen (tuple[bool, bool] | None): Whether each jaw contact face of object 0's best grasp was seen, (jaw
+            1, jaw 2); ``None`` where it was not judged (default: None).
+        refused (str): Why nothing may be planned on it, or ``""``: a look the arm did not reach, a controller that
+            stopped, or, with ``both_faces``, the face no look saw (default: "").
+        hand_eye_gap_mm (float | None): How far apart, in millimetres, the looks measured the part's shared surface
+            (median); above ``HAND_EYE_DRIFT_WARN_MM`` the calibration may have drifted, and it is said. ``None`` where
+            fewer than two looks shared one (default: None).
+        generated_view_deg (float | None): How far the one generated view turned about the part, degrees; ``None`` where
+            none was generated (default: None).
+        views_file (str): Where the looks' frames were kept with ``record_views``; ``""`` otherwise (default: "").
+        closing_axis (ClosingAxis | None): The axis the look around judged object 0's grasp along; ``None`` for any
+            axis, and for one locate (default: None).
     """
 
     camera: str
@@ -393,10 +521,35 @@ class Located:
     #: parts the prompt did not name in; ``None`` where none was kept (a double, or no look reached).
     _frame: "_Frame | None" = field(default=None, repr=False)
 
-    def keep_out(self, target: int) -> SegmentationOffer:
-        """What a planner world has to leave out to reach object ``target``: its box, and this frame's masks.
+    def split(self, prompt: str) -> "dict[str, tuple[int, ...]]":
+        """Which objects each description of a class-list prompt located.
 
-        Hand it to ``robot.core.keep_out.keeping_out`` around the motions that reach for the object.
+        Args:
+            prompt (str): The prompt this was located for. For a class list (``class_list_prompt(["yellow bin", "blue
+                bin"])``), each description; for one description, every object.
+
+        Returns:
+            dict[str, tuple[int, ...]]: Every description, in the prompt's order, mapped to the indices into
+                :attr:`objects` of the objects whose label is that description; ``()`` for one no object carries. An
+                object two descriptions claimed is ``ambiguous``: it is neither's, and stays an obstacle.
+        """
+        # Here, not at the module's top: the locator imports no model package until it is asked.
+        from src.models.vlm.qwen import classes_of  # noqa: PLC0415
+
+        descriptions = classes_of(prompt)
+        if not descriptions:
+            return {str(prompt): tuple(range(len(self.objects)))}
+        return {description: tuple(index for index, obj in enumerate(self.objects) if obj.label == description)
+                for description in descriptions}
+
+    def keep_out(self, target: int) -> SegmentationOffer:
+        """What a planner world has to leave out so the arm may reach object ``target``: its box and this frame's masks.
+
+        Args:
+            target (int): The index into :attr:`objects`.
+
+        Returns:
+            SegmentationOffer: Hand it to ``Robot.pick(..., keep_out=)`` or ``Robot.place(..., keep_out=)``.
         """
         if not 0 <= int(target) < len(self.objects):
             raise IndexError(f"object {target} of {len(self.objects)} located by camera {self.camera!r}")
@@ -414,33 +567,29 @@ class Located:
     def scene(self, target: int, robot_config: "RobotConfig") -> Scene:
         """Object ``target`` as the :class:`Scene` its grasps are planned on, every other object an obstacle.
 
-        The support height and the jaw come from ``robot_config`` through ``Scene.from_robot_config``, the
-        target cloud is the object's measured surface, and every other object this frame located with a surface
-        goes in as observed obstacle points. A candidate gives the BASE pose and the width ``Robot.pick`` takes,
-        and :meth:`keep_out` holds the same object out of the planner world while the arm reaches for it:
-
-            best = located.scene(0, app.robot).grasps().best
+            best = located.scene(0, tree.robot).grasps().best
             if best is not None:
                 robot.pick(best.pose(), best.grip_width_mm, keep_out=located.keep_out(0))
 
-        The camera sees one side of a part, so the scene extrudes the seen footprint down to the support. The
-        support is the declared one, raised to the object's own lowest point when its surface reaches down to what
-        it stands on, and the jaw is the hand ``grasping.gripper_geometry`` describes, both as the cell's pick path
-        takes them. The generator is the geometric one whatever ``grasping.calculator`` says, and
-        ``SceneGrasps.generator`` says so on every result. An object with no surface under its mask gives a scene
-        with no grasps. A ``Located`` that was :attr:`refused` raises ``LocatorRefused`` with the reason. Where the
-        cell names how its hand and camera naturally stand (``robot.natural_closing_axis``), every grasp is turned the
-        way round nearer it, as the pick loop turns its own, and a look around judges the grasp so turned.
+        Args:
+            target (int): The index into :attr:`objects`; 0 is a look around's part.
+            robot_config (RobotConfig): The cell's robot section, ``tree.robot``: the support height and the jaw come
+                from it.
 
-        The scene's ``part_bottom_mm``, the bottom a set-down hangs the part from, is the declared support, lowered
-        where the looks measured the part standing below it only for object 0 of a look around whose part two or more
-        looks fused (:attr:`looks_fused`, addendum 7.6); one view, a fixed camera's above all, keeps the declared
-        support as before.
+        Returns:
+            Scene: The object's measured surface, extruded down to the support, the jaw the cell's
+                ``grasping.gripper_geometry`` describes, every other located object as observed obstacle points.
+                ``scene.grasps()`` ranks the grasps (always the geometric generator, which ``SceneGrasps.generator``
+                says); ``scene.part_bottom_mm`` is what a set-down hangs the part from. An object with no surface under
+                its mask gives a scene with no grasps.
 
-        Object 0's scene of a look around that judged its grasp (from :attr:`looks`, on its jaw faces,
-        :attr:`jaw_faces_seen`, or along a closing axis, :attr:`closing_axis`) chooses along the axis the looks judged it
-        along, and among grasps of any axis where they named none: ``grasps()`` does so when asked for no axis, and
-        refuses any other (``ValueError``), so the grasp gripped is the grasp the looks judged.
+        Raises:
+            LocatorRefused: This ``Located`` was :attr:`refused`; the message is the reason.
+            IndexError: ``target`` is out of range.
+
+        Where the cell names how its hand and camera naturally stand (``robot.natural_closing_axis``) every grasp is
+        turned the way round nearer it. Object 0's scene of a look around chooses along the axis the looks judged its
+        grasp along, and ``grasps()`` refuses any other (``ValueError``), so the grasp gripped is the grasp judged.
         """
         self._refuse_if_refused()
         if not 0 <= int(target) < len(self.objects):
@@ -500,27 +649,25 @@ class Located:
 
     def set_down(self, target: int, *, grasp: Pose, part_bottom_mm: float,
                  air_mm: float = SET_DOWN_AIR_MM) -> SetDown:
-        """Where the tool sets the part it grasped at ``grasp`` down on object ``target``: :meth:`SetDown.onto`.
+        """Where the tool sets the part it grasped down on object ``target``: :meth:`SetDown.onto`.
 
-        The step after :meth:`scene` and ``Robot.pick``. The part's bottom is the support the scene its grasp came from
-        declares, lowered only where two or more looks of a wrist camera measured the part standing below it
-        (``scene.part_bottom_mm``; one view keeps the declared support as before), a lower bound on where the part
-        stood, and :meth:`keep_out` holds the target out of the planner world while the part comes down onto it:
-
-            scene = seen.scene(0, app.robot)
-            best = scene.grasps().best
-            ...                                  # robot.pick(best.pose(), ...), then locate the target
             set_down = onto.set_down(0, grasp=best.pose(), part_bottom_mm=scene.part_bottom_mm)
             if set_down.pose is not None:
                 robot.place(set_down.pose, keep_out=onto.keep_out(0))
 
-        The tool keeps the grasp's turn over the middle of the target's top, at that top (the 95th percentile of the
-        target's surface heights) plus the part's hang plus ``air_mm``, the owner's 5 mm unless chosen. From that
-        bottom the part lands with at least that air, and a part taken off a raised block drops the block's height on
-        top of it; a caller that knows where the part stood passes that as ``part_bottom_mm`` instead. Not
-        ``scene.support_height_mm``: it is raised to the part's lowest SEEN point and presses the part into the target
-        by whatever the camera missed of its foot (see :meth:`SetDown.onto`). A ``Located`` that was :attr:`refused`
-        raises ``LocatorRefused`` with the reason.
+        Args:
+            target (int): The index into :attr:`objects` of what the part goes on.
+            grasp (Pose): Where the tool closed on the part, in BASE.
+            part_bottom_mm (float): A lower bound on where the part's bottom stood, BASE Z millimetres: the
+                ``part_bottom_mm`` of the scene its grasp came from.
+            air_mm (float): The gap over the target's top when the hand opens, millimetres (default: 5.0).
+
+        Returns:
+            SetDown: The set-down; ``pose`` is ``None`` with a ``reason`` where it cannot be measured.
+
+        Raises:
+            LocatorRefused: This ``Located`` was :attr:`refused`.
+            ValueError: A grasp not in BASE, or a bottom or an air that is not a finite number.
         """
         self._refuse_if_refused()
         if not 0 <= int(target) < len(self.objects):
@@ -532,12 +679,36 @@ class Located:
         if self.refused:
             raise LocatorRefused(f"nothing is planned on what camera {self.camera!r} located: {self.refused}")
 
+    def measure(self, points_base_mm: Any, image_bgr: "np.ndarray | None" = None) -> "Measured | None":
+        """What this frame read where given points should stand, as :meth:`Locator.measure` reads a new frame.
+
+        Args:
+            points_base_mm (Any): The points, an N x 3 array in BASE millimetres.
+            image_bgr (np.ndarray | None): The colour image this frame was located in (BGR), for each point's colour;
+                ``None`` gives NaN colours (default: None).
+
+        Returns:
+            Measured | None: Per point, in order: ``in_frame``, ``expected_mm`` (the depth the camera reads where it
+                stands), ``measured_mm`` (what the frame measured at its pixel) and ``lab`` (the pixel's CIE L*a*b*
+                colour). ``None`` where no frame was kept (a double's, a look around that reached no look).
+        """
+        frame = self._frame
+        if frame is None:
+            return None
+        rgb = None if image_bgr is None else np.asarray(image_bgr)[..., ::-1]
+        return _measured(points_base_mm, camera=self.camera, captured_at_s=self.captured_at_s, depth_mm=frame.depth_mm,
+                         intrinsics=frame.intrinsics, camera_to_base=frame.camera_to_base, rgb=rgb)
+
     def __str__(self) -> str:
         """What ``print()`` shows: the text :meth:`render` returns."""
         return self.render()
 
     def render(self) -> str:
-        """Describe this to a person, as text, ASCII, no trailing newline."""
+        """What was located, as a person reads it: the camera, the looks, each object with its centre.
+
+        Returns:
+            str: ASCII, no trailing newline. ``print(located)`` shows the same.
+        """
         if not self.objects and self.refused and not self.looks:
             lines = [f"camera {self.camera!r} located nothing: the arm reached none of the looks, so no frame was taken"]
         elif not self.objects:
@@ -570,7 +741,11 @@ class Located:
         return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
-        """Plain data, ``json.dumps`` safe."""
+        """What was located, as plain data.
+
+        Returns:
+            dict[str, Any]: ``json.dumps`` safe; each object without its mask and points.
+        """
         return {
             "camera": self.camera,
             "captured_at_s": self.captured_at_s,
@@ -659,11 +834,32 @@ class _DepthOnly:
         return self._handle.get_intrinsics()
 
 
+class _DetectsNothing:
+    """A perception backend that grounds nothing: what :meth:`Locator.measure` takes its frame through, so a measure
+    costs a frame and never a detector's call."""
+
+    def perceive(self, _image_bgr: Any, _prompt: str) -> tuple[()]:
+        return ()
+
+
+#: What the source of a measure is handed as its phrase: the backend above never reads it.
+_MEASURE_PROMPT = "nothing: a measure grounds no phrase"
+
+
 class Locator:
     """One open camera, a perception backend, and what it takes to place its frames in BASE.
 
-    ``view``, where given, is the cameras' windows (a ``LiveView``): the camera gets a window there, and every
-    ``Located`` is shown on it (see the module docstring).
+    Build it with :meth:`from_tree` (one camera) or :meth:`for_cameras` (every camera of a cell, over one backend); then
+    :meth:`locate` from one frame, or :meth:`look_around` for a part to grip.
+
+    Args:
+        camera (Any): An open camera owner (:class:`Camera`).
+        backend (Any): A perception backend with ``perceive(image_bgr, prompt)``.
+        calibration (Any): The camera's calibration, which places its frames in BASE.
+        tool_pose (Callable[[], Pose] | None): The arm's ``get_tcp_pose``, for a camera on the wrist; ``None`` for a
+            fixed camera.
+        attempts (int): How many more frames a wrist camera takes while the tool moved.
+        view (Any): A ``LiveView``, or ``None`` (default: None).
     """
 
     def __init__(self, *, camera: Any, backend: Any, calibration: Any, tool_pose: "Callable[[], Pose] | None",
@@ -688,14 +884,28 @@ class Locator:
         tool_frame: Maybe[Any] = UNSET,
         view: Any = None,
     ) -> "Locator":
-        """A locator over ``camera``, an open owner answering ``rig_id``, ``source``, ``handle()`` and ``calibration()``.
+        """A locator over one open camera and a backend you built.
 
-        ``tool_pose`` is the arm's ``get_tcp_pose`` and ``tool_frame`` the cell's ``robot.gripper.tool_frame``, both
-        required for a camera on the wrist and ignored for a fixed one. ``attempts`` is how many more frames a wrist
-        camera takes while the tool moved; unset, the schema's ``perceived.fresh_frame_attempts`` default. Refuses a
-        rig with no depth, a rig that declares no calibration (``RigNotCalibrated`` names its key), a wrist rig with
-        no TCP reader, and a wrist rig whose calibration was not solved against ``tool_frame``. ``view`` (a
-        ``LiveView``) shows each ``Located`` on the camera's window; it is handed the camera once every refusal passed.
+        Args:
+            camera (Any): An open owner answering ``rig_id``, ``source``, ``handle()`` and ``calibration()``, as
+                :class:`Camera` does.
+            backend (Any): A perception backend with ``perceive(image_bgr, prompt)``.
+            tool_pose (Maybe[Callable[[], Pose]]): The arm's ``get_tcp_pose``, read at each shutter to place a wrist
+                camera's frame; required for a camera on the wrist, ignored for a fixed one (default: UNSET).
+            attempts (Maybe[int]): How many more frames a wrist camera takes while the tool moved; unset is the schema's
+                ``perceived.fresh_frame_attempts`` (default: UNSET).
+            tool_frame (Maybe[Any]): The cell's ``robot.gripper.tool_frame``; a wrist camera's calibration must have
+                been solved against it. Required on the wrist, ignored for a fixed camera (default: UNSET).
+            view (Any): A ``LiveView``: the camera gets a window there, and every ``Located`` is pinned on it (default:
+                None).
+
+        Returns:
+            Locator: The locator; the view gets the camera once every refusal passed.
+
+        Raises:
+            LocatorRefused: A rig with no depth, a wrist rig with no TCP reader, or a wrist rig whose calibration was
+                not solved against ``tool_frame``.
+            RigNotCalibrated: The rig declares no calibration; it names its key.
         """
         rig_id = str(getattr(camera, "rig_id", "camera"))
         source = getattr(camera, "source", "rgbd")
@@ -730,12 +940,24 @@ class Locator:
     @classmethod
     def from_config(cls, robot_cfg: Any, models_cfg: Any, *, camera: Any,
                     tool_pose: "Maybe[Callable[[], Pose]]" = UNSET, view: Any = None) -> "Locator":
-        """A locator for the cell ``robot_cfg`` describes, with the backend ``models_cfg`` builds, as the cell builds it.
+        """A locator for the cell a robot section describes, with the backend a models section builds, as the cell
+        builds it.
 
-        Every refusal of :meth:`from_parts` runs before the backend is built, so a rig with no depth, no declared
-        calibration or no TCP reader is refused before the detector and the segmenter load. ``view`` is handed to the
-        locator built, as :meth:`from_parts` hands it. For several cameras, :meth:`for_cameras` builds one backend for
-        all of them.
+        Args:
+            robot_cfg (Any): The cell's robot section, ``tree.robot``.
+            models_cfg (Any): Its models section, ``tree.app_config.models``.
+            camera (Any): An open camera owner (:class:`Camera`).
+            tool_pose (Maybe[Callable[[], Pose]]): The arm's ``get_tcp_pose``, read at each shutter to place a wrist
+                camera's frame; required for a camera on the wrist, ignored for a fixed one (default: UNSET).
+            view (Any): A ``LiveView``: the camera gets a window there, and every ``Located`` is pinned on it (default:
+                None).
+
+        Returns:
+            Locator: The locator; the detector and the segmenter loaded.
+
+        Raises:
+            LocatorRefused: As :meth:`from_parts` refuses, before any model loads.
+            RigNotCalibrated: The rig declares no calibration.
         """
         (locator,) = cls._over_one_backend(robot_cfg, models_cfg, [camera], tool_pose=tool_pose, view=view)
         return locator
@@ -743,27 +965,53 @@ class Locator:
     @classmethod
     def from_tree(cls, tree: Any, *, camera: Any, tool_pose: "Maybe[Callable[[], Pose]]" = UNSET,
                   view: Any = None) -> "Locator":
-        """A locator for the cell a loaded tree describes, with the perception stack its models section
-        builds (see :meth:`from_config`). A tree that did not load is refused with its own refusal, as
-        ``ConfigError``. ``view`` (a ``LiveView``) shows each ``Located`` on the camera's window."""
+        """A locator for one camera of the cell a loaded tree describes, with the perception stack its models section
+        builds.
+
+            with Camera.from_tree(tree) as camera:
+                locator = Locator.from_tree(tree, camera=camera, tool_pose=robot.arm.get_tcp_pose)
+
+        Args:
+            tree (Any): A loaded tree, ``load_tree()``.
+            camera (Any): An open camera owner (:class:`Camera`).
+            tool_pose (Maybe[Callable[[], Pose]]): The arm's ``get_tcp_pose``, read at each shutter to place a wrist
+                camera's frame; required for a camera on the wrist, ignored for a fixed one (default: UNSET).
+            view (Any): A ``LiveView``: the camera gets a window there, and every ``Located`` is pinned on it (default:
+                None).
+
+        Returns:
+            Locator: The locator; the detector and the segmenter loaded.
+
+        Raises:
+            ConfigError: The tree did not load.
+            LocatorRefused: As :meth:`from_parts` refuses, before any model loads.
+            RigNotCalibrated: The rig declares no calibration.
+        """
         return cls.from_config(tree.robot, tree.app_config.models, camera=camera, tool_pose=tool_pose, view=view)
 
     @classmethod
     def for_cameras(cls, tree: Any, cameras: "Sequence[Any]", *, tool_pose: "Maybe[Callable[[], Pose]]" = UNSET,
                     view: Any = None) -> "list[Locator]":
-        """One locator per open camera of the cell a loaded tree describes, in the order given, all over ONE backend.
+        """One locator per open camera of a cell, in the order given, all over ONE backend.
 
-        Building a backend loads the detector's and the segmenter's weights (``PerceptionSpec.build``, with no cache),
-        so a locator per camera from :meth:`from_tree` loads every model once per camera: N sets of weights in memory,
-        and N loads' time, for what one set answers. The backend is stateless per call, and the cell's own pick path
-        shares one across its cameras for that reason (``autonomous_grasp.cells``); so does this.
+        A locator per camera from :meth:`from_tree` would load every model once per camera; the backend is stateless per
+        call, so the cell's own pick path shares one, and so does this.
 
-        Every camera is checked as :meth:`from_parts` checks one, all of them before anything loads: one rig it cannot
-        place (no depth, no declared calibration, a wrist rig with no TCP reader or solved against another tool frame)
-        refuses the lot, with no model loaded and no window opened. ``tool_pose`` goes to every camera on the wrist and
-        is ignored by a fixed one; ``view`` (a ``LiveView``) gives each camera its window. No camera at all is a
-        ``LocatorRefused``, since there would be nothing to locate with. A tree that did not load is refused with its
-        own refusal, as ``ConfigError``.
+        Args:
+            tree (Any): A loaded tree, ``load_tree()``.
+            cameras (Sequence[Any]): The open camera owners, the primary first.
+            tool_pose (Maybe[Callable[[], Pose]]): The arm's ``get_tcp_pose``, for every camera on the wrist; ignored by
+                a fixed one (default: UNSET).
+            view (Any): A ``LiveView``: each camera gets its window (default: None).
+
+        Returns:
+            list[Locator]: One per camera, in the order given.
+
+        Raises:
+            LocatorRefused: No camera at all, or one rig it cannot place (no depth, a wrist rig with no TCP reader or
+                solved against another tool frame): the lot is refused, before any model loads or window opens.
+            RigNotCalibrated: A rig declares no calibration.
+            ConfigError: The tree did not load.
         """
         return cls._over_one_backend(tree.robot, tree.app_config.models, list(cameras), tool_pose=tool_pose, view=view)
 
@@ -793,97 +1041,97 @@ class Locator:
         return self._tool_pose is not None
 
     def locate(self, prompt: str) -> Located:
-        """Ground ``prompt`` in one frame and place every object in BASE. Raises ``PerceptionFrameMoved`` on the wrist.
+        """Ground a prompt in one frame and place every object in BASE.
 
-        With a view, what was located is pinned on the camera's window, handed over with ``prompt`` and the colour
-        image (BGR) of the frame it was located in, and a locate that raised says why there before it raises as it
-        would have.
+        Args:
+            prompt (str): What to find: a phrase (``"a red cube"``), or a class list (``class_list_prompt(["yellow bin",
+                "blue bin"])``) grounded in one call, every object under the description its box named
+                (:meth:`Located.split` says which are whose).
+
+        Returns:
+            Located: Every object grounded, placed in BASE; with a view, pinned on the camera's window.
+
+        Raises:
+            PerceptionFrameMoved: A camera on the wrist and the tool would not hold still for the frame.
+            LocatorRefused: The frame cannot be placed.
         """
         return self._placed(prompt).located
 
+    def measure(self, points_base_mm: Any) -> Measured:
+        """What one new frame reads where given points should stand.
+
+        The frame is taken as :meth:`locate` takes one, through the same source, but the backend grounds nothing, so a
+        measure costs a frame, never a detector's call.
+
+        Args:
+            points_base_mm (Any): The points, an N x 3 array in BASE millimetres.
+
+        Returns:
+            Measured: Per point, in order: ``in_frame``, ``expected_mm``, ``measured_mm`` and ``lab``, as
+                :meth:`Located.measure` gives them.
+
+        Raises:
+            PerceptionFrameMoved: A camera on the wrist and the tool would not hold still.
+            LocatorRefused: The frame cannot be taken or placed.
+        """
+        try:
+            frame, camera_to_base, depth = self._take(_DetectsNothing(), _MEASURE_PROMPT)
+        except Exception as exc:
+            if self._view is not None:
+                _on_view(self._view, "note", f"measure failed: {type(exc).__name__}: {exc}",
+                         str(getattr(self._camera, "rig_id", "camera")))
+            raise
+        return _measured(points_base_mm, camera=str(getattr(self._camera, "rig_id", "camera")),
+                         captured_at_s=float(frame.timestamp if frame.timestamp is not None else float("nan")),
+                         depth_mm=depth, intrinsics=frame.intrinsics, camera_to_base=camera_to_base, rgb=frame.rgb)
+
     def look_around(self, prompt: str, looks: "Look | None" = None, *, robot: Any, both_faces: bool = False,
                     record_views: bool = False, closing_axis: "Maybe[ClosingAxisLike]" = UNSET) -> Located:
-        """Locate the part ``prompt`` names from each of ``looks`` in turn, every look fused with the ones before, until
-        its grasp is safe.
+        """Find the part a prompt names from each look in turn, every look fused with the ones before, until its grasp
+        is safe; a camera on the wrist moves there through ``robot``'s own verbs.
 
-        It is how a part to grip is found: every look is judged by the part's grasp. What a held part is set down on has
-        no grasp to judge, so a look around for it would visit every look while the hand carries the part: example 13
-        locates its target look by look instead, the first look that sees it answering, and holds nothing for the place.
+        Args:
+            prompt (str): What to find, as :meth:`locate` takes it.
+            looks (Look | None): One look or several: ``JointPositions``, or ``"home"``. ``None`` takes the pose the arm
+                stands at as the one look (default: None).
+            robot (Any): The connected :class:`Robot` that moves the camera; it must keep its robot section
+                (``Robot.from_tree``) and its hand must be a parallel jaw.
+            both_faces (bool): Look on until both jaw contact faces of the chosen grasp were seen, and refuse a part no
+                look showed both of: the switch for safety-critical processes (default: False).
+            record_views (bool): Keep the looks' frames for training, one file for the look around: each look's colour
+                image, depth, lens, tool pose and camera pose, and the part's fused cloud (default: False).
+            closing_axis (Maybe[ClosingAxisLike]): Judge only the grasps closing along this axis (``"-y"``, ...), as
+                ``scene.grasps(closing_axis=...)`` takes it; the ``Located`` keeps it and object 0's scene holds to it
+                (default: UNSET, any axis).
 
-        A camera on the wrist sees only what the arm points it at, so the arm goes to each look in the order given
-        through ``robot``'s own verbs (``robot.move_joints``, ``robot.home`` for ``"home"``), today's rules for a taught
-        look, and the camera locates there, each frame placed by the tool pose stamped at its shutter. ``looks`` is one
-        look or several (``JointPositions``, ``"home"``); none means the pose the arm stands at is the one look, and a
-        list that names none, or an entry that is not a look, raises before anything moves.
+        Returns:
+            Located: Object 0 the part with its fused cloud, every other object as the looks saw it, and
+                :attr:`Located.looks`, :attr:`Located.looks_fused`, :attr:`Located.jaw_faces_seen` and
+                :attr:`Located.hand_eye_gap_mm`. A look around that reached no look, or stopped, says why in
+                :attr:`Located.refused`, and nothing may be planned on it.
 
-        Each look's objects are fused with what the looks before it located, by association at the wrist's tolerances
-        (``association.WRIST_VIEW_*``: two views of one hand-eye disagree by more the more the wrist turned), each
-        look's surface thinned of the points it sees at a grazing incidence first (``scene_geometry.grazing_pixels``).
-        Object 0 of the first look that measured its surface is the part, and it stays the part: a later look finds it
-        by association, and a look that does not see it is left out and said. A look whose object 0 has no surface under
-        its mask (a dark or shiny face at a bad angle) makes no part, and is said: nothing would associate with it.
-        After each look the part's grasp is computed again on all the looks saw of it (``Located.scene(0,
-        robot.robot_config).grasps().best``, its support read from all of them too), and the looking stops at the first
-        look whose grasp is valid and which the looks agree on: looks whose detector calls the part by different labels
-        make its grasp uncertain, and the looking goes on (a name the locator made up for an unlabelled object is no
-        label). A safe grasp point is the goal, never a full scan: with ``both_faces`` (off by default) the looking goes
-        on until both jaw contact faces of the chosen grasp were seen (``unseen_side.jaw_faces_seen``), and a part no
-        look showed both of is refused (:attr:`Located.refused`), so nothing is gripped on it.
+        Raises:
+            LocatorRefused: ``robot`` keeps no robot section, or its hand is not a parallel jaw; raised before anything
+                moves.
+            ValueError: ``looks`` names no look, an entry is not a look, or ``closing_axis`` names no axis; raised
+                before anything moves.
+            TypeError: A look entry or a ``closing_axis`` of another type, raised before anything moves.
 
-        Once every declared look was visited and the grasp is still not safe enough, one view is generated, the last
-        resort, as a pick's looks generate it (``src/robot/execution/generated_view.py``, the one implementation both
-        call): the look the part was last seen from turned about the part, toward the jaw contact face of the chosen
-        grasp that no look showed, or toward the side no look faced where there is no grasp; every turn screened by the
-        arm before it moves (``nearest_configuration``), the smallest first, and driven on the straight joint line alone,
-        never planned around (no cuRobo, no retract, no detour); it is located and judged as a look is, and
-        ``both_faces`` still refuses a part the generated view did not show both faces of either. An arm that names no
-        configuration (the simulator's, a desk arm) or drives no straight joint line alone, or whose world does not hold
-        the frames of the looks, generates none, and says why. Then, where the part was last seen from a look other than
-        the one the arm stands at, the arm goes back there on the straight joint line; where that line is not clear, or
-        would turn a joint past the generated view's travel cap, the pick approaches from where the arm stands, planned
-        and judged as every approach is. A look around handed no looks generates nothing and moves back nowhere. Once
-        that is done the looking ends with the views fused so far.
+        How the looks run. Each look's objects are fused with what the looks before located, by association at the
+        wrist's tolerances; object 0 of the first look that measured its surface is the part, and it stays the part.
+        After each look the part's grasp is computed again on everything the looks saw of it, and the looking stops at
+        the first look whose grasp is valid and which the looks agree on. A safe grasp point is the goal, never a full
+        scan. Once every declared look was visited and the grasp is still not safe enough, one view is generated: the
+        last look turned about the part toward the face no look showed, every turn screened by the arm before it moves
+        and driven on the straight joint line alone (no planner, no detour); an arm that cannot generates none and says
+        why. A look the planner or a guard refused before anything was sent is skipped and said; a motion that failed
+        once commanded, a controller that cannot move, or a camera that could not vouch for the cell end the looking
+        with nothing else commanded. Nothing is said to the hand.
 
-        The motions, as a pick's looks: nothing is said to the hand. A look the planner or a guard refused before
-        anything was sent is skipped and said, and the looking goes on (a refused look is used up as a reached one is,
-        so the generated view may still follow it); a look around that reaches none of its looks
-        ends with nothing located and the first refusal in :attr:`Located.refused`. A look motion that failed once it
-        may have been commanded, one refused before its command for a reason every look shares (a link that is not
-        open, a camera world or a route the arm refuses, an arm that did not come to rest), a controller that cannot
-        move and a camera that could not vouch for the cell on the way end the looking there with nothing else
-        commanded, the reason in :attr:`Located.refused`.
-
-        The frames the looks were taken in are held in the arm's live planner world from the first look the arm stands
-        at (``LivePlannerWorld.hold_pick_views``), each placed where it was taken, so the pick that follows plans every
-        motion against all of what the looks saw rather than only the frame where the arm stands; the frame of the pose
-        the look around started from is not held. ``Robot.pick`` lets them go when it ends, however it ends, as do the
-        next look around, before it moves, and the disconnect (``Robot.connected()``
-        or ``Cell.connected()``); a place does not need them. A look around that raises lets them go itself. A program
-        that tries another candidate after a pick that failed looks around again first, so that the frames are held for
-        that pick too.
-
-        What comes back is a :class:`Located`: object 0 the part with its fused cloud, every other object as the looks
-        saw it, and :attr:`Located.looks`, :attr:`Located.looks_fused`, :attr:`Located.jaw_faces_seen` and the hand-eye
-        check of the looks (:attr:`Located.hand_eye_gap_mm`, said above ``HAND_EYE_DRIFT_WARN_MM``). ``robot`` must keep
-        the robot section its looks are judged on (``Robot.from_tree``), and its hand must be a parallel jaw, the one
-        ``Located.scene`` plans grasps for, or ``LocatorRefused`` is raised before anything moves.
-
-        ``record_views`` (off by default) keeps the frames of the looks for training, one file for the look around
-        (``src/robot/execution/record_views.py``, the layout ``PickRun(record_views=True)`` writes): each look's colour
-        image, the depth it was placed by, its lens, the tool pose stamped at its shutter, where its camera stood, and
-        the part's fused cloud. Where the file went is :attr:`Located.views_file`; one that cannot be written is said,
-        and the look around answers all the same.
-
-        A fixed camera locates once, where it stands, and moves nothing: :meth:`locate`, with ``both_faces`` judging
-        that one frame's grasp the same way. It has no looks to keep.
-
-        ``closing_axis`` (unset by default) judges only the grasps that close along the axis named, as
-        ``Located.scene(0, ...).grasps(closing_axis=...)`` takes them (the owner's "choose, don't twist", 2026-09-30):
-        the looking stops at a valid grasp along it, and ``both_faces`` asks for its faces. The ``Located`` keeps it
-        (:attr:`Located.closing_axis`), and object 0's scene chooses along it: ``grasps()`` takes it when asked for
-        none and refuses another, so the grasp a program grips is the grasp the looks judged. A look around that judged
-        the part's grasp along any axis refuses a scene asked for one the same way. A value that names no axis raises
-        before anything moves.
+        The frames of the looks are held in the arm's live planner world, each where it was taken, so the pick that
+        follows plans against everything the looks saw; ``Robot.pick`` lets them go when it ends, however it ends, as do
+        the next look around and the disconnect. A program that tries another candidate after a failed pick looks around
+        again first. A fixed camera locates once, where it stands, and moves nothing.
         """
         wanted = closing_axis_of(closing_axis) if chosen(closing_axis) else None
         if not self.on_the_wrist:
@@ -1040,12 +1288,19 @@ class Locator:
             _on_view(self._view, "show_located", placed.located, image=placed.image, prompt=prompt)
         return placed
 
-    def _locate(self, prompt: str) -> "_Placed":
-        """What one frame located, that frame's colour image as the backend segmented it (BGR) where the source kept
-        it, and the depth, lens, placement and surfaces a fusion of looks reads."""
+    def _take(self, backend: Any, prompt: str, *,
+              object_labels: "tuple[str, ...]" = ()) -> "tuple[Any, np.ndarray, np.ndarray]":
+        """One frame through the pick frame's source over ``backend``: the frame, where the camera stood at its shutter
+        (CAMERA to BASE, 4x4 mm) and the depth it measured. A locate and a measure take their frames here alike.
+
+        ``object_labels`` are the descriptions of a class list, which the source maps each box's label onto (and onto
+        none where it names another thing or two of them); ``()`` passes the labels through, as every locate of one
+        description always did. No colour is judged here: a bin's mask holds whatever lies in it, and the colour
+        check's numbers were measured on parts on the mat, so a locate keeps what the detector called each object."""
         rig_id = str(getattr(self._camera, "rig_id", "camera"))
         source = RealSenseVisionPerceptionSource(
-            streamer=_DepthOnly(self._camera.handle(), rig_id), backend=self._backend, prompt=prompt)
+            streamer=_DepthOnly(self._camera.handle(), rig_id), backend=backend, prompt=prompt,
+            object_labels=tuple(object_labels), colour_check=ColourCheck.OFF)
         wrist = self._tool_pose is not None
         if wrist:
             source.stamp_tool_pose_with(
@@ -1055,15 +1310,26 @@ class Locator:
                 attempts=self._attempts,
             )
         frame = source.acquire()
-        if wrist:
-            if frame.tool_pose is None:
-                raise LocatorRefused(f"camera {rig_id!r} is on the wrist and its frame carries no tool pose")
-            tool_to_base = np.asarray(frame.tool_pose.to_matrix(), dtype=np.float64)
-        else:
-            tool_to_base = None
+        if wrist and frame.tool_pose is None:
+            raise LocatorRefused(f"camera {rig_id!r} is on the wrist and its frame carries no tool pose")
         # The composition the hand finder over a wrist camera shares, so the two place one frame alike.
         camera_to_base = camera_to_base_at_shutter(self._calibration, frame.tool_pose if wrist else None)
         depth = frame.surface_depth_map if frame.surface_depth_map is not None else frame.depth_map
+        return frame, camera_to_base, depth
+
+    def _locate(self, prompt: str) -> "_Placed":
+        """What one frame located, that frame's colour image as the backend segmented it (BGR) where the source kept
+        it, and the depth, lens, placement and surfaces a fusion of looks reads.
+
+        A class list (``src.models.vlm.qwen.class_list_prompt``) is grounded in this one call, and each object's label
+        is the description its box named (:meth:`Located.split`)."""
+        # Here, not at the module's top: the locator imports no model package until it locates.
+        from src.models.vlm.qwen import classes_of  # noqa: PLC0415
+
+        rig_id = str(getattr(self._camera, "rig_id", "camera"))
+        frame, camera_to_base, depth = self._take(self._backend, prompt, object_labels=classes_of(prompt))
+        wrist = self._tool_pose is not None
+        tool_to_base = np.asarray(frame.tool_pose.to_matrix(), dtype=np.float64) if wrist else None
         objects: list[LocatedObject] = []
         surfaces: list[np.ndarray] = []
         labels: list[str] = []

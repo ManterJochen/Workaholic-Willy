@@ -40,10 +40,17 @@ class RtDetrObjectDetector:
     zero-shot GroundingDINO backend, so the two are interchangeable. The optional
     ``prompt``, passed positionally by the perception seam, is only a case-insensitive
     class-name filter; ``None`` returns every class above threshold.
+
+    ``device`` names where the model runs (``"cpu"``, ``"cuda"`` or ``"mps"``); left out, it
+    runs where every model here runs, ``WILLY_DEVICE`` or else the first of CUDA, MPS and the
+    CPU. :attr:`classes` is the class list the model was trained on, which is all a prompt can
+    name.
     """
 
-    def __init__(self, config: ObjectDetectorConfig, debug_images: bool = False) -> None:
-        self.device = get_device()
+    def __init__(
+        self, config: ObjectDetectorConfig, debug_images: bool = False, *, device: str | None = None,
+    ) -> None:
+        self.device = get_device(device)
         self.model_id = config.model_id
         self.model_path = config.model_path
         self.threshold = config.threshold
@@ -84,6 +91,15 @@ class RtDetrObjectDetector:
         else:
             self.logger.info("RT-DETR model '%s' loaded on %s.", source, self.device.type.upper())
 
+    @property
+    def classes(self) -> tuple[str, ...]:
+        """Every class name the model knows, in id order: exactly the names of its ``id2label``.
+
+        The owner, 2026-10-09: a program that wants every class at once has to be able to read
+        them, rather than guess them from a prompt that matched.
+        """
+        return tuple(str(self._id2label[key]) for key in sorted(self._id2label, key=int))
+
     def _class_filter(self, prompt: str | None) -> str | None:
         """``prompt`` as a class-name filter, or a refusal when it is plainly not a class name.
 
@@ -111,11 +127,14 @@ class RtDetrObjectDetector:
         return cleaned
 
     @torch.inference_mode()
-    def detect_all(self, image: np.ndarray, prompt: str | None = None) -> list[Detection]:
+    def detect_all(
+        self, image: np.ndarray, prompt: str | None = None, *, threshold: float | None = None,
+    ) -> list[Detection]:
         """Every detection above threshold, filtered by class name when ``prompt`` is given.
 
         Raises ``ValueError`` rather than returning nothing when ``prompt`` is free text instead
         of a class name; see :meth:`_class_filter`. Boxes are in pixels of the input image.
+        ``threshold`` stands in for the configured one for this call alone.
         """
         if image is None or image.size == 0:
             raise ValueError("Input image is empty or None.")
@@ -132,7 +151,7 @@ class RtDetrObjectDetector:
 
         target_sizes = torch.tensor([(h, w)], device=self.device)
         results = self.processor.post_process_object_detection(
-            outputs, target_sizes=target_sizes, threshold=self.threshold
+            outputs, target_sizes=target_sizes, threshold=self.threshold if threshold is None else threshold
         )
         if not results:
             return []

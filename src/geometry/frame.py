@@ -25,10 +25,17 @@ from enum import StrEnum
 
 
 class Frame(StrEnum):
-    """Canonical coordinate frames used across the stack.
+    """The coordinate frames a pose can be in; each value is what serialisation writes and reads back.
 
-    Each member's string value is what serialization writes and reads back, so
-    those values are part of the wire format.
+    Attributes:
+        WORLD: An application-defined fixed frame, a table corner for instance.
+        BASE: The robot's base, link 0 of the arm: what every motion verb takes.
+        CAMERA: A camera's optical frame.
+        MARKER: A calibration marker or board.
+        TCP: The tool centre point, as the controller reports it.
+        TOOL: The physical tool or flange, often equal to the TCP but not always.
+        OBJECT: A part's own frame.
+        GRASP: A grasp's frame: +Z the approach, +X the closing axis.
     """
 
     WORLD = "world"

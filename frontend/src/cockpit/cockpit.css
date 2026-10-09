@@ -95,6 +95,16 @@
     border-color: color-mix(in srgb, var(--alarm) 50%, var(--line));
     background: color-mix(in srgb, var(--alarm) 8%, var(--panel));
   }
+  /* A sort's rules in the run header (2026-10-09): each with the parts it placed, the part in hand's rule lit. */
+  .ck-rules { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem; list-style: none; margin: 0; padding: 0; }
+  .ck-rule {
+    display: inline-flex; align-items: center; gap: 0.45rem; min-height: 2rem; padding: 0.15rem 0.6rem;
+    border: 1px solid var(--line-strong); border-radius: 0.3rem; font-size: 0.875rem; color: var(--fg-muted);
+  }
+  .ck-rule b { font-size: 0.8125rem; padding: 0 0.35rem; border-radius: 0.25rem; color: var(--fg);
+               background: color-mix(in srgb, currentColor 12%, transparent); }
+  .ck-rule.current { color: var(--fg); font-weight: 650; border-color: var(--accent);
+                     background: color-mix(in srgb, var(--accent) 14%, transparent); }
   .ck-alarm-icon { color: var(--alarm); flex: none; }
 
   /* ── the stage: the live image, as tall as the strip under it leaves it ──────────────────────────────────── */
@@ -381,6 +391,8 @@
   .ck-fields select { min-height: 2.75rem; max-width: 100%; font-size: 0.9375rem; }
   .ck-field-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
   .ck-input-phrase { flex: 1 1 11rem; min-width: 0; min-height: 2.75rem; font-size: 0.9375rem; font-weight: 600; }
+  /* How much of a phrase's 200 characters it holds, from 80 % on: small, beside the field. */
+  .ck-count { font-family: var(--font-mono); font-size: 0.6875rem; color: var(--fg-muted); font-variant-numeric: tabular-nums; }
   .ck-ask-pick { display: grid; gap: 0.3rem; padding: 0.45rem 0.65rem; border-radius: var(--radius-field); border: 1px dashed var(--line-strong); }
   .ck-ask-pick p { margin: 0; font-weight: 600; }
   .ck-check-line { display: flex; align-items: center; gap: 0.5rem; min-height: 2.75rem; cursor: pointer; }
@@ -390,6 +402,19 @@
   .ck-seg button + button { border-left: 1px solid var(--line-strong); }
   .ck-seg button[aria-pressed='true'] { background: var(--accent); color: var(--accent-fg); font-weight: 700; }
   .ck-notes { margin: 0.55rem 0 0; padding-left: 1.1rem; font-size: 0.8125rem; color: var(--fg-muted); }
+  /* A sort's rules on the card (2026-10-09): the first is Greifen and Ablegen above, each further one a compact row. */
+  .ck-rules-edit { display: grid; gap: 0.45rem; margin: 0; padding: 0; list-style: none; }
+  .ck-rule-row { display: grid; grid-template-columns: 1.4rem minmax(0, 1fr) auto; align-items: start; gap: 0.3rem 0.5rem;
+                 padding: 0.4rem 0.5rem; border: 1px dashed var(--line-strong); border-radius: var(--radius-field); }
+  .ck-rule-row.first { grid-template-columns: 1.4rem minmax(0, 1fr); align-items: baseline; border-style: solid; border-color: var(--line); }
+  .ck-rule-row.first small { grid-column: 2; }
+  .ck-rule-n { padding-top: 0.6rem; font-size: 0.8125rem; color: var(--fg-muted); text-align: center; }
+  .ck-rule-row.first .ck-rule-n { padding-top: 0; }
+  .ck-rule-body { display: grid; gap: 0.3rem; min-width: 0; }
+  .ck-rule-arrow { color: var(--fg-muted); font-weight: 700; }
+  .ck-rule-remove { min-width: 2.75rem; min-height: 2.75rem; padding: 0; display: inline-grid; place-items: center; }
+  .ck-rules-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+  .ck-rule-add { min-height: 2.75rem; display: inline-flex; align-items: center; gap: 0.4rem; }
   .ck-start { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.85rem; scroll-margin-bottom: 0.75rem; }
   .ck-startbtn { flex: 1 1 18rem; min-height: 3.25rem; padding: 0.7rem 1.1rem; font-size: 1rem; }
   .ck-off { margin-top: 0.5rem; font-size: 0.8125rem; color: var(--fg-muted); }

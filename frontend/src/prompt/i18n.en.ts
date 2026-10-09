@@ -13,7 +13,7 @@ const en: Record<keyof typeof de, string> = {
   'prompt.mic.stop': 'Stop recording',
   'prompt.mic.transcribing': 'Transcribing…',
   'prompt.mic.title':
-    'Click to speak, click again to stop. Holding {key} records while held, so a foot switch that sends {key} works too. The text lands in the box; nothing moves until you press Start.',
+    'Click to speak, click again to stop. Holding {key} records while held, so a foot switch that sends {key} works too. The text lands in the box; nothing moves before you have read it and pressed Enter.',
   'prompt.level': 'Level',
   'prompt.noMic': 'No microphone here: {why} Type the command instead.',
   'prompt.noMic.insecure': 'The microphone needs HTTPS or localhost; this page was loaded over plain HTTP from another machine.',
@@ -24,7 +24,8 @@ const en: Record<keyof typeof de, string> = {
   'prompt.nothingHeard': 'Nothing was recognised in that recording.',
   'prompt.spoken': 'This was transcribed from speech, not typed: read it before you start. The arm moves on what was heard.',
   'prompt.send': 'Send',
-  'prompt.sendTitle': 'Enter or Send reads the sentence. Nothing starts until Start on the card.',
+  'prompt.sendTitle': 'Enter or Send reads the sentence. Whether the task then starts at once or on Start on the card is said under the box.',
+  'prompt.count': '{n} of {max} characters',
 }
 
 export default en

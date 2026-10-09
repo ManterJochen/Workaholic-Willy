@@ -330,6 +330,20 @@ robot:
     # [default: 0.5]
     max_acceleration: 0.5
 
+  # When the next leg of a pick or a place is judged: as it runs, or ahead while the arm waits or moves.
+  motion:
+
+    # off, as shipped: every leg is judged when the arm stands at its start, and the jaws' stroke is waited out
+    # first. in_settles: the jaws' one change goes out as ever, and while their stroke is waited out the next leg is
+    # judged: the line out of a place, and, in a world held across the stroke (safety.planning_world.hold), the joint
+    # move a task declared after the pick or the place. in_settles_and_motion: also a declared joint move not judged in
+    # a stroke, on a second thread while the line before it runs, on an arm that watches its sends
+    # (robot.ur.brake_on_halt true: a halt brakes the line in flight); elsewhere it falls back to in_settles and says
+    # so in the log. A leg judged ahead runs only where the arm stands within 0.5 mm of where it was judged from and
+    # nothing else it was judged on changed; otherwise it is judged again. Nothing is sent before the stroke is over.
+    # [default: off] [one of: off | in_settles | in_settles_and_motion]
+    judge_next_leg: "off"
+
   # Cartesian workspace bounding box in millimetres.
   workspace_limits:
 
@@ -640,6 +654,89 @@ robot:
   # [default: null]
   default_place_pose: null
 
+  # How a task sets its parts down (the owner, 2026-10-08 night): parts are set down, not dropped, and never piled.
+  # Every default is what a task did before this block existed.
+  place:
+
+    # Where the jaws open on a box the camera found (a target whose inside reads lower than its rim): over_the_rim,
+    # the task's rim air over the rim, as before; or below_the_rim, below_the_rim_mm under it, never lower than 10 mm
+    # over what the camera reads inside the box (its floor, or the parts already in it), read again before every drop.
+    # Where the camera could not read the inside, the box reads full to within 10 mm of its rim, the part or the open
+    # hand does not fit inside the opening by opening_margin_mm, the grasp stands more than 5 degrees off vertical, or
+    # the guard refuses the line into the box before anything is sent, the part is let go over the rim instead.
+    # [default: over_the_rim] [one of: over_the_rim | below_the_rim]
+    release_in_a_box: over_the_rim
+
+    # How far under the rim the part's bottom stands when the jaws open below it, mm: the owner's 10 to 50 mm.
+    # [default: 30.0]
+    below_the_rim_mm: 30.0
+
+    # How far inside a box's opening the part, as it hangs, and the open hand keep on every side before the part goes
+    # below the rim, mm. The guard judges the hand on the line in; the part itself is not modelled, so this keeps it
+    # off the walls.
+    # [default: 10.0]
+    opening_margin_mm: 10.0
+
+    # What a part's hang below the tool is measured from: declared_support, the support the cell declares
+    # (grasping.support, a lower bound on where any part stood, so every error goes toward more air: on the owner's
+    # cell the drop stood 85 to 92 mm over the rim, a 55 mm mat under the part); or measured, the lowest reading of a
+    # surface the pick's looks found under the part's cloud, or its cloud's lowest point where that is lower. Where
+    # the pick's looks found no surface under it, the declared support stands. Measured, a part set down at a taught
+    # pose keeps 5 mm of air over it.
+    # [default: declared_support] [one of: declared_support | measured]
+    part_bottom: declared_support
+
+    # Whether the parts on a flat place (a taught pose, or a target the camera found with no inside) lie side by side
+    # rather than at the one spot: a spot the camera reads free first (the pick's own looks for a taught pose, the
+    # check before the drop for a target), else the next spot of the grid the task has not filled. A place with no
+    # free spot puts the part back where it was gripped and asks.
+    # [default: false]
+    side_by_side: false
+
+    # How far apart two parts lie side by side beyond their footprints (each the open hand's where that is wider), mm.
+    # [default: 20.0]
+    spacing_margin_mm: 20.0
+
+    # The spots a taught pose lays its parts out on where no camera reads them: rows x columns about the taught pose,
+    # along the taught tool's heading, the nearest the taught pose first.
+    grid:
+
+      # How many spots along the taught tool's +X.
+      # [default: 3]
+      rows: 3
+
+      # How many spots along the taught tool's +Y.
+      # [default: 3]
+      columns: 3
+
+      # How far apart two spots stand, mm; null: each part's own footprint, the open hand's where that is wider, and
+      # spacing_margin_mm.
+      # [default: null]
+      spacing_mm: null
+
+    # How a part is carried to a box a wrist camera found: via_the_look, to the look the box was found from, where the
+    # box is looked at again, as before; or over_the_rim, where one of the pick's looks was the box's: the box is
+    # checked on that look's frame (its rim's depth and colour, no detector), the arm's world holds the pick's frames
+    # for the place, and the part goes up and straight over to the box on judged lines, its bottom kept the rim air and
+    # rim_floor_margin_mm over the rim and over everything the pick's looks saw on the way. Anything that cannot be so
+    # (the box unsure on that frame, the way not seen, a line refused before anything was sent, a world that cannot
+    # hold the pick's frames) carries the part via the look instead. The console's switch comes in a later wave.
+    # [default: via_the_look] [one of: via_the_look | over_the_rim]
+    carry: via_the_look
+
+    # How far the part's bottom stays over the rim and over what the pick's looks saw on the way, beyond the rim air,
+    # on a carry over the rim, mm.
+    # [default: 15.0]
+    rim_floor_margin_mm: 15.0
+
+    # Whether a bin the check before a drop lost (not seen, moved too far, another size where it stood) is looked for
+    # again, as the owner decided on 2026-10-09: the task carries the part to its looks once more, and a bin of the
+    # size the survey found and the colour the task followed, standing in no other place, is kept in place of the old
+    # one and the drop planned anew over it, once per part; found nowhere, the part goes back where it was gripped and
+    # the task asks. false: every lost bin puts the part back and asks, as before.
+    # [default: true]
+    relocate: true
+
   # Cartesian POSITION the robot can retreat to at operator request.
   safe_pose:
 
@@ -760,6 +857,24 @@ robot:
       # [default: 2.0]
       limit_proximity_deg: 2.0
 
+      # Who solves the samples of a line a cuRobo UR judges before a moveL (the line down at the standoff, the
+      # lift at the part, the lines at the bin, the lines judged ahead). controller, as shipped: the controller's
+      # getInverseKinematics, a round trip of about 33 ms per sample. local: the driver solves every sample on the
+      # controller's own kinematics (its calibrated DH rows, read once per connection from the primary interface
+      # with nothing sent, and its active TCP) and asks the controller at two samples of each line whether it answers
+      # the same within 1e-6 rad; where it does not, where a sample cannot be vouched for, or where the rows cannot be
+      # read, that line is solved by the controller as before. About -1 s per line on the cell.
+      # [default: controller] [one of: controller | local]
+      line_ik: controller
+
+      # Which forward kinematics the singularity check before every moveL/moveJ of the motion controller
+      # differentiates. controller, as shipped: 12 getForwardKinematics round trips (about 0.4 s). dh: the arm's own
+      # DH chain here (the controller's calibrated rows where they can be read, the model's nominal table where they
+      # cannot and the controller's FK confirms it is its chain) times the active TCP, with the same differences and
+      # thresholds; anywhere else the controller's FK, as shipped.
+      # [default: controller] [one of: controller | dh]
+      singularity_fk: controller
+
     # Self-collision guard configuration.
     self_collision:
 
@@ -863,6 +978,16 @@ robot:
       # [default: 150.0]
       tool_finger_span_mm: 150.0
 
+      # Judge a path whole before judging it sample by sample: every route, joint move, plan, leg and line. Each
+      # guard finds, over the whole path at once, the first sample it might refuse, never later than the first it
+      # does; a sample before it is passed only where a bounding sphere, a part's convex hull (Coal) or a distance
+      # measured earlier less how far the pair moved since proves it keeps its distance. From that sample on every
+      # sample is judged one at a time as with this off, so the verdict, the sample it names and its message are the
+      # same. A route the exact guard took 2.3 to 2.6 s for on the owner's cell took 12 ms on the desk instead of
+      # 0.96 s, about 0.03 s on the cell. Off: the sample-by-sample loop, as before.
+      # [default: false]
+      whole_path_judge: false
+
     # Tool / payload envelope.
     payload:
 
@@ -945,6 +1070,28 @@ robot:
       # [default: true]
       mesh_first: true
 
+      # How many time-optimal passes a cuRobo joint plan runs after the pass that finds it. 3 is cuRobo's own
+      # plan_cspace, today's plan to the bit; those passes only shrink the plan's time step towards cuRobo's
+      # acceleration and jerk limits, and the arm runs the plan's positions with moveJ at its own speed, never that
+      # timing. 0 is the first pass's plan, about a quarter of the optimiser's work per attempt. A plan is found
+      # exactly where 3 finds one; its positions may differ, and the exact guard and the planner's check judge every
+      # sample of it as they judge every plan. The owner's cell: 0, after the desk A/B
+      # (scripts/curobo/ab_planning_spheres.py --finetune 3,0).
+      # [default: 3]
+      finetune_passes: 3
+
+      # The robot cuRobo plans with. "" plans on the robot every plan is judged with: the arm's cover fit (747
+      # spheres on a UR10), the hand's and the wrist camera's, 172,414 sphere pairs on the owner's cell. "lean" plans
+      # on a planning-only model made the way NVIDIA's own UR configs are (a few spheres along each link's axis,
+      # fitted to this arm's and this hand's committed meshes by scripts/curobo/fit_planning_spheres.py, the camera's
+      # boxes filled coarsely, the self pairs the exact guard decides left to it): its planner, IK and graph planner
+      # are built from it, and every check, the combination evidence and the exact guard stay on today's robot and
+      # judge every sample of a plan as before. An arm or a hand without committed lean spheres, or a modelled
+      # carried part, plans on today's robot and the log says why. The owner's cell: "lean", once the desk A/B
+      # (scripts/curobo/ab_planning_spheres.py) shows it plans at least as often with no more refused plans.
+      # [default: ""] [one of: "" | lean]
+      planning_spheres: ""
+
     # Post-Stop dwell + steady-state gating.
     dwell:
 
@@ -956,6 +1103,21 @@ robot:
       # approach/grasp/retreat move, waiting for the controller to report it has stopped moving.
       # [default: 5.0]
       steady_timeout_s: 5.0
+
+      # Where the steady gate waits. verb, as shipped: every verb waits for steady before it asks the arm to move,
+      # and the arm judges the motion after that. send: the judgement goes first, while the arm settles from the
+      # motion before, and an arm that gates its own sends (the cuRobo UR) waits for steady right before it sends;
+      # where the arm then stands more than 0.5 mm from where the motion was judged from, it is judged again. A
+      # timeout sends nothing either way, and so does a halt. Saves the 0.5-0.6 s a gate costs right after a motion.
+      # [default: verb] [one of: verb | send]
+      gate_at: verb
+
+      # What a UR's steady gate reads (also the zero-move skip at a look). is_steady, as shipped: the controller's
+      # isSteady, a script command of about 33 ms, polled every 20 ms. joint_speeds: every actual joint speed at most
+      # 0.01 rad/s on three fresh samples in a row read 8 ms apart, locally with no round trip; isSteady where they
+      # cannot be read. steady_timeout_s and its refusal are the same either way. About -0.54 s a gate after a motion.
+      # [default: is_steady] [one of: is_steady | joint_speeds]
+      steady_signal: is_steady
 
     # What the TRAJECTORY PLANNER is told about the cell, as axis-aligned boxes in the base frame.
     planning_world:
@@ -1008,6 +1170,15 @@ robot:
       # [default: true]
       require_registration: true
 
+      # Whether the cuRobo planner writes a world of boxes into its storage in one call. false: update_world, one
+      # box after another with a device sync each, 217 ms a refresh at 129 boxes on the owner's cell, about eight
+      # refreshes a pick. true: cuRobo's own load_batch, every slot the same bit for bit (cuRobo's storage on the
+      # CPU: 0.55 ms against 15.1 ms at 129 boxes, scripts/curobo/probe_world_in_place.py). A planner holding mesh
+      # slots or a voxel grid, and a world with meshes or a field, go through update_world either way. The owner's
+      # cell: true, once the probe's two sidecars judge 1,000 configurations alike (--sidecars).
+      # [default: false]
+      register_in_place: false
+
       # Geometry the planner routes around as the shape it is rather than as a box. The case that pays
       # for itself is a container: as a box a tote is solid, so a cell can never reach into it; as a
       # mesh it keeps its hollow. The planning sidecar reads the file itself, in its own process, so
@@ -1025,6 +1196,31 @@ robot:
       #       yaw_deg: 0.0                    # rotation about base Z; a tote stands on a floor
       #       scale: 0.001                    # 0.001 for a mesh authored in millimetres
       meshes: []
+
+      # Where a pick or a place judges a motion in the world it already holds rather than in a new camera frame
+      # (the owner, 2026-10-09: "altes Bild, weil sich in der Kiste so oder so nichts verändert"). Off, as shipped,
+      # every motion takes a new frame. Every judgement still runs in the held world, the exact guard on every sample
+      # and the planner; only no new frame is taken.
+      hold:
+
+        # At a standoff, the line down to a grasp, or the line in to a place, is judged in the world held from before
+        # the arm left for the standoff: a grasp judged ahead holds the world its line down was judged in at the look
+        # (its route to the standoff is judged in it too), a place the world its route to the standoff was judged in.
+        # A standoff frame in a bin often holds no depth at all.
+        # [default: false]
+        standoff: false
+
+        # The world the line down was judged in, held at the part, is held for the joint move a task declared after
+        # the pick (the carry to the bin's look), judged while the jaws close. Acts only through
+        # robot.motion.judge_next_leg.
+        # [default: false]
+        carry: false
+
+        # The world the line in was judged in is held through the release: the line out is judged in it (while the
+        # jaws open where robot.motion.judge_next_leg says so), and the joint move a task declared after the place
+        # (the return) too.
+        # [default: false]
+        drop: false
 
       # What the cameras see, turned into obstacles the planner routes around. It has no opt-in of its
       # own: a cell that declares planning_world has said the planner should know its surroundings, and
@@ -1197,6 +1393,115 @@ robot:
     # for a tilted approach. Off, a tilted grasp is offered only where no vertical one fits.
     # [default: true]
     side_approaches: true
+
+    # The pick computes a frame's parts one at a time and takes the first good one (the owner's "speed first",
+    # 2026-10-08): the parts the hand closes across first, the less crowded first, and the first whose grasp is full,
+    # carries no rescan reason and scores good_part_score or more is taken without computing the rest; none good, the
+    # best is taken. A later look of a wrist pick computes only the part it keeps. Off, every part is computed and the
+    # best taken, as before. The clutter selector (ordering) always computes every part.
+    # [default: true]
+    first_good_part: true
+
+    # The score, 0 to 1, a part's best grasp needs for first_good_part to take it at once. A full result's best grasp
+    # scored 0.80 at the median on the grasp bench, one SFE's fine search found 0.57.
+    # [default: 0.75]
+    good_part_score: 0.75
+
+    # SFE's fine search waits while another part may have a full result: a part is computed without it, but for the
+    # last where no part has a full result yet, and gets it only where no part has a full result with a grasp. Off,
+    # every part gets its fine search at once, as before.
+    # [default: true]
+    fine_pass_waits: true
+
+    # Whether a part's pixels must have the colour its phrase names (src/robot/perception/colour_check.py). Asked for
+    # "each separate grey cube", the detector boxed the green and the orange parts too, by the prompt's words, and the
+    # cell picked them (2026-10-08). on (the owner's choice): the camera source judges every part mapped onto an object
+    # label whose words name one colour, on its mask in CIELAB (about 2 ms a part), and asks the VLM for one colour
+    # word where the pixels cannot tell; a part of another colour, or one the VLM names no colour of, stays a neighbour
+    # and is never a target. log: judged and logged, nothing changed. off: not judged. A bare on or off is the word.
+    # [default: on]
+    colour_check: "on"
+
+    # What the colour check does with a pixel some but not all of whose channels the camera clipped (250 of 255 or
+    # over; src/robot/perception/colour_check.py). The colour camera runs on auto exposure and clips an orange part's
+    # red channel where the mat around it is dark: its hue is read off green alone and lands in the yellow band, and on
+    # the 31 looks the cell recorded on 2026-10-07 orange was judged right 53 of 89 times. exclude (the owner's choice,
+    # 2026-10-09: "wenn das schon so gut war, dann nutzen wir das doch instant"): left out of the hue and lightness
+    # counts, and a part left with fewer than 50 pixels is unsure, so the VLM is asked; offline 89 of 89 orange right,
+    # the grey cubes, the white and green parts and the yellow bin as before. No red part stood in those views. keep:
+    # counted as every other pixel, as before. A pixel clipped in all three channels (glare) is counted either way.
+    # [default: exclude]
+    # [one of: keep | exclude]
+    colour_check_clipped: exclude
+
+    # How many worker processes search a part's grasps beside the cell's own (src/robot/grasping/workers.py). One
+    # boxed-in cube took 24 of a look's 30 s on the owner's cell (2026-10-08), every grasp the support-footprint stage
+    # tried built one after another in one process. Its units then run on worker processes started once, when the cell
+    # is built, with the same candidates, refusal counts and telemetry as in the one process; a part the workers cannot
+    # answer for is searched in it, as before, said in the log. 0: no workers. auto: every physical core but one, said
+    # in the log. A number: that many. The workers run at the console's own priority, one BLAS thread each.
+    # [default: 0]
+    workers: 0
+
+    # SFE builds each closing line's grasps at once, in one numpy pass per check (src/robot/grasping/generation/
+    # support_footprint.py). It made every grasp it tried one after another: 24 s for one boxed-in cube on the owner's
+    # cell (2026-10-08). On, in the cell's process and in every worker, with the same candidates, refusal counts and
+    # telemetry to the bit: 0.22 instead of 2.2 s for the recorded boxed-in Zollstock on the desk. A build whose
+    # deciding number lies within 1e-6 of its threshold is made alone, as before; a machine whose numpy would round a
+    # stacked product otherwise makes every build alone, said in the log. Off: every build one at a time, as before.
+    # Switch it on for a cell once scripts/checks/batched_builds.py passes on its machine.
+    # [default: false]
+    batched_builds: false
+
+    # A look whose view of its part is weak sends a wrist pick on to its next look (the owner's automatic trigger,
+    # 2026-10-08 night; src/robot/grasping/loop/pick_loop.py, _weak_look). A valid grasp at the first look ended the
+    # looking every time on the owner's cell, so a stacked pair or a shiny part was gripped on what one look showed. On,
+    # a look is not safe to stop at where depth was measured on less than 85 % of its mask of the part, where the part
+    # stands more than 1.5 times its footprint's short side over its support with no side of it seen, or where its
+    # cloud holds two height plateaus at least 15 mm apart; judged again on the views fused so far at every look. It
+    # only adds looks (and the generated view after them): the grasp the looks end on is gripped as before. A wrist pick
+    # handed looks only: the console's "bei Bedarf". Off: the first valid grasp with no rescan reason ends the looking.
+    # [default: false]
+    weak_look_trigger: false
+
+    # The regions a task keeps out of its picks (its bin's footprint, the circles about its drops) are painted out of
+    # the copy of each frame its detector reads (src/robot/perception/realsense_source.py, kept_out_pixels), so it
+    # boxes none of the parts already placed there: 2 to 4 s a box on the owner's cell. A pixel is painted where its
+    # own depth places it in such a region, never one of a part that reaches out of it, a hole in the depth only where
+    # painted pixels close round it, in the colour of what the parts stand on. The segmenter, the depth, the colour
+    # check and the planner world read the real frame. Needs a declared support (support) and a perception backend that
+    # hands its detector a copy (said once where it does not). Off: the detector reads the real frame, as before.
+    # [default: false]
+    hide_own_places: false
+
+    # A task asks the detector once and then follows its parts (src/robot/perception/kept_scene.py, the owner,
+    # 2026-10-09). Every pick of a task used to ground its first look again, Qwen boxing every part on the mat in 13 s
+    # at the median, to find the parts where the last pick left them. On, the next pick finds them again with SAM2 on
+    # their boxes and no detector, where nothing changed in depth (both ways, the task's bin and drop left out) and every
+    # part stands where it stood or within max_shift_mm, its mask in its footprint, at its top and of its colour; all or
+    # nothing per frame, any doubt grounds the frame as before. The first pick and a Restart ground; so does the pick
+    # after a push, a blocker cleared, a recovery, a try that sent motion and failed, a gripped part that was not kept,
+    # and every end check of an "until empty" task. The later looks of each pick find its first look's parts by their
+    # projected boxes. The guard judges every motion against fresh depth either way.
+    follow_parts:
+      # Whether a task follows its parts. Off: every look is grounded, as before.
+      # [default: false]
+      enabled: false
+
+      # Ground again after this many picks since the last grounding, however clean the scene reads; 0: only on a
+      # trigger. Bounds how long a part swapped for one of the same size, height and colour goes unseen.
+      # [default: 0]
+      refresh_every_picks: 0
+
+      # How far a part may have moved since the last pick and still be followed, mm (its new mask's surface against
+      # the kept one, BASE xy): a neighbour the fingers brushed. Further, it is grounded. At most 15.
+      # [default: 10.0]
+      max_shift_mm: 10.0
+
+      # How far a part may have crept since the detector grounded it, over every pick that followed it, mm; at least
+      # max_shift_mm, at most 40.
+      # [default: 20.0]
+      max_creep_mm: 20.0
 
     # Opt-in JSONL path for production GraspAttemptRecord logging. When set,
     # AutonomousGraspService.from_robot_config / from_components call enable_record_logging(path), so every
@@ -1949,9 +2254,23 @@ robot:
       # [one of: support_footprint | silhouette]
       stage: support_footprint
 
-      # Push every reconstructed face outward by this much.
+      # Push every reconstructed face outward by this much. It gives back the faces footprint_rim_mm takes: 1.25
+      # with a 2 mm rim is what the owner's cell was measured with.
       # [default: 0.0]
       inflate_mm: 0.0
+
+      # The rim a part's mask loses for the cloud the support-footprint stage builds its footprint from, mm at the
+      # part (src/robot/grasping/generation/footprint_rim.py; the owner, 2026-10-09: "Ja, für Montag"): the mask
+      # eroded by ceil(rim * fx / z) px, z the part's median depth, never more than 30 % of the mask, a look's own
+      # input and the looks the pick loop fuses alike. The jaw faces, the association of looks, the kept scene, the
+      # colour check, the planner world's hold-out and the neighbours keep the whole mask. The D415 smears a part's
+      # far edge into a ramp the mask's outer ~3 px lie on, and the footprint's hull follows it: on 23 grey cubes the
+      # cell recorded (2026-10-07) the centre the grasp closes on lay 2.53 mm off at the median, 2.5 mm of it away
+      # from the camera; with 2.0 (3 px, 4 nearer than 609 mm) and inflate_mm 1.25, 0.77 mm, the footprint's sides
+      # within 0.8 mm. Pair it with inflate_mm: the rim alone leaves the sides 1.8 and 3.0 mm short. 0.0: SFE's
+      # input as before.
+      # [default: 0.0]
+      footprint_rim_mm: 0.0
 
       # WHERE IN THE OBJECT'S DEPTH A GRASP IS ANCHORED, and how much of the depth under a mask is
       # believed at all. All five defaults are the do-nothing position, so a cell that leaves them

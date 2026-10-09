@@ -4,6 +4,9 @@
  * **Greifen**: the English phrase the detector is given, the operator's own words under it, how the detector would
  * route it, and "bitte prüfen" where the reader could not check it against the sentence. An empty phrase asks what to
  * pick; on a real cell "alles, was die Kamera sieht, auch Kistenwände" only with the operator's tick (Q7 A+).
+ * **Welches**: the one part the sentence singled out ("the gray cube on top of the other one"), which the camera then
+ * looks for alone; **Woher**: where the parts lie ("on the black mat"). Both English, both editable, both empty where
+ * the sentence said nothing of it (2026-10-08).
  * **Ablegen**: the default place, a taught pose by its label, or "Kamera sucht: …" (a target the camera finds).
  * **Umfang**: Einmal | Bis leer. **Danach**: Home or a taught pose. Then the Advanced drawer.
  *
@@ -11,18 +14,42 @@
  * countdown when one is due, and for a camera place what happens if the target is not found. It is off, saying why,
  * until the cell is ready and the card is complete. Without a reader (501, or the model not loaded) the card opens by
  * hand with the reason, every field editable. A refused Start is said right above Start, where the person is looking,
- * and brought into view: under the card's foot the chat could cut it off, and the click would read as ignored.
+ * and brought into view: under the card's foot the chat could cut it off, and the click would read as ignored. Where
+ * Enter starts a clean reading at once (the owner, 2026-10-08), this card is what Enter opens for every other one, and
+ * for a start the server refused.
+ *
+ * The phrases take what the server takes, 200 characters each (`api/limits.ts`): a field stops typing there, and from
+ * 80 % on it says how much it holds.
+ *
+ * **Regeln**, where the reading is a sort (the owner, 2026-10-09: "Grüne Teile in die gelbe Kiste, rote in die
+ * blaue"): the first rule is Greifen and Ablegen above, each further one a row of its own, the kind of part → its
+ * place (a target the camera finds or a taught pose, as Ablegen offers), with its "bitte prüfen" and a button that
+ * removes it; "Regel hinzufügen" adds one, three at most beside the first. Every change of a row is recorded as
+ * `rules`. A card of one rule looks as it always did.
  */
 
 import { useId, useRef } from 'react'
 
 import type { ApiError, CellFactsOut, PosesOut, RoutePreviewOut } from '../api/client'
+import { MAX_FIELD_CHARS, MAX_MORE_RULES, showsCount } from '../api/limits'
 import { ErrorBanner } from '../components/ui'
 import { useT } from '../i18n'
 import { noteMsg, refusalMsg } from '../i18n/codes'
 import { Icon } from '../icons'
 import AdvancedDrawer from './AdvancedDrawer'
-import { RIM_AIR_MM, draftProblems, type Draft, type DraftField, type DraftProblem, type PlaceChoice } from './draft'
+import {
+  PROBLEM_KEY,
+  RIM_AIR_MM,
+  draftProblems,
+  newRule,
+  placeChoiceWords,
+  placesOf,
+  ruleDoubt,
+  type Draft,
+  type DraftField,
+  type DraftRule,
+  type PlaceChoice,
+} from './draft'
 import { useBroughtIntoView } from './hooks'
 import { COCKPIT } from './i18n'
 
@@ -48,16 +75,17 @@ export interface UnderstoodCardProps {
   retry(): void
 }
 
-const PROBLEM_KEY: Record<DraftProblem, 'ck.start.needObject' | 'ck.start.needPhrase' | 'ck.place.noDefault' | 'ck.start.unknownPose'> = {
-  needObject: 'ck.start.needObject',
-  needPhrase: 'ck.start.needPhrase',
-  noDefault: 'ck.place.noDefault',
-  unknownPose: 'ck.start.unknownPose',
-}
-
 function placeValue(place: PlaceChoice): string {
   if (place.kind === 'pose') return `pose:${place.pose}`
   return place.kind
+}
+
+/** The place a select's value names; a target the camera finds keeps the phrase it had. */
+function choiceOf(value: string, camera: { readonly phrase: string; readonly said: string | null } | null): PlaceChoice | null {
+  if (value === 'default') return { kind: 'default' }
+  if (value === 'camera') return { kind: 'camera', phrase: camera?.phrase ?? '', said: camera?.said ?? null }
+  if (value.startsWith('pose:')) return { kind: 'pose', pose: value.slice(5) }
+  return null
 }
 
 export default function UnderstoodCard(props: UnderstoodCardProps) {
@@ -69,10 +97,20 @@ export default function UnderstoodCard(props: UnderstoodCardProps) {
   const off = [...cellOff, ...problems.map((problem) => t(PROBLEM_KEY[problem]))]
   const canStart = off.length === 0 && busy === null
   const taught = poses?.poses ?? []
-  const defaultLabel = poses?.default_place ? (taught.find((p) => p.name === poses.default_place)?.label || poses.default_place) : null
   const manual = draft.mode === 'manual'
   const title = t(manual ? 'ck.card.manual' : 'ck.card.understood')
   const camera = draft.place.kind === 'camera' ? draft.place : null
+  // A sort's further rules (2026-10-09): the card shows them as rows of their own, and "anything" sorts nothing.
+  const sort = draft.moreRules.length > 0
+  // The put-back fallback is said wherever a rule puts its parts where the camera finds them.
+  const finds = placesOf(draft).some((place) => place.kind === 'camera' && place.phrase.trim() !== '')
+  // The card's notes: the reading's own and its first rule's, then each further rule's, said with its number.
+  const notes = [
+    ...draft.notes.map((note) => ({ id: note, text: t.msg(noteMsg(note)) })),
+    ...draft.moreRules.flatMap((rule, index) =>
+      rule.notes.map((note) => ({ id: `${index + 2}:${note}`, text: t.msg(ruleDoubt(index + 2, noteMsg(note))) })),
+    ),
+  ]
   // The title names the first motion; the lines under it what comes before it (the countdown) and what happens if a
   // camera's target is not found. Each its own line, so each reads as a sentence in both languages.
   const label = t('ck.start.label', { motion })
@@ -80,10 +118,12 @@ export default function UnderstoodCard(props: UnderstoodCardProps) {
   const refused = useBroughtIntoView<HTMLDivElement>(error)
 
   const setPlace = (value: string) => {
-    if (value === 'default') update('place', { place: { kind: 'default' } })
-    else if (value === 'camera') update('place', { place: { kind: 'camera', phrase: camera?.phrase ?? '', said: camera?.said ?? null } })
-    else if (value.startsWith('pose:')) update('place', { place: { kind: 'pose', pose: value.slice(5) } })
+    const place = choiceOf(value, camera)
+    if (place) update('place', { place })
   }
+  const setRules = (moreRules: readonly DraftRule[]) => update('rules', { moreRules })
+  const changeRule = (index: number, change: Partial<DraftRule>) =>
+    setRules(draft.moreRules.map((rule, i) => (i === index ? { ...rule, ...change } : rule)))
 
   return (
     <section className="ck-card ck-understood hud-frame" aria-label={title}>
@@ -119,9 +159,11 @@ export default function UnderstoodCard(props: UnderstoodCardProps) {
               type="text"
               className="ck-input-phrase"
               value={draft.object}
+              maxLength={MAX_FIELD_CHARS}
               placeholder={t('ck.pick.placeholder')}
               onChange={(e) => update('object', { object: e.target.value, objectVerified: true })}
             />
+            <Count length={draft.object.length} />
             <RouteBadge route={draft.objectRoute} />
             {!manual && !draft.objectVerified && draft.object.trim() !== '' && <span className="ck-tag warn">{t('ck.pick.check')}</span>}
           </div>
@@ -129,7 +171,7 @@ export default function UnderstoodCard(props: UnderstoodCardProps) {
           {draft.object.trim() === '' && (
             <div className="ck-ask-pick">
               <p>{t('ck.pick.ask')}</p>
-              {rehearsal ? (
+              {sort ? null : rehearsal ? (
                 <small>{t('ck.pick.anythingProbe')}</small>
               ) : (
                 <label className="ck-check-line">
@@ -146,20 +188,48 @@ export default function UnderstoodCard(props: UnderstoodCardProps) {
         </dd>
 
         <dt>
+          <label htmlFor={`${ids}-which`}>{t('ck.field.which')}</label>
+        </dt>
+        <dd>
+          <div className="ck-field-row">
+            <input
+              id={`${ids}-which`}
+              type="text"
+              className="ck-input-phrase"
+              value={draft.which}
+              maxLength={MAX_FIELD_CHARS}
+              placeholder={t('ck.which.placeholder')}
+              onChange={(e) => update('which', { which: e.target.value })}
+            />
+            <Count length={draft.which.length} />
+          </div>
+          {draft.which.trim() !== '' && <small>{t('ck.which.hint')}</small>}
+        </dd>
+
+        <dt>
+          <label htmlFor={`${ids}-source`}>{t('ck.field.source')}</label>
+        </dt>
+        <dd>
+          <div className="ck-field-row">
+            <input
+              id={`${ids}-source`}
+              type="text"
+              className="ck-input-phrase"
+              value={draft.source}
+              maxLength={MAX_FIELD_CHARS}
+              placeholder={t('ck.source.placeholder')}
+              onChange={(e) => update('source', { source: e.target.value })}
+            />
+            <Count length={draft.source.length} />
+          </div>
+        </dd>
+
+        <dt>
           <label htmlFor={`${ids}-place`}>{t('ck.field.place')}</label>
         </dt>
         <dd>
           <select id={`${ids}-place`} value={placeValue(draft.place)} onChange={(e) => setPlace(e.target.value)}>
-            <option value="default">{defaultLabel ? t('ck.place.default', { label: defaultLabel }) : t('ck.place.defaultNone')}</option>
-            {taught.map((pose) => (
-              <option key={pose.name} value={`pose:${pose.name}`}>
-                {pose.label || pose.name}
-              </option>
-            ))}
-            {draft.place.kind === 'pose' && !taught.some((p) => p.name === (draft.place as { pose: string }).pose) && (
-              <option value={placeValue(draft.place)}>{draft.place.pose}</option>
-            )}
-            <option value="camera">{t('ck.place.camera')}</option>
+            <PlaceOptions place={draft.place} poses={poses} />
           </select>
           {camera && (
             <>
@@ -169,9 +239,11 @@ export default function UnderstoodCard(props: UnderstoodCardProps) {
                   className="ck-input-phrase"
                   aria-label={t('ck.place.target')}
                   value={camera.phrase}
+                  maxLength={MAX_FIELD_CHARS}
                   placeholder={t('ck.place.phrase')}
                   onChange={(e) => update('place', { place: { kind: 'camera', phrase: e.target.value, said: camera.said }, placeVerified: true })}
                 />
+                <Count length={camera.phrase.length} />
                 <RouteBadge route={draft.placeRoute} />
                 {!manual && !draft.placeVerified && <span className="ck-tag warn">{t('ck.pick.check')}</span>}
               </div>
@@ -181,6 +253,49 @@ export default function UnderstoodCard(props: UnderstoodCardProps) {
           )}
           {draft.place.kind !== 'camera' && <small>{t('ck.place.poseHint')}</small>}
         </dd>
+
+        {sort && (
+          <>
+            <dt id={`${ids}-rules`}>{t('ck.field.rules')}</dt>
+            <dd>
+              <ol className="ck-rules-edit" aria-labelledby={`${ids}-rules`}>
+                <li className="ck-rule-row first">
+                  <span className="ck-rule-n mono">1</span>
+                  <span>
+                    {t.msg({
+                      key: 'list.rule',
+                      params: { what: draft.objectSaid || draft.object.trim() || '—', where: placeChoiceWords(draft.place, poses) },
+                    })}
+                  </span>
+                  <small>{t('ck.rules.first')}</small>
+                </li>
+                {draft.moreRules.map((rule, index) => (
+                  <RuleRow
+                    key={index}
+                    rule={rule}
+                    n={index + 2}
+                    poses={poses}
+                    manual={manual}
+                    change={(change) => changeRule(index, change)}
+                    remove={() => setRules(draft.moreRules.filter((_, i) => i !== index))}
+                  />
+                ))}
+              </ol>
+              <div className="ck-rules-foot">
+                <button
+                  type="button"
+                  className="ghost ck-rule-add"
+                  disabled={draft.moreRules.length >= MAX_MORE_RULES}
+                  onClick={() => setRules([...draft.moreRules, newRule()])}
+                >
+                  <Icon name="plus" size={16} />
+                  {t('ck.rules.add')}
+                </button>
+                {draft.moreRules.length >= MAX_MORE_RULES && <small>{t('ck.rules.max', { max: MAX_MORE_RULES })}</small>}
+              </div>
+            </dd>
+          </>
+        )}
 
         <dt id={`${ids}-scope`}>{t('ck.field.scope')}</dt>
         <dd>
@@ -216,10 +331,10 @@ export default function UnderstoodCard(props: UnderstoodCardProps) {
         </dd>
       </dl>
 
-      {draft.notes.length > 0 && (
+      {notes.length > 0 && (
         <ul className="ck-notes">
-          {draft.notes.map((note) => (
-            <li key={note}>{t.msg(noteMsg(note))}</li>
+          {notes.map((note) => (
+            <li key={note.id}>{note.text}</li>
           ))}
         </ul>
       )}
@@ -235,9 +350,15 @@ export default function UnderstoodCard(props: UnderstoodCardProps) {
 
       {tech && draft.reading && (
         <div className="ck-human">
-          {draft.reading.latencyMs !== null && draft.reading.attempts !== null
-            ? t('ck.card.reading', { ms: Math.round(draft.reading.latencyMs), attempts: draft.reading.attempts, model: draft.reading.modelId ?? '—' })
-            : null}
+          {draft.reading.known
+            ? t('ck.card.known')
+            : draft.reading.latencyMs !== null && draft.reading.attempts !== null
+              ? t(draft.reading.remembered ? 'ck.card.remembered' : 'ck.card.reading', {
+                  ms: Math.round(draft.reading.latencyMs),
+                  attempts: draft.reading.attempts,
+                  model: draft.reading.modelId ?? '—',
+                })
+              : null}
           {draft.reading.raw && (
             <details className="ck-data">
               <summary>{t('ck.card.raw')}</summary>
@@ -261,7 +382,7 @@ export default function UnderstoodCard(props: UnderstoodCardProps) {
             {busy === 'starting' ? t('ck.start.starting') : label}
           </span>
           {countdown && <small>{t('ck.start.countdown')}</small>}
-          {camera && camera.phrase.trim() !== '' && <small>{t('ck.start.camera')}</small>}
+          {finds && <small>{t('ck.start.camera')}</small>}
         </button>
         <button type="button" className="ghost big" onClick={discard} disabled={busy === 'starting'}>
           {t('ck.card.discard')}
@@ -279,6 +400,117 @@ export default function UnderstoodCard(props: UnderstoodCardProps) {
       )}
     </section>
   )
+}
+
+/** The places a select offers: the default place, every taught pose by its label (a pose that is gone by its name),
+ *  and a target the camera finds. */
+function PlaceOptions({ place, poses }: { place: PlaceChoice; poses: PosesOut | null }) {
+  const t = useT(COCKPIT)
+  const taught = poses?.poses ?? []
+  const defaultLabel = poses?.default_place ? (taught.find((p) => p.name === poses.default_place)?.label || poses.default_place) : null
+  return (
+    <>
+      <option value="default">{defaultLabel ? t('ck.place.default', { label: defaultLabel }) : t('ck.place.defaultNone')}</option>
+      {taught.map((pose) => (
+        <option key={pose.name} value={`pose:${pose.name}`}>
+          {pose.label || pose.name}
+        </option>
+      ))}
+      {place.kind === 'pose' && !taught.some((p) => p.name === place.pose) && <option value={placeValue(place)}>{place.pose}</option>}
+      <option value="camera">{t('ck.place.camera')}</option>
+    </>
+  )
+}
+
+/**
+ * One further rule of a sort, compact: the kind of part, its place as Ablegen offers it (a target the camera finds
+ * with its phrase), "bitte prüfen" where the reader did not find a word in the sentence, the operator's own words under
+ * it, and the button that removes it.
+ */
+function RuleRow({
+  rule,
+  n,
+  poses,
+  manual,
+  change,
+  remove,
+}: {
+  rule: DraftRule
+  /** The rule's number as the card says it: 2 for the first further rule. */
+  n: number
+  poses: PosesOut | null
+  manual: boolean
+  change(change: Partial<DraftRule>): void
+  remove(): void
+}) {
+  const t = useT(COCKPIT)
+  const camera = rule.place.kind === 'camera' ? rule.place : null
+  const setPlace = (value: string) => {
+    const place = choiceOf(value, camera)
+    if (place) change({ place, placeRoute: null })
+  }
+  const said =
+    rule.objectSaid && camera?.said
+      ? t('ck.rules.saidBoth', { what: rule.objectSaid, where: camera.said })
+      : rule.objectSaid || camera?.said
+        ? t('ck.pick.said', { said: rule.objectSaid || camera?.said })
+        : null
+  return (
+    <li className="ck-rule-row">
+      <span className="ck-rule-n mono">{n}</span>
+      <div className="ck-rule-body">
+        <div className="ck-field-row">
+          <input
+            type="text"
+            className="ck-input-phrase"
+            aria-label={t('ck.rules.object', { n })}
+            value={rule.object}
+            maxLength={MAX_FIELD_CHARS}
+            placeholder={t('ck.pick.placeholder')}
+            onChange={(e) => change({ object: e.target.value, objectVerified: true, objectRoute: null })}
+          />
+          <Count length={rule.object.length} />
+          <RouteBadge route={rule.objectRoute} />
+          {!manual && !rule.objectVerified && rule.object.trim() !== '' && <span className="ck-tag warn">{t('ck.pick.check')}</span>}
+        </div>
+        <div className="ck-field-row">
+          <span className="ck-rule-arrow" aria-hidden="true">
+            →
+          </span>
+          <select aria-label={t('ck.rules.place', { n })} value={placeValue(rule.place)} onChange={(e) => setPlace(e.target.value)}>
+            <PlaceOptions place={rule.place} poses={poses} />
+          </select>
+          {camera && (
+            <>
+              <input
+                type="text"
+                className="ck-input-phrase"
+                aria-label={t('ck.rules.target', { n })}
+                value={camera.phrase}
+                maxLength={MAX_FIELD_CHARS}
+                placeholder={t('ck.place.phrase')}
+                onChange={(e) => change({ place: { kind: 'camera', phrase: e.target.value, said: camera.said }, placeVerified: true, placeRoute: null })}
+              />
+              <Count length={camera.phrase.length} />
+              <RouteBadge route={rule.placeRoute} />
+              {!manual && !rule.placeVerified && <span className="ck-tag warn">{t('ck.pick.check')}</span>}
+            </>
+          )}
+        </div>
+        {said && <small>{said}</small>}
+      </div>
+      <button type="button" className="ghost ck-rule-remove" aria-label={t('ck.rules.remove', { n })} title={t('ck.rules.remove', { n })} onClick={remove}>
+        <Icon name="close" size={16} />
+      </button>
+    </li>
+  )
+}
+
+/** How many of a phrase's characters are used, said once the field is 80 % full. */
+function Count({ length }: { length: number }) {
+  const t = useT(COCKPIT)
+  if (!showsCount(length, MAX_FIELD_CHARS)) return null
+  return <span className="ck-count">{t('ck.field.count', { n: length, max: MAX_FIELD_CHARS })}</span>
 }
 
 /** How the detector would route a phrase: by the phrase grounder, or by the VLM; and whether it can run here. */

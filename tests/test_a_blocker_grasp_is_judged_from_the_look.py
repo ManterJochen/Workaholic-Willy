@@ -7,15 +7,19 @@ where the arm stands and with nothing sent:
 
 * ``GraspExecutionPolicy.refusal_ahead`` hands the arm the very poses ``execute`` drives: the standoff, the grasp and
   the lift's top, and the width the lift is judged carrying;
-* ``URRobotArm.grasp_refusal_ahead`` judges them in the order the pick runs them, each from where the one before ends:
-  the route ``move`` would run to the standoff, the line down from that route's end, and the lift from the grasp's
-  configuration as if carrying; the first refusal ends the judgement and is said;
+* ``URRobotArm.grasp_refusal_ahead`` judges each once where it can (the judge chain, 2026-10-08): the line down from the
+  configuration the route to the standoff ends on as the closed form names it, the lift from the grasp's configuration
+  as if carrying, in the world the line down was judged in, and the route ``move`` would run to the standoff last. A
+  route that ends there is kept for the move to the standoff; one that ends anywhere else has the line and the lift
+  judged again from its end, each in its own world, as before. The first refusal ends the judgement and is said;
 * a line judged from elsewhere is never the line commanded.
 """
 
 from __future__ import annotations
 
 import unittest
+from collections.abc import Iterator
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 
@@ -95,18 +99,26 @@ def _pose(z: float) -> Pose:
     return Pose.tool_down(-150.0, -760.0, z)
 
 
+#: The configuration the stand-in's closed form names for the standoff, and a route's end that is not it.
+_NEAR = [0.05] * 6
+_ELSEWHERE = [0.1] * 6
+
+
 class TheArmJudgesInTheOrderThePickRunsTests(unittest.TestCase):
-    """``URRobotArm.grasp_refusal_ahead`` on a stand-in of the arm's own judgements."""
+    """``URRobotArm.grasp_refusal_ahead`` on a stand-in of the arm's own judgements: its world is one refresh, which
+    nothing replaces, and a held world opened on it is recorded as ``("held", reason)``."""
 
     def _arm(self, *, route: Any = None, line: Any = None, lift: Any = None, planner: str = "curobo") -> Any:
         from src.robot.drivers.ur.arm import _Route
 
         asked: list[tuple[str, Any]] = []
+        kept: list[Any] = []
+        world = object()
 
         def route_to(planner_: Any, goal: Pose, pose: Pose, *, velocity: float) -> Any:
             asked.append(("route", (pose, velocity)))
-            return route if route is not None else _Route(waypoints=[[0.0] * 6, [0.1] * 6], dense=2, how="direct line",
-                                                           planned=False)
+            return route if route is not None else _Route(waypoints=[[0.0] * 6, list(_ELSEWHERE)], dense=2,
+                                                           how="direct line", planned=False)
 
         def judge_line(pose: Pose, *, command: MotionCommand, commanded: bool = True, start: Any = None) -> Any:
             asked.append(("line", (pose, commanded, start)))
@@ -114,7 +126,7 @@ class TheArmJudgesInTheOrderThePickRunsTests(unittest.TestCase):
 
         def nearest(pose: Pose) -> Any:
             asked.append(("nearest", pose))
-            return SimpleNamespace(values=np.array([0.05] * 6))
+            return SimpleNamespace(values=np.array(_NEAR))
 
         def ik(pose: Pose, *, seed: Any) -> Any:
             asked.append(("ik", (pose, list(seed.tolist()))))
@@ -124,18 +136,32 @@ class TheArmJudgesInTheOrderThePickRunsTests(unittest.TestCase):
             asked.append(("lift", (pose, grip_width_mm, start)))
             return lift
 
-        self.asked = asked
-        from src.robot.drivers.ur.arm import URRobotArm
+        @contextmanager
+        def held_world(reason: str) -> Iterator[None]:
+            asked.append(("held", reason))
+            yield
 
-        arm = SimpleNamespace(
+        def keep(planner_: Any, route_: Any, standoff: Pose, *, velocity: float) -> None:
+            kept.append((route_, standoff, velocity))
+
+        self.asked = asked
+        self.kept = kept
+        return SimpleNamespace(
             _motion_planner=planner, _preflight=object(), _conn=SimpleNamespace(is_connected=True),
             config=SimpleNamespace(motion_limits=SimpleNamespace(max_velocity=0.5)),
             _curobo_ur_planner=lambda: "planner", _pose_to_flange=lambda pose: pose,
             _route_to_the_nearest_goal=route_to, _judge_linear_move=judge_line, ik=ik, carried_line_refusal=carried,
-            nearest_configuration=nearest,
+            nearest_configuration=nearest, _planner_refresh=lambda: world, held_world=held_world,
+            _keep_the_route_ahead=keep,
+            # safety.planning_world.hold.* as shipped: no junction holds its world (2026-10-09).
+            _holds_at=lambda junction: False,
         )
-        arm._flange_line_refusal = lambda standoff, grasp: URRobotArm._flange_line_refusal(arm, standoff, grasp)
-        return arm
+
+    @staticmethod
+    def _route(end: "list[float]") -> Any:
+        from src.robot.drivers.ur.arm import _Route
+
+        return _Route(waypoints=[[0.0] * 6, list(end)], dense=2, how="direct line", planned=False)
 
     def _ask(self, arm: Any) -> str:
         from src.robot.drivers.ur.arm import URRobotArm
@@ -143,29 +169,59 @@ class TheArmJudgesInTheOrderThePickRunsTests(unittest.TestCase):
         return URRobotArm.grasp_refusal_ahead(arm, standoff=_pose(105.0), grasp=_pose(95.0), lift=_pose(195.0),
                                               grip_width_mm=30.0)
 
-    def test_each_is_judged_from_where_the_one_before_ends(self) -> None:
-        self.assertEqual("", self._ask(self._arm()))
+    def test_each_is_judged_once_and_the_route_last_where_it_ends_where_the_line_was_judged_from(self) -> None:
+        """The judge chain, 2026-10-08: on the cell the line down was judged twice and the lift's world refreshed for the
+        same question the line's had answered, 2.0 to 2.7 s of a try."""
+        route = self._route(_NEAR)
+        self.assertEqual("", self._ask(self._arm(route=route)))
         kinds = [kind for kind, _ in self.asked]
-        # The line down first from the standoff's nearest configuration (``_flange_line_refusal``), then as before.
-        self.assertEqual(["nearest", "line", "route", "line", "ik", "lift"], kinds)
-        self.assertEqual([0.05] * 6, self.asked[1][1][2][1])
-        _pose_line, commanded, start = self.asked[3][1]
+        self.assertEqual(["nearest", "line", "ik", "held", "lift", "route"], kinds)
+        _line_pose, commanded, start = self.asked[1][1]
         self.assertFalse(commanded)
         self.assertAlmostEqual(float(start[0].position_mm[2]), 105.0)
-        self.assertEqual([0.1] * 6, start[1])                      # the route's end
-        self.assertEqual([0.1] * 6, self.asked[4][1][1])           # the grasp solved seeded on it
-        lift_pose, width, lift_start = self.asked[5][1]
+        self.assertEqual(_NEAR, start[1])                          # the standoff's nearest configuration
+        self.assertEqual(_NEAR, self.asked[2][1][1])               # the grasp solved seeded on it
+        self.assertIn("the world the line down to its grasp was judged in", self.asked[3][1])
+        lift_pose, width, lift_start = self.asked[4][1]
         self.assertAlmostEqual(float(lift_pose.position_mm[2]), 195.0)
         self.assertEqual(30.0, width)
         self.assertAlmostEqual(float(lift_start[0].position_mm[2]), 95.0)
         self.assertEqual([0.2] * 6, lift_start[1])                 # the grasp's own configuration
+        ((kept_route, standoff, velocity),) = self.kept
+        self.assertIs(kept_route, route, "the very route judged is kept for the move to the standoff")
+        self.assertAlmostEqual(float(standoff.position_mm[2]), 105.0)
+        self.assertEqual(0.5, velocity)
+
+    def test_a_route_that_ends_elsewhere_has_the_line_and_the_lift_judged_again_from_its_end(self) -> None:
+        """A cuRobo plan, another goal or a turn flip: the line and the lift from where the route ends, each in its own
+        world, and nothing is kept."""
+        self.assertEqual("", self._ask(self._arm(route=self._route(_ELSEWHERE))))
+        kinds = [kind for kind, _ in self.asked]
+        self.assertEqual(["nearest", "line", "ik", "held", "lift", "route", "line", "ik", "lift"], kinds)
+        _pose_line, commanded, start = self.asked[6][1]
+        self.assertFalse(commanded)
+        self.assertAlmostEqual(float(start[0].position_mm[2]), 105.0)
+        self.assertEqual(_ELSEWHERE, start[1])                     # the route's end
+        self.assertEqual(_ELSEWHERE, self.asked[7][1][1])          # the grasp solved seeded on it
+        self.assertEqual([0.2] * 6, self.asked[8][1][2][1])
+        self.assertEqual(1, kinds.count("held"), "the lift judged again refreshes its own world")
+        self.assertEqual([], self.kept)
+
+    def test_a_lift_refused_ends_the_judgement_before_the_route(self) -> None:
+        lift = MotionResult.failed(MotionStatus.SELF_COLLISION_REJECTED, MotionCommand.MOVE_TO, message="world")
+        said = self._ask(self._arm(lift=lift))
+        self.assertIn("the lift, as if the jaws held a part 30 mm across, would be refused", said)
+        self.assertIn("world", said)
+        self.assertEqual(["nearest", "line", "ik", "held", "lift"], [kind for kind, _ in self.asked])
+        self.assertEqual([], self.kept)
 
     def test_the_first_refusal_ends_the_judgement_and_is_said(self) -> None:
         refused = MotionResult.failed(MotionStatus.TIMEOUT, MotionCommand.MOVE_TO, message="no plan")
         said = self._ask(self._arm(route=refused))
         self.assertIn("the move to the standoff would be refused", said)
         self.assertIn("no plan", said)
-        self.assertEqual(["nearest", "line", "route"], [kind for kind, _ in self.asked])
+        self.assertEqual(["nearest", "line", "ik", "held", "lift", "route"], [kind for kind, _ in self.asked])
+        self.assertEqual([], self.kept)
 
         line = MotionResult.failed(MotionStatus.SELF_COLLISION_REJECTED, MotionCommand.MOVE_TO, message="finger 2 mm")
         said = self._ask(self._arm(line=line))

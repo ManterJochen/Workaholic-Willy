@@ -19,6 +19,7 @@ it needs another interpreter.
 | [`isaac/`](isaac/) | bakes an arm's collision meshes into `src/robot/safety/data/`, from UR's own description or from Isaac's USD | `bake_ur_meshes_from_urdf.py` |
 | [`ursim/`](ursim/) | real UR controller software in Docker: the SDK, the driver, both I/O grippers, a protective stop, "halt now" and the operator console's task driven against it | [`ursim/README.md`](ursim/README.md) |
 | [`console/`](console/) | captures the operator console's event logs, the ones the frontend's run model replays, byte for byte the same on every run | `python scripts/console/capture_event_log.py` |
+| [`cell/`](cell/) | reads a cell's logs back: every pick split into its stages, best, median and worst, and two log folders set A against B | [`cell/README.md`](cell/README.md) |
 | [`trial/`](trial/) | runs [`your_own_gripper.md`](../docs/runbooks/your_own_gripper.md) in a copy of the tree with two hands whose answers are known | [`trial/README.md`](trial/README.md) |
 
 ```bash
@@ -43,6 +44,7 @@ against fixtures and a check runs against the tree this box loads.
 | [`safety_guards.py`](checks/safety_guards.py) | Does every wired guard of this cell refuse a violation of its own family, for its own reason? | 0 yes, 1 one did not, 2 no guard pipeline |
 | [`camera_artifacts.py`](checks/camera_artifacts.py) | Does every calibration the tree declares open and resolve? Opens no device | 0 yes, 1 one does not, 2 none declared |
 | [`grasping_switches.py`](checks/grasping_switches.py) | Which `robot.grasping` block is reachable in which grasp mode, and is every unwired switch refused? | 0 yes, 1 one is not, 2 no grasping block |
+| [`batched_builds.py`](checks/batched_builds.py) | Does SFE build a closing line's grasps at once on this PC exactly as one at a time (`robot.grasping.batched_builds`)? CPU only, moves nothing | 0 yes, switch it on; 1 one differs; 2 no `tests` folder to read its scenes from |
 
 `cell_bringup.py` refuses to connect without `--live`, because reading a controller is not something a
 check does because someone typed its name. `safety_guards.py` builds a real cell's driver, so it needs a
@@ -51,9 +53,12 @@ profile whose tree names a hand, such as your own cell's.
 ## Which interpreter
 
 - The project environment runs `checks/`, `model_weights/`, `grippers/`, `trial/`, and in `curobo/` the
-  sphere fit, the retract choice and the matrix gate, which spawns the cuRobo environment itself.
+  sphere fit, the retract choice and the matrix gate, which spawns the cuRobo environment itself, and the
+  planning model's fit and its A/B (`fit_planning_spheres.py`, `ab_planning_spheres.py`).
 - The cuRobo environment's interpreter, `ext_deps/curobo_env/python.exe`, runs
-  `curobo/build_ur_config.py`; `curobo/build_compiled_backend.bat` builds the kernel backend on Windows.
+  `curobo/build_ur_config.py` and the probes of cuRobo's own storage and kinematics
+  (`probe_world_in_place.py`, `probe_planning_model.py`); `curobo/build_compiled_backend.bat` builds the kernel
+  backend on Windows.
 - `isaac/bake_ur_collision_meshes.py` and the Isaac probes need an Isaac install;
   `isaac/bake_ur_meshes_from_urdf.py` needs no Isaac and no GPU.
 

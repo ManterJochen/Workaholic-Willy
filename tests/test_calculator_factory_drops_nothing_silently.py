@@ -56,9 +56,17 @@ def _config(choice: str, artifact: str = ""):
 
 
 def _artifact(directory: Path) -> str:
+    """The smallest file the factory's artifact checks accept, with a passed proof beside it.
+
+    Promoted since 2026-10-09: a cell builds no deep calculator from an artifact whose proof has not passed,
+    and what is under test here is the kwarg gate behind that one.
+    """
+    from tests._deep_promotion import promote
+
     path = directory / "generator.pt"
     torch.save({"kind": ARTIFACT_KIND, "artifact_version": ARTIFACT_VERSION,
                 "gripper": "2f85", "trained_grippers": ["2f85"]}, path)
+    promote(path)
     return str(path)
 
 

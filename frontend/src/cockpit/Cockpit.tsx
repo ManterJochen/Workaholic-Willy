@@ -9,13 +9,16 @@
  * bar before a task, the run header during one, the stop after a problem. Below 1200 px it stacks: the bar, the image,
  * the run strip, the numbers, the chat.
  *
- * **Nothing here moves the arm without a person's click on a button that names the motion,** bar one: a greeting. A
- * sentence, typed or spoken, is only read (`POST /v1/commands/parse`); the card it opens starts the task only on a
- * click on Start, whose label names the first motion. Home and Restart ask first. A greeting ("Hallo Willy") opens no
- * card, and Willy waves back as the app config says (`runtime.greeting.wave`): at once, the greeting being the person's
- * act (`direct`, the owner's choice of 2026-10-06), after a dialog like Home's (`confirm`), or not at all (`off`); every
- * swing is judged, and the wave is never a way back after a stop. "Sofort anhalten" is one click and is not the
- * e-stop. After a stop nothing starts by itself: the stop card waits for a person.
+ * **Nothing here moves the arm without a person's act: a click on a button that names the motion, or the person's
+ * Enter on a sentence.** A sentence, typed or spoken, is read first (`POST /v1/commands/parse`, which moves nothing).
+ * Where the settings say Enter starts (the default; the owner, 2026-10-08: "Enter ist der Klick der Person"), a clean
+ * reading on a ready cell, asked afresh, starts at once, and the chat says the first motion; any doubt opens the card,
+ * whose Start names the first motion, as it always does where the settings say "Erst die Karte". The line under the
+ * box says which. Home and Restart ask first. A greeting ("Hallo Willy") opens no card, and Willy waves back as the app
+ * config says (`runtime.greeting.wave`): at once, the greeting being the person's act (`direct`, the owner's choice of
+ * 2026-10-06), after a dialog like Home's (`confirm`), or not at all (`off`); every swing is judged, and the wave is
+ * never a way back after a stop. "Sofort anhalten" is one click and is not the e-stop. After a stop nothing starts by
+ * itself: the stop card waits for a person.
  *
  * It reads the console's shared models (the one cell poll, the run on screen, the conversation, the preferences) and
  * polls nothing of the cell itself; only the live image is its own. It fills the window under the top bar and no more
@@ -25,9 +28,11 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Link } from 'react-router-dom'
 
+import { MAX_SENTENCE_CHARS } from '../api/limits'
 import { useLang, useT } from '../i18n'
-import { blockerMsg, lightIdMsg, lightMsg, refusalMsg, runKindMsg } from '../i18n/codes'
+import { runKindMsg } from '../i18n/codes'
 import { say, useConversation } from '../model/chat'
 import { usePrefs } from '../model/prefs'
 import { EMPTY_RUN, hasEnded, STEPS, type RunView, type StepId } from '../model/runModel'
@@ -38,7 +43,8 @@ import AskCard from './AskCard'
 import CellFacts from './CellFacts'
 import ChatPanel, { type ChatCard } from './ChatPanel'
 import { chatFlow } from './chatFlow'
-import { draftFromPlan, firstMotion, MOTION_KEY } from './draft'
+import { draftFromPlan, firstMotion, MOTION_KEY, poseLabel } from './draft'
+import { cellOffOf } from './gate'
 import { useEarlierTasks, usePoses, useRunRecord, useWindowFit } from './hooks'
 import { COCKPIT } from './i18n'
 import ReadyBar from './ReadyBar'
@@ -70,7 +76,8 @@ export default function Cockpit() {
   const { view, follow } = useRun()
   const conversation = useConversation()
   const motions = useMotions()
-  const command = useCommand({ lang, follow, refresh, greet: motions.wave })
+  const poses = usePoses(`${cell?.state ?? ''}:${view.kind === 'teach' && hasEnded(view.phase) ? view.runId : ''}`)
+  const command = useCommand({ lang, follow, refresh, greet: motions.wave, task: prefs.task, facts, poses })
   const [mountedAt] = useState(() => Date.now() / 1000)
   const [text, setText] = useState('')
   const [source, setSource] = useState<'typed' | 'spoken'>('typed')
@@ -83,7 +90,6 @@ export default function Cockpit() {
   useEarlierTasks()
 
   // ── what holds the cell ──────────────────────────────────────────────────────────────────────────────────────
-  const connected = cell?.state === 'connected'
   const activeId = cell?.active_run_id ?? null
   const viewLive = view.runId !== null && !hasEnded(view.phase) && view.phase !== 'idle'
   // The poll may still name a run whose end the stream already drew: that run holds nothing any more.
@@ -97,7 +103,6 @@ export default function Cockpit() {
   if (counted && view !== lastTask) setLastTask(view)
   const statsView = counted ? view : lastTask
 
-  const poses = usePoses(`${cell?.state ?? ''}:${view.kind === 'teach' && hasEnded(view.phase) ? view.runId : ''}`)
   const stoppedRecord = useRunRecord(recovery?.run_id ?? null, view.runId === recovery?.run_id ? view.run : null)
   const stoppedRun = stoppedRecord.run
   const stoppedAt =
@@ -121,19 +126,8 @@ export default function Cockpit() {
     banner = { kind: 'halted' }
   }
 
-  // ── Start, and why it is off for the cell's sake ─────────────────────────────────────────────────────────────
-  const cellOff: string[] = []
-  if (!connected) cellOff.push(t.msg(refusalMsg('not_connected')))
-  else if (running) cellOff.push(t.msg(blockerMsg('run_active')))
-  else if (recovery) cellOff.push(t.msg(blockerMsg('restart_required')))
-  else if (!readiness) cellOff.push(t('ck.start.readinessUnknown'))
-  else if (!readiness.ready) {
-    for (const light of readiness.lights ?? []) {
-      if (light.blocks && light.state !== 'ok') cellOff.push(t('ck.start.light', { id: lightIdMsg(light.id), state: lightMsg(light.code) }))
-    }
-    for (const blocker of readiness.blockers ?? []) cellOff.push(t.msg(blockerMsg(blocker.code)))
-    if (cellOff.length === 0) cellOff.push(t('ck.ready.not'))
-  }
+  // ── Start, and why it is off for the cell's sake: the same rule Enter asks afresh (`gate.ts`) ─────────────────
+  const cellOff = cellOffOf(cell, readiness, running).map((why) => t.msg(why))
   const canStart = cellOff.length === 0
   const motion = t(MOTION_KEY[firstMotion(facts)])
 
@@ -155,7 +149,8 @@ export default function Cockpit() {
     if (ended) refresh()
   }, [ended, view.runId, refresh])
 
-  // ── the input: read on Enter, never start; locked during a run, a teach, and under a stop record ────────────
+  // ── the input: Enter reads, and starts a clean reading where the settings say so; locked during a run, a teach,
+  // and under a stop record ─────────────────────────────────────────────────────────────────────────────────────
   const inputOff = running || recovery !== null
   // What runs, in the operator's words ("Auftrag", "Home-Fahrt"), never the console's ("Lauf").
   const runningKind = running && view.kind !== null && (view.runId === activeId || viewLive) ? view.kind : null
@@ -168,12 +163,32 @@ export default function Cockpit() {
     : recovery
       ? t('ck.chat.blocked.recovery')
       : undefined
+  const fits = text.length <= MAX_SENTENCE_CHARS
   const submit = () => {
-    if (inputOff || !text.trim()) return
+    if (inputOff || !text.trim() || !fits) return
     void command.read(text, source)
     setText('')
     setSource('typed')
   }
+  // What Enter does, said under the box: the settings of this browser, one line, with the way to change them.
+  const task = prefs.task
+  const placeNote =
+    task.place.kind === 'pose'
+      ? t('ck.prompt.place.pose', { label: poseLabel(task.place.pose, poses) ?? task.place.pose })
+      : task.place.kind === 'camera'
+        ? t('ck.prompt.place.camera', { phrase: task.place.phrase })
+        : t('ck.prompt.place.default')
+  // How each pick looks, said where it is not the looks as they always ran ("bei Bedarf").
+  const looksNote = task.looks === 'when_needed' ? [] : [t('ck.prompt.looks', { looks: t(`looks.inline.${task.looks}`) })]
+  const promptNote = (
+    <>
+      {task.start === 'enter'
+        ? [t('ck.prompt.enter'), t(`scope.${task.scope}`), placeNote, ...(task.anything ? [t('ck.prompt.anything')] : []), ...looksNote].join(' · ')
+        : t('ck.prompt.card')}
+      {' · '}
+      <Link to="/settings">{t('ck.prompt.settings')}</Link>
+    </>
+  )
 
   // After a task, Willy asks for the next instruction and the input takes the focus (item 20), when that happened
   // now: a run replayed after a reload does not take the focus away from wherever it is.
@@ -186,13 +201,15 @@ export default function Cockpit() {
   const chatState =
     command.busy === 'reading'
       ? t('ck.chat.state.reading')
-      : running
-        ? runningKind
-          ? t('ck.chat.state.running', { kind: runKindMsg(runningKind) })
-          : t('ck.chat.state.busy')
-        : recovery || askOpen || command.draft
-          ? t('ck.chat.state.waiting')
-          : t('ck.chat.state.idle')
+      : command.busy === 'starting'
+        ? t('ck.chat.state.starting')
+        : running
+          ? runningKind
+            ? t('ck.chat.state.running', { kind: runKindMsg(runningKind) })
+            : t('ck.chat.state.busy')
+          : recovery || askOpen || command.draft
+            ? t('ck.chat.state.waiting')
+            : t('ck.chat.state.idle')
 
   const endAsk = () => {
     if (!view.askCard) return
@@ -260,7 +277,7 @@ export default function Cockpit() {
           start={() => void command.start()}
           discard={command.discard}
           load={() => void command.load()}
-          retry={() => command.lastSaid && void command.read(command.lastSaid.text, command.lastSaid.source)}
+          retry={() => command.lastSaid && void command.read(command.lastSaid.text, command.lastSaid.source, false)}
         />
       ),
     })
@@ -273,7 +290,7 @@ export default function Cockpit() {
         setText(next)
         setSource(from)
       }}
-      canSubmit={!inputOff && text.trim() !== '' && command.busy === null}
+      canSubmit={!inputOff && text.trim() !== '' && fits && command.busy === null}
       onSubmit={submit}
       spoken={source === 'spoken'}
       disabled={inputOff}
@@ -281,6 +298,7 @@ export default function Cockpit() {
       inputRef={inputRef}
       showSend
       busy={command.busy !== null}
+      note={promptNote}
     />
   )
 

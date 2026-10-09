@@ -36,15 +36,18 @@ def _validate_joint_array(values: np.ndarray) -> np.ndarray:
 
 @dataclass(frozen=True, slots=True)
 class JointPositions:
-    """Immutable joint-space configuration.
+    """An immutable joint configuration, in radians, base to wrist.
 
-    Construct from any 1-D iterable of floats. The array is copied, cast to
-    ``float64``, validated and write-locked.
+        LOOK = JointPositions.deg(-90.0, -110.0, -100.0, -60.0, 90.0, 0.0)   # as the pendant shows them
+        robot.move_joints(LOOK)
 
-    Parameters
-    ----------
-    values : array-like
-        Joint angles in radians, one per DoF.
+    Construct from any 1-D iterable of floats; the array is copied, cast to ``float64``, validated and write-locked.
+
+    Attributes:
+        values (np.ndarray): The joint angles in radians, one per degree of freedom, read-only.
+
+    Raises:
+        ValueError: Values that are not a 1-D sequence of finite numbers.
     """
 
     values: np.ndarray
@@ -66,11 +69,16 @@ class JointPositions:
         return int(self.values.shape[0])
 
     def check_dof(self, expected: int) -> "JointPositions":
-        """Return ``self`` if this vector has ``expected`` joints, else raise.
+        """This configuration, checked to have the expected number of joints.
 
-        This is the canonical DoF check, so a driver or a guard does not
-        re-implement joint-count validation of its own. Joint space is implicit per
-        arm, and the arm's ``RobotCapabilities.dof`` gives the expected length.
+        Args:
+            expected (int): How many joints the arm has (``RobotCapabilities.dof``).
+
+        Returns:
+            JointPositions: ``self``.
+
+        Raises:
+            ValueError: It has another number of joints.
         """
         if self.dof != int(expected):
             raise ValueError(f"JointPositions has {self.dof} joints; expected {int(expected)}.")
@@ -109,26 +117,42 @@ class JointPositions:
     # ---- conversions ----------------------------------------------------
 
     def tolist(self) -> list[float]:
-        """Plain Python list of joint angles in radians."""
+        """The joint angles as a plain list.
+
+        Returns:
+            list[float]: Radians, base to wrist.
+        """
         return self.values.tolist()
 
     @classmethod
     def from_list(cls, values: Iterable[float]) -> JointPositions:
-        """Alias for ``JointPositions(values)``."""
+        """The same as ``JointPositions(values)``.
+
+        Args:
+            values (Iterable[float]): The joint angles in radians.
+
+        Returns:
+            JointPositions: The configuration.
+        """
         return cls(values)
 
     @classmethod
     def deg(cls, *degrees: float) -> JointPositions:
-        """The joints in DEGREES, one per axis, as a pendant shows them and ``--where`` prints them.
+        """The joints in DEGREES, one per axis, as a pendant shows them and ``python -m src.robot.drivers.ur --where``
+        prints them; stored in radians like every other value.
 
-            LOOK = JointPositions.deg(-90.0, -110.0, -100.0, -60.0, 90.0, 0.0)
+        Args:
+            *degrees (float): One angle per joint, in degrees, base to wrist.
 
-        Stored in radians like every other value: the unit is said once, here, and nothing downstream
-        has to guess it. A program that declares its look poses copies the numbers off the pendant or
-        off ``python -m src.robot.drivers.ur --where`` without converting them by hand.
+        Returns:
+            JointPositions: The configuration.
         """
         return cls(np.radians(np.asarray(degrees, dtype=np.float64)))
 
     def degrees(self) -> tuple[float, ...]:
-        """The joints in degrees, rounded to a hundredth, the way :meth:`deg` takes them."""
+        """The joints in degrees, rounded to a hundredth, the way :meth:`deg` takes them.
+
+        Returns:
+            tuple[float, ...]: Degrees, base to wrist.
+        """
         return tuple(round(float(v), 2) for v in np.degrees(self.values))

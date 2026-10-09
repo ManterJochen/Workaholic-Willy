@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import ClassVar, Iterable, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, NonNegativeInt, field_validator, model_validator
 
 from .._base import ConfigPath, StrictModel
 from .._removed import REMOVED_GRASP_MODES, REMOVED_RECOVERY_ACTIONS
@@ -1434,28 +1434,37 @@ class GraspingDeepGeneratorConfig(StrictModel):
 
     Different from `deep_ranker` in the one way that matters: the ranker scores candidates the
     analytic stack proposed and changes no order, this one proposes them instead of the analytic
-    stack. There is no shadow mode for a generator, either it is the source of candidates or it is
-    not running.
+    stack. This build has no shadow mode for a generator: either it is the source of candidates or
+    it is not running. A promotion record names `shadow` and `ab` for a proof that has not reached
+    `active`, and a cell builds a generator at `active` alone.
 
     It fails closed. `calculator: deep` with no readable artifact refuses to build the cell rather
     than falling back to `geometric`: a cell that asked for the learned generator and quietly got
-    the analytic one would file the analytic one's numbers under the learned one's name.
+    the analytic one would file the analytic one's numbers under the learned one's name. A cell
+    also refuses an artifact whose proof has not passed (the owner's decision of 2026-10-09): no
+    finished models ship, every customer trains their own, and a trained generator drives a cell
+    only once the promotion record beside it says its proof passed at `active`
+    (`deep/promotion.py`). Nothing writes one yet, so today every artifact refuses a cell, and the
+    ladder and the simulation runners still build it to measure it.
 
     The score it attaches is not a probability. The v1 net has no calibrated P(hold) head: the
-    corpus carries no physics until it is shaken, and `held_jaw_v1` already ranks proposals at
-    0.8947 AUROC. Generator proposes, scorer ranks, and each is promoted on its own evidence.
+    corpus carries no physics until it is shaken. A scorer fitted on shaken holds, `held_jaw_v1`,
+    reached 0.8947 AUROC on analytic candidates with folds that share meshes and 0.8758 with no test
+    mesh trained on (the 2026-10-09 review), and it was never scored on this generator's proposals.
+    Generator proposes, scorer ranks, and each is promoted on its own evidence.
     """
 
     artifact_path: ConfigPath | None = Field(
         default=None,
         description=(
             "Path to the generator's `.pt`, written by "
-            "`python -m src.robot.grasping.deep train`. The card beside it is committed; the "
+            "`python -m src.robot.grasping.deep train-set`. The card beside it is committed; the "
             "weights are not, exactly as the ranker's trees are not. Null (default) means the "
             "learned generator cannot be selected; `calculator: deep` then refuses. "
-            "Both generator families are accepted here: a `grasp_generator` from "
-            "`deep train` and a `set_grasp_generator` from `deep train-set`. The calculator "
-            "branches on the artifact's own `kind`, so the file decides which decoder runs."
+            "One family is accepted here, a `set_grasp_generator`; a file of the binned family, "
+            "retired on 2026-09-04, is refused by name. A cell also refuses an artifact whose "
+            "promotion record beside it (`<stem>.promotion.json`) does not say its proof passed at "
+            "`active` (2026-10-09); nothing writes one yet."
         ),
     )
     device: str | None = Field(
@@ -1483,11 +1492,17 @@ class GraspingDeepGeneratorConfig(StrictModel):
 class GraspingDeepRankerConfig(StrictModel):
     """The learned grasp ranker, in shadow: it computes, the telemetry records, the order never changes.
 
-    Measured on 1,611 (scene, view, object) units of `v1_proof`, out of fold and grouped by object
-    so no scored object was ever trained on:
+    Measured on 1,611 (scene, view, object) units of `v1_proof`, out of fold, with the folds cut by
+    placement (a scene and an instance) and not by mesh: the corpus places each mesh many times over,
+    so a scored mesh can sit in the training folds in another placement (the 2026-10-09 review):
 
         random (expected)   54.4 %      the calculator's own order   51.6 %
         this ranker         84.1 %      best possible               100.0 %
+
+    Pooled over the candidates of every evaluation configuration, not the support-footprint stage's
+    list alone. Cut by mesh, its AUROC goes from 0.9188 to 0.9054; and the same recipe fitted on
+    shaken holds, with no test mesh trained on, chose among SFE's own candidates as well as SFE's
+    order did and no better, +0.000 (95 % CI -0.027 to +0.027).
 
     "top-1 is valid": the first candidate physically closes. Not "the grasp holds": the label is
     the analytic verdict this stack computes, and the pilot's hold rate is 5.62 % where validity
@@ -1658,7 +1673,28 @@ class GraspingGeometryStageConfig(StrictModel):
             "of a curved surface, so the measured footprint is systematically smaller than the "
             "object and every consequence of that is one-sided (an under-estimated span, a finger "
             "that clips a flank on the way in). Non-zero biases the estimate in the safe direction. "
-            "Default 0.0 = the measurement above, which was taken without it."
+            "Default 0.0 = the measurement above, which was taken without it. It gives back the faces "
+            "footprint_rim_mm takes: 1.25 with a 2 mm rim is what the owner's cell was measured with."
+        ),
+    )
+    footprint_rim_mm: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=10.0,
+        description=(
+            "The rim a part's mask loses for the cloud the support-footprint stage builds its footprint "
+            "from, millimetres at the part (src/robot/grasping/generation/footprint_rim.py): the mask "
+            "eroded by ceil(rim * fx / z) px, z the part's median depth and fx the colour lens's, never "
+            "more than 30 % of the mask, a look's own input and the looks the pick loop fuses alike. The "
+            "full mask stays for everything else: the jaw faces, the association of looks, the kept scene, "
+            "the colour check, the planner world's hold-out and the neighbours. The D415 smears a part's "
+            "far edge into a ramp of depths the mask's outer ~3 px lie on, and the footprint's hull follows "
+            "them. Measured offline (2026-10-09) on 23 grey cubes the owner's cell recorded from 5 look "
+            "poses on 2026-10-07: the centre the grasp closes on lay 2.53 mm off at the median, 2.5 mm of it away "
+            "from the camera; through the calculator with 2.0 (3 px, 4 nearer than 609 mm) and inflate_mm 1.25 "
+            "giving the faces back, 0.77 mm, and the footprint's sides within 0.8 mm. Pair it with inflate_mm: "
+            "the rim alone leaves the sides 1.8 and 3.0 mm short. Default 0.0 = SFE's input as before; the "
+            "owner, 2026-10-09: 'Ja, für Montag' (2.0 with inflate_mm 1.25, at the cell's test)."
         ),
     )
     grasp_depth_reference: Literal["centre", "top"] = Field(
@@ -1746,6 +1782,42 @@ class GraspingGripperGeometryConfig(StrictModel):
     )
 
 
+class GraspingFollowPartsConfig(StrictModel):
+    """A task asks the detector once and then follows its parts (``src/robot/perception/kept_scene.py``).
+
+    Every pick of a task used to ground its first look again: Qwen boxing every part on the mat, 13 s at the median on
+    the owner's cell (2026-10-07/08), to find the parts where the last pick left them. On, a task's next pick finds them
+    again with SAM2 on their boxes and no detector, where nothing changed in depth and every part stands where it stood
+    or within ``max_shift_mm``, its mask in its footprint, at its top and of its colour; all or nothing per frame, and
+    any doubt grounds the frame as before (the owner, 2026-10-09). The first pick and a Restart ground; so does the pick
+    after a push, a blocker cleared, a recovery, a try that sent motion and failed, a part gripped that was not kept,
+    and every end check of an "until empty" task. The later looks of each pick find its first look's parts by their
+    projected boxes. Off, the default: every pick grounds every look, as before. The guard judges every motion against
+    fresh depth either way.
+    """
+
+    #: Whether a task follows its parts. Off, the default and the repository's: every look is grounded.
+    enabled: bool = Field(default=False)
+    #: Ground again after this many picks since the last grounding, however clean the scene reads; 0, the default: only
+    #: on a trigger. Bounds how long a part swapped for one of the same size, height and colour goes unseen.
+    refresh_every_picks: NonNegativeInt = Field(default=0, le=1000)
+    #: How far a part may have moved since the last pick and still be followed, millimetres (BASE xy, its new mask's
+    #: surface against the kept one): a neighbour the fingers brushed (the owner: up to 10). Further, it is grounded.
+    max_shift_mm: float = Field(default=10.0, gt=0.0, le=15.0)
+    #: How far a part may have crept since the detector grounded it, over every pick that followed it, millimetres.
+    max_creep_mm: float = Field(default=20.0, gt=0.0, le=40.0)
+
+    @model_validator(mode="after")
+    def _creep_holds_a_shift(self) -> "GraspingFollowPartsConfig":
+        """A part may creep at least as far as it may move in one pick, or no move would ever be followed."""
+        if self.max_creep_mm < self.max_shift_mm:
+            raise ValueError(
+                f"follow_parts.max_creep_mm ({self.max_creep_mm:g}) is the drift over every pick and must be at least "
+                f"max_shift_mm ({self.max_shift_mm:g}), the move of one"
+            )
+        return self
+
+
 class RobotGraspingConfig(StrictModel):
     """Vendor-neutral grasping-behaviour surface.
 
@@ -1821,6 +1893,89 @@ class RobotGraspingConfig(StrictModel):
     #: are ranked by geometry alone (the owner, 2026-10-01: "gleichwertig nach Geometrie"). Only space the camera saw
     #: counts as clear for a tilted approach. Off, a tilted grasp is offered only where no vertical one fits.
     side_approaches: bool = Field(default=True)
+    #: The pick computes a frame's parts one at a time and takes the first good one.
+    #:
+    #: Every part of a look used to be computed before one was chosen: on the owner's cell one tilted cube cost 24 s and
+    #: the part taken 3 (the owner's "speed first", 2026-10-08). On, the parts are computed in the order they stand
+    #: apart (those the hand closes across first, the less crowded first), and the first whose grasp is full, carries
+    #: no rescan reason and scores ``good_part_score`` or more is taken without computing the rest; none good, the best
+    #: is taken. A later look of a wrist pick computes only the part it keeps. Off, every part is computed and the best
+    #: taken, as before. The clutter selector (``ordering``) always computes every part.
+    first_good_part: bool = Field(default=True)
+    #: The score a part's best grasp needs for ``first_good_part`` to take it at once, 0 to 1. A full SFE result's best
+    #: grasp scored 0.80 at the median on the grasp bench (0.71 at the 10th percentile), one the fine search found 0.57.
+    good_part_score: float = Field(default=0.75, ge=0.0, le=1.0)
+    #: SFE's fine search waits while another part may have a full result.
+    #:
+    #: Where SFE's coarse grid finds fewer than three grasps it searches again on a fine grid, the most of what such a
+    #: part costs. On, a part is computed without it, but for the last where no part has a full result yet; a part whose
+    #: coarse grid found few grasps waits, and gets the fine search only where no part has a full result with a grasp.
+    #: Off, every part gets its fine search at once, as before.
+    fine_pass_waits: bool = Field(default=True)
+    #: Whether a part's pixels must have the colour its phrase names (``src/robot/perception/colour_check.py``).
+    #:
+    #: Asked for "each separate grey cube", the detector boxed the green and the orange parts as well and called them by
+    #: the prompt's words, and the cell picked them (2026-10-08). ``on``, the owner's choice and the default: the camera
+    #: source judges every part mapped onto an object label whose words name one colour, on its mask in CIELAB, about
+    #: 2 ms a part, and asks the VLM for one colour word where the pixels cannot tell; a part of another colour, or one
+    #: the VLM names no colour of, keeps its mask and depth as a neighbour and is never a target. ``log``: judged and
+    #: logged, nothing changed, to measure the rule on a cell first. ``off``: not judged. A phrase that names no colour,
+    #: or two, is never judged. A bare ``on`` or ``off`` in YAML is the word.
+    colour_check: Literal["on", "log", "off"] = Field(default="on")
+    #: What the colour check does with a pixel some but not all of whose channels the camera clipped (at 250 of 255,
+    #: ``colour_check.CLIPPED_AT``).
+    #:
+    #: The colour camera runs on auto exposure, and where the mat around an orange part is dark it clips the part's red
+    #: channel: its hue is then read off its green channel alone and lands in the yellow band. On the 31 looks the cell
+    #: recorded on 2026-10-07, 53 of 89 orange sightings were judged orange. ``exclude``, the owner's choice and the
+    #: default (2026-10-09, "wenn das schon so gut war, dann nutzen wir das doch instant"): such pixels are left out of
+    #: the hue and lightness counts, and a part left with fewer than 50 pixels is unsure, so the VLM is asked; offline on
+    #: the same looks 89 of 89 orange right, and the grey cubes, the white and green parts and the yellow bin judged as
+    #: before. No red part stood in those views, so a red part's verdict is not measured yet. ``keep``: counted as every
+    #: other pixel, as before. A pixel clipped in all three channels, glare on a white part, is counted either way.
+    colour_check_clipped: Literal["keep", "exclude"] = Field(default="exclude")
+    #: How many worker processes search a part's grasps beside the cell's own (``src/robot/grasping/workers.py``).
+    #:
+    #: One boxed-in cube took 24 of a look's 30 s on the owner's cell (2026-10-08), every grasp the support-footprint
+    #: stage tried built one after another in one process. Its units then run on worker processes started once, when
+    #: the cell is built, with the same candidates, refusal counts and telemetry as in the one process; a part the
+    #: workers cannot answer for is searched in it, as before, said in the log. ``0``, the default: no workers. ``auto``:
+    #: every physical core but one, said in the log. A number: that many. The arm stands still while grasps are
+    #: computed, so the workers run at the console's own priority, one BLAS thread each.
+    workers: Literal["auto"] | NonNegativeInt = Field(default=0)
+    #: SFE builds each closing line's grasps at once, in one numpy pass per check.
+    #:
+    #: The support-footprint stage made every grasp it tried one after another: 24 s for one boxed-in cube on the
+    #: owner's cell (2026-10-08). On, the builds of each closing line are made together, in the cell's process and in
+    #: every worker (``workers``), with the same candidates, refusal counts and telemetry to the bit: 0.22 instead of
+    #: 2.2 s for the recorded boxed-in Zollstock on the desk. A build whose deciding number lies within 1e-6 of its
+    #: threshold is made alone, as before, and a machine whose numpy would round a stacked product otherwise makes
+    #: every build alone, said in the log. Off, the default, makes every build one at a time, as before. On for a cell
+    #: once ``scripts/checks/batched_builds.py`` passes on its machine.
+    batched_builds: bool = Field(default=False)
+    #: A look whose view of its part is weak sends a wrist pick on to its next look.
+    #:
+    #: A valid grasp at the first look ended the looking on the owner's cell every time (2026-10-08), so a stacked pair
+    #: or a shiny part was gripped on what its first look showed of it. On, a look is not safe to stop at where
+    #: depth was measured on less than 85 % of its mask of the part, where the part stands more than one and a half
+    #: times its footprint's short side over its support with no side of it seen, or where its cloud holds two height
+    #: plateaus at least 15 mm apart; judged again on the views fused so far at every look, so it clears once a side or
+    #: more depth was seen. It only adds looks, and the generated view after them: the grasp the looks end on is gripped
+    #: as before. A wrist pick handed looks only, and the console's "bei Bedarf". Off, the default, stops at the first
+    #: valid grasp with no rescan reason, as before.
+    weak_look_trigger: bool = Field(default=False)
+    #: The regions a task keeps out of its picks are painted out of the image its detector reads.
+    #:
+    #: Every look that saw the task's bin had the detector box every part already placed in it, about 2 to 4 s a box on
+    #: the owner's cell (2026-10-07/08), each then left out as standing in the bin. On, the bin's footprint and the
+    #: circles about a task's drops are painted in the colour of what the parts stand on, in the copy of the frame the
+    #: detector reads only: a pixel placed in such a region by its own depth, never one of a part that reaches out of
+    #: it, and holes in the depth only where the painted pixels close round them. The segmenter, the depth, the colour
+    #: check and the planner world read the real frame. Needs a declared support (``support``) and a perception backend
+    #: that hands its detector a copy. Off, the default, the detector reads the real frame, as before.
+    hide_own_places: bool = Field(default=False)
+    #: A task asks the detector once and then follows its parts (:class:`GraspingFollowPartsConfig`); off by default.
+    follow_parts: GraspingFollowPartsConfig = Field(default_factory=GraspingFollowPartsConfig)
     record_log_path: ConfigPath | None = Field(
         default=None,
         description=(
@@ -1957,6 +2112,24 @@ class RobotGraspingConfig(StrictModel):
     def _refuse_removed_default_mode(cls, value: str) -> str:
         """A mode removed on purpose is refused here, at load, rather than at the first pick."""
         _refuse_removed_modes("default_mode", (value,))
+        return value
+
+    @field_validator("colour_check", mode="before")
+    @classmethod
+    def _a_bare_switch(cls, value: object) -> object:
+        """YAML reads a bare ``on`` as true and ``off`` as false: each means what it says here."""
+        if value is True:
+            return "on"
+        if value is False:
+            return "off"
+        return value
+
+    @field_validator("workers", mode="before")
+    @classmethod
+    def _workers_counted(cls, value: object) -> object:
+        """A yes or a no is no number of workers: refused, rather than read as one worker or none."""
+        if isinstance(value, bool):
+            raise ValueError("workers is 0, 'auto' or a number of worker processes, not a yes or a no")
         return value
 
     @model_validator(mode="after")

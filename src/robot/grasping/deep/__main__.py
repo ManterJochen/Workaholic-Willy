@@ -20,7 +20,7 @@ import dataclasses
 import json
 import sys
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 from src.robot.grasping.deep.corpus.discovery import scene_files, stratified_scenes
 from src.robot.grasping.deep.train.plan import UNSET
@@ -283,6 +283,11 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
     recipe, which corpus, whether the weights are one fold or a refit on everything, and whether
     it was a control run, which fits synthetic labels derived from an input channel and must
     never be served.
+
+    The first line is whether a cell may grasp with it at all (the owner's decision of 2026-10-09):
+    `NOT DEPLOYABLE` and why, or `deployable` with its phase and when it was promoted. It is the
+    answer `build_calculator` gives a cell, read from the promotion record beside the weights
+    (`promotion.py`), and until `deep judge` exists it is `NOT DEPLOYABLE` for every file.
     """
     import json  # noqa: PLC0415
 
@@ -301,6 +306,21 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
         # the customer should learn it from `inspect` rather than from a pick that returns nothing.
         print(f"this file cannot be loaded: {type(exc).__name__}: {exc}", file=sys.stderr)
         return _EXIT_PROBLEM
+
+    from src.robot.grasping.deep.promotion import read_promotion, why_not_deployable  # noqa: PLC0415
+
+    # The verdict before the facts, because it is the one line that decides whether a cell may use the
+    # file, and the same answer the factory gives a cell.
+    why = why_not_deployable(path)
+    if why:
+        print(f"NOT DEPLOYABLE: {why}")
+        print("  a trained generator drives a cell only once its proof has passed (deep judge, coming); "
+              "it can be inspected and evaluated meanwhile: deep propose, the ladder's deep rung")
+    else:
+        promotion = read_promotion(path)
+        print(f"deployable (phase {promotion.phase}, promoted {promotion.promoted_at})")
+        print(f"  promoted by {promotion.promoted_by} under {promotion.protocol} "
+              f"v{promotion.protocol_version}")
 
     net = loaded.net
     head = net.config.head
@@ -521,7 +541,8 @@ def build_parser() -> argparse.ArgumentParser:
     train_set.add_argument("--tier", default=None, metavar="NAME",
                            help="how long to run: `smoke` proves the chain closes on your corpus "
                                 "and your box and says NOTHING about grasp quality, `full` is the "
-                                "model you deploy. Applied after --recipe and before explicit flags")
+                                "model you judge: a cell grasps with it only once its proof has "
+                                "passed. Applied after --recipe and before explicit flags")
     train_set.add_argument("--refit", action="store_true", default=UNSET,
                            help="after the folds, train one more net on EVERY unit and ship THAT "
                                 "as the artifact. The fold pass earns the numbers; it has to hold "
@@ -829,7 +850,34 @@ def _cmd_train_set(args: argparse.Namespace) -> int:
               f"{args.init_from}", flush=True)
     run.write_report(report)
     print(report.render(), flush=True)
+    # The weights exist, and whether a cell may grasp with them is a second question that a proof
+    # answers (2026-10-09). Said here, because the end of a long run is where a person reaches for
+    # the cell. The exit code stays what it was.
+    weights = _written_weights(report)
+    if weights is not None:
+        from src.robot.grasping.deep.promotion import why_not_deployable  # noqa: PLC0415
+
+        why = why_not_deployable(weights)
+        if why:
+            print(f"  NOT DEPLOYABLE until judged: {why}. A trained generator drives a cell only once its "
+                  f"proof has passed (deep judge, coming); evaluate it meanwhile with deep propose or the "
+                  f"ladder's deep rung", flush=True)
     return _EXIT_OK
+
+
+def _written_weights(report: Any) -> Path | None:
+    """The weights a finished run wrote, wherever its report keeps them, or None where it wrote none.
+
+    Two places: a run without a refit keeps its artifact block at the top (`report.artifact`), and a
+    refit, which writes the shipped weights from its own pass, inside the refit block
+    (`report.raw["refit"]["artifact"]`).
+    """
+    refit = report.raw.get("refit")
+    refitted = (refit.get("artifact") or {}) if isinstance(refit, dict) else {}
+    for block in (report.artifact, refitted):
+        if block.get("written") and block.get("weights"):
+            return Path(str(block["weights"]))
+    return None
 
 
 

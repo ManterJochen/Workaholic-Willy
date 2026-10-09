@@ -1,0 +1,7 @@
+2026-10-08 07:27:42,781 - Console - INFO - Building the cell (rehearse=False) from D:\cell\cell_config\config, profile chain (none).
+2026-10-08 07:30:59,454 - Console - INFO - Grasp records go to the configured path D:\cell\logs.
+2026-10-08 07:30:59,455 - Console - INFO - Cell built in 196.7 s: arm=URRobotArm, gripper=JawIOGripper, records -> D:\cell\logs.
+2026-10-08 07:38:47,459 - Console - WARNING - Recovery record written: task run run-1f9a82860d stopped on part_still_held where the arm stands; a person confirms the cell is clear, then Restart or Home.
+2026-10-08 07:39:37,912 - Console - INFO - Recovery record of run-1f9a82860d ended: run run-ca72c832aa (restart) arrived at its return pose.
+2026-10-08 07:41:11,867 - Console - WARNING - Recovery record written: task run run-ca72c832aa stopped on part_still_held where the arm stands; a person confirms the cell is clear, then Restart or Home.
+2026-10-08 07:42:09,869 - Console - INFO - Recovery record of run-ca72c832aa ended: run run-77c6528fca (home) arrived at its return pose.

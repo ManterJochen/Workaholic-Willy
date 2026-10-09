@@ -472,6 +472,8 @@ def compare_grasp_views(
             cache[key] = build_calculator(
                 cfg.robot,
                 data_dir=data_dir,
+                # A simulated cell measures the generator; only a real one asks for its proof (2026-10-09).
+                purpose="evaluate",
                 camera_matrix=intrinsics,
                 max_grip_width_mm=g.max_width_mm, min_grip_width_mm=g.min_width_mm,
             )

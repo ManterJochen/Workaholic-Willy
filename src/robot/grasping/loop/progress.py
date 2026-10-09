@@ -103,7 +103,9 @@ class PickProgress:
     #: The typed ``PickOutcome`` on :attr:`PickStage.PICK_FINISHED`.
     outcome: str | None = None
     #: Which perception route grounded this frame (``simple`` / ``vlm``), and the rule that chose it.
-    #: Both ``None`` unless the cell runs a routed pipeline; an un-routed cell is byte-identical.
+    #: Both ``None`` unless the cell runs a routed pipeline; an un-routed cell is byte-identical. A
+    #: real camera source handed a task's parts to follow says ``followed`` (no detector asked) or
+    #: ``grounded`` (``not followed: why``) instead (``RealSenseVisionPerceptionSource.last_route``).
     #:
     #: Named fields rather than entries in :attr:`extra`: a console renders a sentence from them, and
     #: the route is usually what explains a slow pick or a grasp on the wrong object.

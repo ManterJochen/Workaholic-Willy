@@ -137,6 +137,8 @@ def build_service(
     calculator = build_calculator(
         cell.robot,
         data_dir=data_dir,
+        # A simulated cell measures the generator; only a real one asks for its proof (2026-10-09).
+        purpose="evaluate",
         camera_matrix=np.asarray(handles.camera.get_intrinsics_matrix(), dtype=np.float64),
         max_grip_width_mm=cell.robot.gripper.max_width_mm,
         min_grip_width_mm=cell.robot.gripper.min_width_mm,
@@ -174,15 +176,23 @@ def run_gate(runs: int = 10, *, headless: bool = True, data_dir: str | None = No
              radial_closing: bool = False,
              # False: the camera's own rendered depth reaches the pick. See build_service.
              ground_truth_depth: bool = True) -> GateResult:
-    """Run ``runs`` known-pose picks, re-placing the object each time, and score the M1 gate.
+    """Known-pose picks in Isaac Sim, the object re-placed each time, scored against the scene's ground truth. Runs
+    under Isaac's own interpreter.
 
-    A run passes iff ``pick()`` reports succeeded and the object rose by >= the configured lift
-    threshold (``robot.sim.scene_setup.gate``).
+    Args:
+        runs (int): How many picks (default: 10).
+        headless (bool): Run Isaac without a window (default: True).
+        data_dir (str | None): The config directory; ``None`` the repository's (default: None).
+        mode (str): The grasp mode, ``"easy"``, ``"auto"`` or ``"dense_clutter"`` (default: "easy").
+        record_log (str | None): Append each attempt's record to this JSONL file (default: None).
+        debug_frames (str | None): Write each pick's camera frames to this folder (default: None).
+        cell_kwargs (Mapping[str, Any] | None): Extra settings for the simulated cell (default: None).
+        radial_closing (bool): Close every grasp radially, an isotropic jaw (default: False).
+        ground_truth_depth (bool): Hand the pick the scene's ground-truth depth; ``False`` the camera's own rendered
+            depth (default: True).
 
-    Both instrumentation hooks are opt-in and default-off: ``record_log`` appends one
-    ``GraspAttemptRecord`` JSONL line per pick, stamped with the ground-truth ``sim_lift_mm`` and
-    ``sim_lifted``, and ``debug_frames`` dumps the grasp-point overlay PNG per pick. With neither
-    set the gate is byte-identical.
+    Returns:
+        GateResult: Each run's verdict (``pick()`` succeeded and the object rose by the configured lift) and the gate's.
     """
     service, arm, gripper, handles, cfg, cell = build_service(
         headless=headless, data_dir=data_dir, mode=mode, cell_kwargs=cell_kwargs,

@@ -1,0 +1,3 @@
+2026-10-07 11:41:04,720 - Console - INFO - Building the cell (rehearse=False) from D:\cell\cell_config\config, profile chain (none).
+2026-10-07 11:41:15,365 - Console - INFO - Grasp records go to the configured path D:\cell\logs.
+2026-10-07 11:41:15,368 - Console - INFO - Cell built in 10.6 s: arm=URRobotArm, gripper=JawIOGripper, records -> D:\cell\logs.

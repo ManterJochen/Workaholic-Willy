@@ -1,0 +1,124 @@
+_provenance:
+  what: robotiq_hande hand bodies, planning only
+  model: lean
+  source: robotiq_hande_hand_meshes.npz
+  generated_by: scripts/curobo/fit_planning_spheres.py
+  recipe: 'NVIDIA''s UR pattern, fitted: a few spheres along each body''s axis, each
+    the body''s thickness there plus the reach asked, held to a hole allowance instead
+    of a complete cover; a planning model only, every check, the evidence and the
+    exact guard stay on the cover fit'
+  asked_for: scripts/curobo/fit_planning_spheres.py ARM_PLAN / HAND_PLAN, per body
+  seed: 0
+  bodies:
+  - body: gripper
+    frame: 6
+    why: 'the housing: a row along the approach, as franka''s palm'
+    spheres: 6
+    reach_mm: 15.0
+    hole_mm: 8.0
+    radii_mm:
+    - 40.1
+    - 40.2
+    - 18.3
+    - 21.5
+    - 21.5
+    - 18.3
+    fresh_uncovered_max_mm: 7.841
+    fresh_reach_max_mm: 14.968
+    fresh_samples: 20000
+    sample_spacing_mm: 3.237
+    seconds: 84.2
+  - body: lfinger
+    frame: 6
+    why: one jaw, at the evidence model's reach
+    spheres: 3
+    reach_mm: 12.0
+    hole_mm: 8.0
+    radii_mm:
+    - 14.3
+    - 16.0
+    - 15.8
+    fresh_uncovered_max_mm: 7.752
+    fresh_reach_max_mm: 11.944
+    fresh_samples: 20000
+    sample_spacing_mm: 1.139
+    seconds: 23.1
+  - body: rfinger
+    frame: 6
+    why: the other jaw
+    spheres: 3
+    reach_mm: 12.0
+    hole_mm: 8.0
+    radii_mm:
+    - 14.8
+    - 15.6
+    - 16.3
+    fresh_uncovered_max_mm: 7.086
+    fresh_reach_max_mm: 11.714
+    fresh_samples: 20000
+    sample_spacing_mm: 1.139
+    seconds: 23.0
+  origin: mounting_face
+  frame: tool0 (Y=approach, X=closing, Z=depth), metres
+collision_spheres:
+  tool0:
+  - center:
+    - 0.000617
+    - 0.0263
+    - -0.000945
+    radius: 0.040127
+  - center:
+    - -4.7e-05
+    - 0.056964
+    - -0.00032
+    radius: 0.040236
+  - center:
+    - 0.000289
+    - 0.085454
+    - 0.026144
+    radius: 0.018254
+  - center:
+    - 0.017135
+    - 0.090305
+    - 0.000575
+    radius: 0.021475
+  - center:
+    - -0.016347
+    - 0.091895
+    - -0.000575
+    radius: 0.021475
+  - center:
+    - -0.001663
+    - 0.095939
+    - -0.024274
+    radius: 0.018261
+  - center:
+    - -0.028148
+    - 0.138557
+    - 0.008209
+    radius: 0.014281
+  - center:
+    - -0.026755
+    - 0.103688
+    - -0.006418
+    radius: 0.015988
+  - center:
+    - -0.002075
+    - 0.091584
+    - -0.012837
+    radius: 0.015823
+  - center:
+    - 0.028237
+    - 0.126946
+    - -0.001273
+    radius: 0.014849
+  - center:
+    - 0.02605
+    - 0.103626
+    - 0.006786
+    radius: 0.015637
+  - center:
+    - 0.001407
+    - 0.092024
+    - 0.014113
+    radius: 0.016276

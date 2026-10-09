@@ -30,10 +30,16 @@ _DEEP = "src.robot.grasping.deep.calculator.DeepGraspCalculator"
 
 
 def _artifact(directory: Path, *, stamp: str = "2f85", trained: tuple[str, ...] = ()) -> str:
-    """The smallest file the factory's artifact checks accept, carrying the hands it was trained across."""
+    """The smallest file the factory's artifact checks accept, carrying the hands it was trained across.
+
+    With a passed proof beside it (2026-10-09), so a cell gets past the promotion check to the hand check.
+    """
+    from tests._deep_promotion import promote
+
     path = directory / "generator.pt"
     torch.save({"kind": SET_ARTIFACT_KIND, "artifact_version": SET_ARTIFACT_VERSION, "gripper": stamp,
                 "trained_grippers": list(trained or (stamp,))}, path)
+    promote(path)
     return str(path)
 
 

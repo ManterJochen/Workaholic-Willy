@@ -76,6 +76,22 @@ grasps are judged. The simulator's twist, `GraspMotion(align_closing_to_base_x=T
 after the judging, so beside `both_faces` it raises `ValueError` before the controller or the hand is
 asked.
 
+`pick(follow=kept, follow_looks=True)` is how a task follows its parts (`robot.grasping.follow_parts`, the owner,
+2026-10-09; [`task.py`](../task.py) hands both, off by default): `follow` is the parts its last pick kept
+(`src/robot/perception/kept_scene.KeptScene`), which the pick's first look finds again with SAM2 on their boxes and no
+detector, grounding the frame as before where any check fails; `follow_looks` has every later look find the first
+look's parts by their projected boxes and rank the part it keeps first. Both are a wrist camera's, handed to the pick
+loop (`orch.follow`, `orch.follow_looks`) only where asked and taken back in the same `finally`; a fixed camera ignores
+them. The first look takes `follow`, so a pick the recovery loop runs again grounds.
+
+`pick(every_look=True)` is the console's "Alle Posen" (the owner, 2026-10-08 night): a wrist pick visits every look it
+was handed, the early stop off, and goes on with the last look's grasp, fused over every look. Handed to the pick loop
+(`orch.every_look`) only where asked and taken back in the same `finally`; ignored with `multi_view=False` and on a
+fixed camera. `from_robot_config` sets two of the cell's own switches on the pick loop where its tree turns them on,
+both off by default: `robot.grasping.weak_look_trigger` (`orch.weak_look`: a weak view of the part sends a wrist pick
+on to its next look) and `robot.grasping.hide_own_places` (`orch.hide_own_places`: the regions a task keeps out painted
+out of the image its detector reads); see [grasping/loop](../../grasping/loop/README.md).
+
 `RuntimePickService.from_robot_config` hands the pick loop the cell's `robot.natural_closing_axis`
 (`BinPickingOrchestrator.natural_closing_axis`), so every pick of the service, `Cell` and `PickRun` turns
 its grasps and its pushes the natural way round with no argument of its own. A motion's `closing_axis`
@@ -112,6 +128,13 @@ and readable on `service.looked_around` (`None` after a pick that ended before i
 | `telemetry['refused_look']`, `['look_refused']` | the look, generated view or move back whose motion ended the pick, and why |
 | `telemetry['looks_skipped']` | looks refused before anything was sent, each `"look: why"` |
 | `telemetry['move_back_refused']` | why the arm did not go back to the look that ranked the grasp; the approach started where it stood |
+| `telemetry['targets_by_look']` | how many targets each look perceived from saw, in their order: the parts past the label gate, no surface, none kept out |
+| `telemetry['followed']`, `['follow_why']` | on a pick handed parts to follow: whether its first look followed them, and what it came to or why the detector grounded it |
+| `telemetry['looks_followed']` | the looks whose parts were found with no detector, the first and the later looks' projected boxes |
+| `telemetry['every_look']` | on a pick that drove every look ("Alle Posen"): `True` |
+| `telemetry['looks_weak']` | the looks the cell's trigger judged weak, each `"look: why"` (`robot.grasping.weak_look_trigger`) |
+| `pick_report.target_label` | the label of the segmentation the pick went for, its executed grasp's or its last chosen one's; `""` where it chose none |
+| `pick_report.unclaimed_labels` | on a sort, the labels the label gate turned away at the pick's first look, one per part no rule claims; a surface and a part in a region the task keeps out left out |
 
 `failure_summary()` adds the look not reached, the looks perceived from and the looks skipped, and names
 the unseen face only when `both_faces` was asked and the outcome is `NO_VALID_GRASP` (on a fixed camera,
@@ -124,6 +147,25 @@ detector's words map onto, and the label filter) with no camera reopened and no 
 previous = service.set_prompt("the red cube")
 report = service.pick()
 service.set_prompt(previous)                       # all three back
+```
+
+A sort names several kinds at once (the owner, 2026-10-09: "Grüne Teile in die gelbe Kiste, rote in die blaue"):
+the phrase is a class list, every kind grounded in one call, and the label filter takes any of the kinds
+(`PickPrompt.target_labels`, with `target_label` `None`). The prompt `set_prompt` returns carries the kinds it
+replaced, so passing it back puts them back too. Each pick says which kind it went for, and which parts its first
+look saw that no rule claims (the detector's `ambiguous`, a word no rule names), both on the pick report:
+
+```python
+from src.models.vlm.qwen import class_list_prompt
+
+kinds = ("green part", "red part")
+previous = service.set_prompt(PickPrompt(
+    phrase=class_list_prompt(["each separate green part", "each separate red part"]),
+    object_labels=kinds, target_labels=kinds))
+report = service.pick()
+report.pick_report.target_label                    # "green part": the yellow bin's rule
+report.pick_report.unclaimed_labels                # ("ambiguous",): it stays where it lies
+service.set_prompt(previous)
 ```
 
 To build the service from parts of your own, `calculator` and `perception` are required and have no
@@ -213,6 +255,12 @@ A record's `extra` carries the looks where the pick had them: `looks_visited` on
 (a fixed camera's look the arm did not reach left out); `looks_fused`, `jaw_faces_seen`,
 `hand_eye_gap_mm` and `generated_view_deg`, a wrist camera's alone; and `both_faces`, written only when
 it was asked.
+A real cell (`build_real_cell`) writes its records in the background (`write_records_in_the_background`):
+`pick()` returns at once, the process's one writer writes the records in the order of their picks, each
+stamped when its pick ended, a write that fails is logged and stops nothing, and whatever still waits is
+written before the process ends. A cell built by hand writes each record before `pick()` returns, as
+before. `build_real_cell` also starts the cell's SFE workers (`robot.grasping.workers`) and hands them to
+the pick loop.
 `EffectiveGraspingConfig.to_dict()` is the flat telemetry contract of 77 keys, each the state that
 acted on the attempt: a block outside its `apply_modes` reads false even where the YAML says true.
 `closed_loop_enabled` left it on 2026-09-29 with the refinement it flagged, and
@@ -232,7 +280,7 @@ with their blocks.
 | `builders.py` | the per-phase wiring `from_robot_config` runs, `build_effective_config`, `apply_orchestrator_overlays` |
 | `watchdog.py`, `latency.py` | drift and out-of-distribution events; rolling p95 latency, which never fails closed |
 | `shadow.py`, `action_mask_eval.py` | the reinforcement-learning shadow router and its per-candidate action mask |
-| `record_logging.py` | the report to `GraspAttemptRecord` serializer |
+| `record_logging.py` | the report to `GraspAttemptRecord` serializer, and the process's background writer |
 
 ## Details
 

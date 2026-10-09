@@ -78,12 +78,15 @@ class _Calculator:
 
 
 class _Streamer:
-    """One fixed RGB-D frame: a plane at 500 mm with a box standing 40 mm toward the camera."""
+    """One fixed RGB-D frame: a plane at 500 mm with a box standing 40 mm toward the camera, painted red on a black
+    plane: the red cube the campaigns here ask for, which the camera source's colour check passes (2026-10-08)."""
 
     def __init__(self) -> None:
         depth = np.full((64, 64), 500, dtype=np.uint16)
         depth[24:40, 24:40] = 460
-        self._frame = RGBDFrame(color=np.zeros((64, 64, 3), dtype=np.uint8), depth=depth)
+        color = np.zeros((64, 64, 3), dtype=np.uint8)
+        color[24:40, 24:40] = (40, 40, 200)
+        self._frame = RGBDFrame(color=color, depth=depth)
 
     def grab(self) -> RGBDFrame:
         return self._frame

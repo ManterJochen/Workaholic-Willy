@@ -80,6 +80,7 @@ looks the same way ([perception/](../../perception/README.md)). What this packag
 | --- | --- | --- |
 | **Wrist tolerances** | `association.WRIST_VIEW_*` | two looks are associated by overlap at a score of 0.30, with a 15 mm neighbour radius and 3 mm scoring cells: two views through one hand-eye disagree more the more the wrist turned. A cell that fuses fixed cameras associates with its own `fusion.geometry` metric and `min_score`, and the wider radius and cells of the two |
 | **Clean surfaces** | `scene_geometry.grazing_pixels` | before a look is fused, its masks lose the pixels behind a depth step (the Locator's rule) and the ones that see their surface past 75 deg of incidence (`GRAZING_INCIDENCE_DEG`, the normal measured 2 px either way, `GRAZING_BASELINE_PX`): a grazing point says more about the edge it was seen past than about the surface |
+| **A footprint less the rim** | `fuse_scene_geometry(primary_footprints=...)` | where the cell cuts a rim off the support-footprint stage's input (`robot.grasping.geometry.footprint_rim_mm`, 2026-10-09), each view carries its masks less their rim beside them (`ObservedView.footprints`), and the fusion builds every fused object's cloud again from them by the association the clouds made (`FusedSceneGeometry.footprint_clouds_base_mm`, `footprint_for`); a view with none gives its masks. The clouds, the associations and the neighbours are the same with footprints as without, and only the stage's footprint reads them |
 | **One name per look** | the pick loop | a look is the view `rig@look`, so two looks of one camera are two views; a pick handed no looks keeps the rig id |
 | **Label agreement** | `association.label_agreement` | looks that call the associated part by different labels make its grasp uncertain; looks that agree change nothing. One rule for the pick loop and the Locator, and one sentence for both accounts, `label_agreement_said`: `label agreed in N of M looks`, M the looks that saw the part, N those that call it the judged look's label |
 | **Jaw contact faces** | `unseen_side.jaw_faces_seen` | a face counts as seen when at least 30 % of the pad's touchable 4 mm cells, and at least 3 cells, hold 3 or more points within 6 mm of the face |
@@ -139,7 +140,7 @@ out by `camera.cameras.primary_rig_id`, and listing it keeps the single-view war
 | File | Holds |
 | --- | --- |
 | `association.py` | `AssociationMetric`, `associate_target`, `assign_view`, `cluster_views`, `fuse_target_cloud`, `fuse_scene_clouds`; `label_agreement`, `label_agreement_said`, `nearest_surface_distances_mm`, `HAND_EYE_DRIFT_WARN_MM`, `HAND_EYE_MIN_POINTS` and the `WRIST_VIEW_*` tolerances |
-| `scene_geometry.py` | `ObservedView`, `fuse_scene_geometry`, `FusedSceneGeometry`, `build_scene_objects`, `SceneObject`, `to_base_mm`, `grazing_pixels` |
+| `scene_geometry.py` | `ObservedView` (with its `footprints`), `fuse_scene_geometry`, `FusedSceneGeometry` (with its `footprint_clouds_base_mm`), `build_scene_objects`, `SceneObject`, `to_base_mm`, `grazing_pixels` |
 | `localize.py` | `fuse_view_localizations`, `ViewLocalization`: a visibility-weighted BASE centroid |
 | `unseen_side.py` | `jaw_faces_seen`, `orbit_views`: were both jaw contact faces seen, and the turns of the judged look that would show the one that was not, up to 180 deg |
 

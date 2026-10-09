@@ -40,11 +40,13 @@ class Handedness(StrEnum):
 
 
 class HandGesture(StrEnum):
-    """The gestures this package commits to recognising.
+    """What a gesture reading may be.
 
-    Four values, not the seven MediaPipe's canned classifier knows: thumbs-up and thumbs-down are
-    mapped, everything else is `OTHER`, and `OTHER` is not `NONE`. A hand that was not a thumbs-up
-    and no hand at all call for different actions at an operator console.
+    Attributes:
+        THUMB_UP: A thumb up.
+        THUMB_DOWN: A thumb down.
+        OTHER: A hand, and no gesture of the two.
+        NONE: No hand at all; not the same as ``OTHER``.
     """
 
     THUMB_UP = "thumb_up"

@@ -150,7 +150,18 @@ class ImportReport:
 
 @dataclass(frozen=True, slots=True)
 class PublicCorpus:
-    """A published grasp corpus, read into the scene files this training loop already eats."""
+    """A published grasp corpus, read into the scene files this training loop already eats: for a user with no simulator
+    and no cell.
+
+        corpus = PublicCorpus.from_source(out_dir="corpora/grasp_anything", gripper="robotiq_hande")
+        print(corpus.describe())          # the source, its licence, what is on disk
+        print(corpus.fetch(limit=200))
+
+    Attributes:
+        key (str): The corpus, such as ``"grasp_anything_6d"``.
+        out_dir (Path): Where its scenes land.
+        gripper (str): The jaw the grasps are read for, a name of ``JAW_GEOMETRY``.
+    """
 
     key: str
     out_dir: Path
@@ -161,10 +172,19 @@ class PublicCorpus:
     @classmethod
     def from_source(cls, key: str = DEFAULT_SOURCE, *, out_dir: str | Path,
                     gripper: str | None = None) -> "PublicCorpus":
-        """The named corpus, landing in `out_dir`. Reads nothing and opens no connection.
+        """A named public corpus, landing in a folder. Reads nothing and opens no connection.
 
-        The gripper is validated here rather than after the fetch: the names live in `JAW_GEOMETRY`,
-        and finding out that a typo was a typo should not cost a download.
+        Args:
+            key (str): The corpus (default: "grasp_anything_6d").
+            out_dir (str | Path): Where its scenes land.
+            gripper (str | None): The jaw the grasps are read for; checked here, before any download; ``None`` the
+                default jaw (default: None).
+
+        Returns:
+            PublicCorpus: The corpus.
+
+        Raises:
+            ValueError: An unknown corpus or jaw.
         """
         from src.robot.grasping.deep.net.gripper import JAW_GEOMETRY  # noqa: PLC0415 (pulls torch)
 
@@ -181,7 +201,11 @@ class PublicCorpus:
         return source
 
     def describe(self) -> str:
-        """The source, its licence and what is already on disk, before anything is fetched."""
+        """The source, its licence and what is already on disk, before anything is fetched.
+
+        Returns:
+            str: ASCII, one line per fact.
+        """
         source = self.source
         return _NEWLINE.join([
             f"public corpus {source.key}",
@@ -193,25 +217,39 @@ class PublicCorpus:
         ])
 
     def scenes_present(self) -> int:
-        """How many scenes `out_dir` already holds. A fetch resumes rather than starting over."""
+        """How many scenes the folder already holds; a fetch resumes rather than starting over.
+
+        Returns:
+            int: The count.
+        """
         return sum(1 for _ in self.out_dir.glob("*.npz")) if self.out_dir.is_dir() else 0
 
     def fetch(self, *, limit: int = 200, jobs: int = 8, validate: int = 3,
               centre_offset_m: float | None = None, cache_dir: str | Path | None = None,
               report: "Callable[[str], None] | None" = None) -> ImportReport:
-        """Fetch `limit` scenes and write them as the `.npz` files the training loop reads.
+        """Fetch scenes by range request (the source is 229 GB; a scene costs about 200 KB) and write them as the
+        ``.npz`` files the training loop reads. Each scene is written as it converts, so an interrupted fetch keeps what
+        it got.
 
-        By range request, not by download. The source is 229 GB and its clouds are one Zip64 split
-        across five parts, so looking at it costs roughly 200 KB per scene rather than the archive.
+        Args:
+            limit (int): How many scenes (default: 200).
+            jobs (int): Conversions in parallel (default: 8).
+            validate (int): Read this many written scenes back through the corpus loader and the sample contract; 0
+                skips it (default: 3).
+            centre_offset_m (float | None): How far along the approach the published translation sits from the grasp
+                centre, metres; ``None`` fits it from the data (default: None).
+            cache_dir (str | Path | None): Where the archive's directory index is cached; ``None`` is
+                ``out_dir/.directories`` (default: None).
+            report (Callable[[str], None] | None): Called with one progress line at a time; ``None`` says nothing
+                (default: None).
 
-        Needs the network, and raises what the network raises: `OSError` (which `URLError` is),
-        `RuntimeError` for an archive that will not address, `ValueError` for a member that will not
-        parse. Each scene is written as it converts, so an interrupted fetch keeps what it got and
-        the next call continues from there.
+        Returns:
+            ImportReport: The source, its licence, the fitted offset, what was written and what was refused.
 
-        `validate` reads that many written scenes back through the corpus loader and puts them
-        through the sample contract, which is the cheapest place to catch a frame error; `0` skips
-        it. `report` is called with one progress line at a time, `None` swallows them.
+        Raises:
+            OSError: The network failed (``URLError`` is one).
+            RuntimeError: The archive will not address.
+            ValueError: A member will not parse.
         """
         provenance = _reader(self.key).import_scenes(
             self.out_dir, limit=limit, jobs=jobs, validate=validate,
@@ -220,7 +258,11 @@ class PublicCorpus:
         return self._report(provenance)
 
     def report(self) -> ImportReport | None:
-        """The last import's provenance, read back from disk. `None` where none has run."""
+        """The last import's provenance, read back from disk.
+
+        Returns:
+            ImportReport | None: The report; ``None`` where no import has run.
+        """
         stamp = self.out_dir / "provenance.json"
         if not stamp.is_file():
             return None

@@ -7,7 +7,8 @@ until it builds. A cell reaches the stack through `Locator`; call `PerceptionSpe
 build the stack a config describes, before a weight loads.
 
 ```python
-from willy import PerceptionSpec, load_tree
+from willy import load_tree
+from src.models.perception_spec import PerceptionSpec
 
 spec = PerceptionSpec.from_config(load_tree().app_config.models)   # the cell WILLY_PROFILE names
 print(spec.resolve())                  # which stack, decided by which half of the config, any refusal
@@ -17,8 +18,12 @@ for obj in objects:
 ```
 
 Images go in as OpenCV BGR arrays; each wrapper swaps to RGB itself, so do not swap before calling.
-The same calls run in [resolve_perception_stack.py](../../examples/offline/perception/resolve_perception_stack.py),
-and a located pick at a cell in [15_speak_pick_and_hand_handover.py](../../examples/real_robot/15_speak_pick_and_hand_handover.py).
+That is the cell's own path, the one every pick takes; a located pick at a cell runs it in
+[15_speak_pick_and_hand_handover.py](../../examples/real_robot/15_speak_pick_and_hand_handover.py). A program of your
+own takes `ObjectDetector` ([detection/](detection/README.md)), every model here behind one
+`detect(image, prompt= or classes=, segment=)`, as
+[detect_with_a_prompt.py](../../examples/offline/perception/detect_with_a_prompt.py) and
+[detect_every_class.py](../../examples/offline/perception/detect_every_class.py) do.
 `python -m src.robot.perception --rig <rig id>` runs detection and segmentation on a live camera
 ([docs/cli.md](../../docs/cli.md)).
 
@@ -44,6 +49,7 @@ reach the VLM, and [`vlm/`](vlm/README.md) is the VLM route itself.
 | `PerceptionSpec` | the same | `resolve()` | a `PerceptionResolution`: what `build()` would construct, and why |
 | `PerceptionBackend` | `spec.build()`, `build_perception(models)` | `perceive(image_bgr, prompt)` | a tuple of `PerceivedObject` |
 | `PerceivedObject` | the backend | read | a `Detection` (box, score, label) and its `SegmentationResult` (mask) |
+| `ObjectDetector` | `from_weights(path_or_id)`, `from_config(tree)` | `detect(image_bgr, classes=, threshold=, segment=)` | `Detections`: every class of a closed-set detector in one call, each object with its SAM2 mask where asked ([`detection/`](detection/README.md)) |
 | `SpeechEngine` and friends | see [`speech/`](speech/README.md) | `propose(samples, samplerate=...)` | a `Proposal` of text a person confirms |
 
 `build_perception` is the one builder; `PerceptionSpec.build()` calls it and `resolve()` predicts it
@@ -66,6 +72,22 @@ exception (`failures_of(backend)` and `last_failure_of(backend)` read them on an
 guarded ones pass them through). A caller that must tell "the scene is empty" from "the model could not look"
 reads the count before and after: the console's task ends `detector_failed` on it, never "nothing left". A VLM that
 cannot load raises inside the detector, so it is counted the same way, before `on_unavailable` sees it.
+
+**One colour word, where the pixels cannot tell.** The camera source judges a part's colour on its pixels and asks
+the backend only when they leave it unsure (`src/robot/perception/colour_check.py`): `name_colour(image_bgr, box)`
+answers one colour word for the object in the box, or `""`. `TwoStageBackend` asks its detector where it can answer
+(Qwen3-VL's `name_colour`; GroundingDINO answers nothing), and counts a question that raises in `failures` as a
+perceive that raised; `GuardedVlmBackend` asks the VLM while it is not degraded; `RoutedPerceptionBackend` asks its VLM
+route, building it as a prompt that chooses it would. No answer refuses the part.
+
+**Boxes cut with no detector.** A task that follows its parts (`robot.grasping.follow_parts`,
+`src/robot/perception/kept_scene.py`) has SAM2 cut the boxes of the parts it kept, and asks no detector:
+`segment_boxes(image_bgr, boxes)` takes `((x0, y0, x1, y1), label)` pairs and answers `SegmentedBoxes`, the object cut
+for each box in their order and a sentence for each box that could not be. `TwoStageBackend` cuts each as a detection of
+score 1.0 under its label, and never counts a box it could not cut in `failures`: the camera source grounds the frame
+instead, and that perceive counts its own. `GuardedVlmBackend` forwards to the VLM route's segmenter without loading
+the VLM, and cuts nothing once degraded; `RoutedPerceptionBackend` cuts with the route that grounded last, and builds
+no route for it, so a cell that has grounded nothing yet cuts nothing.
 
 The shipped `model_path` directories sit under `assets/models/hf/` and are empty in a fresh clone:
 `python scripts/model_weights/fetch.py --list` names what to fetch. GroundingDINO, Whisper and Silero
@@ -139,7 +161,7 @@ python -m src.models.detection.closed_set.train eval --model-dir assets/models/r
 | [`factory.py`](factory.py) | `build_perception`, `build_object_detector`, `build_segmenter`, the refusal sentences |
 | [`perception_backend.py`](perception_backend.py) | the `PerceptionBackend` seam and `TwoStageBackend`, detector then segmenter |
 | [`routed_backend.py`](routed_backend.py) | `RoutedPerceptionBackend`: two backends chosen per prompt, one shared segmenter |
-| [`detection/`](detection/) | `Detection`, the GroundingDINO and RT-DETR wrappers, RT-DETR training on your own classes (`DetectorTraining`) and its command |
+| [`detection/`](detection/README.md) | `Detection`, the GroundingDINO and RT-DETR wrappers, `ObjectDetector` (every class in one call, each object with its SAM2 mask), RT-DETR training on your own classes (`DetectorTraining`) and its command |
 | [`segmentation/`](segmentation/) | `SegmentationResult` (a `uint8` mask of 0 and 1), the SAM2 and OneFormer wrappers |
 | [`routing/`](routing/README.md), [`vlm/`](vlm/README.md) | which route a prompt takes, and the VLM that answers the hard ones |
 | [`speech/`](speech/README.md) | speech to a prompt: Whisper, Silero, push to talk, a person's confirmation |

@@ -257,6 +257,10 @@ def _build_on_open_cameras(robot_cfg: "RobotConfig", app_cfg: Any, *, prompt: st
         streamer=handle,
         backend=backend,
         prompt=prompt,
+        # Whether a part's pixels must have the colour its phrase names (robot.grasping.colour_check).
+        colour_check=getattr(getattr(robot_cfg, "grasping", None), "colour_check", "on"),
+        # Whether a channel the camera clipped leaves its pixel out (robot.grasping.colour_check_clipped).
+        colour_check_clipped=getattr(getattr(robot_cfg, "grasping", None), "colour_check_clipped", "exclude"),
     )
     intrinsics = np.asarray(handle.get_intrinsics(), dtype=np.float64)
     multi_camera = _build_multi_camera_rig(
@@ -435,6 +439,8 @@ def _build_multi_camera_rig(robot_cfg: "RobotConfig", app_cfg: Any, *, cameras: 
             # with one set of weights; the cost of an extra camera is an inference pass.
             backend=backend,
             prompt=prompt,
+            colour_check=getattr(grasping_cfg, "colour_check", "on"),
+            colour_check_clipped=getattr(grasping_cfg, "colour_check_clipped", "exclude"),
         )
     return MappedCameraRig(sources)
 
@@ -507,6 +513,7 @@ def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
         # Before the world, because the world's self filter reads the bodies the arm holds.
         _wire_wrist_bodies(service, wrist)
         _wire_live_planner_world(robot_cfg, service, perception, app_cfg=app_cfg)
+        _start_the_pick_writers(robot_cfg, service)
     except BaseException:
         # A refused build gives the cameras back past the components as well.
         # `build_real_components` gives back what it opened when it fails itself, but the root, the
@@ -516,6 +523,31 @@ def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
         _give_back(perception, multi_camera)
         raise
     return service
+
+
+def _start_the_pick_writers(robot_cfg: Any, service: Any) -> None:
+    """What keeps a pick of a real cell from waiting: SFE's workers started now and handed to the pick loop
+    (``robot.grasping.workers``, ``src/robot/grasping/workers.py``), and the records written in the background
+    (``AutonomousGraspService.write_records_in_the_background``).
+
+    The workers start once per process (``shared_workers``), here rather than at the first pick, which would wait for
+    them; how many, and why, is said in the log. Workers that cannot start are said there too, and every part is then
+    searched in the cell's process, as with none. Nothing here moves or opens a device.
+    """
+    from src.robot.constants import create_robot_logger
+    from src.robot.grasping.workers import shared_workers, worker_count
+
+    write_later = getattr(service, "write_records_in_the_background", None)
+    if callable(write_later):
+        write_later(True)
+    orchestrator: Any = getattr(getattr(service, "runtime", None), "orchestrator", None)
+    setting = getattr(getattr(robot_cfg, "grasping", None), "workers", 0)
+    count, said = worker_count(setting if isinstance(setting, (int, str)) else 0)
+    if orchestrator is None or count < 1:
+        return
+    # The robot log (a bare logger writes nowhere in the console), under this module's name, as the tests read it.
+    create_robot_logger(__name__, "grasp_cells.log").info("SFE workers (robot.grasping.workers): %s", said)
+    orchestrator.sfe_workers = shared_workers(count)
 
 
 def _plans_with_curobo(robot_cfg: Any) -> bool:
@@ -609,12 +641,11 @@ def _wire_live_planner_world(robot_cfg: "RobotConfig", service: Any, perception:
     opens nothing more and logs nothing. A camera that cannot be opened or placed refuses the build
     naming it, after the cameras opened here are given back.
     """
-    import logging
-
     from src.camera.orchestration.camera import Camera
+    from src.robot.constants import create_robot_logger
     from src.robot.execution.camera_world_wiring import CameraWorldPlan, CameraWorldWiring, OpenedCameras
 
-    log = logging.getLogger(__name__)
+    log = create_robot_logger(__name__, "grasp_cells.log")
     orchestrator: Any = getattr(getattr(service, "runtime", None), "orchestrator", None)
     arm = getattr(orchestrator, "arm", None)
     setter = getattr(arm, "set_live_planner_world", None)

@@ -1,0 +1,28 @@
+2026-10-12 09:00:01,100 - URConnection - INFO - Connecting to UR robot at 169.254.111.231 ...
+2026-10-12 09:00:02,500 - URConnection - INFO - Connected (control + receive + io + dashboard).
+2026-10-12 09:00:02,600 - URRobotArm - INFO - tool frame verified: source=polyscope, controller matches within 6.29 mm / 0.58 deg
+2026-10-12 09:00:02,700 - URConnection - INFO - The steady gate reads the joint speeds (robot.safety.dwell.steady_signal: joint_speeds): every joint under 0.01 rad/s on 3 reads 8 ms apart, isSteady where they cannot be read.
+2026-10-12 09:00:03,100 - CuroboPlanClient - INFO - spawning the cuRobo sidecar: python=D:\cell\Workaholic_Willy\ext_deps\curobo_env\python.exe robot=willy_ur10.yml cuboid_cache=129 mesh_cache=0 voxel_grid=none self_collision_margin=0.000 mm
+2026-10-12 09:00:04,000 - src.robot.grasping.workers - INFO - SFE workers: 7 ready (pids 4101, 4102, 4103, 4104, 4105, 4106, 4107)
+2026-10-12 09:00:30,000 - src.robot.execution.camera_world_wiring - ERROR - a line nobody reads, with its traceback
+Traceback (most recent call last):
+  File "x.py", line 1, in <module>
+ValueError: only to be skipped
+2026-10-12 09:01:10,000 - CuroboPlanClient - INFO - cuRobo sidecar ready after 66.9 s: 6 joint(s), dt=0.0250 s
+2026-10-12 09:01:10,100 - CuroboPlanClient - INFO - collision world set: 1 of 1 obstacle(s) registered
+2026-10-12 09:01:32,700 - src.robot.execution.autonomous_grasp.service - INFO - recovery rescans nothing for a wrist pick handed looks: its looks, and the one view they may generate, were its rescans, and driving them again is not a recovery
+2026-10-12 09:01:32,750 - src.robot.execution.looks - INFO - look home: the arm already stands there, every joint within 0.05 deg of it; nothing was sent
+2026-10-12 09:01:39,900 - src.robot.grasping.loop.pick_loop - INFO - the parts are computed in the order they stand apart, the first good one taken: 2, 0, 1
+2026-10-12 09:01:40,000 - src.robot.grasping.loop.pick_loop - INFO - the camera world finds what the part stands on at 51.2 mm under its foot, over the 0.0 mm declared: its grasps are planned on that
+2026-10-12 09:01:40,500 - GraspCalculator - INFO - Generated 12 grasp candidates (best score=0.822); telemetry={'final': 12, 'best_score': 0.822}
+2026-10-12 09:01:40,510 - src.robot.grasping.loop.pick_loop - INFO - part 2 is good (0.822, 0.75 asked): it is taken, and 2 part(s) after it are not computed
+2026-10-12 09:01:40,600 - src.robot.grasping.loop.pick_loop - INFO - look home: a valid grasp with no rescan reason; the looking ends here
+2026-10-12 09:01:40,601 - src.robot.grasping.loop.pick_loop - INFO - the looks stop at look home, whose grasp is safe enough (looked from home); label agreed in 1 of 1 look
+2026-10-12 09:01:40,700 - src.robot.grasping.loop.pick_loop - INFO - try 1 of 12: the grasp the look ranked first (rank 0 of the look's grasps)
+2026-10-12 09:01:41,790 - CuroboPlanClient - INFO - collision world set: 129 of 129 obstacle(s) registered
+2026-10-12 09:01:41,800 - CuroboUrPlanner - INFO - planner world refreshed: 129 box(es), frame 50 ms old, 500.0 ms to build (300.0 ms of it reading the camera), 12.0 ms to register; 12 box(es) merged into the boxes holding them to fit the slots; kept out: goal region left out 0 point(s); not seen, planned as free: no depth on 18% of EIH_Cam
+2026-10-12 09:01:42,000 - URRobotArm - INFO - mesh first: the exact guard alone judged 115 sample(s) of the line to approach_03 clear; cuRobo was not asked
+2026-10-12 09:01:42,300 - URRobotArm - INFO - a lift to retreat judged as if the jaws held a part 42.0 mm across: it would run
+2026-10-12 09:01:43,000 - URRobotArm - INFO - mesh first: the exact guard alone judged 905 sample(s) of this straight joint line clear; cuRobo was not asked
+2026-10-12 09:01:43,010 - URRobotArm - INFO - move to approach_00: the route judged ahead runs as it was judged, 12 ms ago, in the world of the refresh it was judged in (129 box(es)); it is not judged a second time
+2026-10-12 09:01:43,011 - URRobotArm - INFO - move to approach_00: direct line to goal 1 of 8 (branch shoulder -, wrist 2 +, elbow -, 78.8 deg at most); 2 waypoint(s) dense, 2 executed (1 leg(s)); joint travel in deg, total/largest leg: shoulder_pan_joint 16.0/16.0, shoulder_lift_joint 26.3/26.3, elbow_joint 29.8/29.8, wrist_1_joint 78.8/78.8, wrist_2_joint 6.0/6.0, wrist_3_joint 8.8/8.8

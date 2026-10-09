@@ -31,7 +31,7 @@ Pure: numpy, and SciPy's image tools for the mask growth and the cluster count. 
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Final
 
@@ -54,6 +54,7 @@ __all__ = [
     "SceneObstacleRules",
     "SceneObstacles",
     "SeenEnvelope",
+    "SeenInTheFrame",
     "corridor_seen_in",
     "envelope_verdicts",
     "least_part_height_mm",
@@ -451,6 +452,15 @@ SOFT_SLACK_MM = 1.0
 #: tightest scenes with the cell's own depth (2026-10-07): 4 picked against 5, the tray's 30 mm cube lost, so 1 mm
 #: stays: a refused try costs a quarter of a second now, a grasp never offered costs the pick.
 WHOLE_SLACK_MM = 1.0
+#: How far past the distance a pair's bounding spheres have to stand before :meth:`SeenEnvelope.refuses` leaves the
+#: pair unmeasured, millimetres. The spheres' gap is a lower bound on the boxes' distance, so any pair beyond the
+#: distance could be left out; this much more keeps a rounding in either sum from ever deciding a verdict.
+_SPHERE_SLACK_MM: Final[float] = 1e-6
+#: How near its limit a number :meth:`SeenEnvelope.refuses_many` or :meth:`SeenInTheFrame.unseen_many` reads may lie
+#: before its answer for that hand is "unsure" (2), millimetres or pixels. They answer for many hands at once, and a
+#: product over many rounds its last bit, about 1e-13 mm here, as it likes; within this much of a limit the caller asks
+#: the one-hand call (:meth:`SeenEnvelope.refuses`, :meth:`SeenInTheFrame.__call__`), which decides as it always did.
+_MANY_SURE: Final[float] = 1e-6
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -472,6 +482,59 @@ class SeenEnvelope:
     way_in_mm: tuple[float, ...] = (0.0, 40.0, 80.0)
     #: Which of the hand's boxes are a finger, which may come to a soft box's measured surface (``SeenBox.soft_mm``).
     hand_fingers: "np.ndarray | None" = None
+    #: What :meth:`refuses` reads, worked out once from the fields above (``__post_init__``) rather than on every build
+    #: SFE asks about: the hand's boxes swept along the way in, their bounding spheres' radii and which are a finger;
+    #: every box whole, its sphere and its soft; and the soft boxes as a finger meets them, their soft taken off.
+    _swept_centres: np.ndarray = field(init=False, repr=False)
+    _swept_halves: np.ndarray = field(init=False, repr=False)
+    _swept_radii: np.ndarray = field(init=False, repr=False)
+    _fingers: np.ndarray = field(init=False, repr=False)
+    _box_centres: np.ndarray = field(init=False, repr=False)
+    _box_turns: np.ndarray = field(init=False, repr=False)
+    _box_halves: np.ndarray = field(init=False, repr=False)
+    _box_radii: np.ndarray = field(init=False, repr=False)
+    _whole_pairs: np.ndarray = field(init=False, repr=False)
+    _soft_centres: np.ndarray = field(init=False, repr=False)
+    _soft_turns: np.ndarray = field(init=False, repr=False)
+    _soft_halves: np.ndarray = field(init=False, repr=False)
+    _soft_radii: np.ndarray = field(init=False, repr=False)
+    #: Whether every box's rotation is a rotation, its axes square and of unit length: only then is a box's gap along a
+    #: face normal a bound on its distance, which :meth:`refuses_many` measures by.
+    _square: bool = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Work out once what :meth:`refuses` reads, by the arithmetic :meth:`_least` works it out with per call."""
+        fingers = (np.asarray(self.hand_fingers, dtype=bool).reshape(-1) if self.hand_fingers is not None
+                   else np.zeros(np.asarray(self.hand_centres).shape[0], dtype=bool))
+        front, back = (min(self.way_in_mm), max(self.way_in_mm)) if self.way_in_mm else (0.0, 0.0)
+        swept_centres = (np.asarray(self.hand_centres, dtype=np.float64).reshape(-1, 3)
+                         - np.array([0.0, 0.0, (front + back) / 2.0]))
+        swept_halves = (np.asarray(self.hand_halves, dtype=np.float64).reshape(-1, 3)
+                        + np.array([0.0, 0.0, (back - front) / 2.0]))
+        softs = np.array([float(getattr(b, "soft_mm", 0.0) or 0.0) for b in self.boxes], dtype=np.float64)
+        centres = np.array([b.centre_mm for b in self.boxes], dtype=np.float64).reshape(-1, 3)
+        turns = np.array([b.rotation for b in self.boxes], dtype=np.float64).reshape(-1, 3, 3)
+        halves = np.array([b.half_extents_mm for b in self.boxes], dtype=np.float64).reshape(-1, 3)
+        soft = softs > 0.0
+        # A soft box as a finger meets it: its soft taken off its sides and its top, as :meth:`_least` takes it off.
+        lowered = np.minimum(softs, np.maximum(halves[:, 2] - 0.5, 0.0) * 2.0)
+        soft_halves = halves.copy()
+        soft_halves[:, :2] = np.maximum(soft_halves[:, :2] - softs[:, None], 0.5)
+        soft_halves[:, 2] -= lowered / 2.0
+        soft_centres = centres - turns[:, :, 2] * (lowered / 2.0)[:, None]
+        values = {
+            "_swept_centres": swept_centres, "_swept_halves": swept_halves,
+            "_swept_radii": np.linalg.norm(swept_halves, axis=1), "_fingers": fingers,
+            "_box_centres": centres, "_box_turns": turns, "_box_halves": halves,
+            "_box_radii": np.linalg.norm(halves, axis=1),
+            # A finger against a soft box is the soft test's, never the whole one's.
+            "_whole_pairs": ~(fingers[:, None] & soft[None, :]),
+            "_soft_centres": soft_centres[soft], "_soft_turns": turns[soft], "_soft_halves": soft_halves[soft],
+            "_soft_radii": np.linalg.norm(soft_halves[soft], axis=1),
+            "_square": _all_square(turns),
+        }
+        for name, value in values.items():
+            object.__setattr__(self, name, value)
 
     @classmethod
     def of(cls, boxes: Sequence[Any], *, gripper_model: Any, open_width_mm: float, distance_mm: float,
@@ -547,30 +610,186 @@ class SeenEnvelope:
     def refuses(self, position: np.ndarray, rotation: np.ndarray) -> bool:
         """Whether the open hand comes nearer the boxes than the guard keeps, at the grasp or on the way in: every part
         of it the guard's distance and :data:`WHOLE_SLACK_MM` from every whole box, and a finger no closer than
-        :data:`SOFT_SLACK_MM` to a soft box's measured surface."""
-        return (self.least_mm(position, rotation) < self.distance_mm + WHOLE_SLACK_MM
-                or self.into_parts_mm(position, rotation) < SOFT_SLACK_MM)
+        :data:`SOFT_SLACK_MM` to a soft box's measured surface.
+
+        The verdict of ``least_mm < distance_mm + WHOLE_SLACK_MM or into_parts_mm < SOFT_SLACK_MM``, measured only where
+        it can be decided: a pair of a hand's box and a box whose bounding spheres stand apart by the limit and more
+        cannot come nearer than the limit, so it is not measured. SFE asks this of every build it gets that far with. A
+        part on the owner's cell had 38 boxes beside it (2026-10-08), and measuring the hand's 3 boxes against all 38 was
+        95 % of a call's 1.7 to 2.0 ms on synthetic scenes of the Hand-E; measured only where it can refuse, a call takes
+        0.6 to 0.7 ms, and the verdict is the same on every pose of the seeded scenes
+        (``tests/test_the_seen_boxes_are_measured_only_where_they_could_refuse.py``).
+        """
+        turn = np.asarray(rotation, dtype=np.float64).reshape(3, 3)
+        at = np.asarray(position, dtype=np.float64).reshape(3)
+        hand = at + self._swept_centres @ turn.T
+        if _any_nearer(hand, turn, self._swept_halves, self._swept_radii, self._box_centres, self._box_turns,
+                       self._box_halves, self._box_radii, self._whole_pairs, self.distance_mm + WHOLE_SLACK_MM):
+            return True
+        fingers = self._fingers
+        if not self._soft_centres.shape[0] or not fingers.any():
+            return False
+        return _any_nearer(hand[fingers], turn, self._swept_halves[fingers], self._swept_radii[fingers],
+                           self._soft_centres, self._soft_turns, self._soft_halves, self._soft_radii, None,
+                           SOFT_SLACK_MM)
+
+    def refuses_many(self, positions: np.ndarray, rotations: np.ndarray) -> np.ndarray:
+        """:meth:`refuses` for many hands at once: ``(N, 3)`` positions and ``(N, 3, 3)`` rotations in, one ``int8`` per
+        hand out: 0 where it keeps its distance, 1 where it does not, 2 where a distance it measured lies within
+        :data:`_MANY_SURE` of its limit, which only :meth:`refuses` decides.
+
+        Each hand is placed as :meth:`refuses` places it, by the same product one hand at a time (a stacked
+        ``np.matmul``), so its boxes stand where they stand there to the bit. Of the pairs :meth:`refuses` measures it
+        leaves out those whose gap along one of the two boxes' six face normals already stands at the limit and
+        :data:`_MANY_SURE` or more (a projection never lengthens a distance, so such a pair is not nearer; the bound's
+        own rounding stayed under 1.1e-13 mm on 200,000 random pairs, 2026-10-08), and it refuses a hand at once where
+        the point of one of its boxes nearest a box's centre already stands nearer to that box than the limit less the
+        band. The distances it measures many at once may round their last bit another way than one hand's call does,
+        which the band covers. SFE asks this of every build of a closing line at once (``support_footprint._build_many``):
+        on a boxed-in cube's search (2026-10-09) 183 of the 25,843 pairs the spheres leave were measured, and the search
+        took 0.15 instead of 0.56 s.
+        """
+        turns = np.asarray(rotations, dtype=np.float64).reshape(-1, 3, 3)
+        at = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
+        hands = at[:, None, :] + np.matmul(self._swept_centres[None], turns.transpose(0, 2, 1))
+        # The face normals bound a distance only where both boxes' axes are square: the camera's boxes and each hand.
+        square = (np.abs(np.matmul(turns.transpose(0, 2, 1), turns) - np.eye(3)).max(axis=(1, 2)) <= 1e-9
+                  if self._square else np.zeros(at.shape[0], dtype=bool))
+        verdict = _nearer_many(hands, turns, self._swept_halves, self._swept_radii, self._box_centres,
+                               self._box_turns, self._box_halves, self._box_radii, self._whole_pairs,
+                               self.distance_mm + WHOLE_SLACK_MM, square)
+        fingers = self._fingers
+        if not self._soft_centres.shape[0] or not fingers.any():
+            return verdict
+        soft = _nearer_many(hands[:, fingers], turns, self._swept_halves[fingers], self._swept_radii[fingers],
+                            self._soft_centres, self._soft_turns, self._soft_halves, self._soft_radii, None,
+                            SOFT_SLACK_MM, square)
+        # Refused by either test is refused; unsure in either, and refused by neither, is unsure.
+        return np.where((verdict == 1) | (soft == 1), 1, np.maximum(verdict, soft)).astype(np.int8)
 
 
-def corridor_seen_in(
-    depth_mm: np.ndarray, intrinsics: Any, camera_to_base: np.ndarray, *, tolerance_mm: float = SEEN_TOLERANCE_MM,
-) -> Callable[[np.ndarray], np.ndarray]:
-    """Who says whether a depth ray of this frame reached a point (SFE's ``CorridorSeen``, the fix plan's contract 5).
+def _all_square(turns: np.ndarray) -> bool:
+    """Whether every one of ``(N, 3, 3)`` rotations is one, its columns square and of unit length to 1e-9."""
+    turns = np.asarray(turns, dtype=np.float64).reshape(-1, 3, 3)
+    return bool(not turns.shape[0]
+                or np.abs(np.matmul(turns.transpose(0, 2, 1), turns) - np.eye(3)).max() <= 1e-9)
 
-    A BASE point is seen where its pixel's measured depth reaches at least to it, less ``tolerance_mm``: the ray went
-    through the space the point stands in, or stopped on it. Behind the camera, outside the image, or on a pixel with no
-    measured depth it is not seen.
+
+def _face_gaps(centres_a: np.ndarray, turns_a: np.ndarray, halves_a: np.ndarray, centres_b: np.ndarray,
+               turns_b: np.ndarray, halves_b: np.ndarray) -> np.ndarray:
+    """The largest gap between each pair of oriented boxes along the six normals of their faces, millimetres: a lower
+    bound on their distance (a projection never lengthens one) where both boxes' axes are square (:func:`_all_square`),
+    negative where no face separates them."""
+    normals = np.concatenate([turns_a, turns_b], axis=2)
+    reach = ((halves_a[:, :, None] * np.abs(np.einsum("pki,pkl->pil", turns_a, normals))).sum(axis=1)
+             + (halves_b[:, :, None] * np.abs(np.einsum("pki,pkl->pil", turns_b, normals))).sum(axis=1))
+    return (np.abs(np.einsum("pk,pkl->pl", centres_b - centres_a, normals)) - reach).max(axis=1)
+
+
+def _nearest_point_distances(centres_a: np.ndarray, turns_a: np.ndarray, halves_a: np.ndarray, centres_b: np.ndarray,
+                             turns_b: np.ndarray, halves_b: np.ndarray) -> np.ndarray:
+    """For each pair of oriented boxes, how far the first's point nearest the second's centre stands from the second,
+    millimetres: an upper bound on their distance, the least over every point of the first, where the axes are square."""
+    local = np.einsum("pk,pki->pi", centres_b - centres_a, turns_a)
+    point = centres_a + np.einsum("pij,pj->pi", turns_a, np.clip(local, -halves_a, halves_a))
+    return _point_box_distance(point[:, None, :], centres_b, turns_b, halves_b)[:, 0]
+
+
+def _nearer_many(hands: np.ndarray, turns: np.ndarray, hand_halves: np.ndarray, hand_radii: np.ndarray,
+                 box_centres: np.ndarray, box_turns: np.ndarray, box_halves: np.ndarray, box_radii: np.ndarray,
+                 pairs: "np.ndarray | None", limit_mm: float, square: np.ndarray) -> np.ndarray:
+    """:func:`_any_nearer` for many hands at once (``hands`` ``(N, H, 3)``, a turn each): 0 no box nearer than
+    ``limit_mm``, 1 one surely is, 2 one measured within :data:`_MANY_SURE` of it. Where the hand's turn is ``square``
+    (and the boxes' are), the pairs the spheres leave are culled once more by the gap along the two boxes' six face
+    normals, a lower bound on their distance (:func:`_face_gaps`), and a hand one of whose pairs is surely nearer by the
+    distance of its point nearest the box's centre, an upper bound (:func:`_nearest_point_distances`), is refused
+    without measuring the rest: only the pairs neither bound decides are measured (``box_distances_mm``)."""
+    out = np.zeros(hands.shape[0], dtype=np.int8)
+    if not hands.shape[0] or not hands.shape[1] or not box_centres.shape[0]:
+        return out
+    gaps = (np.linalg.norm(hands[:, :, None, :] - box_centres[None, None, :, :], axis=3)
+            - hand_radii[None, :, None] - box_radii[None, None, :])
+    near = gaps < float(limit_mm) + _SPHERE_SLACK_MM
+    if pairs is not None:
+        near &= pairs[None, :, :]
+    which, hand, box = np.nonzero(near)
+    if not which.size:
+        return out
+    culled = square[which]
+    if culled.any():
+        keep = np.ones(which.size, dtype=bool)
+        keep[np.nonzero(culled)[0]] = _face_gaps(
+            hands[which[culled], hand[culled]], turns[which[culled]], hand_halves[hand[culled]],
+            box_centres[box[culled]], box_turns[box[culled]], box_halves[box[culled]]) < float(limit_mm) + _MANY_SURE
+        which, hand, box = which[keep], hand[keep], box[keep]
+        if not which.size:
+            return out
+    # A pair surely nearer than the limit decides its hand without its exact distance: the distance of the hand's box's
+    # point nearest the other box's centre from that box is never less than the two boxes' distance.
+    within = square[which] & (_nearest_point_distances(
+        hands[which, hand], turns[which], hand_halves[hand], box_centres[box], box_turns[box],
+        box_halves[box]) < float(limit_mm) - _MANY_SURE)
+    out[which[within]] = 1
+    open_hand = out[which] == 0
+    which, hand, box = which[open_hand], hand[open_hand], box[open_hand]
+    if not which.size:
+        return out
+    distances = box_distances_mm(hands[which, hand], turns[which], hand_halves[hand], box_centres[box],
+                                 box_turns[box], box_halves[box])
+    unsure = np.abs(distances - float(limit_mm)) < _MANY_SURE
+    out[which[unsure]] = 2
+    out[which[(distances < float(limit_mm)) & ~unsure]] = 1
+    return out
+
+
+def _any_nearer(hand_centres: np.ndarray, turn: np.ndarray, hand_halves: np.ndarray, hand_radii: np.ndarray,
+                box_centres: np.ndarray, box_turns: np.ndarray, box_halves: np.ndarray, box_radii: np.ndarray,
+                pairs: "np.ndarray | None", limit_mm: float) -> bool:
+    """Whether any of the hand's boxes (BASE centres, one ``turn``) comes nearer than ``limit_mm`` to any of the boxes,
+    among the pairs ``pairs`` marks (every pair where ``None``). Only the pairs whose bounding spheres come nearer than
+    the limit and :data:`_SPHERE_SLACK_MM` are measured (``box_distances_mm``); every other pair is that far apart at
+    least."""
+    if not hand_centres.shape[0] or not box_centres.shape[0]:
+        return False
+    gaps = (np.linalg.norm(hand_centres[:, None, :] - box_centres[None, :, :], axis=2)
+            - hand_radii[:, None] - box_radii[None, :])
+    near = gaps < float(limit_mm) + _SPHERE_SLACK_MM
+    if pairs is not None:
+        near &= pairs
+    hands, boxes = np.nonzero(near)
+    if not hands.size:
+        return False
+    distances = box_distances_mm(hand_centres[hands], np.repeat(turn[None, :, :], hands.size, axis=0),
+                                 hand_halves[hands], box_centres[boxes], box_turns[boxes], box_halves[boxes])
+    return bool((distances < float(limit_mm)).any())
+
+
+@dataclass(frozen=True, eq=False)
+class SeenInTheFrame:
+    """Who says whether a depth ray of one frame reached a point: what :func:`corridor_seen_in` answers, asked with
+    ``(N, 3)`` BASE millimetres and answering one ``bool`` per point.
+
+    A value rather than a closure, so it pickles and a worker process (``src.robot.grasping.workers``) asks the same
+    question of the same numbers. The turn and the shift are read off :attr:`to_camera` at every call, the views the
+    closure held, so the arithmetic is the closure's to the bit.
     """
-    depth = np.asarray(depth_mm, dtype=np.float64)
-    if depth.ndim != 2:
-        raise ValueError(f"the depth must be 2-D, got {depth.shape}")
-    fx, fy, cx, cy = _matrix_of(intrinsics)
-    to_camera = np.linalg.inv(np.asarray(camera_to_base, dtype=np.float64).reshape(4, 4))
-    turn, shift = to_camera[:3, :3], to_camera[:3, 3]
-    height, width = depth.shape
-    slack = float(tolerance_mm)
 
-    def seen(points_base_mm: np.ndarray) -> np.ndarray:
+    #: The frame's depth along the optical axis, millimetres, ``(H, W)``; 0 or not finite where nothing was measured.
+    depth_mm: np.ndarray
+    #: BASE to CAMERA, 4x4, millimetres.
+    to_camera: np.ndarray
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+    #: How far short of a point its pixel's measured depth may stop and the point still count as seen, millimetres.
+    tolerance_mm: float = SEEN_TOLERANCE_MM
+
+    def __call__(self, points_base_mm: np.ndarray) -> np.ndarray:
+        depth = self.depth_mm
+        turn, shift = self.to_camera[:3, :3], self.to_camera[:3, 3]
+        height, width = depth.shape
+        slack = float(self.tolerance_mm)
         points = np.asarray(points_base_mm, dtype=np.float64).reshape(-1, 3)
         out = np.zeros(points.shape[0], dtype=bool)
         if points.shape[0] == 0:
@@ -579,8 +798,8 @@ def corridor_seen_in(
         z = camera[:, 2]
         front = np.isfinite(z) & (z > 1e-6)
         safe_z = np.where(front, z, 1.0)
-        u = np.rint(fx * camera[:, 0] / safe_z + cx)
-        v = np.rint(fy * camera[:, 1] / safe_z + cy)
+        u = np.rint(self.fx * camera[:, 0] / safe_z + self.cx)
+        v = np.rint(self.fy * camera[:, 1] / safe_z + self.cy)
         inside = front & (u >= 0) & (u < width) & (v >= 0) & (v < height)
         index = np.nonzero(inside)[0]
         measured = depth[v[index].astype(np.int64), u[index].astype(np.int64)]
@@ -588,7 +807,66 @@ def corridor_seen_in(
             out[index] = np.isfinite(measured) & (measured > 0.0) & (measured >= z[index] - slack)
         return out
 
-    return seen
+    def unseen_many(self, points_base_mm: np.ndarray, asked: np.ndarray) -> np.ndarray:
+        """Whether a depth ray missed one of a build's points, for many builds at once: ``(N, P, 3)`` BASE millimetres
+        and which of them are asked (``asked``, ``(N, P)``) in, one ``int8`` per build out: 0 where :meth:`__call__`
+        sees every point asked, 1 where it misses one, 2 where a point's pixel lies within :data:`_MANY_SURE` of a
+        rounding edge, its depth within it of the measured depth less the tolerance, or the point within it of the
+        camera's plane, which only :meth:`__call__` decides.
+
+        The arithmetic is :meth:`__call__`'s, on every point asked at once, whose product may round its last bit
+        another way than one build's call does; the band covers that. SFE asks this of every tilted build of a closing
+        line at once (``support_footprint._build_many``).
+        """
+        depth = self.depth_mm
+        turn, shift = self.to_camera[:3, :3], self.to_camera[:3, 3]
+        height, width = depth.shape
+        slack = float(self.tolerance_mm)
+        points = np.asarray(points_base_mm, dtype=np.float64)
+        out = np.zeros(points.shape[0], dtype=np.int8)
+        owner = np.nonzero(asked)[0]
+        flat = points[asked]
+        if not flat.shape[0]:
+            return out
+        camera = flat @ turn.T + shift
+        z = camera[:, 2]
+        front = np.isfinite(z) & (z > 1e-6)
+        safe_z = np.where(front, z, 1.0)
+        u_at = self.fx * camera[:, 0] / safe_z + self.cx
+        v_at = self.fy * camera[:, 1] / safe_z + self.cy
+        u, v = np.rint(u_at), np.rint(v_at)
+        # A pixel rounds another way only near its half, a point leaves the camera's front only at its plane.
+        unsure = ((np.abs(u_at - np.floor(u_at) - 0.5) < _MANY_SURE) | (np.abs(v_at - np.floor(v_at) - 0.5) < _MANY_SURE)
+                  | (np.abs(z - 1e-6) < _MANY_SURE))
+        inside = front & (u >= 0) & (u < width) & (v >= 0) & (v < height)
+        index = np.nonzero(inside)[0]
+        measured = depth[v[index].astype(np.int64), u[index].astype(np.int64)]
+        seen = np.zeros(flat.shape[0], dtype=bool)
+        with np.errstate(invalid="ignore"):
+            read = np.isfinite(measured) & (measured > 0.0)
+            seen[index] = read & (measured >= z[index] - slack)
+            unsure[index] |= read & (np.abs(measured - (z[index] - slack)) < _MANY_SURE)
+        out[owner[unsure]] = 2
+        out[owner[~seen & ~unsure]] = 1
+        return out
+
+
+def corridor_seen_in(
+    depth_mm: np.ndarray, intrinsics: Any, camera_to_base: np.ndarray, *, tolerance_mm: float = SEEN_TOLERANCE_MM,
+) -> SeenInTheFrame:
+    """Who says whether a depth ray of this frame reached a point (SFE's ``CorridorSeen``, the fix plan's contract 5).
+
+    A BASE point is seen where its pixel's measured depth reaches at least to it, less ``tolerance_mm``: the ray went
+    through the space the point stands in, or stopped on it. Behind the camera, outside the image, or on a pixel with no
+    measured depth it is not seen. The answer is a :class:`SeenInTheFrame`, which a worker process can be handed.
+    """
+    depth = np.asarray(depth_mm, dtype=np.float64)
+    if depth.ndim != 2:
+        raise ValueError(f"the depth must be 2-D, got {depth.shape}")
+    fx, fy, cx, cy = _matrix_of(intrinsics)
+    to_camera = np.linalg.inv(np.asarray(camera_to_base, dtype=np.float64).reshape(4, 4))
+    return SeenInTheFrame(depth_mm=depth, to_camera=to_camera, fx=fx, fy=fy, cx=cx, cy=cy,
+                          tolerance_mm=float(tolerance_mm))
 
 
 # --------------------------------------------------------------------------------------------------------------------

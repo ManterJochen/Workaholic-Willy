@@ -12,11 +12,21 @@ rather than guessed at.
 **What this does not promise.** The pipeline below runs end to end. The quality of the model that
 comes out of it is the open question the pipeline exists to answer, and it is answered on your
 corpus, with the instruments in Step 5 and in `src/robot/grasping/deep/eval/probes.py`, not by any
-claim made here. Nothing in the learned generator has ever been measured on a physical cell.
+claim made here. The pipeline is not yet proven to generalise: the best full run so far did not beat
+"straight down" on objects it never saw (+0.017 top-1 over `top_down`, 95 % interval [-0.0004,
++0.039], the 2026-10-09 review). So your own run gets its own proof before a cell uses it, and a cell
+refuses trained weights until that proof has passed (Step 5). Nothing in the learned generator has
+ever been measured on a physical cell.
+
+**A known data defect, being fixed.** In a MuJoCo-rendered corpus the jaw labels of a mesh whose file
+origin is not its bounding-box centre sit off the geometry the camera rendered by that offset, about
+45 mm (median) on the scanned meshes measured in the 2026-10-09 review, and the physics referee
+judges against the same shifted copy. A CAD export's origin can sit anywhere, so until the fix lands
+a number measured on such meshes cannot tell a working model from a broken one.
 
 Read [`src/robot/grasping/deep/README.md`](../../src/robot/grasping/deep/README.md) alongside this:
-it describes the architecture, the artifact and the serving seam, and it carries no result numbers
-for the same reason this runbook carries none.
+it describes the architecture, the artifact and the serving seam. Neither page quotes a result except
+the review's above, which says what has not been shown, and none is a claim about your corpus.
 
 ---
 
@@ -28,7 +38,7 @@ Any of:
    by decision rather than by omission.
 2. The parts changed: a new product, a new fixture, a gripper the current artifact never saw.
 3. `calculator: deep` refuses to build the cell because `deep_generator.artifact_path` names
-   nothing.
+   nothing, or names weights whose proof has not passed (Step 5).
 4. A trained artifact proposes grasps that a physics referee does not hold.
 
 ## Diagnose
@@ -159,7 +169,7 @@ python -m src.robot.grasping.deep train-set --recipe v1 --tier smoke \
   --clouds logs/dl/clouds/mine --out logs/dl/models/mine_smoke \
   --slots 4 --artifact-gripper 2f85
 
-# then the model you deploy
+# then the model you judge (Step 5) before any cell may grasp with it
 python -m src.robot.grasping.deep train-set --recipe v1 --tier full \
   --clouds logs/dl/clouds/mine --out logs/dl/models/mine \
   --slots 4 --artifact-gripper 2f85
@@ -167,8 +177,8 @@ python -m src.robot.grasping.deep train-set --recipe v1 --tier full \
 
 The smoke tier proves the chain closes and nothing else. It is 2 epochs on 400 training units with
 the refit off, it says nothing whatever about grasp quality, and what comes out of it is not a model
-to deploy. Its value is that a corpus with a problem in it surfaces in minutes rather than after a
-night. The tier is recorded in the plan, the run report and the model card, and `deep inspect`
+to deploy: a cell refuses a smoke-tier artifact by its card, whatever record stands beside it. Its
+value is that a corpus with a problem in it surfaces in minutes rather than after a night. The tier is recorded in the plan, the run report and the model card, and `deep inspect`
 prints a loud line for a smoke artifact, so a two-epoch file is never indistinguishable at load
 time from one that took hours.
 
@@ -219,7 +229,28 @@ python -m src.robot.grasping.deep report --run logs/dl/models/mine --no-curve
 `epochs.json` is rewritten after every epoch, so this works on a live run. It prints the lift over
 the run's own held-out floor and declines to give a verdict it does not have the epochs for.
 
-### Step 5. Judge it with physics, not with its own loss
+### Step 5. The gate: judge it with physics, not with its own loss
+
+A cell grasps with trained weights only once their proof has passed (the owner's decision of
+2026-10-09). No finished models ship and every customer trains their own, so every run is proven on
+its own. The proof leaves a record beside the weights, `set_grasp_generator_v1.promotion.json`, with
+its verdict and how far it has gone (`shadow`, `ab`, `active`), and a cell builds from the weights at
+`active` alone. A card that says smoke tier or control run refuses whatever record stands beside it,
+and so does a record written for other bytes than the file's.
+
+**Nothing writes that record yet.** The command that runs the proof and writes it, `deep judge` with
+`deep promote`, comes next, so today every artifact refuses a cell, and that is the honest state: the
+best full run so far did not beat "straight down" on objects it never saw, because the 95 % interval
+of its lift reaches below zero. What this step gives you now is the evidence a proof reads, and you
+can read it yourself meanwhile. At the least, a pass will have to show a lift over `top_down` on
+objects the run never saw whose interval stays above zero, measured with the seeds a cell draws
+rather than from the answer key, and in physics a hold rate read beside the label control on the same
+objects.
+
+`deep inspect --artifact <weights>` prints the verdict first, `NOT DEPLOYABLE` and why, or
+`deployable` with its phase and when it was promoted, and `train-set` ends on the same line for the
+weights it wrote. Evaluating needs no record: `deep propose` below and the ladder's `deep` rung
+(`WILLY_DEEP_ARTIFACT`) read any artifact.
 
 ```bash
 python -m src.robot.grasping.deep propose \
@@ -254,7 +285,16 @@ with a training run.
 The join between a proposal and its verdict is by scene and rank, never by pose, because a pose join
 is ambiguous wherever a label and the row describing it carry identical poses.
 
-### Step 6. Point a cell at it
+### Step 6. Point a cell at it, once its proof has passed
+
+Only once `deep inspect` says `deployable (phase active, ...)`. Before that the cell refuses to build,
+in one sentence, for example:
+
+```
+set_grasp_generator_v1.pt carries no promotion, so this cell will not grasp with it: a trained
+generator drives a cell only once its proof has passed (deep judge, coming); until then set
+robot.grasping.calculator: geometric, or evaluate the artifact with the ladder.
+```
 
 ```yaml
 robot:
@@ -271,8 +311,9 @@ path works as well.
 It fails closed. `calculator: deep` with no readable artifact of the right kind and version refuses
 to build the cell rather than falling back to the analytic stack, because a cell that asked for the
 learned generator and quietly got the other one would file the analytic stack's numbers under the
-learned one's name. `robot.grasping.calculator` defaults to `geometric`, and `build_calculator` is
-its only reader.
+learned one's name. So does an artifact whose proof has not passed, and a promotion record that
+cannot be read refuses as no record does. `robot.grasping.calculator` defaults to `geometric`, and
+`build_calculator` is its only reader.
 
 **Which device it runs on.** Leave `device` unset and it resolves the way every other model in this
 stack resolves one: the `WILLY_DEVICE` environment variable first, then cuda, then mps, then a CPU
@@ -301,7 +342,9 @@ Three readings, in this order, and none of them is the training loss.
    perfectly would not score 100 either. Read the control first, every time.
 3. The cell builds. With `calculator: deep` and `deep_generator.artifact_path` set, the cell
    comes up or refuses; there is no third outcome, because a fallback to the analytic stack
-   would file the analytic stack's numbers under the learned one's name.
+   would file the analytic stack's numbers under the learned one's name. It comes up only for
+   weights whose proof has passed, so until `deep judge` exists the refusal is the expected
+   reading, and `deep inspect` names its reason.
 
 Held-out stops being held-out when the assets repeat. Split your own parts by asset rather than
 by scene, or the number describes recall of objects the model has already seen.

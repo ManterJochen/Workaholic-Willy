@@ -141,7 +141,15 @@ _SHARED_LOCK: Final[threading.Lock] = threading.Lock()
 
 
 def shared_speech() -> SpeechHolder:
-    """The process's holder. The console's upload path asks it, and so can a `Listener` caller."""
+    """The process's one speech holder, which every caller shares: the console's upload path asks it, and so can a
+    program.
+
+        proposal = shared_speech().for_config(config=load_speech_section()).propose(samples, samplerate=16000)
+
+    Returns:
+        SpeechHolder: The holder; ``for_config(config=...)`` gives the voice gate and the transcriber that section
+            names, loaded once and kept.
+    """
     global _SHARED
     with _SHARED_LOCK:
         if _SHARED is None:

@@ -419,6 +419,44 @@ class JointLimitGuard:
 
         return SafetyDecision.accept(self.name)
 
+    def first_suspect(self, arm: object, configs: Any, until: int) -> int:
+        """The first of ``configs``, ``(N, dof)`` in radians, :meth:`evaluate` might refuse on ``arm``, never later than
+        the first it does refuse, all at once; ``until`` where none before it may (a path judged whole,
+        ``SafetyPreflight.gate_joint_path``).
+
+        The limits :meth:`evaluate` resolves for ``arm``, less the margin, on every axis of every configuration at once.
+        A configuration within ``_SUSPECT_SLACK_DEG`` of a bound counts as one it may refuse, so the conversion to degrees
+        can never pass one it refuses. 0 where it refuses every configuration whatever its joints, no table, a table of
+        another length, a margin that eats a range: :meth:`evaluate` says which at the first.
+        """
+        import numpy as np  # noqa: PLC0415
+
+        vendor: str | None = None
+        model: str | None = None
+        if arm is not None:
+            caps = arm.capabilities  # type: ignore[attr-defined]
+            vendor = caps.vendor
+            model = caps.model
+        home = stated_home_rad(arm) if self._half_turn else None
+        limits, _ = self._resolve(vendor=vendor, model=model, home_rad=home)
+        rows = np.asarray(configs, dtype=np.float64)
+        if limits is None or rows.ndim != 2 or len(limits[0]) != rows.shape[1]:
+            return 0
+        lower = np.asarray(limits[0], dtype=np.float64) + self._margin_deg
+        upper = np.asarray(limits[1], dtype=np.float64) - self._margin_deg
+        if bool(np.any(lower >= upper)):
+            return 0
+        degrees = np.degrees(rows[:until])
+        outside = np.flatnonzero(np.any((degrees < lower + _SUSPECT_SLACK_DEG) | (degrees > upper - _SUSPECT_SLACK_DEG),
+                                        axis=1))
+        return int(outside[0]) if len(outside) else min(int(until), rows.shape[0])
+
+
+#: How near a bound, in degrees, a configuration of a path judged whole counts as one the guard may refuse
+#: (:meth:`JointLimitGuard.first_suspect`): far above the rounding between ``np.degrees`` and ``math.degrees``, and far
+#: below anything a joint can be told apart by.
+_SUSPECT_SLACK_DEG = 1e-9
+
 
 def _half_turn_sentence(q_deg: float, home_deg: float, lower: float, upper: float, margin: float) -> str:
     """What a refusal adds on a guard that keeps half a turn about home: the window, and where the same angle lies."""

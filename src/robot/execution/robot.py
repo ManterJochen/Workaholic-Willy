@@ -76,28 +76,29 @@ class LockKeyRequired(ValueError):
 
 @dataclass(frozen=True)
 class Robot:
-    """An arm and the gripper on it, built and not yet connected.
+    """An arm and the hand on it, built and not yet connected: the object a program moves.
 
-        from src.config import ConfigTree
-        from src.robot.execution import Robot
+    Build it with :meth:`from_tree` (the usual way), :meth:`from_config` or :meth:`from_parts`, then connect it in a
+    ``with`` block and call its verbs; every verb returns a report that prints as itself.
 
-        robot = Robot.from_tree(ConfigTree.from_directory(profile="console_dummy").load())
-        print(robot.render())                   # arm, gripper, lock, planner route, camera world
-        print(robot.preflight().render())       # the desk checklist for the tree it came from
-        with robot.connected() as live:         # lock, arm, then gripper
-            print(robot.home().render())
-            print(robot.move(pose, decline="bench, no camera mounted").render())
-            print(robot.grasp(40.0).render())   # close, read the hold, model the part
-            print(robot.release().render())
-        print(live.teardown.render())
+        robot = Robot.from_tree(load_tree("console_dummy"))
+        with robot.connected():                    # lock, arm, then hand
+            print(robot.home())
+            print(robot.move(robot.tool_down(450.0, 100.0, 300.0)))
+            print(robot.grasp(40.0))
 
-    ``gripper`` is ``None`` for an arm-only robot. ``lock_key`` names the controller the cross-process
-    lock is taken on, and is ``None`` for a robot that takes no lock. ``camera_world`` is what the
-    cameras handed in built, ``None`` for a robot handed no camera. ``wrist_bodies`` are the camera
-    bodies the arm carries: every one its tree declares for a robot ``from_tree`` built, camera open or
-    not, and those of the cameras handed in otherwise. ``robot_config`` is the tree a factory was handed
-    and ``tree`` the loaded tree ``from_tree`` read; both are ``None`` where the robot was built around
-    handles alone.
+    Attributes:
+        arm (RobotArm): The arm driver, built and not connected.
+        gripper (Gripper | None): The hand on it; ``None`` for an arm-only robot.
+        lock_key (str | None): The controller the cross-process lock is taken on (``ur@<ip>``); ``None`` for a robot
+            that takes no lock (a desk arm).
+        camera_world (CameraWorldWiring | None): What the cameras handed in built for the arm's planner; ``None`` for a
+            robot handed no camera.
+        wrist_bodies (WristBodies | None): The camera bodies the arm carries: every one its tree declares for a robot
+            :meth:`from_tree` built, camera open or not, else those of the cameras handed in.
+        robot_config (RobotConfig | None): The robot section a factory was handed; ``None`` for a robot built around
+            handles alone.
+        tree (LoadedTree | None): The loaded tree :meth:`from_tree` read; ``None`` otherwise.
     """
 
     arm: RobotArm
@@ -120,19 +121,27 @@ class Robot:
     ) -> "Robot":
         """The robot a loaded tree describes, built from its robot section. Connects nothing.
 
-            robot = Robot.from_tree(ConfigTree.from_directory(profile="console_dummy").load())
+        Args:
+            tree (LoadedTree): What ``load_tree()`` returned; ``load_tree()`` reads the cell ``WILLY_PROFILE`` names.
+            gripper (Maybe[None]): Leave unset to build the hand the tree names; ``None`` builds the arm alone, with no
+                activation sweep (default: UNSET).
+            cameras (Maybe[Sequence[Any]]): Open camera owners (:class:`Camera`), the primary first, whose live world
+                the arm plans in; unset builds no world. ``None`` is refused, since unset already says no camera
+                (default: UNSET).
+            unmodelled_wrist_body (Maybe[str]): Why this robot may move without a wrist camera body that cannot be
+                placed yet because its camera is not calibrated; read only for such a body (default: UNSET).
 
-        The robot section is built as :meth:`from_config` builds it, and the robot keeps the tree, so
-        :meth:`preflight` reads the camera half and the root from the same load. A tree that did not load
-        is refused with its own refusal (``ConfigError``); anything but a ``LoadedTree`` is a ``TypeError``.
+        Returns:
+            Robot: The robot, keeping the tree, so :meth:`preflight` reads the camera half from the same load. Every
+                wrist camera body the tree declares hangs on the arm, camera open or not.
 
-        Every wrist camera body the tree's camera section declares is handed to the arm, whether or not
-        its camera is handed in or even enabled: a camera that is not open still hangs on the arm, and the
-        planner, the exact guard and the self filter carry its housing (``execution.wrist_bodies``). A body
-        that cannot be placed yet, because its camera is not calibrated, is refused with
-        :class:`~src.robot.execution.wrist_bodies.WristBodyUnplaced`, unless ``unmodelled_wrist_body`` says
-        why this robot may move without it; the robot then names the camera it moves without. The reason
-        is read only for such a body.
+        Raises:
+            ConfigError: The tree did not load (its own refusal).
+            TypeError: ``tree`` is not a ``LoadedTree``, or ``cameras=None``.
+            RobotConnectionError: This machine is not ready for the arm's vendor (its SDK is missing).
+            WristBodyUnplaced: A wrist camera's body cannot be placed (its camera is not calibrated) and no
+                ``unmodelled_wrist_body`` says why the robot may move without it.
+            CameraWorldRequired: The arm needs a camera world for every motion and a calibrated camera builds none.
         """
         from src.config.loader import ConfigError
         from src.config.tree import LoadedTree
@@ -156,18 +165,26 @@ class Robot:
         cls, robot_config: "RobotConfig", *, gripper: "Maybe[None]" = UNSET,
         cameras: "Maybe[Sequence[Any]]" = UNSET,
     ) -> "Robot":
-        """The arm and the gripper ``robot_config`` describes. Connects nothing.
+        """The arm and the hand a robot section describes. Connects nothing.
 
-        The arm-vendor readiness gate runs first, as it does for a pick service built from the same
-        tree. ``gripper`` left unset builds the configured end-effector, and one that had to be
-        substituted is refused at connect. ``gripper=None`` builds the arm alone: no activation
-        sweep, and a gripper that could not be built does not stand in the way. ``cameras`` are passed
-        through to :meth:`from_parts` with this tree, which the world's planning block is read from.
+        The arm-vendor readiness gate runs first, as for a pick service built from the same tree. A robot section holds
+        no camera section, so the arm carries only the bodies of the cameras handed in; a robot beside a wrist camera it
+        was not handed is built with :meth:`from_tree`, which reads them all.
 
-        A robot section holds no camera section, so the arm carries only the bodies of the cameras handed
-        in. A robot that moves beside a wrist camera it was not handed is built with :meth:`from_tree`,
-        which reads them all; the calibration sweep builds its arm here and hands it every body the tree
-        declares itself, for either mounting (``hand_eye``).
+        Args:
+            robot_config (RobotConfig): The robot section, ``tree.robot``.
+            gripper (Maybe[None]): Leave unset to build the configured hand (a substituted one is refused at connect);
+                ``None`` builds the arm alone (default: UNSET).
+            cameras (Maybe[Sequence[Any]]): Open camera owners, passed to :meth:`from_parts` with this section, whose
+                planning block the world is built under (default: UNSET).
+
+        Returns:
+            Robot: The robot, keeping ``robot_config``.
+
+        Raises:
+            RobotConnectionError: This machine is not ready for the arm's vendor (its SDK is missing).
+            TypeError: ``cameras=None``.
+            CameraWorldRequired: The arm needs a camera world for every motion and a calibrated camera builds none.
         """
         arm = resolve_arm(robot_config, arm=None)
         hand = None if chosen(gripper) else build_gripper(robot_config, arm=arm)
@@ -179,25 +196,29 @@ class Robot:
         cls, *, arm: RobotArm, gripper: Gripper | None, lock_key: "Maybe[str | None]" = UNSET,
         cameras: "Maybe[Sequence[Any]]" = UNSET, robot_config: "Maybe[RobotConfig]" = UNSET,
     ) -> "Robot":
-        """A robot around handles that are already built. No construction, no gate, no substitution.
+        """A robot around handles that are already built: no construction, no gate, no substitution.
 
-        ``lock_key`` left unset is derived from the tree the arm keeps (``arm.config``): ``ur@<ip>``
-        for a UR driver, ``kuka@<ip>`` for a KUKA driver. An arm that reports a vendor with a
-        controller of its own (anything but sim and dummy) and yields no key is refused with
-        :class:`LockKeyRequired`. An object that reports no capabilities at all is a stand-in, as
-        ``resolve_arm`` counts it, and takes no lock.
+        Args:
+            arm (RobotArm): The arm driver.
+            gripper (Gripper | None): The hand, or ``None`` for an arm-only robot.
+            lock_key (Maybe[str | None]): The controller the cross-process lock is taken on. Unset derives it from the
+                tree the arm keeps (``ur@<ip>``, ``kuka@<ip>``); ``None`` states that no lock is taken (default: UNSET).
+            cameras (Maybe[Sequence[Any]]): Open camera owners, the primary first, each answering ``rig_id``, ``rig``,
+                ``handle()`` and ``calibration()`` as :class:`Camera` does; the caller opens and releases them, the
+                robot only reads them. Unset builds no world; ``None`` is refused (default: UNSET).
+            robot_config (Maybe[RobotConfig]): The section whose planning block the camera world is built under; unset
+                reads the arm's ``arm.config`` (default: UNSET).
 
-        ``cameras`` are open camera owners, the primary first, each answering ``rig_id``, ``rig``,
-        ``handle()`` and ``calibration()`` as :class:`~src.camera.orchestration.camera.Camera`
-        does. The caller opens and releases them; the robot only reads them. The live planner world they
-        build, under the planning block of ``robot_config`` (``arm.config`` when unset), is handed to the
-        arm through its ``set_live_planner_world`` where it has one, and kept as ``camera_world`` either way.
-        Unset builds no world. ``None`` is refused, because unset already says no camera was chosen.
+        Returns:
+            Robot: The robot; ``camera_world`` holds what the cameras built, handed to the arm through its
+                ``set_live_planner_world`` where it has one.
 
-        On an arm whose every motion needs a world or a decline (``camera_world_required``), a
-        calibrated camera that yields no world is refused with
-        :class:`~src.robot.execution.camera_world_wiring.CameraWorldRequired`, before the wrist bodies
-        are handed over and again after the wiring.
+        Raises:
+            LockKeyRequired: An arm with a controller of its own (anything but sim and dummy) yields no lock key and
+                none was stated.
+            CameraWorldRequired: The arm needs a camera world for every motion and a calibrated camera builds none.
+            TypeError: ``cameras=None``.
+            ValueError: ``cameras`` is empty, or was handed to an arm that keeps no tree with no ``robot_config``.
         """
         return cls._assemble(arm=arm, gripper=gripper, lock_key=lock_key, cameras=cameras,
                              robot_config=robot_config, wrist=UNSET)
@@ -240,27 +261,43 @@ class Robot:
     ) -> ConnectedRobot:
         """The robot, connected, for the duration of a ``with`` block.
 
-        It takes the cross-process lock first when ``lock_key`` is set. That is the lock ``Cell``
-        takes for the same controller, so the two refuse each other. Then the arm, then the gripper,
-        and on the way out the gripper, the arm and the lock. A substituted gripper is refused before
-        the arm is commanded. On the way out the frames a wrist camera's ``Locator.look_around`` held
-        in the arm's live world are let go first (the exit ``Cell.connected()`` runs too), as the next
-        connect starts from a cell this one changed.
+        The cross-process lock comes first when ``lock_key`` is set (the lock ``Cell`` takes for the same controller, so
+        the two refuse each other), then the arm, then the hand; on the way out the hand, the arm and the lock, after
+        the frames a wrist camera's ``Locator.look_around`` held in the arm's live world are let go.
+
+        Args:
+            announce (Callable[[ConnectStage], None] | None): Called with each stage as the connect reaches it, for a
+                console that shows progress; ``None`` says nothing (default: None).
+
+        Returns:
+            ConnectedRobot: The context manager; ``with robot.connected() as live:`` gives the robot, and
+                ``live.teardown`` says how it came down.
+
+        Raises:
+            CellBusy: On entering the block: another process holds the controller's lock; the message names it.
+            NoRealGripper: On entering the block: the tree names a hand this arm cannot drive, so a stand-in was built.
         """
         lock = CellLock(self.lock_key, owner="Robot") if self.lock_key else None
         return ConnectedRobot(self.arm, self.gripper, lock=lock, announce=announce)
 
     def wrist_body_line(self) -> str:
-        """One ASCII line saying which wrist cameras this robot's arm carries."""
+        """One line saying which wrist cameras this robot's arm carries.
+
+        Returns:
+            str: ASCII, no newline.
+        """
         if self.wrist_bodies is None:
             return "wrist cameras  not handed any camera"
         return self.wrist_bodies.line()
 
     def camera_world_line(self) -> str:
-        """One ASCII line saying what world this robot's cameras give its arm.
+        """One line saying what world this robot's cameras give its arm.
 
-        On an arm whose every motion needs a world or a decline and that holds none, the line says
-        so: a robot before its first calibration moves only under a decline.
+        On an arm whose every motion needs a world or a decline and that holds none, the line says so: a robot before
+        its first calibration moves only under a decline.
+
+        Returns:
+            str: ASCII, no newline.
         """
         needs = (": every planned motion needs a decline"
                  if bool(getattr(self.arm, "camera_world_required", False)) else "")
@@ -271,27 +308,30 @@ class Robot:
         return "camera world  wired: " + ", ".join(repr(camera) for camera in self.camera_world.cameras)
 
     def safety(self) -> SafetyAttestation:
-        """What this robot's arm will refuse. Commands nothing.
+        """What this robot's arm will refuse, asked of the built arm. Commands nothing.
 
-        Asked of the built arm, not of the config that asked for it, as ``Cell.safety`` asks.
+        Returns:
+            SafetyAttestation: The guards the arm runs before every motion, and what each refuses; prints as itself.
         """
         return SafetyAttestation.of(self.arm)
 
     def route(self) -> "_motion.RouteReading":
-        """How this robot's motions reach its arm, read off the built arm: PLANNED, UNPLANNED or REFUSED.
+        """How this robot's motions reach its arm, read off the built arm. Commands nothing, starts no planner.
 
-        UNPLANNED is a desk arm. Commands nothing and starts no planner. Every verb that moves the arm reads
-        it before its first command.
+        Returns:
+            RouteReading: ``PLANNED`` (cuRobo plans, the exact mesh guard judges), ``UNPLANNED`` (a desk arm) or
+                ``REFUSED`` (an arm whose motions would not pass both), and why.
         """
         return _motion.route_of(self.arm)
 
     def preflight(self) -> "PreflightReport":
         """The real cell's desk checklist for the tree this robot was built from. Touches no hardware.
 
-        The robot half comes from the tree this robot keeps (``from_tree``, ``from_config``, ``robot_config`` on
-        ``from_parts``), else from the arm's own ``arm.config``. The camera half and the root come only from a tree
-        ``from_tree`` read, so a robot built from a robot section alone says its camera row was handed nothing rather
-        than reading another tree. A robot that keeps no tree at all gets one BLOCK row that says so.
+        The robot half comes from the tree the robot keeps, else from the arm's ``arm.config``; the camera half and the
+        root only from a tree :meth:`from_tree` read. A robot that keeps no tree gets one BLOCK row that says so.
+
+        Returns:
+            PreflightReport: One row per check, ``OK``, ``WARN`` or ``BLOCK``, and an ``exit_code``; prints as itself.
         """
         from src.config.schema.robot import RobotConfig
         from src.robot.execution.real_cell.preflight import (
@@ -318,10 +358,11 @@ class Robot:
         return self.render()
 
     def render(self) -> str:
-        """Describe this robot to a person, as text.
+        """Describe this robot to a person: arm, hand, lock, safety, planner route, camera world, wrist cameras and
+        tree, one line each, read off the built arm as it is now. Nothing connects or moves.
 
-        Arm, gripper, lock, safety, planner route, camera world, wrist cameras and tree, one line each.
-        ASCII, no trailing newline. Every line is read off the built arm as it is now; nothing connects or moves.
+        Returns:
+            str: ASCII, no trailing newline. ``print(robot)`` shows the same.
         """
         facts = self._facts()
         lines = [
@@ -342,7 +383,11 @@ class Robot:
         return "\n".join(line.encode("ascii", "backslashreplace").decode("ascii") for line in lines)
 
     def to_dict(self) -> dict[str, Any]:
-        """Plain data, ``json.dumps`` safe: the same readings ``render()`` prints."""
+        """The readings :meth:`render` prints, as plain data.
+
+        Returns:
+            dict[str, Any]: ``json.dumps`` safe.
+        """
         facts = self._facts()
         facts["route"] = self.route().to_dict()
         facts["camera_world"] = {
@@ -375,21 +420,29 @@ class Robot:
         self, x_mm: float, y_mm: float, z_mm: float, *, yaw_deg: float = 0.0,
         closing_axis: "Maybe[ClosingAxisLike]" = UNSET,
     ) -> "Pose":
-        """The tool at (``x_mm``, ``y_mm``, ``z_mm``) in BASE, pointing straight down, its jaws closing the way this
-        cell's hand and camera naturally stand where the program names no axis: ``Pose.tool_down`` through the cell.
+        """A BASE pose with the tool pointing straight down, its jaws closing the way this cell's hand and camera
+        naturally stand. Commands nothing.
 
             above = robot.tool_down(450.0, 100.0, 300.0)              # along robot.natural_closing_axis
             part = robot.tool_down(450.0, 100.0, 120.0, yaw_deg=90.0)  # a quarter turn further about the vertical
 
-        ``closing_axis`` is a name ``Pose.tool_down`` takes or an orientation, a quaternion (x, y, z, w) or a BASE
-        ``Pose``, whose tool +X laid onto the base XY plane is the direction. Unset, it is the cell's
-        ``robot.natural_closing_axis`` (the owner's decision, 2026-09-30), and ``"x"`` where the cell names none, which
-        is ``Pose.tool_down`` exactly. ``yaw_deg`` turns the closing axis further about the vertical, counted from that
-        axis: on a cell whose hand stands along ``-y``, ``yaw_deg=90.0`` closes along base x. The config is the tree this
-        robot was built from, else the one its arm keeps (``arm.config``), as :meth:`preflight` reads it. Raises
-        ``ValueError`` for a name or an orientation that names no axis, and ``TypeError`` for a value of another type,
-        ``None`` included. Commands nothing, and loads no grasping package: the reader is the geometry's
-        (``src.geometry.closing_axis``).
+        Args:
+            x_mm (float): The tool's x in the robot's base frame, in millimetres.
+            y_mm (float): The tool's y in the base frame, in millimetres.
+            z_mm (float): The tool's z in the base frame, in millimetres.
+            yaw_deg (float): A further turn of the closing axis about the vertical, in degrees, counted from that axis;
+                on a cell whose hand stands along ``-y``, ``90.0`` closes along base x (default: 0.0).
+            closing_axis (Maybe[ClosingAxisLike]): Which way the jaws close: a name ``Pose.tool_down`` takes (``"x"``,
+                ``"-y"``, ...), a quaternion ``(x, y, z, w)`` or a BASE ``Pose`` whose tool +X laid onto the base XY
+                plane is the direction. Unset is the cell's ``robot.natural_closing_axis``, and ``"x"`` where it names
+                none (default: UNSET).
+
+        Returns:
+            Pose: The pose in ``Frame.BASE``, for :meth:`move`, :meth:`pick` or :meth:`place`.
+
+        Raises:
+            ValueError: ``closing_axis`` names no axis.
+            TypeError: ``closing_axis`` is of another type, ``None`` included.
         """
         from src.geometry import Pose  # noqa: PLC0415
         from src.geometry.closing_axis import closing_axis_of, natural_closing_axis_of  # noqa: PLC0415
@@ -406,22 +459,39 @@ class Robot:
         self, pose: "Pose", *, decline: "Maybe[str]" = UNSET, linear: bool = False,
         vel: "Maybe[float]" = UNSET, acc: "Maybe[float]" = UNSET,
     ) -> "_motion.MotionReport":
-        """Move the arm to ``pose`` (BASE), as a straight line when ``linear``, through the arm's own typed ``move``.
+        """Move the arm to a pose, planned around what the cameras see, or as a straight line.
 
-        Refuses before any command a closed link, a pose not in BASE, a camera world the arm would refuse, and an arm
-        whose motions do not go through cuRobo and the exact mesh guard (a UR on the ik planner, a KUKA). A desk arm
-        runs and its report says UNPLANNED. ``decline`` is the reason this motion needs no camera world. ``vel`` and
-        ``acc`` reach the arm only when chosen. The report carries the arm's result and, for a line, what the arm keeps
-        of it.
+        Args:
+            pose (Pose): The target, in ``Frame.BASE`` millimetres; :meth:`tool_down` builds one.
+            decline (Maybe[str]): Why this motion needs no camera world, such as ``"bench, no camera mounted"``; unset
+                asks for the world the cameras built (default: UNSET).
+            linear (bool): Drive a straight line in Cartesian space instead of a planned move (default: False).
+            vel (Maybe[float]): The speed handed to the arm driver's move, in the driver's own units; unset keeps the
+                driver's default speed (default: UNSET).
+            acc (Maybe[float]): The acceleration, likewise (default: UNSET).
+
+        Returns:
+            MotionReport: What was asked, how the arm's motions reach it, and what the arm said; ``outcome`` is
+                ``EXECUTED``, ``MOTION_REFUSED``, ``CAMERA_WORLD_UNAVAILABLE`` or ``REFUSED``. Prints as itself.
+
+        The move is refused before any command for a closed link, a pose not in BASE, a camera world the arm would
+        refuse, and an arm whose motions do not go through cuRobo and the exact mesh guard (a UR on the ik planner, a
+        KUKA); a desk arm runs and says UNPLANNED. A refusal is an outcome, not an exception.
         """
         return _motion.move(self.arm, pose, decline=_motion.decline_of(decline), linear=linear, vel=vel, acc=acc)
 
     def move_joints(
         self, joints: "JointPositions | Sequence[float]", *, decline: "Maybe[str]" = UNSET,
     ) -> "_motion.MotionReport":
-        """Move the arm to ``joints`` (radians) through its own typed ``move_to_joints``.
+        """Move the arm to a joint configuration, refused as :meth:`move` is.
 
-        The same refusals as :meth:`move`.
+        Args:
+            joints (JointPositions | Sequence[float]): The target joints in radians, base to wrist;
+                ``JointPositions.deg(...)`` takes degrees as the pendant shows them.
+            decline (Maybe[str]): Why this motion needs no camera world (default: UNSET).
+
+        Returns:
+            MotionReport: What was asked and what the arm said; prints as itself.
         """
         target = joints if isinstance(joints, JointPositions) else JointPositions(joints)
         return _motion.move_joints(self.arm, target, decline=_motion.decline_of(decline))
@@ -429,24 +499,38 @@ class Robot:
     def home(self, *, decline: "Maybe[str]" = UNSET) -> "_motion.MotionReport":
         """Move the arm to its configured home through its own gated home verb, refused as :meth:`move` is.
 
-        An arm that goes home as a typed verb (the UR driver's ``move_to_home``) reports the status and the sentence of
-        the gate that refused it. Any other arm answers ``move_home`` with a bool, so a home it refuses reads UNKNOWN
-        and its log names the gate.
+        Args:
+            decline (Maybe[str]): Why this motion needs no camera world (default: UNSET).
+
+        Returns:
+            MotionReport: What the arm said. An arm that goes home as a typed verb (the UR driver) reports the status
+                and the sentence of a gate that refused it; any other arm answers with a bool, so a refused home reads
+                UNKNOWN and its log names the gate.
         """
         return _motion.home(self.arm, decline=_motion.decline_of(decline))
 
     def grasp(self, width_mm: float) -> "_handling.HandReport":
-        """Close the gripper to ``width_mm``, read what it measured, and hand a held part to the arm's model.
+        """Close the hand to a width, read what it measured, and hand a held part to the arm's model.
 
-        Commands nothing on a robot with no gripper, a gripper that holds nothing, or a link that is not
-        open. A hold the gripper measured, or that nothing could measure, is modelled as a carried part
-        where the arm models one; a measured empty close is not. No force is commanded. A gripper that
-        raises is stopped once where it can be.
+        Args:
+            width_mm (float): How far the jaws close, in millimetres. No force is commanded.
+
+        Returns:
+            HandReport: What was commanded and measured (``HoldEvidence``), and what it did to the carried part model;
+                ``outcome`` is ``GRASPED``, ``NOTHING_HELD``, ... Prints as itself.
+
+        Commands nothing on a robot with no hand, a hand that holds nothing, or a link that is not open. A hold the hand
+        measured, or that nothing could measure, is modelled as a carried part where the arm models one; a measured
+        empty close is not. A hand that raises is stopped once where it can be.
         """
         return _handling.grasp(self, width_mm)
 
     def release(self) -> "_handling.HandReport":
-        """Open the gripper to the hand's width and forget the carried part, unless the gripper still measures one."""
+        """Open the hand to its width and forget the carried part, unless the hand still measures one.
+
+        Returns:
+            HandReport: What was commanded and measured; ``RELEASE_NOT_CONFIRMED`` where the hand still holds.
+        """
         return _handling.release(self)
 
     def pick(
@@ -454,29 +538,37 @@ class Robot:
         pre_open_mm: "Maybe[float | None]" = UNSET, decline: "Maybe[str]" = UNSET,
         camera_world: "Maybe[CameraWorldDecline]" = UNSET, keep_out: "Maybe[SegmentationOffer]" = UNSET,
     ) -> "_handling.HandlingReport":
-        """Pick the part at ``pose`` (BASE, approach along its +Z), ``width_mm`` across.
+        """Pick the part at a known pose: open, a planned move to the standoff, a line in, close, a line out.
 
-        Refuses before any command a robot that cannot hold, a closed link, a pose not in BASE, a camera
-        world this arm's motion would be refused for, and an arm whose motions do not go through cuRobo
-        and the exact mesh guard (a desk arm runs). Then it detaches, opens to ``pre_open_mm`` (the
-        hand's width when unset, not at all when ``None``), makes a planned move to the standoff
-        ``standoff_mm`` back along the approach, drives a line to ``pose``, runs :meth:`grasp` at
-        ``width_mm`` minus ``squeeze_mm``, and drives a line back to the standoff. A close that measures
-        nothing opens again and backs out. ``keep_out`` is held in the arm's live world through every
-        motion. A refused motion, and a camera that could not vouch for the cell, end the pick with
-        nothing commanded after it, as an outcome. A hand that toggles with no sensor (a ``jaw_io``
-        single_toggle) is never switched before the arm moves, whatever ``pre_open_mm`` says: it is asked
-        whether its jaws stand open, asks a person where it believes them closed, and is closed with
-        one change of its output at the part.
+        Args:
+            pose (Pose): Where the tool closes, in ``Frame.BASE``, the approach along its +Z (straight down from
+                :meth:`tool_down`).
+            width_mm (float): The part's width across the jaws, in millimetres.
+            standoff_mm (float): How far back along the approach the planned move stops before the line in, in
+                millimetres (default: 80.0).
+            squeeze_mm (float): How much narrower than ``width_mm`` the jaws close, in millimetres (default: 1.0).
+            pre_open_mm (Maybe[float | None]): How wide to open before the approach; unset opens to the hand's width,
+                ``None`` does not open (default: UNSET).
+            decline (Maybe[str]): Why these motions need no camera world (default: UNSET).
+            camera_world (Maybe[CameraWorldDecline]): The same decline as an object, kept as an alias; passing both is a
+                ``TypeError`` (default: UNSET).
+            keep_out (Maybe[SegmentationOffer]): What the part is, held out of the arm's live world through every
+                motion, so the line in may come close to it: ``located.keep_out(i)`` (default: UNSET).
 
-        ``decline`` is the reason these motions need no camera world. ``camera_world=CameraWorldDecline(...)``
-        is the same decline as an object, kept as an alias; passing both is a ``TypeError``.
+        Returns:
+            HandlingReport: What was commanded, what stood behind each motion, and what the hand did; ``outcome`` is
+                ``SUCCEEDED``, ``NOTHING_HELD`` (the jaws closed on nothing, the arm opened and backed out), a refusal,
+                ... Prints as itself.
 
-        The pick ends what a wrist camera's ``Locator.look_around`` held for it: the frames of its looks
-        stay in the arm's live world through every motion of the pick, each where it was taken, and are
-        let go when the pick ends, however it ends (the owner, 2026-09-29), a pick refused before any
-        command included. A place does not need them. A program that tries another candidate after a
-        pick that failed looks around again first, so that the frames are held for that pick too.
+        Raises:
+            TypeError: Both ``decline`` and ``camera_world`` are given.
+
+        Refused before any command, as an outcome: a robot that cannot hold, a closed link, a pose not in BASE, a camera
+        world the motion would be refused for, and an arm whose motions do not go through cuRobo and the exact mesh
+        guard. A hand that toggles with no sensor (a ``jaw_io`` single_toggle) is never switched before the arm moves:
+        it is asked whether its jaws stand open, asks a person where it believes them closed, and closes with one change
+        of its output at the part. The frames a wrist camera's ``Locator.look_around`` held stay in the arm's world
+        through the pick and are let go when it ends, however it ends.
         """
         try:
             return _handling.pick(self, pose, width_mm, standoff_mm=standoff_mm, squeeze_mm=squeeze_mm,
@@ -489,38 +581,60 @@ class Robot:
         self, pose: Pose, *, standoff_mm: float = 80.0, decline: "Maybe[str]" = UNSET,
         camera_world: "Maybe[CameraWorldDecline]" = UNSET, keep_out: "Maybe[SegmentationOffer]" = UNSET,
     ) -> "_handling.HandlingReport":
-        """Place the held part at ``pose``: a planned move to the standoff, a line in, :meth:`release`, a line out.
-
-        The same refusals, the same outcomes and the same ``decline`` as :meth:`pick`. A release the
-        gripper does not confirm leaves the arm where it stands, and nothing opens before the line in
-        has arrived. ``keep_out`` is what the part is set down on, held out of the arm's live world
-        from before the first motion to after the last, the release between them, as :meth:`pick`
-        holds its own: a part set down onto something a camera located comes within the line
-        clearance of it, and the world would refuse the line in.
+        """Place the held part at a pose: a planned move to the standoff, a line in, release, a line out.
 
             set_down = located.set_down(0, grasp=best.pose(), part_bottom_mm=scene.part_bottom_mm)
             if set_down.pose is not None:
                 robot.place(set_down.pose, keep_out=located.keep_out(0))
+
+        Args:
+            pose (Pose): Where the tool releases, in ``Frame.BASE``, the approach along its +Z.
+            standoff_mm (float): How far back along the approach the planned move stops, in millimetres (default: 80.0).
+            decline (Maybe[str]): Why these motions need no camera world (default: UNSET).
+            camera_world (Maybe[CameraWorldDecline]): The same decline as an object; passing both is a ``TypeError``
+                (default: UNSET).
+            keep_out (Maybe[SegmentationOffer]): What the part is set down on, held out of the arm's live world from
+                before the first motion to after the last: a part set down onto something a camera located comes within
+                the line clearance of it, and the world would refuse the line in (default: UNSET).
+
+        Returns:
+            HandlingReport: What was commanded and what the hand did. A release the hand does not confirm leaves the arm
+                where it stands.
+
+        Raises:
+            TypeError: Both ``decline`` and ``camera_world`` are given.
         """
         return _handling.place(self, pose, standoff_mm=standoff_mm,
                                camera_world=_motion.decline_of(decline, camera_world), keep_out=keep_out)
 
     def is_holding(self) -> HoldEvidence:
-        """What the gripper measured about a hold, commanding nothing; UNMEASURED where nothing can say."""
+        """What the hand measured about a hold, commanding nothing.
+
+        Returns:
+            HoldEvidence: ``HELD``, ``EMPTY``, or ``UNMEASURED`` where nothing can say.
+        """
         return _handling.is_holding(self)
 
     def without_camera_world(self, reason: str) -> AbstractContextManager[CameraWorldDecline]:
-        """Decline the camera world for every motion of this robot's arm inside the ``with`` block.
+        """Decline the camera world for every motion of this robot's arm inside a ``with`` block.
 
             with robot.without_camera_world("bench check, no cameras mounted"):
                 robot.move(pose)
                 robot.home()
 
-        Bound to this robot's arm, so another robot in the same process plans as it would without it,
-        and a blank reason is refused here. A ``decline=`` on a verb inside the block beats the block. A
-        motion no planner plans or checks still says UNPLANNED, and on an arm whose live camera world is
-        wired a declined planned or checked motion is refused. An arm that does not stamp its motions
-        ignores the block. The block does not follow into a thread started inside it.
+        Args:
+            reason (str): Why these motions need no camera world; it goes into every report and log line.
+
+        Returns:
+            AbstractContextManager[CameraWorldDecline]: The block. A ``decline=`` on a verb inside it beats the block;
+                it does not follow into a thread started inside it.
+
+        Raises:
+            ValueError: ``reason`` is blank.
+
+        Bound to this robot's arm, so another robot in the same process plans as it would without it. A motion no
+        planner plans or checks still says UNPLANNED, and on an arm whose live camera world is wired a declined planned
+        or checked motion is refused.
         """
         return _without_camera_world(self.arm, reason)
 

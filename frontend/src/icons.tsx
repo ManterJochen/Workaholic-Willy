@@ -31,6 +31,7 @@ export type IconName =
   | 'restart'
   | 'check'
   | 'close'
+  | 'plus'
   | 'alert'
   | 'info'
   | 'camera'
@@ -142,6 +143,7 @@ const SHAPES: Record<IconName, ReactNode> = {
   ),
   check: <path d="M5 12.6l4.4 4.4L19.2 7.4" />,
   close: <path d="M6.2 6.2l11.6 11.6M17.8 6.2L6.2 17.8" />,
+  plus: <path d="M12 5v14M5 12h14" />,
   alert: (
     <>
       <path d="M12 3.6l9.4 16.4H2.6z" />

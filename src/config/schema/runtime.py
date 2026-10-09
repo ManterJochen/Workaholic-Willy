@@ -1,8 +1,10 @@
-"""App-runtime tuning: what the console encodes its frames at, and how it answers a greeting.
+"""App-runtime tuning: what the console encodes its frames at, how it answers a greeting, and how it reads a command.
 
-Both blocks are operator-tunable. ``image_encoding`` is safety-irrelevant: editing it cannot move the robot.
+Every block is operator-tunable. ``image_encoding`` is safety-irrelevant: editing it cannot move the robot.
 ``greeting`` decides whether "Hallo Willy" in the chat waves at once, on a click, or not at all: the wave is a motion,
 two swings of the wrist, each judged by the exact guard like every other, and refused where it is not clear.
+``commands`` decides whether the cell's everyday sentences are read without the language model: a reading moves
+nothing either way, and a task still starts only at ``POST /v1/task``, behind every gate of that route.
 
 Loaded from ``app/runtime.yaml``, which is optional. The schema defaults apply when it is absent.
 """
@@ -49,8 +51,19 @@ class GreetingConfig(StrictModel):
         return value
 
 
+class CommandsConfig(StrictModel):
+    """How the console reads an operator's sentence (``POST /v1/commands/parse``)."""
+
+    #: ``true``: a known sentence ("Alle grauen Würfel in die Gelbe Kiste.", "Hallo Willy") is read without the
+    #: language model, as the model was measured to read it (``src/models/vlm/known.py``), in well under a
+    #: millisecond instead of about ten seconds on the cell; every other sentence goes to the model. ``false``: every
+    #: sentence goes to the model. The owner, 2026-10-08: "speed first", on.
+    known_sentences: bool = True
+
+
 class RuntimeConfig(StrictModel):
     """Every app-runtime block, read from the ``runtime`` section of ``app/runtime.yaml``."""
 
     image_encoding: ImageEncodingConfig = Field(default_factory=ImageEncodingConfig)
     greeting: GreetingConfig = Field(default_factory=GreetingConfig)
+    commands: CommandsConfig = Field(default_factory=CommandsConfig)

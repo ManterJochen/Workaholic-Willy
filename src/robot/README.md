@@ -36,8 +36,8 @@ Every command and its exit codes: [docs/cli.md](../../docs/cli.md).
 | Subpackage | What it is | You reach it through |
 | --- | --- | --- |
 | [`execution/`](execution/README.md) | `Robot`, `Cell`, `PickRun`, hand-eye calibration and the real-cell command | `from willy import Robot, Cell, PickRun` |
-| [`safety/`](safety/README.md) | `SafetyPreflight`, the ordered fail-closed guards, and the cuRobo planner binding | `from willy import SafetyPreflight` |
-| [`grasping/`](grasping/README.md) | generating, scoring and choosing grasps, a wrist camera's looks, the motion and its hold check, recovery, and the attempt record | `Scene`, and the pick service |
+| [`safety/`](safety/README.md) | `SafetyPreflight`, the ordered fail-closed guards, and the cuRobo planner binding | a `Robot`, whose driver runs them before every move |
+| [`grasping/`](grasping/README.md) | generating, scoring and choosing grasps, a wrist camera's looks, the motion and its hold check, recovery, and the attempt record | the pick service: `Cell`, `PickRun`, `run_task` |
 | [`perception/`](perception/README.md) | the live-camera source and the `Locator` of a real cell | `from willy import Locator` |
 | [`drivers/`](drivers/README.md) | the arm registry `create_arm`: `ur`, `kuka`, `sim`, `dummy` | `robot.vendor` in the tree |
 | [`grippers/`](grippers/README.md) | the hand registry: `robotiq`, `onrobot`, `vacuum`, `jaw_io`, `dummy`, `none` | `robot.gripper.vendor` in the tree |

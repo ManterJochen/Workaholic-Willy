@@ -78,15 +78,8 @@ network, an optional engine) checks for it, names what is missing in one sentenc
 
 | file | what it shows |
 |---|---|
-| [`config/which_gripper_gets_built.py`](offline/config/which_gripper_gets_built.py) | which hand your config really builds, and what stands in when it cannot |
-| [`config/planner_or_ik.py`](offline/config/planner_or_ik.py) | a collision-free planner or the controller's straight line, and whether this machine has the planner |
-| [`perception/resolve_perception_stack.py`](offline/perception/resolve_perception_stack.py) | which detector and segmenter your config builds, before a weight loads |
-| [`perception/route_hard_prompts.py`](offline/perception/route_hard_prompts.py) | the prompts a phrase grounder answers wrongly, and where they go instead |
-| [`safety/gate_the_whole_path.py`](offline/safety/gate_the_whole_path.py) | every waypoint of a path checked, not only where it ends |
-| [`safety/self_collision_backend.py`](offline/safety/self_collision_backend.py) | exact meshes or the capsule proxy for self collision, and which one runs |
-| [`grasping/grasps_for_a_cloud.py`](offline/grasping/grasps_for_a_cloud.py) | ranked grasps for an object's points, with no config tree at all |
-| [`grasping/jaw_or_suction.py`](offline/grasping/jaw_or_suction.py) | grasps for a jaw and for a suction cup on the same part |
-| [`grasping/select_grasp_generator.py`](offline/grasping/select_grasp_generator.py) | the geometric generator or the learned one, which refuses without weights |
+| [`perception/detect_with_a_prompt.py`](offline/perception/detect_with_a_prompt.py) | what a sentence names, found by the detector your config builds (GroundingDINO as shipped, the VLM or the router as its third argument), each object with its SAM2 mask; a drawing lands beside the image |
+| [`perception/detect_every_class.py`](offline/perception/detect_every_class.py) | every class a closed-set detector knows in one call, each object with its SAM2 mask, on an image you name; a drawing and the JSON land beside it |
 | [`datagen/01_plan_scenes.py`](offline/datagen/01_plan_scenes.py) | what each scene holds, decided before anything renders |
 | [`datagen/02_choose_an_engine.py`](offline/datagen/02_choose_an_engine.py) | which engine settles and renders the scenes, and which ones this machine can run |
 | [`datagen/03_label_and_shake.py`](offline/datagen/03_label_and_shake.py) | grasp labels from geometry, and the physics screen that grades them |

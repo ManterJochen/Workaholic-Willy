@@ -3,14 +3,15 @@
  * of the STILL GRINDING card.
  *
  * Pure, from the run model's view (`model/runModel`, the cockpit's own reducer) and the session's runs, so the
- * projector says what the cockpit shows and never a word of its own about the run.
+ * projector says what the cockpit shows and never a word of its own about the run. A sort (the owner, 2026-10-09)
+ * looks for every kind its rules take, and places each part where the part's own rule says, once the run said it.
  */
 
 import type { RunOut, TaskPlanOut } from '../api/client'
 import { STOP_CLASS_OF } from '../api/codes'
-import { stopMsg } from '../i18n/codes'
+import { listMsg, stopMsg } from '../i18n/codes'
 import type { MessageKey, Msg } from '../i18n/types'
-import { hasEnded, type RunView } from '../model/runModel'
+import { currentRule, hasEnded, sortRules, type RunView } from '../model/runModel'
 import type { DemoKey } from './i18n'
 
 type Key = DemoKey | MessageKey
@@ -107,9 +108,15 @@ export function captionOf(view: RunView, connected: boolean, labels: PoseLabels 
       break
   }
 
-  const object = objectWords(view.plan, view.prompt)
+  // A sort looks for every kind of its rules, until the part in hand's rule is said: then that rule's kind and place.
+  const rules = sortRules(view)
+  const lit = currentRule(view)
+  const rule = lit !== null ? rules[lit] : undefined
+  const kinds = rules.length > 0 ? (listMsg(rules.map((r) => r.what), 'list.words') as Msg<Key>) : null
+  const object = rule?.what ?? kinds ?? objectWords(view.plan, view.prompt)
   if (view.survey.state === 'active') {
-    return { verb: m('aud.cap.survey'), what: view.survey.phrase || placeWords(view.plan), sub: null, tone: 'run' }
+    const all = view.survey.phrases.length > 1 ? (listMsg(view.survey.phrases, 'list.words') as Msg<Key>) : null
+    return { verb: m('aud.cap.survey'), what: view.survey.phrase || all || placeWords(view.plan), sub: null, tone: 'run' }
   }
   switch (view.current.step) {
     case 'look':
@@ -119,7 +126,7 @@ export function captionOf(view: RunView, connected: boolean, labels: PoseLabels 
     case 'grasp':
       return { verb: m('aud.cap.grasp'), what: object, sub: null, tone: 'run' }
     case 'place':
-      return { verb: m('aud.cap.place'), what: placeWords(view.plan) ?? object, sub: null, tone: 'run' }
+      return { verb: m('aud.cap.place'), what: rule?.where ?? placeWords(view.plan) ?? object, sub: null, tone: 'run' }
     case 'return':
       return { verb: m('aud.cap.return'), what: returnWords(view.plan, view.to, labels), sub: null, tone: 'run' }
     default:

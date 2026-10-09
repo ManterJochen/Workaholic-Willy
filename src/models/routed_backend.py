@@ -24,7 +24,7 @@ from collections.abc import Callable
 from typing import Any
 
 from src.models.constants import MODELS_LOG_DIR, PERCEPTION_ROUTING_LOG_FILE
-from src.models.perception_backend import PerceivedObject, failures_of, last_failure_of
+from src.models.perception_backend import PerceivedObject, SegmentedBoxes, failures_of, last_failure_of
 from src.models.routing import (
     PromptRouter,
     Route,
@@ -100,7 +100,11 @@ class RoutedPerceptionBackend:
             self._built[route] = backend
         return backend
 
-    def perceive(self, image_bgr: Any, prompt: str) -> tuple[PerceivedObject, ...]:
+    #: The chosen route's detector may read a copy of the image (``robot.grasping.hide_own_places``) where it takes
+    #: one; :meth:`perceive` passes ``detect_on`` on.
+    detects_on_a_copy = True
+
+    def perceive(self, image_bgr: Any, prompt: str, *, detect_on: Any = None) -> tuple[PerceivedObject, ...]:
         decision = self._router.route(prompt)
         self._last_decision = decision
         if self._on_decision is not None:
@@ -121,7 +125,40 @@ class RoutedPerceptionBackend:
         backend = self._backend_for(decision.route)
         before = failures_of(backend)
         try:
+            if detect_on is not None and getattr(backend, "detects_on_a_copy", False) is True:
+                return tuple(backend.perceive(image_bgr, text, detect_on=detect_on))
             return tuple(backend.perceive(image_bgr, text))
         finally:
             if failures_of(backend) > before:
                 self._last_failure = last_failure_of(backend)
+
+    def name_colour(self, image_bgr: Any, box: Any) -> str:
+        """One colour word for the object in ``box``, asked of the VLM route: the one that can name a colour, built at
+        its first use as a prompt that chooses it builds it. ``""`` where it answers none: a degraded route, or a route
+        that names no colour.
+
+        A question that raised is counted by that route (:attr:`failures` sums the built routes), and its sentence kept
+        here as a perceive's is.
+        """
+        backend = self._backend_for(Route.VLM)
+        name = getattr(backend, "name_colour", None)
+        if not callable(name):
+            return ""
+        before = failures_of(backend)
+        try:
+            answer = name(image_bgr, box)
+        finally:
+            if failures_of(backend) > before:
+                self._last_failure = last_failure_of(backend)
+        return answer if isinstance(answer, str) else ""
+
+    def segment_boxes(self, image_bgr: Any, boxes: Any) -> SegmentedBoxes:
+        """Cut ``boxes`` with the route that grounded last, already built: never a route built for it, and so no model
+        loaded. Both routes share one segmenter; a cell that has grounded nothing yet cuts none, and its frame is
+        grounded."""
+        decision = self._last_decision
+        backend = self._built.get(decision.route) if decision is not None else None
+        cut = getattr(backend, "segment_boxes", None)
+        if not callable(cut):
+            return SegmentedBoxes.refused(boxes, "no perception route that cuts boxes has grounded a frame yet")
+        return cut(image_bgr, boxes)

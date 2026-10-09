@@ -1,0 +1,7 @@
+2026-10-08 07:27:42,781 - CellSession - INFO - Cell released: nothing is built, nothing is connected.
+2026-10-08 07:31:08,657 - CellSession - INFO - Connect preview issued for arm=URRobotArm gripper=JawIOGripper: 1 motion warning(s), 0 blocker(s); config fingerprint 0ba1a0b2e7c3f824, valid until 2026-10-08T05:36:08+00:00.
+2026-10-08 07:31:09,661 - CellSession - INFO - Connecting: arm=URRobotArm, then gripper=JawIOGripper. THIS MOVES; acknowledged by token.
+2026-10-08 07:31:11,389 - CellSession - INFO - Arm connected (URRobotArm).
+2026-10-08 07:31:14,191 - CellSession - INFO - Gripper connected (JawIOGripper).
+2026-10-08 07:31:14,191 - CellSession - INFO - Cell connected.
+2026-10-08 07:42:26,651 - CellSession - INFO - Cell disconnected (gripper first, then arm); now built.

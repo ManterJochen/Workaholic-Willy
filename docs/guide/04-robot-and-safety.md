@@ -5,7 +5,8 @@ that YAML and a moving arm: which driver is built, which hand, which guards run 
 two external engines the motion stack needs before its answers mean anything.
 
 ```python
-from willy import Robot, SafetyPreflight, load_tree
+from willy import Robot, load_tree
+from src.robot.safety import SafetyPreflight
 
 tree = load_tree()                   # the cell WILLY_PROFILE names
 robot = Robot.from_tree(tree)        # the arm and the hand, built and not connected
@@ -268,7 +269,8 @@ the same on the simulation path and on the real-hardware path. `SafetyPreflight.
 preflight the way the cell's driver does:
 
 ```python
-from willy import SafetyPreflight, load_tree
+from willy import load_tree
+from src.robot.safety import SafetyPreflight
 
 gate = SafetyPreflight.from_tree(load_tree("console_dummy"))
 print(gate.guard_names)       # what runs, in order
@@ -509,6 +511,15 @@ sphere map as the guard places it, a wrist camera's fill and a declared carried 
 which turns about the tool axis, a carried point counts by its distance from that axis. A robot or a hand
 whose reach does not derive is refused rather than sampled by a guessed number.
 
+**A path judged whole** (`self_collision.whole_path_judge`, off as shipped; 2026-10-09). On, the gate first asks
+each guard, over the whole path at once, for the first sample it might refuse: a sample before it passes only on a
+proof that every distance the guard would measure there keeps its limit (the spheres it culls by, a part's convex
+hull, or a distance measured at an earlier sample less how far the pair can have moved since), and from that
+sample on every sample is judged one at a time, as with the switch off. The verdict, the sample it names and its
+message are the same; a guard that offers no such pass leaves every sample to the loop. A route of 905 samples
+among 128 boxes took 12 ms on the desk instead of 0.96 s ([safety README](../../src/robot/safety/README.md),
+[05](05-pick-loop.md) 5.5).
+
 [`src/robot/safety/continuous_monitor.py`](../../src/robot/safety/continuous_monitor.py) runs the
 exact-mesh backend over every interpolation waypoint of a move, with its own clearance margin and its own
 fail-safe: a check that overruns its budget or cannot run returns a stop or a hold, never a continuation.
@@ -706,6 +717,19 @@ swing beyond the span between where it starts and where it ends: a plan past it 
 is planned to instead, and with none left the move is refused `JOINT_LIMIT_REJECTED` naming the joint. A
 Cartesian goal out of reach is `IK_FAILED`, and no clear line and no plan is `TIMEOUT`. A `move_to_joints`
 takes the same order to the one configuration it names.
+
+**What a cuRobo UR may ask less, and judge earlier** (the owner, 2026-10-09, each switch off as shipped). A line's
+samples solved on the controller's own kinematics and checked against it at two (`ik_quality.line_ik: local`), the
+singularity check on the same chain (`ik_quality.singularity_fk: dh`), steady read from the joint speeds
+(`dwell.steady_signal: joint_speeds`), the steady gate right before the send (`dwell.gate_at: send`), the world
+held at the standoff, at the part and through the release (`planning_world.hold`), the next leg judged while the
+jaws travel or the line before it runs (`robot.motion.judge_next_leg`), and cuRobo planning on a lean model with
+one optimiser pass and its boxes registered in one call (`planned_motion.planning_spheres`,
+`planned_motion.finetune_passes`, `planning_world.register_in_place`). None changes how a motion is judged: every
+sample of every motion is judged by the exact guard before it is sent, and anything that cannot be vouched for
+falls back to the way before. What each saves and what was checked is in [05](05-pick-loop.md) 5.5, the details in the
+[UR driver README](../../src/robot/drivers/ur/README.md) and the
+[planning README](../../src/robot/safety/planning/README.md).
 
 **Two motions never plan.** The one view a wrist pick generates once its declared looks are used up, and
 its move back to the look that saw the part, run on the **straight joint line alone**

@@ -1,0 +1,16 @@
+2026-10-08 07:31:14,221 - RunRegistry - INFO - Run run-e087ce08c9 starting: planner.
+2026-10-08 07:32:30,282 - RunRegistry - INFO - Run run-e087ce08c9 (planner) finished: planner_ready in 76.1 s.
+2026-10-08 07:35:43,751 - RunRegistry - INFO - Run run-f4eb29c254 starting: wave.
+2026-10-08 07:35:56,601 - RunRegistry - INFO - Run run-f4eb29c254 (wave) finished: finished in 12.8 s.
+2026-10-08 07:36:12,113 - RunRegistry - INFO - Run run-4fb32513ff starting: wave.
+2026-10-08 07:36:23,804 - RunRegistry - INFO - Run run-4fb32513ff (wave) finished: finished in 11.7 s.
+2026-10-08 07:37:10,098 - RunRegistry - INFO - Run run-1f9a82860d starting: task.
+2026-10-08 07:38:47,443 - RunRegistry - ERROR - Run run-1f9a82860d (task) FAILED (part_still_held): the pick gripped the part and nothing models it: the planner carries no part (payload_model none), so every carry, the place and a put back would be planned as if the hand were empty; the task stops where the arm stands with the part in the jaws, and a person takes it
+2026-10-08 07:38:47,459 - RunRegistry - INFO - Run run-1f9a82860d (task) failed: part_still_held in 97.3 s.
+2026-10-08 07:39:24,184 - RunRegistry - INFO - Run run-ca72c832aa starting: task, restarting run-1f9a82860d.
+2026-10-08 07:39:24,185 - RunRegistry - WARNING - Run run-ca72c832aa (task) counts down 3 s before its first motion: jaws_opened.
+2026-10-08 07:41:11,866 - RunRegistry - ERROR - Run run-ca72c832aa (task) FAILED (part_still_held): the pick gripped the part and nothing models it: the planner carries no part (payload_model none), so every carry, the place and a put back would be planned as if the hand were empty; the task stops where the arm stands with the part in the jaws, and a person takes it
+2026-10-08 07:41:11,867 - RunRegistry - INFO - Run run-ca72c832aa (task) failed: part_still_held in 107.7 s.
+2026-10-08 07:41:57,506 - RunRegistry - INFO - Run run-77c6528fca starting: home.
+2026-10-08 07:41:57,508 - RunRegistry - WARNING - Run run-77c6528fca (home) counts down 3 s before its first motion: jaws_opened.
+2026-10-08 07:42:09,870 - RunRegistry - INFO - Run run-77c6528fca (home) finished: finished in 12.4 s.

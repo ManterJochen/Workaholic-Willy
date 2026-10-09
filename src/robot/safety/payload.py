@@ -26,6 +26,8 @@ from .decision import SafetyDecision, SafetyReason
 from .guard import SafetyContext
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from collections.abc import Sequence
+
     from src.config.schema.robot import PayloadSafetyConfig
 
 __all__ = ["PayloadGuard"]
@@ -98,3 +100,15 @@ class PayloadGuard:
                 )
 
         return SafetyDecision.accept(self.name)
+
+    def first_suspect(self, arm: object, configs: "Sequence[Sequence[float]]", until: int) -> int:
+        """0 where :meth:`evaluate` refuses the first of ``configs``, else ``until`` (a path judged whole,
+        ``SafetyPreflight.gate_joint_path``): it reads its config alone, so its verdict at one sample of a path is its
+        verdict at every one."""
+        if not len(configs):
+            return until
+        from src.robot.core import JointPositions, MotionCommand  # noqa: PLC0415
+
+        first = SafetyContext(command=MotionCommand.MOVE_JOINTS, arm=arm,  # type: ignore[arg-type]
+                              target_joints=JointPositions(tuple(float(v) for v in configs[0])))
+        return 0 if self.evaluate(first).rejected else until

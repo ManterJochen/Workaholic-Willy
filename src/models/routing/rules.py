@@ -13,6 +13,12 @@ The vocabularies are English and German, the languages the cell is operated in. 
 detected only through non-ASCII letters, so an ASCII-only prompt in, say, Dutch routes simple and
 grounds badly. Widening that needs either a language-ID model, which is a weight load to decide
 whether to load weights, or a vocabulary per language.
+
+A class list (``"green part | red part"``, ``src.models.vlm.qwen.class_list_prompt``: every rule's kind
+of part, or every bin, found in one call, the sorting package of 2026-10-09) is routed description by
+description, and goes to the VLM where any one of them needs it. Summed, three colour words of three
+plain descriptions would read as one phrase binding three attributes, and two short descriptions as
+one long instruction, though each is a phrase the simple path grounds on its own.
 """
 
 from __future__ import annotations
@@ -77,6 +83,11 @@ _COMPARATIVE = frozenset({
     "groesste", "groessten", "kleinste", "kleinsten", "hoechste", "laengste", "kuerzeste",
     "schwerste", "leichteste", "naechste", "vorderste", "hinterste", "oberste", "unterste",
     "groesser", "kleiner", "hoeher", "laenger", "schwerer", "leichter", "naeher",
+    # Where a part stands among its kind (2026-10-08): "the upper gray cube" singles out one cube of
+    # a stack, and a phrase grounder boxes every gray cube for it. The German with the endings its
+    # articles leave on it ("der obere", "den oberen", "ein oberer", "ein oberes").
+    "upper", "lower", "uppermost", "lowermost", "highest", "lowest",
+    "obere", "oberen", "oberer", "oberes", "untere", "unteren", "unterer", "unteres",
 })
 _SPATIAL = frozenset({
     "above", "below", "beneath", "under", "underneath", "behind", "beside", "between", "inside",
@@ -89,6 +100,9 @@ _SPATIAL = frozenset({
 _SPATIAL_PHRASES = (
     "next to", "in front of", "on top of", "close to", "far from", "away from", "to the left of",
     "to the right of",
+    # The same relations said shorter (2026-10-08): "the cup left of the bin", "the gray cube on
+    # top", "the cube on the left". Each would ground every cup or cube on the simple path.
+    "left of", "right of", "on top", "on the left", "on the right",
 )
 
 _QUANTIFIER = frozenset({
@@ -177,8 +191,8 @@ def _reason_for(signals: PromptSignals) -> RouteReason | None:
     return None
 
 
-def route(prompt: str) -> RouteDecision:
-    """Route one prompt. The module-level entry point; :class:`RuleBasedRouter` wraps it for the seam."""
+def _route_one(prompt: str) -> RouteDecision:
+    """Route a prompt of one description: its signals, and the first complex property they show."""
     signals = analyse(prompt)
     if signals.words == 0:
         # Routing is not validation: an empty prompt is a caller bug, and the expensive route would
@@ -188,6 +202,29 @@ def route(prompt: str) -> RouteDecision:
     if reason is None:
         return RouteDecision(Route.SIMPLE, RouteReason.PLAIN_NOUN_PHRASE, signals)
     return RouteDecision(Route.VLM, reason, signals)
+
+
+def route(prompt: str) -> RouteDecision:
+    """Route one prompt. The module-level entry point; :class:`RuleBasedRouter` wraps it for the seam.
+
+    A class list is routed description by description (``src.models.vlm.qwen.classes_of``): the
+    decision of the first description, in the list's order, that needs the VLM, its reason and its
+    signals; where none does, the simple path, with the whole list's signals. A prompt of one
+    description is routed as it always was.
+    """
+    # Imported here: ``vlm.command`` imports this package, and the VLM's package imports no model at import.
+    from src.models.vlm.qwen import classes_of  # noqa: PLC0415
+
+    descriptions = classes_of(prompt)
+    if not descriptions:
+        return _route_one(prompt)
+    for description in descriptions:
+        decision = _route_one(description)
+        if decision.is_vlm:
+            return decision
+    signals = analyse(prompt)
+    reason = RouteReason.PLAIN_NOUN_PHRASE if signals.words else RouteReason.EMPTY_PROMPT
+    return RouteDecision(Route.SIMPLE, reason, signals)
 
 
 class RuleBasedRouter:

@@ -22,8 +22,9 @@ cd frontend && npm install && npm run build
 ```
 
 In **Setup**, read the check, build (the dummy arm rehearses by default), read the preview and connect. In the
-**cockpit**, type a command and press Enter: without a language model on the desk the card opens by hand, so
-leave **Greifen** empty (the desk scene takes anything), keep the default place, and press **Start**. The top
+**cockpit**, type a command and press Enter. A known sentence such as "Leg den Würfel auf Ablage links" is read
+without a language model and starts at once; any other opens the card by hand, because the desk has no language
+model: leave **Greifen** empty (the desk scene takes anything), keep the default place, and press **Start**. The top
 bar's cell chip reads `dummy · verbunden · simulierter Arm`, because a dummy arm proves the console and nothing
 about grasping. `WILLY_API=http://10.0.0.5:8000 npm run dev` points the development server at a
 console on another machine.
@@ -48,7 +49,7 @@ cell>,cell`), and open http://127.0.0.1:8000. Work in this order:
 2. **Setup, Posen**: teach the default place and a park pose by hand, one at a time.
 3. **Cockpit**: a command, typed or spoken; read the card; **Start**.
 4. **History** for the session and the logged attempts; **Settings** for language, theme, view, voice output,
-   the talk key and the bench values.
+   the talk key, how a task starts (Enter or the card, the mode, the defaults) and the bench values.
 
 The runbooks [bringing up a cell](../docs/runbooks/cell_bringup.md),
 [the first pick on a physical arm](../docs/runbooks/real_cell_first_pick.md) and
@@ -69,7 +70,7 @@ The runbooks [bringing up a cell](../docs/runbooks/cell_bringup.md),
 | **Cockpit** | `/` | the live image, the task's steps, the two stops and Home under it; the numbers and the chat beside it; the ready bar or the run header across the top |
 | **Einrichten / Setup** | `/setup` | Prüfen → Aufbauen → Vorschau → Verbinden → Bereit, the taught poses and the teach dialog, and what this cell is |
 | **Verlauf / History** | `/history` | the session's tasks in numbers and two charts, every run with its kind, its command and how it ended, the logged attempts and their KPIs, CSV |
-| **Einstellungen / Settings** | `/settings` | language, theme, demo or tech view, voice output, the talk key; the config explained and its bench values written |
+| **Einstellungen / Settings** | `/settings` | language, theme, demo or tech view, voice output, the talk key; how a task starts ("Auftrag"); the config explained and its bench values written |
 | **Audience window** | `/demo.html` | a read-only mirror of the cell for a projector: no button, no link, always the black stage |
 
 The old addresses redirect, so a bookmark lands where its work now is: `/pick` to the cockpit, `/cell` to
@@ -118,14 +119,38 @@ bewegt". It stays as the thumbnail of its part's card.
 
 - **Click the microphone to start, click again to stop.** A foot switch keeps hold to talk: the talk key
   records while it is held, wherever the focus is.
-- **The transcript lands in the box**, editable, marked as spoken until it is edited. **Enter only reads the
-  sentence**: the VLM fills the **Understood card** (Greifen, Ablegen, Umfang: Einmal or Bis leer, Danach, and
-  the Advanced drawer), and nothing moves.
+- **The transcript lands in the box**, editable, marked as spoken until it is edited, and never sent by itself:
+  the person's Enter sends it, as it sends a typed sentence.
+- **Enter starts the task** (the owner, 2026-10-08: Enter is the person's click). The sentence is read first:
+  by the VLM, or, for a known sentence ("Alle grauen Würfel in die Gelbe Kiste.", "Hallo Willy"), by the
+  server's table in well under a millisecond (`runtime.commands.known_sentences`). A clean reading (an
+  understood task, no note, its part and its place found in the sentence) on a cell the server says is ready
+  starts at once, and the chat says the first motion ("Verstanden, ich fange an: der Roboter fährt zu Blick 1.").
+  What and where come from the sentence; the mode (Einmal or Bis leer) and the place where the sentence names
+  none come from **Settings → Auftrag**, and the line under the box says them. Any doubt opens the
+  **Understood card** (Greifen, Welches, Woher, Ablegen, Umfang: Einmal or Bis leer, Danach, and the Advanced
+  drawer) with the first reason in the chat: a note, a word not found in the sentence, no part named, a cell not
+  ready, a language model the cell detects with that is not loaded yet, a refused start. With "Erst die Karte"
+  Enter only reads, and the card waits for Start, as before. A sentence is at most 1000 characters and a card's
+  phrase 200; the fields stop typing there and count from 80 % on.
+- **Welches and Woher** (2026-10-08) narrow what is picked. **Welches** is the one part the sentence singles out
+  ("the gray cube on top of the other one"): the camera looks for that part alone, and a sentence that singles one
+  out starts once, whatever mode the settings set. **Woher** is where the parts lie ("on the black mat"). Both are
+  English, both editable, and empty where the sentence said nothing of it; the pick's route badge judges what the
+  picks will ground, the which alone or the object where the parts lie, as the server's guard does at Start.
 - **"Kritische Teile"** in the Advanced drawer is the cell's `recovery.critical_parts` for this run, ticked
   where the cell says so. Ticked, nothing is pushed: a blocker is gripped and set aside, the push distance
   field goes, and the summary says "kritische Teile: nur wegräumen". Unticked, a boxed-in part is pushed
   first and the push may rearrange the scene; a push distance left untouched lets the cell go longer, up to
   its ceiling, where its own frees no direction (2026-10-03).
+- **"Blicke"** is one choice (the owner, 2026-10-08 night: "Multi-View" and "Alle Posen" together): **Nur erster
+  Blick** (`multi_view: false`), **Bei Bedarf** (the looks until a grasp is safe; where the cell turns its weak-look
+  trigger on, a weak look is not) or **Alle Posen** (`every_look: true`, every configured look). Settings → Auftrag
+  sets it for every task, the line under the box says it where it is not "Bei Bedarf", and the card's drawer may
+  change it for its task. **"Direkt über die Kante tragen"** shows for a bin the wrist camera finds: ticked as the
+  cell carries (`facts.carry`, `robot.place.carry`), sent only where touched (`options.carry`). The drawer has no
+  "Aufnahmen" switch any more (every task the console starts keeps its picks' looks, `record_views: true`) and no
+  "Beide Backenflächen" (a program's switch; a card made from a run's plan keeps it, and the summary says it).
 - **Start is the confirmation.** One click, no second dialog, and its label names the first motion: "Start –
   der Roboter fährt zu Blick 1" (configured looks), "nach Home und schaut" (a wrist camera with no looks) or
   "zum ersten Griff" (a fixed camera). A due 3 s countdown ("zuerst 3 s Countdown „Hände weg“") and a camera
@@ -150,6 +175,31 @@ the only format the server decodes; anything else is refused with 415. The brows
 over HTTPS or on localhost: a console opened as `http://<cell PC>:8000` from another machine has none, and the
 box says why.
 
+### Sorting
+
+- **One sentence, several rules** (the owner, 2026-10-09): "Grüne Teile in die gelbe Kiste, rote in die blaue"
+  puts each kind of part where its rule says, four rules at most; two rules may share one place. The chat says
+  every rule it understood, in the operator's own words: "Verstanden, ich sortiere: Grüne Teile → in die gelbe
+  Kiste · rote → in die blaue."
+- **Enter starts a clean sort with every rule**, as it starts a task of one kind. A note on any rule, or a
+  reading the server does not call startable, opens the card, and the chat names the rule ("Regel 2: …").
+- **Regeln on the card.** The first rule is Greifen and Ablegen, as always; each further rule is a row of its
+  own, the kind of part → its place (a target the camera finds, or a taught pose), with "bitte prüfen" where
+  the reader did not find its words, its route badge, and a button that removes it. "Regel hinzufügen" adds
+  one, three at most beside the first, and a row's change is recorded as `rules`. Start stays off while a rule
+  names no part, two rules name the same parts (case and blanks aside), or a rule's place is not complete. A
+  card of one rule looks and sends exactly as before, with no `more_rules`.
+- **While it runs**, the run header shows the rules instead of one part and one place, each with the parts it
+  placed, and lights the rule of the part in hand once the run says it ("Teil 3: grüne Teile → in die gelbe
+  Kiste."). Every bin is looked for before the first pick ("Ich suche die Ziele „…“, „…“"), and the place lines
+  name the bin they are about. A bin the check before a drop lost and found again says how far it stood, its
+  picture pinned as a found bin's ("Das Ziel „in die gelbe Kiste“ stand 150 mm weiter; neu gefunden, die Ablage
+  wird neu berechnet."); a bin found nowhere is a warning, and the ask card names it. The parts no rule clearly
+  claims stay where they lie and are named at the end ("2 Teile gehören zu keiner Regel und bleiben liegen
+  (nicht eindeutig, orange part).").
+- **The ask card of a sort** searches again with every rule, or opens the card with every rule; it offers no
+  "Standard-Ablage nehmen", because which rule's parts would go there is no question one button can answer.
+
 ### Stopping
 
 - **"Nach diesem Teil stoppen"** asks the task to end after the part in hand: a held part is still placed and
@@ -171,7 +221,11 @@ box says why.
   the stopped run's belief included); a hand among parts is jogged clear first; then **Restart** or **Home**,
   each behind its confirm dialog and on only when every gate is green. Restart names the stopped task's own
   return pose and waits until the stopped run's record is read. While the way back runs, the card folds to one
-  line.
+  line. Where the stopped run's pick left the arm at a grasp's standoff, its move back to the look not run
+  (`stands_at` on its `pick.attempt_finished`, 2026-10-08), the card says so. Where Home was refused because the
+  wrist camera saw no depth from there or the planner will not start from there, the checklist names the way out
+  by hand: freedrive at the pendant, or Einrichten → "Pose einlernen …" → "Arm freigeben", whose Cancel saves
+  nothing. The card adds no button for it.
 - **After a restart of the server** the card comes back from the stop the server kept: the stopped run's record
   answers, its events do not, and a stop of unknown origin (a file the server could not read) offers Home only.
   Until the cell is connected no hand is read, so the card says what the stopped run believed it held, never
@@ -275,7 +329,8 @@ for the cell poll, and names taught poses by their labels.
 | The screen | Because | Test |
 |---|---|---|
 | Start names the first motion, the countdown and a camera place's fallback, and stays off until ready | Start is the confirmation; nothing moves on a click that did not say where | yes |
-| Enter and a spoken sentence only fill the card; nothing starts but Start, bar a greeting's wave where the app config says `direct` | a misheard word must never move an arm; the owner chose the wave at once, two judged swings of the wrist, `confirm` to ask first | yes |
+| A spoken sentence is never sent by itself; Enter starts only a clean reading on a cell the server says is ready, and opens the card for every other; "Erst die Karte" leaves Start the only start; a greeting's wave where the app config says `direct` | a misheard word must never move an arm unread; Enter is the person's click (the owner, 2026-10-08); the owner chose the wave at once, two judged swings of the wrist, `confirm` to ask first | yes |
+| A sort starts with every rule or not at all; a note on any rule opens the card; two rules never name the same parts; a card of one rule sends the body it always sent | Enter must never start the first rule alone, and a part of one kind has one place | yes |
 | "Sofort anhalten" is one click, orange, and says it is not the e-stop, whatever else is open | the red button at the cell is the e-stop | yes |
 | "Not-Aus drücken" only where the arm brakes and no confirmation came | a false alarm teaches people to ignore the real one | yes |
 | After a stop nothing starts by itself; Restart and Home stay off until every gate is green, and ask first | the arm stands where the problem left it | yes |
@@ -400,9 +455,10 @@ to what the console says.
 
 ## Testing
 
-- **`npm test`** runs 21 Vitest files and 414 tests: every screen against captured payloads, the run model
-  against the captured event logs, the catalogs, the theme scripts and the client. A test picks a run out of a
-  captured log with `runOf`, `eventsOf` and `upTo` (`src/test/render.tsx`), never by its id.
+- **`npm test`** runs 24 Vitest files and 538 tests: every screen against captured payloads, the run model
+  against the captured event logs, the catalogs, the theme scripts and the client; a sort's draft, card, Enter,
+  run and rule strip in `src/cockpit/sort.test.tsx`. A test picks a run out of a captured log with `runOf`,
+  `eventsOf` and `upTo` (`src/test/render.tsx`), never by its id.
 - **`npm run build`, then `npm run e2e`** runs three Playwright specs, four tests, against a real `python -m api
   --profile console_dummy` the run starts itself: `smoke.e2e.ts` connects in Setup, starts a task in the
   cockpit, halts it, clears the cell and restarts; `audience.e2e.ts` mirrors a task, its stop card and the

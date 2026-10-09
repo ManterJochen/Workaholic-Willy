@@ -44,7 +44,18 @@ __all__ = [
 
 
 def build_palm_detector(config: HandDetectConfig) -> PalmDetector:
-    """`models.handdetect` -> a landmark detector. Raises if mediapipe or the bundle is missing."""
+    """Where hands are in a colour frame, in pixels, with no gesture.
+
+    Args:
+        config (HandDetectConfig): ``models.handdetect``: the ``.task`` bundle and the thresholds.
+
+    Returns:
+        PalmDetector: The detector; ``observe(frame_bgr)`` answers.
+
+    Raises:
+        ImportError: MediaPipe is not installed.
+        FileNotFoundError: The bundle ``models.handdetect.model_path`` names is not there.
+    """
     return PalmDetector(
         config.model_path,
         max_hands=config.max_hands,
@@ -56,7 +67,18 @@ def build_palm_detector(config: HandDetectConfig) -> PalmDetector:
 
 
 def build_gesture_recognizer(config: GestureDetectConfig) -> ThumbGestureRecognizer:
-    """`models.gesturedetect` -> a thumbs-up/down recogniser that also reports palm centres."""
+    """A thumbs-up or thumbs-down recogniser that also reports the palm centre.
+
+    Args:
+        config (GestureDetectConfig): ``models.gesturedetect``: the ``.task`` bundle and the thresholds.
+
+    Returns:
+        ThumbGestureRecognizer: The recogniser; ``observe(frame_bgr)`` answers with a ``HandGesture``.
+
+    Raises:
+        ImportError: MediaPipe is not installed.
+        FileNotFoundError: The bundle is not there.
+    """
     return ThumbGestureRecognizer(
         config.model_path,
         max_hands=config.max_hands,
@@ -108,38 +130,24 @@ def build_hand_finder_on_camera(
     tool_frame: Any = None,
     attempts: Optional[int] = None,
 ) -> HandFinder:
-    """A hand search over one `Camera` that is already open, reading that camera's own calibration.
+    """Where a hand is, in millimetres in the robot's base frame, over one camera you already hold open, read through
+    that camera's own calibration.
 
-    `build_hand_finder` takes a rig catalogue and a transform per rig, which is what a search over
-    a whole cell needs. A caller that already holds one open camera has both facts on that object:
-    `camera.calibration()` is the rig's declared calibration and `camera.get_intrinsics()` its
-    lens. Opening a second `FrameProvider` to rediscover them would claim every other configured
-    streamer, which is how asking where a hand is takes the cell's cameras away from it.
+    Args:
+        config (HandDetectConfig): ``models.handdetect``.
+        camera (Any): An open camera owner (:class:`Camera`).
+        observer (HandObserver | None): The detector to use; ``None`` builds one from ``config`` (default: None).
+        tool_pose (Callable[[], Pose] | None): For a camera on the wrist: the arm's ``get_tcp_pose``, read at each
+            shutter; required there (default: None).
+        tool_frame (Any): For a camera on the wrist: the cell's ``robot.gripper.tool_frame`` (default: None).
+        attempts (int | None): How many more frames a wrist camera takes while the tool moved (default: None).
 
-    A fixed camera's CAMERA to BASE is `RigCalibration.camera_to_base()`, one method with one
-    answer, and `tool_pose`, `tool_frame` and `attempts` are ignored for it. A camera on the wrist
-    has none: its artifact is CAMERA to TOOL, and where it stood is where the tool stood when the
-    shutter opened. It takes what `Locator.from_parts` takes for one: `tool_pose`, the arm's
-    `get_tcp_pose`, and `tool_frame`, the cell's `robot.gripper.tool_frame`, which its calibration
-    must have been solved against. Each frame is then taken as the pick frame is (its warm-ups,
-    then the tool pose read before and after the grab, the grab taken again while the tool moved
-    beyond the rig's shutter tolerance, up to `attempts` more times; unset, the schema's
-    `perceived.fresh_frame_attempts` default, as `Locator.from_parts` takes it, while
-    `Locator.from_tree` reads the profile's, so pass that to match it), and placed by the
-    composition the `Locator` places its frames by, `shutter_motion.camera_to_base_at_shutter`:
-    called here, never written a second time. A frame the tool moved across on every attempt gives
-    no hand, so the arm holds still while it looks.
+    Returns:
+        HandFinder: The finder; ``find_hand()`` answers in BASE millimetres.
 
-    Raises
-    ------
-    RigNotCalibrated
-        The rig declares no calibration; nothing can place what it sees.
-    RigCalibrationError
-        The rig's artifact does not load; or the rig is on the wrist and was handed no `tool_pose`
-        or no `tool_frame`, or its calibration was solved against another flange to TCP. Each says
-        its fix. Refused before anything is grabbed or read.
-    ValueError
-        The rig is RGB-D and its device reports no intrinsics, so a palm cannot be back-projected.
+    Raises:
+        RigCalibrationError: A camera on the wrist without ``tool_pose`` or ``tool_frame``, or whose calibration was
+            solved against another tool frame; ``RigNotCalibrated``, one of these, where it declares no calibration.
     """
     matrix = camera.get_intrinsics()
     rig_id = str(camera.rig_id)

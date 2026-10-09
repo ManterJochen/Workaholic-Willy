@@ -142,6 +142,20 @@ def _qwen(weights: VlmWeights) -> Qwen3VLGrounder:
     return Qwen3VLGrounder(model_id=weights.model_id, model_path=weights.model_path, local=weights.local)
 
 
+def _answer_as(grounder: Any, vlm: Any) -> None:
+    """Hand ``vlm``'s answer settings (the answer lookups, the stop at the answer's end, the decode graphs) to
+    ``grounder``, as a build does (``src/models/factory.py``): a command or Laden on a cell that does not detect with
+    the VLM, or a routed cell before its first VLM prompt, would otherwise answer with the defaults. A block without
+    them (a test's double) and a grounder without ``configure`` keep what they have. Loads nothing."""
+    configure = getattr(grounder, "configure", None)
+    if configure is None:
+        return
+    configure(prompt_lookup_tokens=getattr(vlm, "prompt_lookup_tokens", None),
+              text_prompt_lookup_tokens=getattr(vlm, "text_prompt_lookup_tokens", None),
+              stop_at_answer_end=getattr(vlm, "stop_at_answer_end", None),
+              decode_graphs=getattr(vlm, "decode_graphs", None))
+
+
 def _status_of(grounder: Qwen3VLGrounder) -> VlmStatus:
     error = grounder.load_error
     if grounder.loaded:
@@ -341,6 +355,7 @@ class VlmHolder:
                 _LOG.warning("Laden for VLM %s refused: %s", weights.describe(), conflict)
                 return VlmStatus(state="idle", model_id=weights.model_id, cause=conflict)
             grounder = self._grounder if self._grounder is not None else self._hold(weights)
+        _answer_as(grounder, vlm)
         try:
             if grounder.ensure_loaded():
                 _LOG.info("VLM %s loaded on request in %.1f s", grounder.model_id, grounder.load_s or 0.0)
@@ -369,6 +384,7 @@ class VlmHolder:
                 if not may_load:
                     raise VlmNotLoadedError(weights.model_id)
                 grounder = self._hold(weights)
+        _answer_as(grounder, vlm)
         return TextAsker(grounder, may_load=may_load, max_new_tokens=max_new_tokens)
 
     def forget(self) -> None:

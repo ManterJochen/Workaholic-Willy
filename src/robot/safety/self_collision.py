@@ -55,7 +55,7 @@ from ._capsule import (
     capsule_box_distance_mm,
     capsule_capsule_distance_mm,
 )
-from ._ur_kinematics import ur_link_origins_mm, ur_link_transforms_mm
+from ._ur_kinematics import ur_link_origins_mm, ur_link_transforms_mm, ur_link_transforms_mm_many
 from .decision import SafetyDecision, SafetyReason
 from .guard import SafetyContext
 
@@ -156,6 +156,10 @@ class SelfCollisionGuard:
         #: Separate from the declared list so a perceived box can never overwrite a measured one, and
         #: so clearing them cannot take the bench with it.
         self._perceived_fixtures: tuple[AxisAlignedBox, ...] = ()
+        #: Whether a path is judged whole before it is judged sample by sample
+        #: (``SelfCollisionSafetyConfig.whole_path_judge``): :meth:`exact_pairs` then answers the mesh-first questions of
+        #: a whole path at once too. The path gate reads the same key (``SafetyPreflight.from_safety_config``).
+        self._whole_path_judge = bool(getattr(config, "whole_path_judge", False))
 
     @property
     def _fixtures(self) -> "tuple[AxisAlignedBox, ...]":
@@ -583,10 +587,63 @@ class SelfCollisionGuard:
             part, gap = near_of(transforms, yaw, radius_mm=shape.radius_mm, top_mm=shape.top_mm, within_mm=within)
             return str(part), float(gap)
 
+        # The whole-path judge (whole_path_judge): the same two questions asked of every configuration of a path at once.
+        # ExactPairs.first_low and first_near_base hand only the configurations these may refuse to lowest and base,
+        # which say why; without them every configuration is asked of lowest and base in turn, as before.
+        lowest_many_of = getattr(backend, "lowest_mm_many", None)
+        near_base_from_of = getattr(backend, "first_near_base", None)
+
+        def lows(configs: "Sequence[Sequence[float]]") -> "np.ndarray | None":
+            transforms = ur_link_transforms_mm_many(model, np.asarray(configs, dtype=np.float64))
+            if transforms is None or lowest_many_of is None:
+                return None
+            return np.asarray(lowest_many_of(transforms, yaw), dtype=np.float64)
+
+        def near_base_from(configs: "Sequence[Sequence[float]]", within_mm: float) -> "int | None":
+            transforms = ur_link_transforms_mm_many(model, np.asarray(configs, dtype=np.float64))
+            if transforms is None or shape is None or near_base_from_of is None:
+                return None
+            return int(near_base_from_of(transforms, yaw, radius_mm=shape.radius_mm, top_mm=shape.top_mm,
+                                         within_mm=within_mm))
+
+        whole = self._whole_path_judge
         return ExactPairs(checks=backend.checks, frames=backend.part_frames,  # type: ignore[attr-defined]
                           distance=distance, min_distance_mm=self._min_distance_mm,
                           lowest=lowest if callable(lowest_of) else None,
-                          base=base if shape is not None and callable(near_of) else None)
+                          base=base if shape is not None and callable(near_of) else None,
+                          lows=lows if whole and callable(lowest_of) and callable(lowest_many_of) else None,
+                          near_base_from=(near_base_from if whole and shape is not None and callable(near_of)
+                                          and callable(near_base_from_of) else None))
+
+    def first_suspect(self, arm: "object | None", configs: np.ndarray, until: int) -> "int | None":
+        """The first of ``configs``, ``(N, dof)`` in radians, :meth:`evaluate` might refuse on ``arm``, never later than
+        the first it does refuse, found over the whole path at once; ``until`` where none before it may.
+
+        ``None`` wherever :meth:`evaluate` would not run the exact mesh backend on these configurations, the capsule
+        proxy, no arm, no model, no engine or no bundle, a configuration the DH chain cannot place: then the path gate
+        judges every sample one at a time (``SafetyPreflight.gate_joint_path``). Otherwise every part is placed at every
+        sample in one pass (``ur_link_transforms_mm_many``, bit for bit the chain :meth:`evaluate` places one sample
+        with), and the backend is asked with what :meth:`evaluate` hands it: the arm against itself and the declared
+        fixtures at ``min_distance_mm``, the boxes a camera saw at ``perceived_min_distance_mm``
+        (``MeshSelfCollisionBackend.first_suspect``, which says how a sample is passed).
+        """
+        if self._backend != "fcl" or arm is None:
+            return None
+        model = self.model_for(arm)
+        if model is None:
+            return None
+        backend = self._exact_mesh_backend(model)
+        judge = getattr(backend, "first_suspect", None)
+        if not callable(judge):
+            return None
+        transforms = ur_link_transforms_mm_many(model, configs)
+        if transforms is None:
+            return None
+        return int(judge(
+            transforms, float(self._config.kinematics_base_yaw_deg), declared=self._declared_fixtures,
+            min_distance_mm=self._min_distance_mm, seen=self._perceived_fixtures,
+            seen_min_distance_mm=self._perceived_min_distance_mm, until=until,
+        ))
 
     def _evaluate_fcl(self, ctx: SafetyContext) -> SafetyDecision | None:
         """Exact mesh self-collision. ``None`` where it cannot run, which falls back to capsules."""

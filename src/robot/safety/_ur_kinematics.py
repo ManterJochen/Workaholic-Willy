@@ -27,10 +27,12 @@ from dataclasses import dataclass
 import numpy as np
 
 __all__ = [
+    "URDhChain",
     "URDhRow",
     "UR_DH_TABLES_M",
     "ur_link_origins_mm",
     "ur_link_transforms_mm",
+    "ur_link_transforms_mm_many",
     "ur_joint_radii_mm",
     "ur_reach_mm",
     "ur_series_twin",
@@ -257,3 +259,102 @@ def ur_link_transforms_mm(model: str, joints_rad: np.ndarray) -> list[np.ndarray
         M[:3, 3] = M[:3, 3] * 1000.0  # metres -> mm in the translation column only
         out.append(M)
     return out
+
+
+def ur_link_transforms_mm_many(model: str, joints_rad: np.ndarray) -> np.ndarray | None:
+    """:func:`ur_link_transforms_mm` of every row of ``joints_rad``, ``(N, 6)``, at once: ``(N, 7, 4, 4)``.
+
+    The same chain, multiplied in the same order with the same numbers: each frame is the one before it times the row's
+    DH transform, in metres, and the translation column of the copy handed out is scaled to mm. Every frame is bit for
+    bit the one :func:`ur_link_transforms_mm` gives that row (``tests/test_the_arm_measures_itself_only_where_it_could_
+    refuse.py`` holds it to that on 20,000 configurations), so a whole path judged at once places every part where one
+    sample judged at a time places it, about 30 times faster. It returns ``None`` where ``model`` is not in the bundled
+    DH table or ``joints_rad`` is not one row of the table's joint count per configuration.
+    """
+    table = UR_DH_TABLES_M.get(model.lower())
+    rows = np.asarray(joints_rad, dtype=np.float64)
+    if table is None or rows.ndim != 2 or rows.shape[1] != len(table):
+        return None
+    count = rows.shape[0]
+    out = np.empty((count, len(table) + 1, 4, 4), dtype=np.float64)
+    T = np.broadcast_to(np.eye(4, dtype=np.float64), (count, 4, 4)).copy()
+    out[:, 0] = T
+    for joint, row in enumerate(table):
+        ct, st = np.cos(rows[:, joint]), np.sin(rows[:, joint])
+        ca, sa = float(np.cos(row.alpha_rad)), float(np.sin(row.alpha_rad))
+        # _dh_transform's matrix, one per configuration, entry by entry as it writes them.
+        A = np.zeros((count, 4, 4), dtype=np.float64)
+        A[:, 0, 0], A[:, 0, 1], A[:, 0, 2], A[:, 0, 3] = ct, -st * ca, st * sa, row.a_m * ct
+        A[:, 1, 0], A[:, 1, 1], A[:, 1, 2], A[:, 1, 3] = st, ct * ca, -ct * sa, row.a_m * st
+        A[:, 2, 1], A[:, 2, 2], A[:, 2, 3] = sa, ca, row.d_m
+        A[:, 3, 3] = 1.0
+        T = T @ A
+        out[:, joint + 1] = T
+        out[:, joint + 1, :3, 3] *= 1000.0  # metres -> mm in the translation column only
+    return out
+
+
+@dataclass(frozen=True, slots=True)
+class URDhChain:
+    """A UR's six DH rows as one controller holds them, each joint's theta offset included; lengths in metres.
+
+    The tables above are the nominal ones of the UR support page, with no theta offset. A real arm is calibrated at the
+    factory: its controller keeps a theta, a, d and alpha of its own for every joint and computes its forward and inverse
+    kinematics on them, the poses ``getForwardKinematics`` reports and the joints ``getInverseKinematics`` answers. The
+    owner's UR10 CB3 puts its TCP 6.0 to 6.3 mm and 0.6 degrees from where the nominal table puts it at the same joints
+    (the guard map, 2026-10-08). The controller says what its rows are in the kinematics info of its robot state, which
+    :meth:`~src.robot.drivers.ur.connection.URConnection.controller_kinematics` reads; URSim CB3 3.15.8 reports the
+    nominal table plus whatever its ``calibration.conf`` adds, measured.
+
+    The convention of :func:`ur_link_transforms_mm`, with the joint variable added to the row's ``theta_rad``. A calibrated
+    chain may hold a frame far along a joint axis, a ``d`` of metres that the next row's cancels (nearly parallel axes meet
+    their common normal far away); the product is the same flange either way.
+    """
+
+    theta_rad: tuple[float, ...]
+    a_m: tuple[float, ...]
+    d_m: tuple[float, ...]
+    alpha_rad: tuple[float, ...]
+
+    def __post_init__(self) -> None:
+        rows = (self.theta_rad, self.a_m, self.d_m, self.alpha_rad)
+        if any(len(row) != 6 for row in rows) or not np.all(np.isfinite(np.asarray(rows, dtype=np.float64))):
+            raise ValueError(f"a UR chain is six finite rows of theta, a, d and alpha, got {rows!r}")
+
+    @classmethod
+    def nominal(cls, model: str) -> "URDhChain | None":
+        """The bundled table of ``model`` as a chain, or ``None`` for a model with no table."""
+        table = UR_DH_TABLES_M.get(str(model).lower())
+        if table is None:
+            return None
+        return cls(
+            theta_rad=(0.0,) * len(table),
+            a_m=tuple(row.a_m for row in table),
+            d_m=tuple(row.d_m for row in table),
+            alpha_rad=tuple(row.alpha_rad for row in table),
+        )
+
+    def frames_m(self, joints_rad: "np.ndarray | list[float] | tuple[float, ...]") -> list[np.ndarray]:
+        """The base frame and the frame after each joint, the last the flange, as 4x4s in metres."""
+        q = np.asarray(joints_rad, dtype=np.float64).reshape(-1)
+        if q.shape != (6,):
+            raise ValueError(f"a UR configuration is six joint values, got {joints_rad!r}")
+        turned = q + np.asarray(self.theta_rad, dtype=np.float64)
+        ct, st = np.cos(turned), np.sin(turned)
+        ca, sa = np.cos(np.asarray(self.alpha_rad)), np.sin(np.asarray(self.alpha_rad))
+        T = np.eye(4, dtype=np.float64)
+        out = [T]
+        for j in range(6):
+            a, d = self.a_m[j], self.d_m[j]
+            T = T @ np.array([
+                [ct[j], -st[j] * ca[j], st[j] * sa[j], a * ct[j]],
+                [st[j], ct[j] * ca[j], -ct[j] * sa[j], a * st[j]],
+                [0.0, sa[j], ca[j], d],
+                [0.0, 0.0, 0.0, 1.0],
+            ], dtype=np.float64)
+            out.append(T)
+        return out
+
+    def flange_m(self, joints_rad: "np.ndarray | list[float] | tuple[float, ...]") -> np.ndarray:
+        """Where this chain puts the flange (tool0) at ``joints_rad``, a 4x4 in metres in the base frame."""
+        return self.frames_m(joints_rad)[-1]

@@ -176,6 +176,13 @@ describe('translate', () => {
     expect(translate('de', refusalMsg('run_active').key)).toBe('Ein Lauf ist aktiv.')
   })
 
+  it('says a text over its limit with the limit the server sent, in both languages', () => {
+    // 422 `text_too_long` (the owner, 2026-10-08): "Die Anfrage ist ungültig." told nobody what to shorten.
+    const said = refusalMsg('text_too_long', { field: 'object', max: 200, errors: [] })
+    expect(translate('de', said.key, said.params)).toBe('Zu lang: höchstens 200 Zeichen.')
+    expect(translate('en', said.key, said.params)).toBe('Too long: at most 200 characters.')
+  })
+
   it('shows an outcome it does not know as its own words', () => {
     const unknown = outcomeMsg('brand_new_outcome')
     expect(translate('en', unknown.key, unknown.params)).toBe('brand new outcome')

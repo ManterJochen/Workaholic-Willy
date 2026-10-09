@@ -404,6 +404,9 @@ class LivePlannerWorld:
     #: The frames of new poses the pick in progress did not hold because it held
     #: :data:`_MAX_HELD_FRAMES` already, by camera and shutter time, so a frame served twice counts once.
     _pick_frames_not_kept: set[tuple[str, float | None]] = field(default_factory=set, init=False, repr=False)
+    #: The frames the last pick held when it ended, for a place that carries the part straight over a bin's rim and
+    #: judges the way in against the walls the pick's looks saw (:meth:`hold_pick_views_again`); empty otherwise.
+    _let_go: "list[_HeldFrame]" = field(default_factory=list, init=False, repr=False)
     #: When this world last said that the bare bench reads lower than declared, on its own clock, or `None`.
     _bench_warned_at: float | None = field(default=None, init=False, repr=False)
     #: The frames the latest world was built from, read and thinned, so the next world built from one of them does not
@@ -619,16 +622,33 @@ class LivePlannerWorld:
         is kept in single precision (:data:`_HELD_DEPTH_DTYPE`). Returns whether this world has a
         camera on the wrist, whose frames there are to hold; one with fixed cameras only holds nothing.
         """
+        self._let_go = []
         self._pick_frames = []
         self._pick_frames_not_kept.clear()
         self._built = None
         return any(camera.camera_to_tool is not None for camera in self.cameras)
 
     def forget_pick_views(self) -> None:
-        """Drop every frame the pick holds and hold no more: the pick ended."""
+        """Drop every frame the pick holds and hold no more: the pick ended. The frames are kept aside, only for
+        :meth:`hold_pick_views_again`, until the next pick holds its own."""
+        if self._pick_frames:
+            self._let_go = list(self._pick_frames)
         self._pick_frames = None
         self._pick_frames_not_kept.clear()
         self._forget_builds()
+
+    def hold_pick_views_again(self) -> bool:
+        """Hold again the frames the last pick held when it ended, for the place that carries its part straight over a
+        bin's rim (``robot.place.carry: over_the_rim``): the way into the bin is then judged against the walls the
+        pick's looks saw, as the pick judged its own motions. Once only; ``False`` where no pick left frames, and
+        the place then goes via the bin's look as before."""
+        frames, self._let_go = list(self._let_go), []
+        if not frames:
+            return False
+        self._pick_frames = frames
+        self._pick_frames_not_kept.clear()
+        self._built = None
+        return True
 
     @property
     def held_view_count(self) -> int:

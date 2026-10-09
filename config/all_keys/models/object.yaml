@@ -150,6 +150,31 @@ pipeline:
       # [default: refuse] [one of: refuse | degrade]
       on_unavailable: refuse
 
+      # End a grounding answer where its JSON array closes, rather than one pass of the model later (the end
+      # token) or three (after a code fence), and a command's reading where its JSON object closes, one pass
+      # before the end token. The parser reads the same boxes from it, the command reader the same card.
+      # [default: true]
+      stop_at_answer_end: true
+
+      # How many tokens the answer lookup proposes per pass of a grounding answer; 0 is off. The model checks
+      # the proposals in one pass and keeps those it would have written: about half the passes on the cell's
+      # frames, and a coordinate's last digit may come out one off. 10 is the measured value.
+      # [default: 0]
+      prompt_lookup_tokens: 0
+
+      # The same lookup for the command reader's text answers, whose keys come from its instruction: about a
+      # fifth of the passes with the earlier instruction, every measured answer identical; with today's compact
+      # one 57 % of the passes, and 3 of 67 readings came out otherwise. 10 is the measured value.
+      # [default: 0]
+      text_prompt_lookup_tokens: 0
+
+      # Run each pass of the model as CUDA graphs, the attention over the answer so far as before: the same
+      # answers byte for byte, in fewer of the CPU's milliseconds a pass, which is what a pass waits for on the
+      # cell. auto = on a CUDA card of compute capability 8.0 or newer, where the first pass of each shape matched
+      # the plain pass bit for bit; on = on any CUDA card, a check that differed only warned; off = as before.
+      # [default: auto] [one of: auto | on | off]
+      decode_graphs: auto
+
   # Fixed-vocabulary perception: RT-DETR's trained classes, no free text.
   closed_set:
 

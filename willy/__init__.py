@@ -20,7 +20,6 @@ from typing import TYPE_CHECKING, Any
 _HOME: dict[str, str] = {
     # The config tree of a cell.
     "ConfigError": "src.config",
-    "ConfigTree": "src.config",
     "LoadedTree": "src.config",
     "load_speech_section": "src.config",
     "load_tree": "src.config",
@@ -37,8 +36,6 @@ _HOME: dict[str, str] = {
     "HandlingReport": "src.robot.execution.handling",
     "HoldEvidence": "src.robot.core.gripper",
     "JointPositions": "src.robot.core",
-    "SafetyPreflight": "src.robot.safety",
-    "create_arm": "src.robot.drivers",
     # Joint poses taught by guiding the arm by hand, and what refuses hand guiding.
     "HandGuidingRefused": "src.robot.execution.hand_guiding",
     "teach_poses": "src.robot.execution.teach",
@@ -54,11 +51,12 @@ _HOME: dict[str, str] = {
     "PickAttempt": "src.robot.execution.pick_run",
     "PickRun": "src.robot.execution.pick_run",
     "PickRunReport": "src.robot.execution.pick_run",
-    "PlannerStart": "src.robot.execution.planner_start",
     "RecordLog": "src.robot.grasping.replay.runs",
     "Recording": "src.robot.execution.pick_run",
-    # A task: pick a part, place it, return, once or until nothing is left.
+    # A task: pick a part, place it, return, once or until nothing is left; a sort, each kind to its rule's place.
+    "MAX_FURTHER_RULES": "src.robot.execution.task",
     "PlaceAt": "src.robot.execution.task",
+    "SortRule": "src.robot.execution.task",
     "TaskEvent": "src.robot.execution.task",
     "TaskHooks": "src.robot.execution.task",
     "TaskOptions": "src.robot.execution.task",
@@ -95,14 +93,6 @@ _HOME: dict[str, str] = {
     "build_palm_detector": "src.models.handdetection",
     "build_gesture_recognizer": "src.models.handdetection",
     "build_hand_finder_on_camera": "src.models.handdetection",
-    # Grasps, and the stacks a desk can evaluate without a robot.
-    "MotionStack": "src.robot.safety.planning.stack",
-    "PerceptionSpec": "src.models.perception_spec",
-    "RuleBasedRouter": "src.models.routing",
-    "Scene": "src.robot.grasping.scene",
-    "build_calculator": "src.robot.grasping.calculator_factory",
-    "preflight_calculator": "src.robot.grasping.calculator_factory",
-    "synthesize_suction_grasps": "src.robot.grasping.suction",
     # Speech: push to talk, and a person confirms.
     "Confirmation": "src.models.speech",
     "Listener": "src.models.speech",
@@ -114,10 +104,13 @@ _HOME: dict[str, str] = {
     "record_demo": "src.willy_sim.run_eih_demo",
     "run_gate": "src.willy_sim.run_m1_pick",
     # Offline: scenes, a dataset from simulation, parts of your own, a generator trained on them, and a detector
-    # trained on your labelled images.
+    # trained on your labelled images, which then finds every class it knows in one call, each object with its mask.
     "DatasetBuild": "datagen.api",
     "DetectorPlanOverrides": "src.models.detection.closed_set.training.plan",
     "DetectorTraining": "src.models.detection.closed_set.training.api",
+    "DetectedObject": "src.models.detection.object_detector",
+    "Detections": "src.models.detection.object_detector",
+    "ObjectDetector": "src.models.detection.object_detector",
     "GeneratorTraining": "src.robot.grasping.deep.train.api",
     "MeshPreparation": "datagen.assets.service",
     "PhysicsSampling": "datagen.grasps.service",
@@ -153,23 +146,21 @@ else:  # pragma: no cover (the names as mypy reads them, each from the module th
     # Not from `src.config` or `src.models.speech`: those hand their names out through a module `__getattr__`, and
     # mypy reads every name reached that way as Any, so no call through them would be checked.
     from src.config.loader import ConfigError, load_speech_section
-    from src.config.tree import ConfigTree, LoadedTree, load_tree
+    from src.config.tree import LoadedTree, load_tree
     from src.camera import Camera, CameraRefused, RGBDFrame, RigCalibrationError, RigNotCalibrated
     from src.camera.live_view import LiveView
     from src.geometry import Frame, Pose
     from src.models.detection.closed_set.training.api import DetectorTraining
     from src.models.detection.closed_set.training.plan import DetectorPlanOverrides
+    from src.models.detection.object_detector import DetectedObject, Detections, ObjectDetector
     from src.models.handdetection import (
         HandGesture, build_gesture_recognizer, build_hand_finder_on_camera, build_palm_detector)
-    from src.models.perception_spec import PerceptionSpec
-    from src.models.routing import RuleBasedRouter
     from src.models.speech.confirm import Confirmation, TerminalConfirmer
     from src.models.speech.holder import shared_speech
     from src.models.speech.listener import Listener
     from src.models.speech.push_to_talk import PushToTalkSource, TalkButton
     from src.robot.core import JointPositions
     from src.robot.core.gripper import HoldEvidence
-    from src.robot.drivers import create_arm
     from src.robot.execution.autonomous_grasp.config import GraspMode
     from src.robot.execution.autonomous_grasp.prompt import PickPrompt
     from src.robot.execution.autonomous_grasp.report import (
@@ -185,23 +176,18 @@ else:  # pragma: no cover (the names as mypy reads them, each from the module th
     from src.robot.execution.lifecycle import NoRealGripper
     from src.robot.execution.motion import MotionOutcome, MotionReport
     from src.robot.execution.pick_run import PassRule, PickAttempt, PickRun, PickRunReport, Recording
-    from src.robot.execution.planner_start import PlannerStart
     from src.robot.execution.robot import LockKeyRequired, Robot
     from src.robot.execution.task import (
-        PlaceAt, TaskEvent, TaskHooks, TaskOptions, TaskPlan, TaskRefused, TaskReport, TaskStop, run_task)
+        MAX_FURTHER_RULES, PlaceAt, SortRule, TaskEvent, TaskHooks, TaskOptions, TaskPlan, TaskRefused, TaskReport,
+        TaskStop, run_task)
     from src.robot.execution.teach import teach_poses
     from src.robot.execution.wrist_bodies import WristBodyRequired
-    from src.robot.grasping.calculator_factory import build_calculator, preflight_calculator
     from src.robot.grasping.deep.foreign.service import PublicCorpus
     from src.robot.grasping.deep.train.api import GeneratorTraining
     from src.robot.grasping.deep.train.plan import PlanOverrides
     from src.robot.grasping.motion.grasp_motion import GraspMotion
     from src.robot.grasping.replay.runs import RecordLog
-    from src.robot.grasping.scene import Scene
-    from src.robot.grasping.suction import synthesize_suction_grasps
     from src.robot.perception.locator import Located, Locator, LocatorRefused, SetDown
-    from src.robot.safety import SafetyPreflight
-    from src.robot.safety.planning.stack import MotionStack
     from src.willy_sim.run_eih_demo import record_demo
     from src.willy_sim.run_m1_pick import run_gate
     from datagen.api import DatasetBuild

@@ -9,6 +9,9 @@ It provides:
     - the current joint angles, through ``get_joint_positions``;
     - forward kinematics, through ``fk``;
     - inverse kinematics, through ``ik``;
+    - the DH rows and the TCP the controller computes those with, ``controller_kinematics`` (read from its primary
+      interface, nothing sent) and ``active_tcp_offset``;
+    - the steady gate, ``wait_until_steady``, on ``isSteady`` or on the joint speeds (``robot.safety.dwell.steady_signal``);
     - the low-level move wrappers ``moveJ`` and ``moveL``;
     - the halt latch ("halt now"), and with ``robot.ur.brake_on_halt`` the watched move a halt brakes;
     - the hand-guiding primitives, teach mode, the RTDE watchdog and a fresh control
@@ -21,6 +24,7 @@ import dataclasses
 import math
 import re
 import socket
+import struct
 import threading
 import time
 from enum import StrEnum
@@ -225,6 +229,114 @@ def _read_line(sock: socket.socket) -> str:
     return data.decode("utf-8", errors="replace").strip()
 
 
+#: What :meth:`URConnection.wait_until_steady` may read (``robot.safety.dwell.steady_signal``).
+STEADY_SIGNALS: tuple[str, ...] = ("is_steady", "joint_speeds")
+#: How many reads in a row, :data:`_POLL_S` apart, every joint has to be slower than :data:`_STILL_RAD_S` for the arm to
+#: count as steady from its joint speeds.
+_QUIET_READS = 3
+
+#: Where the controller's kinematics are read, in order: the primary client interface's read-only port (CB3 3.x and
+#: e-Series alike; URSim CB3 3.15.8 answers there, measured), then the primary interface itself. Either is only read:
+#: nothing is ever sent on it, because a primary interface runs any URScript it is sent.
+_PRIMARY_PORTS: tuple[int, ...] = (30011, 30001)
+#: The primary interface's robot state message, and its kinematics info sub-package. The controller sends that
+#: sub-package in the first robot state after a client connects, and in none after it (URSim CB3 3.15.8, measured).
+_ROBOT_STATE = 16
+_KINEMATICS_INFO = 5
+#: The kinematics info is six uint32 joint checksums, six doubles each of DH theta, a, d and alpha, and a uint32
+#: calibration status: 220 bytes on a CB3.
+_KINEMATICS_INFO_BYTES = 6 * 4 + 24 * 8
+#: How many robot states without the kinematics info are read before the read gives up, and how many bytes at most.
+_ROBOT_STATES_READ = 2
+_PRIMARY_BYTES_READ = 1 << 20
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class ControllerKinematics:
+    """The DH rows a UR controller computes its kinematics with, as its primary interface reports them.
+
+    The nominal table of the arm plus the arm's own factory calibration: on a calibrated arm every row differs from the
+    support page's by a little, a theta offset included (URSim CB3 3.15.8 reports its nominal UR10 table plus exactly
+    what a ``calibration.conf`` adds, measured). Lengths in metres, angles in radians, the joint variable added to
+    ``theta_rad``. ``checksums`` are the six joint checksums the controller reports beside them (URSim: ``0xFFFFFFFF``
+    each), ``calibration_status`` its status word, and ``port`` where they were read.
+    """
+
+    theta_rad: tuple[float, ...]
+    a_m: tuple[float, ...]
+    d_m: tuple[float, ...]
+    alpha_rad: tuple[float, ...]
+    checksums: tuple[int, ...]
+    calibration_status: int | None
+    port: int
+
+    def render(self) -> str:
+        """The rows and the checksums as one log line reads them."""
+        def row(values: "tuple[float, ...]") -> str:
+            return "[" + ", ".join(f"{v:.9g}" for v in values) + "]"
+
+        status = "not reported" if self.calibration_status is None else str(self.calibration_status)
+        return (f"theta {row(self.theta_rad)}, a {row(self.a_m)}, d {row(self.d_m)}, alpha {row(self.alpha_rad)}; "
+                f"joint checksums {', '.join(f'0x{c:08X}' for c in self.checksums)}; calibration status {status}")
+
+
+def _kinematics_info(data: bytes, port: int) -> ControllerKinematics:
+    """The kinematics info sub-package's payload, after its five header bytes; ``ValueError`` where it is not one."""
+    if len(data) < _KINEMATICS_INFO_BYTES:
+        raise ValueError(f"the kinematics info holds {len(data)} bytes, fewer than the {_KINEMATICS_INFO_BYTES} it needs")
+    checksums = struct.unpack_from(">6I", data, 0)
+    values = struct.unpack_from(">24d", data, 24)
+    if not all(math.isfinite(v) for v in values):
+        raise ValueError("the kinematics info holds a DH value that is not finite")
+    status = struct.unpack_from(">I", data, _KINEMATICS_INFO_BYTES)[0] if len(data) >= _KINEMATICS_INFO_BYTES + 4 else None
+    return ControllerKinematics(
+        theta_rad=tuple(values[0:6]), a_m=tuple(values[6:12]), d_m=tuple(values[12:18]), alpha_rad=tuple(values[18:24]),
+        checksums=tuple(int(c) for c in checksums), calibration_status=status, port=port,
+    )
+
+
+def _read_kinematics_info(host: str, port: int, *, timeout_s: float = 2.0) -> ControllerKinematics:
+    """The kinematics info of the first robot state a primary interface at ``host:port`` sends; nothing is sent to it.
+
+    Raises ``OSError`` (a timeout included) where the port does not answer or closes, and ``ValueError`` where what it
+    sends is no message stream, or holds no readable kinematics info in its first robot states.
+    """
+    deadline = time.monotonic() + timeout_s
+    states = 0
+    with socket.create_connection((host, port), timeout=timeout_s) as sock:
+        data = b""
+        while True:
+            # Every complete message so far; a robot state's sub-packages are length-prefixed like the messages.
+            while len(data) >= 5:
+                size, kind = struct.unpack_from(">iB", data, 0)
+                if size < 5 or size > _PRIMARY_BYTES_READ:
+                    raise ValueError(f"port {port} sent a message {size} bytes long, which no UR primary interface does")
+                if len(data) < size:
+                    break
+                message, data = data[5:size], data[size:]
+                if kind != _ROBOT_STATE:
+                    continue
+                states += 1
+                at = 0
+                while at + 5 <= len(message):
+                    part, part_kind = struct.unpack_from(">iB", message, at)
+                    if part < 5 or at + part > len(message):
+                        raise ValueError(f"port {port} sent a robot state whose sub-package {part_kind} is garbled")
+                    if part_kind == _KINEMATICS_INFO:
+                        return _kinematics_info(message[at + 5:at + part], port)
+                    at += part
+                if states >= _ROBOT_STATES_READ:
+                    raise ValueError(f"port {port} sent {states} robot states and no kinematics info in them")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                raise OSError(f"port {port} sent no kinematics info within {timeout_s:.1f} s")
+            sock.settimeout(remaining)
+            chunk = sock.recv(65536)
+            if not chunk:
+                raise OSError(f"port {port} closed the connection before it sent its kinematics info")
+            data += chunk
+
+
 if TYPE_CHECKING:  # pragma: no cover (import only for static analysis)
     from collections.abc import Callable, Sequence
 
@@ -293,6 +405,9 @@ class URConnection:
         frequency:    The RTDE exchange frequency in Hz. 0 means the default, 125 Hz.
         brake_on_halt: ``robot.ur.brake_on_halt``. Off: every move is the synchronous ur_rtde call it always was, and a
                       halt latches. On: a move is sent asynchronously and watched, and a halt brakes it (:meth:`moveJ`).
+        steady_signal: ``robot.safety.dwell.steady_signal``, what :meth:`wait_until_steady` reads: ``"is_steady"``, the
+                      controller's ``isSteady`` as always, or ``"joint_speeds"``, every joint slower than 0.01 rad/s on
+                      three reads in a row 8 ms apart.
         clock, sleep: The monotonic clock and the sleep a watched move polls with; a test hands in its own. The clock is
                       ``perf_counter``: ``time.monotonic`` ticks in 15.6 ms steps on Windows, two RTDE cycles.
 
@@ -308,6 +423,7 @@ class URConnection:
         frequency: float = 0.0,
         *,
         brake_on_halt: bool = False,
+        steady_signal: str = "is_steady",
         clock: "Callable[[], float]" = time.perf_counter,
         sleep: "Callable[[float], None]" = time.sleep,
     ):
@@ -318,7 +434,14 @@ class URConnection:
         self.acc = acc
         self.frequency = frequency
         self.brake_on_halt = bool(brake_on_halt)
+        if steady_signal not in STEADY_SIGNALS:
+            raise ValueError(f"steady_signal is one of {', '.join(STEADY_SIGNALS)}, got {steady_signal!r}")
+        self.steady_signal = steady_signal
         self.logger = create_robot_logger("URConnection", UR_CONNECTION_LOG_FILE)
+        if steady_signal == "joint_speeds":
+            self.logger.info("The steady gate reads the joint speeds (robot.safety.dwell.steady_signal: joint_speeds): "
+                             "every joint under %.2f rad/s on %d reads %.0f ms apart, isSteady where they cannot be read.",
+                             _STILL_RAD_S, _QUIET_READS, _POLL_S * 1000.0)
 
         self._ctrl: RTDEControlInterface | None = None
         self._recv: RTDEReceiveInterface | None = None
@@ -326,6 +449,15 @@ class URConnection:
         self._dashboard: DashboardClient | None = None
         #: Cached controller TCP offset for :meth:`_fk_tcp_offset`; cleared on every (dis)connect.
         self._tcp_offset_cache: list[float] | None = None
+        #: What :meth:`controller_kinematics` and :meth:`active_tcp_offset` read, each settled once per connection (an
+        #: answer, or ``None`` with the reason logged); cleared on every (dis)connect, the TCP also on a fresh program.
+        #: The epoch counts the clearings, so a read that ends after one keeps nothing.
+        self._kinematics: ControllerKinematics | None = None
+        self._kinematics_settled = False
+        self._active_tcp: list[float] | None = None
+        self._active_tcp_settled = False
+        self._kinematics_epoch = 0
+        self._kinematics_lock = threading.Lock()
         #: The serial :meth:`controller_serial` read, whether that read is settled (a serial, or an answer that is
         #: none), and how often its own dashboard connection failed; all cleared on every (dis)connect.
         self._serial: str | None = None
@@ -500,6 +632,7 @@ class URConnection:
             self.logger.debug("connect() called but already connected; ignored.")
             return
         self._tcp_offset_cache = None
+        self._forget_the_kinematics()
         self.logger.info("Connecting to UR robot at %s ...", self.ip)
         try:
             self._ctrl = self._open_control()
@@ -586,6 +719,7 @@ class URConnection:
     def _safe_teardown(self) -> None:
         """Best-effort release of both RTDE interfaces; never raises."""
         self._tcp_offset_cache = None
+        self._forget_the_kinematics()
         self._serial, self._serial_settled, self._serial_failures = None, False, 0
         if self._ctrl is not None:
             try:
@@ -763,6 +897,87 @@ class URConnection:
         if q_near is not None:
             return self._ctrl.getInverseKinematics(tcp_pose, q_near)
         return self._ctrl.getInverseKinematics(tcp_pose)
+
+    def controller_kinematics(self) -> ControllerKinematics | None:
+        """The DH rows this controller computes its kinematics with, or ``None`` where they cannot be read.
+
+        Read once per connection from the kinematics info of the first robot state the controller's primary client
+        interface sends (:data:`_PRIMARY_PORTS`: the read-only port first, then the primary one), over a connection of
+        its own that is only ever read: nothing is sent, nothing moves, no setting changes. They are the rows its
+        ``getForwardKinematics`` and ``getInverseKinematics`` compute on, so a solver here on them answers what the
+        controller answers (``robot.safety.ik_quality.line_ik``, ``singularity_fk``). Both the rows and a failure are
+        logged once and kept until the next connect; a failure keeps every caller on the controller's own answers.
+        """
+        self._require_connected()
+        with self._kinematics_lock:
+            if self._kinematics_settled:
+                return self._kinematics
+            epoch = self._kinematics_epoch
+            read: ControllerKinematics | None = None
+            tried: list[str] = []
+            for port in _PRIMARY_PORTS:
+                try:
+                    read = _read_kinematics_info(self.ip, port)
+                    break
+                except (OSError, ValueError, struct.error) as exc:
+                    tried.append(f"port {port}: {exc}")
+            if epoch != self._kinematics_epoch:
+                return None  # a disconnect came while it was read: nothing is kept, and nothing vouched for
+            self._kinematics, self._kinematics_settled = read, True
+            if read is None:
+                self.logger.warning("The controller's kinematics could not be read from its primary interface (%s); "
+                                    "whatever asks for them asks the controller instead.", "; ".join(tried))
+            else:
+                self.logger.info("The controller's kinematics, read from %s:%d (read only, nothing sent): %s.", self.ip,
+                                 read.port, read.render())
+            return read
+
+    def active_tcp_offset(self) -> list[float] | None:
+        """The controller's active TCP offset, ``[x, y, z, rx, ry, rz]`` in metres and a rotation vector, exactly as
+        ``getTCPOffset`` reports it, zero included; ``None`` where it cannot be read.
+
+        The TCP the controller's inverse and forward kinematics apply to a pose with no TCP of its own. Read once per
+        connection and once per fresh control program, and kept: a failure as well, logged once. Unlike
+        :meth:`_fk_tcp_offset`, a zero offset stays zero here.
+        """
+        self._require_connected()
+        assert self._ctrl is not None  # guaranteed by _require_connected()
+        with self._kinematics_lock:
+            if self._active_tcp_settled:
+                return None if self._active_tcp is None else list(self._active_tcp)
+            epoch = self._kinematics_epoch
+            offset: list[float] | None = None
+            try:
+                answer = [float(v) for v in self._ctrl.getTCPOffset()]
+                offset = answer if len(answer) == 6 and all(math.isfinite(v) for v in answer) else None
+                why = f"it answered {answer!r}"
+            except Exception as exc:  # noqa: BLE001 (no offset read => nothing here solves as the controller does)
+                why = str(exc)
+            if epoch != self._kinematics_epoch:
+                return None  # a disconnect or a fresh program came while it was read
+            self._active_tcp, self._active_tcp_settled = offset, True
+            if offset is None:
+                self.logger.warning("The controller's active TCP offset could not be read (%s); whatever needs it "
+                                    "asks the controller instead.", why)
+            return None if offset is None else list(offset)
+
+    @property
+    def kinematics_epoch(self) -> int:
+        """How often what :meth:`controller_kinematics` and :meth:`active_tcp_offset` read was forgotten (a connect, a
+        disconnect, a fresh program): whatever is checked against those reads is checked again once it moved on."""
+        return self._kinematics_epoch
+
+    def _forget_the_kinematics(self, *, tcp_only: bool = False) -> None:
+        """Read the active TCP, and unless ``tcp_only`` the kinematics, again on the next ask: a new connection may be
+        another controller, and a fresh program another TCP.
+
+        Without the lock, so a teardown never waits behind a read: the epoch it counts up makes a read that ends after it
+        keep nothing.
+        """
+        self._kinematics_epoch += 1
+        if not tcp_only:
+            self._kinematics, self._kinematics_settled = None, False
+        self._active_tcp, self._active_tcp_settled = None, False
 
     # ------------------------------------------------------------------
     # Motion primitives
@@ -1100,13 +1315,18 @@ class URConnection:
         to the real settle time, and it never returns before the controller reports
         ``isSteady``.
 
+        With :attr:`steady_signal` ``"joint_speeds"`` (``robot.safety.dwell.steady_signal``) the joint
+        speeds decide instead, read every 8 ms (:meth:`_steady_from_joint_speeds`), and ``isSteady``
+        only where they cannot be read; the timeout and its ``False`` are the same.
+
         Parameters
         ----------
         timeout_s : float
             The longest wait in seconds. It is at least 0, and a value at or below 0
-            returns immediately with the current ``is_steady()`` value.
+            returns immediately with the current ``is_steady()`` value (with joint
+            speeds, after the three reads that make one).
         poll_interval_s : float
-            The sleep between polls, capped at ``timeout_s`` for a short wait.
+            The sleep between polls of ``isSteady``, capped at ``timeout_s`` for a short wait.
 
         Returns
         -------
@@ -1118,6 +1338,11 @@ class URConnection:
 
         self._require_connected()
         assert self._ctrl is not None  # guaranteed by _require_connected()
+
+        if self.steady_signal == "joint_speeds":
+            steady = self._steady_from_joint_speeds(timeout_s)
+            if steady is not None:
+                return steady
 
         if timeout_s <= 0:
             return bool(self._ctrl.isSteady())
@@ -1133,6 +1358,50 @@ class URConnection:
                 )
                 return False
             _time.sleep(interval)
+
+    def _steady_from_joint_speeds(self, timeout_s: float) -> bool | None:
+        """Steady from the joint speeds (``robot.safety.dwell.steady_signal: joint_speeds``); ``None`` where they cannot
+        be read, and ``isSteady`` decides as it always did.
+
+        Steady is every joint slower than :data:`_STILL_RAD_S`, the brake's own stillness, on :data:`_QUIET_READS` reads
+        in a row :data:`_POLL_S` apart: a local read of what the receive interface last got, no round trip, where
+        ``isSteady`` is a script command of 33 ms (URSim CB3, measured) polled every 20 ms. Only a sample the controller
+        sent since the read before counts (its timestamp moved on), so a receive stream that stopped never reads as an arm
+        that stands. A wait of at most 0 asks whether the arm is steady now: its three reads, 16 ms, the first that is
+        not quiet a no, and no for a stream that sends nothing new within twice that. A longer wait reads until the arm
+        is steady or ``timeout_s`` is over, and times out as the controller's signal does.
+        """
+        recv = self._recv
+        assert recv is not None  # the caller checked the connection
+        deadline = self._clock() + (float(timeout_s) if timeout_s > 0 else 2.0 * _QUIET_READS * _POLL_S)
+        quiet = 0
+        last: float | None = None
+        while True:
+            try:
+                speeds = [abs(float(v)) for v in recv.getActualQd()]
+                stamp = float(recv.getTimestamp())
+            # AttributeError too: a receive interface without these reads (an older binding, a stand-in) is one whose
+            # speeds cannot be read, and isSteady decides, as the switch promises (2026-10-09, the desk bench).
+            except (AttributeError, RuntimeError, OSError, TypeError, ValueError) as exc:
+                self.logger.warning("The joint speeds could not be read (%s); isSteady decides whether the arm is "
+                                    "steady.", exc)
+                return None
+            if len(speeds) != 6 or not all(math.isfinite(v) for v in [*speeds, stamp]):
+                self.logger.warning("The joint speeds read %r at %r, not six numbers and a time; isSteady decides "
+                                    "whether the arm is steady.", speeds, stamp)
+                return None
+            if last is None or stamp > last:
+                last = stamp
+                quiet = quiet + 1 if max(speeds) <= _STILL_RAD_S else 0
+                if quiet >= _QUIET_READS:
+                    return True
+                if timeout_s <= 0 and quiet == 0:
+                    return False
+            if self._clock() >= deadline:
+                if timeout_s > 0:
+                    self.logger.warning("wait_until_steady timed out after %.2fs (joint speeds).", timeout_s)
+                return False
+            self._sleep(_POLL_S)
 
     # ------------------------------------------------------------------
     # Digital / analog I/O  (RTDEIOInterface set-side + RTDEReceiveInterface read-side)
@@ -1524,6 +1793,7 @@ class URConnection:
         self._require_connected()
         assert self._ctrl is not None  # guaranteed by _require_connected()
         self._tcp_offset_cache = None
+        self._forget_the_kinematics(tcp_only=True)
         try:
             for step in ("stopScript", "disconnect"):
                 try:

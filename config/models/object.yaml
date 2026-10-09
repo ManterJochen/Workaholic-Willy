@@ -75,6 +75,22 @@ pipeline:
       on_unavailable: refuse  # refuse = reject the pick; degrade = fall back to the phrase grounder
                               # and record it. Refuse is the default because the fallback is wrong
                               # on exactly the prompts that reach this route.
+      # How fast it answers: one pass of the model per token of the answer, about 140 ms on the
+      # cell's 8B and 32 ms on the dev box's 4B; three cubes are 108 tokens. Measured in
+      # `src/models/vlm/qwen.py`.
+      stop_at_answer_end: true  # end a grounding answer where its JSON array closes and a command's
+                                # reading where its object closes: the same boxes and cards, one pass
+                                # sooner (three after a code fence)
+      prompt_lookup_tokens: 0   # 10 = propose the next tokens from the answer itself and check them
+                                # in one pass: three cubes in 47 passes instead of 108. A
+                                # coordinate's last digit may come out one off. 0 = off.
+      text_prompt_lookup_tokens: 0  # the same for a command's reading: 128 passes instead of 617 over
+                                    # ten commands, every answer identical. 0 = off. With today's
+                                    # compact instruction 3 of 67 readings came out otherwise.
+      decode_graphs: auto           # each pass as CUDA graphs, the attention over the answer as before:
+                                    # the same answers byte for byte, a pass in 19.7 ms instead of 46.3
+                                    # on the dev box. "off" = every pass as before; "on" = also on a card
+                                    # older than compute capability 8.0
 
   router:
     # true routes each prompt: plain English noun phrases to the phrase grounder, everything else

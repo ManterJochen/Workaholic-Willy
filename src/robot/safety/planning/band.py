@@ -55,7 +55,7 @@ import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.contracts import chosen
 
@@ -96,6 +96,11 @@ _FINEST_STEP_DEG = 0.5
 #: How far the padding a pair carries may lie past ``planner_margin_mm`` and still be the margin's, in millimetres: the
 #: report's two depths of a pair are one float64 subtraction apart, which rounds in its last bits and never by this much.
 _PADDING_TOLERANCE_MM = 1e-3
+
+#: How far past ``below_mm`` a configuration's lowest point asked of a whole path at once has to lie before
+#: :meth:`ExactPairs.first_low` passes it unasked, in millimetres: a path's parts placed at once and one configuration's
+#: placed alone round apart by about 1e-12 mm, never by this much.
+_WHOLE_PATH_SLACK_MM = 1e-6
 
 #: The planner's arm links and the exact guard's parts of the same name (``{model}_collision_meshes.npz``). Not the
 #: shoulder_link: its spheres and cuRobo's stock 70 mm cushion on it cover the robot's own base as well as the shoulder,
@@ -140,6 +145,13 @@ class ExactPairs:
     guard's distance, ``("", inf)`` where none comes that near (``None`` where the arm cannot be placed); ``None`` itself
     where the guard knows no base for this arm. No guard part holds the base: only the planner's shoulder_link stands
     for it (see the module's note), so a part near it is the planner's to judge.
+
+    ``lows`` and ``near_base_from`` are the same two questions asked of a whole path at once, where the guard judges
+    paths whole (``safety.self_collision.whole_path_judge``), else ``None``: ``lows(configs)`` is ``lowest`` of every
+    configuration, ``near_base_from(configs, within_mm)`` the index of the first where a part may come within
+    ``within_mm`` of the base, never later than ``base`` says one does (``None`` either where one cannot be placed). A
+    caller asks them through :meth:`first_low` and :meth:`first_near_base`, which hand ``lowest`` and ``base`` only the
+    configurations they may refuse, and every configuration in turn where they are ``None``.
     """
 
     checks: Callable[[str, str], bool]
@@ -148,6 +160,8 @@ class ExactPairs:
     min_distance_mm: float
     lowest: "Callable[[Sequence[float]], float | None] | None" = None
     base: "Callable[[Sequence[float]], tuple[str, float] | None] | None" = None
+    lows: "Callable[[Sequence[Sequence[float]]], Any] | None" = None
+    near_base_from: "Callable[[Sequence[Sequence[float]], float], int | None] | None" = None
 
     def held(self, link: str) -> tuple[str, ...]:
         """The guard's parts ``link`` is, where the guard holds every one of them; else ``()``."""
@@ -171,6 +185,47 @@ class ExactPairs:
         found = [self.distance(joints, part_a, part_b) for part_a in parts_a for part_b in parts_b]
         known = [value for value in found if value is not None]
         return min(known) if known and len(known) == len(found) else None
+
+    def first_low(self, configs: Sequence[Sequence[float]], below_mm: float, *, start: int = 0) -> int:
+        """The first of ``configs`` from ``start`` on whose lowest point may lie under ``below_mm``, or which the guard
+        cannot place; ``len(configs)`` where none.
+
+        Never later than the first ``lowest`` puts under ``below_mm``: ``lows`` of a configuration within
+        ``_WHOLE_PATH_SLACK_MM`` of it counts as one that may. Without ``lows``, or where it cannot answer, ``start``
+        itself, so a caller that asks ``lowest`` of what this returns and of what it returns next asks every
+        configuration in turn, as before.
+        """
+        import numpy as np  # noqa: PLC0415
+
+        total = len(configs)
+        if start >= total or self.lows is None:
+            return min(start, total)
+        try:
+            heights = self.lows(configs[start:])
+        except Exception:  # noqa: BLE001 - the whole-path answer never decides: lowest is asked of every one
+            return start
+        if heights is None or len(heights) != total - start:
+            return start
+        flagged = np.flatnonzero(~(np.asarray(heights, dtype=np.float64) >= float(below_mm) + _WHOLE_PATH_SLACK_MM))
+        return start + int(flagged[0]) if len(flagged) else total
+
+    def first_near_base(self, configs: Sequence[Sequence[float]], within_mm: float, *, start: int = 0) -> int:
+        """The first of ``configs`` from ``start`` on where a part past the shoulder may come within ``within_mm`` of the
+        robot's base, or which the guard cannot place; ``len(configs)`` where none.
+
+        Never later than the first ``base`` finds that near (``near_base_from``). Without it, or where it cannot answer,
+        ``start`` itself, so a caller that asks ``base`` of what this returns asks every configuration in turn, as before.
+        """
+        total = len(configs)
+        if start >= total or self.near_base_from is None:
+            return min(start, total)
+        try:
+            found = self.near_base_from(configs[start:], float(within_mm))
+        except Exception:  # noqa: BLE001 - the whole-path answer never decides: base is asked of every one
+            return start
+        if found is None:
+            return start
+        return start + max(0, min(int(found), total - start))
 
 
 def admission_refusal(

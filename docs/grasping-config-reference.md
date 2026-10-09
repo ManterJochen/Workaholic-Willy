@@ -170,10 +170,16 @@ consulted, so the block is structurally inert.
 The always-on tunings are a separate family and are not gated by mode:
 
 * `calculator` picks the generator, `geometric` or `deep`. `deep` with no readable artifact refuses
-  to build the cell rather than falling back, and no trained weights ship here.
+  to build the cell rather than falling back, and no trained weights ship here. A cell also refuses
+  trained weights whose proof has not passed, which today is all of them (2026-10-09).
 * `deep_generator` sizes and points that learned generator; it is inert while `calculator` is
   `geometric`.
 * `geometry.stage` chooses which stage proposes candidates, `support_footprint` or `silhouette`.
+  `geometry.footprint_rim_mm` (**0.0**; the owner's "Ja, für Montag", 2026-10-09) cuts a rim of that many
+  millimetres off every mask for the cloud the support-footprint stage builds its footprint from, and for
+  nothing else: the D415 smears a part's far edge into a ramp the hull follows. Pair it with
+  `geometry.inflate_mm` (**0.0**), which gives the faces back: 2.0 with 1.25 took the grasp centre on 23
+  recorded cubes from 2.53 to 0.77 mm off at the median ([05](guide/05-pick-loop.md), section 2).
 * `support` says where the world's floor is, and the bin or tray is `support.container`, not
   `grasping.container`.
 * `fusion.geometry` is per-object multi-camera geometry fusion, and it needs `fusion.enabled` too: that
@@ -198,6 +204,23 @@ The always-on tunings are a separate family and are not gated by mode:
   (**on**) finds what the parts stand on and holds it as solid, and `support_allowance_mm` (**2**, 0 to 10)
   is how far those solids stand over what they take out ([04](guide/04-robot-and-safety.md), 5.5). A
   library caller building `WorldBuildTuning` by hand gets neither, as before.
+* `first_good_part` (**on**), `good_part_score` (**0.75**) and `fine_pass_waits` (**on**), the owner's "speed
+  first" of 2026-10-08: a look's parts are computed in the order they stand apart and the first good one is
+  taken, the best where none is good, and the support-footprint search's fine pass waits while another part may
+  have a full result. Off, every part is computed and the best taken, as before ([05](guide/05-pick-loop.md),
+  section 2).
+* `workers` (**0**) and `batched_builds` (**off**) make a part's grasp search cheaper with the same answer to the
+  bit: its units on worker processes the cell starts once, and a closing line's builds in one numpy pass per
+  check. Switch `batched_builds` on for a cell only once `scripts/checks/batched_builds.py` passes on its PC
+  ([05](guide/05-pick-loop.md), section 2).
+* `colour_check` (**on**, the owner's choice of 2026-10-08): a part whose pixels show another colour than the
+  object label it was mapped onto is no target, and the VLM names the colour where the pixels cannot tell; `log`
+  only says so, `off` judges nothing ([05](guide/05-pick-loop.md), 5.4). `colour_check_clipped` (**exclude**,
+  the owner's choice of 2026-10-09) leaves out of the counts every pixel the camera clipped in some channels and
+  not all, where an orange part's red channel clipped and read yellow; `keep` counts them, as before.
+* `follow_parts` (**off**, `enabled`; 2026-10-09): a task grounds its first pick and every trigger with the
+  detector and follows its parts with SAM2 alone in between, all or nothing per frame, grounding wherever anything
+  is in doubt ([05](guide/05-pick-loop.md), 5.4).
 
 **The closing direction has no `grasping` key, on purpose.** A program's `closing_axis`, the opt-in filter
 that keeps only the grasps heading within 30 degrees of an axis, is its own choice, through `GraspMotion`,

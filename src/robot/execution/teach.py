@@ -379,41 +379,36 @@ def teach_poses(
     box: Any = None,
     out: Callable[[str], None] | None = None,
 ) -> tuple[TaughtPose, ...]:
-    """Teach joint poses by hand on a connected arm until the person finishes; the poses, in the order first taught.
+    """Teach joint poses by guiding a connected arm by hand, for one camera, until the person finishes.
 
-    ``robot`` is a connected :class:`~src.robot.execution.robot.Robot`, built alone (``gripper=None``) as a
-    calibration builds it, or its arm. ``store`` is the file each pose is added to as it is taught. ``prefix`` names
-    the poses the person leaves unnamed: ``LOOK`` gives ``LOOK_1``, ``LOOK_2`` and so on. ``guide`` is the console
-    side, the terminal with no window when ``None``; ``HandGuide(console, view)`` shows a view of the caller's beside
-    it, red outside a boundary. ``box`` is the workspace box a pose is said to be outside of, the robot's own
-    ``workspace_limits`` when ``None``. ``out`` receives each line to paste as it is taught, unindented so it pastes as
-    printed; ``None`` prints it.
+        with robot.connected():
+            poses = teach_poses(robot, tree=tree, camera=camera)    # Enter captures, a name per pose
 
-    Every pose is taught for one rig, the camera it belongs to: the rig of ``camera`` where one is handed in, else the
-    rig ``for_rig`` names in ``tree`` (a loaded tree; the robot's own where it kept one, as ``Robot.from_tree``
-    does), the tree's primary when ``for_rig`` is ``None``. Its mounting is the tree's, read off the rig's calibration
-    (a declared body counts as the wrist); where the tree declares none, the pose says so. Each line printed and each
-    record kept carries the rig and the mounting.
+    Each pose is screened as it is taught, printed as a ``JointPositions.deg(...)`` line to paste (with its rig and
+    mounting), and added to ``store``. Leaving the session holds the arm on every way out.
 
-    ``camera`` is the one open camera the poses are taught for, to look through while the arm is guided: a
-    :class:`~src.camera.Camera` owner, or anything with ``peek()`` or ``grab()`` and a ``rig_id``. Given one, a window
-    beside the console shows what it sees, live (the cell's ``LiveView``, that camera alone), with the guide: the pose
-    being taught and how many are taught, red with the reason outside the cable window or the box. Enter or Space in it
-    captures, ``q`` or ESC finishes, and closing it finishes, the arm held on every way out. It is display only: the
-    view's own thread reads the camera through its display path and draws, and never calls the arm, which only the
-    caller's thread does. It opens once the payload is confirmed, takes the place of ``guide``'s own view for the run,
-    and is closed on every way out of this call, so the caller gives the camera back after it. Where no window can show
-    (``preview_unavailable``, or stdout is no terminal) or the camera gives no frame, one console line says why and the
-    poses are taught at the console, still for that rig. Teaching never needs the camera.
+    Args:
+        robot (Robot | RobotArm): A connected robot built alone (``gripper=None``), or its arm.
+        tree (Any): A loaded tree, which names the rigs; ``None`` the robot's own (default: None).
+        for_rig (str | None): The camera the poses belong to; ``None`` the tree's primary (default: None).
+        camera (Any): An open camera to look through while the arm is guided: a window shows what it sees, with the pose
+            being taught; its rig is the poses' rig (default: None).
+        store (str | Path): The file each pose is added to (default: "logs/taught_poses.json").
+        prefix (str): The name of poses left unnamed: ``LOOK`` gives ``LOOK_1``, ``LOOK_2``, ... (default: "LOOK").
+        guide (HandGuide | None): The console side; ``None`` the terminal (default: None).
+        box (Any): The workspace box a pose is said to be outside of; ``None`` the robot's own (default: None).
+        out (Callable[[str], None] | None): Gets each line to paste; ``None`` prints it (default: None).
 
-    Before anything is asked, ``ValueError`` refuses a ``prefix`` that makes no Python name, a ``camera`` of another
-    rig than ``for_rig``, a rig the tree does not configure, and a run that can name no rig (no camera and no tree:
-    a pose always belongs to one camera); ``TypeError`` refuses a ``camera`` that is no camera or names no rig. Before
-    anything is freed, :class:`~src.robot.execution.hand_guiding.HandGuidingRefused` refuses an arm that offers no hand
-    guiding (naming its vendor), an arm that is not connected, a file that is not taught poses (left as it is), a robot
-    whose workspace box is not known and a payload the person does not confirm. Leaving the session holds the arm on
-    every way out: Ctrl-C and an error raised while the arm is guided are raised on once it holds, and every pose
-    taught before them is printed and in the file.
+    Returns:
+        tuple[TaughtPose, ...]: The poses in the order first taught: ``name``, ``joints``, ``tcp``, ``rig``,
+            ``mounting`` and ``line()``.
+
+    Raises:
+        ValueError: A ``prefix`` that makes no Python name, a camera of another rig than ``for_rig``, a rig the tree
+            does not configure, or no rig at all; raised before anything is asked.
+        TypeError: A ``camera`` that is no camera or names no rig.
+        HandGuidingRefused: An arm with no hand guiding, not connected, a file that is not taught poses, an unknown
+            workspace box, or a payload the person does not confirm; raised before the arm is freed.
     """
     if _not_a_name(f"{prefix}_1"):
         raise ValueError(f"prefix {prefix!r} makes no Python name ({prefix}_1): {_NAME_RULE}")

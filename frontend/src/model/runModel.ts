@@ -20,14 +20,21 @@
  * the reducer stays pure: only where the arm brakes a move in flight, and only after 1.5 s without a confirmation
  * while the arm was moving, does the cockpit raise "press the e-stop" (build plan 4.2). A run that ENDED confirms its
  * halt whatever it ended on: its thread commands nothing more once `run_finished` is out.
+ *
+ * **A sort** (the owner, 2026-10-09: "Grüne Teile in die gelbe Kiste, rote in die blaue") is a task whose plan has
+ * further rules (`more_rules`). Its start names every rule; `task.rule` files the gripped part under its rule, and a
+ * part so filed and then placed counts for that rule (`sortRules`); a place the check before a drop lost and found
+ * again (`task.target_relocated`) is said with how far it stood, its picture pinned as a found target's is; the parts
+ * no rule clearly claimed are named at the end (`task.unsorted`). Where a sort has two bins, the place events name the
+ * bin they are about. A task of one kind says every line as it always did.
  */
 
-import type { CellFactsOut, HaltStateOut, RunOut, TaskPlanOut } from '../api/client'
+import type { CellFactsOut, HaltStateOut, PlanPlaceOut, RunOut, TaskPlanOut } from '../api/client'
 import { STOP_CLASS_OF, isStopCode, type RunKind, type StopClass, type StopCode } from '../api/codes'
 import type { RunEvent } from '../api/events'
 import type { CockpitKey } from '../cockpit/i18n'
-import { isRefusalCode, outcomeMsg, refusalMsg, runKindMsg, stopMsg } from '../i18n/codes'
-import type { MessageKey, Msg, Params } from '../i18n/types'
+import { isRefusalCode, listMsg, outcomeMsg, quotedMsg, refusalMsg, runKindMsg, stopMsg } from '../i18n/codes'
+import type { MessageKey, Msg, ParamValue, Params } from '../i18n/types'
 
 /**
  * What a chat line may say: a key of the shared core, or of the cockpit's own catalog, the one area that draws the
@@ -140,6 +147,9 @@ export interface PartView {
   readonly pushedMm: number
   /** The last grasp overlay of this part, for its card's thumbnail. */
   readonly overlay: string | null
+  /** In a sort, the rule the gripped part goes by (`task.rule`, an index into the plan's rules, 0 its own); `null`
+   *  before it is said, and in a task of one kind. */
+  readonly rule: number | null
 }
 
 export interface CurrentView {
@@ -164,6 +174,8 @@ export interface CountdownView {
 export interface SurveyView {
   readonly state: 'none' | 'active' | 'done' | 'failed'
   readonly phrase: string | null
+  /** A sort's places the survey looks for together (`phrases`); empty where it looks for one. */
+  readonly phrases: readonly string[]
   readonly looks: readonly string[]
   readonly look: string | null
   readonly partsSeen: number | null
@@ -193,6 +205,8 @@ export interface StopCardView {
   readonly step: StepId | null
   readonly at: number
   readonly holding: boolean
+  /** Where the pick left the arm that was not driven back to its look (`standoff of grasp 3`), as the pick said it. */
+  readonly standsAt: string | null
 }
 
 /** The ask card of a question stop: the run returned, and the person chooses what next. */
@@ -202,6 +216,8 @@ export interface AskCardView {
   readonly part: number | null
   /** Why a kept target was lost: `not_seen`, `moved_too_far` or `footprint_changed`. */
   readonly why: string | null
+  /** The place looked for again and found nowhere, in the operator's words (`task.target_relocated`); `null` else. */
+  readonly nowhere: string | null
   readonly target: TargetView | null
   readonly error: string
 }
@@ -311,6 +327,13 @@ export interface RunView {
   readonly targetCheck: { readonly movedMm: number | null; readonly followed: boolean } | null
   /** Why the kept target was lost at the drop, for the ask card the run ends on. */
   readonly lostWhy: string | null
+  /** The place a search after a lost check found nowhere, in the operator's words, for the ask card. */
+  readonly nowhere: string | null
+  /**
+   * Where the last pick left the arm that was not driven back to its look (`stands_at` of its attempt, 2026-10-08:
+   * `standoff of grasp 3`), for the stop card; `null` from each pick's start until a pick says so.
+   */
+  readonly standsAt: string | null
   readonly overlays: readonly OverlayPin[]
   readonly gaps: { readonly count: number; readonly dropped: number }
   /** "Stop after this part" was asked. */
@@ -370,7 +393,7 @@ export const EMPTY_RUN: RunView = {
   current: NO_CURRENT,
   timeline: IDLE_TIMELINE,
   countdown: { state: 'none', secondsLeft: null, because: null },
-  survey: { state: 'none', phrase: null, looks: [], look: null, partsSeen: null },
+  survey: { state: 'none', phrase: null, phrases: [], looks: [], look: null, partsSeen: null },
   chat: [],
   stopCard: null,
   askCard: null,
@@ -380,6 +403,8 @@ export const EMPTY_RUN: RunView = {
   target: null,
   targetCheck: null,
   lostWhy: null,
+  nowhere: null,
+  standsAt: null,
   overlays: [],
   gaps: { count: 0, dropped: 0 },
   stopRequested: false,
@@ -578,17 +603,132 @@ function sayOwn(view: RunView, event: RunEvent, name: string, msg: Msg, tone: To
   return view.chat.some((l) => l.id === line.id) ? view : { ...view, chat: [...view.chat, line] }
 }
 
-function pin(view: RunView, overlay: OverlayPin): RunView {
-  if (view.overlays.some((o) => o.url === overlay.url)) return view
-  return { ...view, overlays: [...view.overlays, overlay] }
+/**
+ * Pin an overlay, once. `again`, the seq of the event that brings it, pins a picture served at an address an earlier
+ * one had under an address of its own (`?seen=<seq>`, which the server ignores): a bin found again may be drawn at its
+ * first picture's address, and the stage would show the old picture, or none.
+ */
+function pin(view: RunView, overlay: OverlayPin, again?: number): RunView {
+  let url = overlay.url
+  if (view.overlays.some((o) => o.url === url)) {
+    if (again === undefined) return view
+    url = `${url}${url.includes('?') ? '&' : '?'}seen=${again}`
+    if (view.overlays.some((o) => o.url === url)) return view
+  }
+  return { ...view, overlays: [...view.overlays, { ...overlay, url }] }
+}
+
+/** Where a resolved place puts a part, in the words a person reads: the pose's label, or the target as they said it. */
+function placeOfWords(place: PlanPlaceOut | null | undefined, fallback: string | null): string | Msg {
+  if (place?.kind === 'pose') return place.pose_label || place.pose || m('common.defaultPlace')
+  if (place?.kind === 'camera') return place.said || place.phrase || fallback || '—'
+  return fallback || '—'
 }
 
 /** Where the plan places a part, in the words a person reads: the pose's label, or the target as they said it. */
 function placeWords(plan: TaskPlanOut | null, fallback: string | null): string | Msg {
-  const place = plan?.place
-  if (place?.kind === 'pose') return place.pose_label || place.pose || m('common.defaultPlace')
-  if (place?.kind === 'camera') return place.said || place.phrase || fallback || '—'
-  return fallback || '—'
+  return placeOfWords(plan?.place, fallback)
+}
+
+// ── a sort: the plan's rules (the owner, 2026-10-09) ───────────────────────────────────────────────────────────
+
+/** One rule of a plan: the kind it takes, as the detector reads it and as the operator said it, and its place. */
+interface PlanRule {
+  readonly object: string
+  readonly said: string | null
+  /** `null` where the payload carried none: its words are then a dash. */
+  readonly place: PlanPlaceOut | null
+}
+
+/** The plan's further rules, as an array whatever the payload held. */
+function moreOf(plan: TaskPlanOut | null): readonly Partial<NonNullable<TaskPlanOut['more_rules']>[number]>[] {
+  return Array.isArray(plan?.more_rules) ? plan.more_rules : []
+}
+
+/** The plan's rules, its own fields first; one for a task of one kind, none without a plan. */
+function rulesOfPlan(plan: TaskPlanOut | null): PlanRule[] {
+  if (!plan) return []
+  const rules: readonly Partial<NonNullable<TaskPlanOut['more_rules']>[number]>[] = [plan, ...moreOf(plan)]
+  return rules.map((rule) => ({ object: rule?.object ?? '', said: rule?.object_said ?? null, place: rule?.place ?? null }))
+}
+
+/** Whether the plan sorts: it has rules beside its own. */
+export function isSort(plan: TaskPlanOut | null): boolean {
+  return moreOf(plan).length > 0
+}
+
+/** What a rule takes, in the operator's words where they were said. */
+function ruleWhat(rule: PlanRule): string | Msg {
+  return rule.said || rule.object || m('common.anything')
+}
+
+/** The plan's rules in a row, in the operator's words: "grüne Teile → in die gelbe Kiste · rote → in die blaue". */
+export function planRulesMsg(plan: TaskPlanOut | null): ParamValue {
+  const rules = rulesOfPlan(plan).map((rule) => m('list.rule', { what: ruleWhat(rule), where: placeOfWords(rule.place, null) }))
+  return listMsg(rules, 'list.rules')
+}
+
+/** A phrase as two places are compared by it: case aside, its blanks collapsed. */
+function phraseKey(phrase: string | null | undefined): string {
+  return (phrase ?? '').trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+/** Whether a rule's place is the one an event names: `pose:<name>`, or `target:<phrase>` (`task.place_started`). */
+function placeIs(place: PlanPlaceOut | null, named: string | null): boolean {
+  const at = named === null ? -1 : named.indexOf(':')
+  if (place === null || named === null || at < 0) return false
+  const what = named.slice(at + 1)
+  if (named.startsWith('pose:')) return place.kind === 'pose' && place.pose === what
+  if (named.startsWith('target:')) return place.kind === 'camera' && phraseKey(place.phrase) === phraseKey(what)
+  return false
+}
+
+/** Two bins or more among a plan's places: then the place events name the bin they are about. */
+function namesTargets(plan: TaskPlanOut | null): boolean {
+  const phrases = new Set(rulesOfPlan(plan).filter((rule) => rule.place?.kind === 'camera').map((rule) => phraseKey(rule.place?.phrase)))
+  return phrases.size > 1
+}
+
+/**
+ * A target the camera finds, in the operator's words: in a sort, the words of the rule whose place it is; a task of one
+ * kind says its own place's words, as it always has. The phrase itself where nobody said it.
+ */
+function targetWords(plan: TaskPlanOut | null, phrase: string | null): string {
+  if (!isSort(plan)) return plan?.place?.said || phrase || '—'
+  const rule = rulesOfPlan(plan).find((r) => r.place?.kind === 'camera' && phrase !== null && phraseKey(r.place.phrase) === phraseKey(phrase))
+  return rule?.place?.said || phrase || '—'
+}
+
+/** A pose's label as the plan resolved it for any of its places; `null` where no place of the plan is that pose. */
+function poseLabelOf(plan: TaskPlanOut | null, pose: string | null): string | null {
+  const rule = rulesOfPlan(plan).find((r) => r.place?.kind === 'pose' && r.place.pose === pose && r.place.pose_label)
+  return rule?.place?.pose_label ?? null
+}
+
+/** A sort's rule as the run counts it: what it takes, where its parts go, how many it placed. */
+export interface RuleView {
+  /** What the rule takes, in the operator's words where they were said. */
+  readonly what: string | Msg
+  /** Where its parts go: a pose's label, or the target as it was said. */
+  readonly where: string | Msg
+  /** Its parts placed: each a part `task.rule` filed under this rule, then placed. */
+  readonly placed: number
+}
+
+/** A sort's rules as the run counts them, its own first; none for a task of one kind. */
+export function sortRules(view: RunView): RuleView[] {
+  if (!isSort(view.plan)) return []
+  return rulesOfPlan(view.plan).map((rule, index) => ({
+    what: ruleWhat(rule),
+    where: placeOfWords(rule.place, null),
+    placed: view.parts.filter((part) => part.rule === index && part.placed === true).length,
+  }))
+}
+
+/** The rule the part in hand goes by, from its `task.rule` until it is placed or not; `null` else. */
+export function currentRule(view: RunView): number | null {
+  const part = view.parts.find((p) => p.part === view.current.part)
+  return part !== undefined && part.placed === null ? part.rule : null
 }
 
 /** A return target in words: Home, a taught pose's label, or its name. */
@@ -677,6 +817,7 @@ function stopCardOf(view: RunView, stopCode: StopCode, at: number, error: string
     step: stoppedStep(view),
     at,
     holding,
+    standsAt: view.standsAt,
   }
 }
 
@@ -755,6 +896,7 @@ function finish(view: RunView, event: RunEvent, run: RunOut): RunView {
             stopCode: code,
             part: next.current.part,
             why: next.lostWhy,
+            nowhere: next.nowhere,
             target: next.target,
             error: next.error,
           }
@@ -859,6 +1001,13 @@ function startRun(view: RunView, event: RunEvent): RunView {
   let line: Msg
   if (kind === 'task' && plan?.first_motion === 'return') {
     line = m('event.run_started.restart', { back: returnWords(plan, null) })
+  } else if (kind === 'task' && isSort(plan)) {
+    // A sort names every rule, in the operator's words: "grüne Teile → in die gelbe Kiste · rote → in die blaue".
+    line = m('event.run_started.sort', {
+      rules: planRulesMsg(plan),
+      back: returnWords(plan, null),
+      scope: m(plan?.scope === 'until_empty' ? 'scope.inline.until_empty' : 'scope.inline.once'),
+    })
   } else if (kind === 'task') {
     line = m('event.run_started.task', {
       what: plan?.object_said || plan?.object || m('common.anything'),
@@ -1011,7 +1160,7 @@ function taskEvent(view: RunView, event: RunEvent): RunView {
   switch (event.type) {
     case 'task.pose_screened': {
       const pose = str(data.pose)
-      const label = plan?.place?.pose === pose && plan?.place?.pose_label ? plan.place.pose_label : (pose ?? '—')
+      const label = poseLabelOf(plan, pose) ?? (pose ?? '—')
       const verdict = str(data.verdict)
       const tone: Tone = verdict === 'clear' || verdict === 'band' ? 'info' : 'warn'
       // Not screened ahead (the screen itself could not judge it): the move judges it when it runs. Never "geprüft:
@@ -1020,28 +1169,44 @@ function taskEvent(view: RunView, event: RunEvent): RunView {
       return say(view, event, m('event.task.pose_screened', { pose: label, verdict: verdictMsg(verdict) }), tone, 'tech')
     }
     // The camera's search is said around the operator's own words in quotes: the reader hands them over as they were
-    // said, a preposition and all ("in die blaue Kiste"), which no sentence can take as its object.
+    // said, a preposition and all ("in die blaue Kiste"), which no sentence can take as its object. A sort looks for
+    // every bin of its rules in one survey, and says each of them.
     case 'task.survey_started': {
       const phrase = str(data.phrase)
+      const phrases = strings(data.phrases)
       const looks = strings(data.looks)
-      const next = moving({ ...view, survey: { ...view.survey, state: 'active', phrase, looks } })
-      return say(next, event, { key: 'ck.target.looking', params: { target: plan?.place?.said || phrase || '—', looks: looks.length } })
+      const next = moving({ ...view, survey: { ...view.survey, state: 'active', phrase, phrases, looks } })
+      if (phrases.length > 1) {
+        const targets = listMsg(phrases.map((p) => quotedMsg(targetWords(plan, p))), 'list.words')
+        return say(next, event, { key: 'ck.target.lookingAll', params: { targets, looks: looks.length } })
+      }
+      return say(next, event, { key: 'ck.target.looking', params: { target: targetWords(plan, phrase ?? phrases[0] ?? null), looks: looks.length } })
     }
     case 'task.target_found': {
       const target = targetOf(data.target, str(data.look))
+      // A sort's survey finds its bins one by one: a bin it missed keeps the survey failed.
+      const state = view.survey.state === 'failed' ? 'failed' : 'done'
       let next: RunView = {
         ...view,
-        survey: { ...view.survey, state: 'done', look: str(data.look) ?? target?.look ?? null, partsSeen: num(data.parts_seen) },
+        survey: { ...view.survey, state, look: str(data.look) ?? target?.look ?? null, partsSeen: num(data.parts_seen) },
         target,
       }
       if (target?.overlay) {
         next = pin(next, { kind: 'target', url: target.overlay, at: event.ts, part: null, pick: null, look: target.look })
       }
-      return say(next, event, { key: 'ck.target.found', params: { score: target?.score ?? null, parts: num(data.parts_seen) ?? 0 } }, 'ok')
+      // A task's survey counts no parts since 2026-10-08 (parts_seen null): it says the target alone, never "0 parts".
+      const parts = num(data.parts_seen)
+      const phrase = str(data.phrase)
+      if (parts === null && phrase !== null && namesTargets(plan)) {
+        return say(next, event, { key: 'ck.target.foundNamed', params: { target: targetWords(plan, phrase), score: target?.score ?? null } }, 'ok')
+      }
+      return say(next, event, parts === null
+        ? { key: 'ck.target.found.nocount', params: { score: target?.score ?? null } }
+        : { key: 'ck.target.found', params: { score: target?.score ?? null, parts } }, 'ok')
     }
     case 'task.target_missing': {
       const next = { ...view, survey: { ...view.survey, state: 'failed' as const } }
-      return say(next, event, { key: 'ck.target.missing', params: { target: plan?.place?.said || str(data.phrase) || '—' } }, 'warn')
+      return say(next, event, { key: 'ck.target.missing', params: { target: targetWords(plan, str(data.phrase)) } }, 'warn')
     }
     case 'task.part_started': {
       const part = num(data.part)
@@ -1050,7 +1215,7 @@ function taskEvent(view: RunView, event: RunEvent): RunView {
       const known = view.parts.some((p) => p.part === part)
       const parts = known
         ? view.parts
-        : [...view.parts, { part, of, startedAt: event.ts, picks: [], placed: null, cut: false, durationS: null, pushedMm: 0, overlay: null }]
+        : [...view.parts, { part, of, startedAt: event.ts, picks: [], placed: null, cut: false, durationS: null, pushedMm: 0, overlay: null, rule: null }]
       const next: RunView = {
         ...view,
         parts,
@@ -1062,6 +1227,13 @@ function taskEvent(view: RunView, event: RunEvent): RunView {
     }
     case 'task.nothing_found': {
       const empty = num(data.empty_in_a_row) ?? 1
+      // Since 2026-10-08 an empty pick counts every look it perceived from (`looks`): "4 Blicke leer".
+      const looks = num(data.looks)
+      if (looks !== null) {
+        return say(view, event, data.only_excluded === true
+          ? { key: 'ck.nothing.looks.excluded', params: { looks } }
+          : { key: 'ck.nothing.looks', params: { looks } })
+      }
       const line = data.only_excluded === true
         ? m('event.task.nothing_found.excluded', { empty })
         : m('event.task.nothing_found', { empty })
@@ -1073,7 +1245,11 @@ function taskEvent(view: RunView, event: RunEvent): RunView {
         timeline: withStep(view.timeline, 'place', 'active'),
         current: { ...view.current, step: 'place' },
       }
-      return say(next, event, m('event.task.carry_started', { look: str(data.to_look) ?? '—' }), 'info', 'tech')
+      // The owner's switch (2026-10-08 night): straight over the rim from the pick, no look at the bin on the way.
+      const line = data.over_the_rim === true
+        ? m('event.task.carry_started.over_the_rim')
+        : m('event.task.carry_started', { look: str(data.to_look) ?? '—' })
+      return say(next, event, line, 'info', 'tech')
     }
     case 'task.target_checked': {
       const followed = data.followed === true
@@ -1083,7 +1259,12 @@ function taskEvent(view: RunView, event: RunEvent): RunView {
         targetCheck: { movedMm: num(data.moved_mm), followed },
         target: followed && seen ? seen : view.target,
       }
-      return say(next, event, m('event.task.target_checked', { moved: round(num(data.moved_mm)) }), followed ? 'info' : 'warn', 'tech')
+      const moved = round(num(data.moved_mm))
+      const phrase = str(data.phrase)
+      const line: Msg<ChatKey> = phrase !== null && namesTargets(plan)
+        ? { key: 'ck.target.checkedNamed', params: { target: targetWords(plan, phrase), moved } }
+        : m('event.task.target_checked', { moved })
+      return say(next, event, line, followed ? 'info' : 'warn', 'tech')
     }
     case 'task.target_lost': {
       // The ask card is drawn only when the run ENDS on the question (`finish`); until then the reason rides along.
@@ -1092,15 +1273,37 @@ function taskEvent(view: RunView, event: RunEvent): RunView {
       const line = why === 'not_seen' || why === 'moved_too_far' || why === 'footprint_changed'
         ? m(`event.task.target_lost.${why}`)
         : m('event.task.target_lost')
+      const phrase = str(data.phrase)
+      if (phrase !== null && namesTargets(plan)) {
+        return say(next, event, { key: 'ck.target.lostNamed', params: { target: targetWords(plan, phrase), why: line } }, 'warn')
+      }
       return say(next, event, line, 'warn')
+    }
+    // A place the check before a drop lost, looked for again (the owner, 2026-10-09): found, the drop is planned anew
+    // over it and its picture is pinned as a found target's is; found nowhere, the part goes back and a person decides.
+    case 'task.target_relocated': {
+      const words = targetWords(plan, str(data.phrase))
+      if (data.found !== true) {
+        return say({ ...view, nowhere: words }, event, m('event.task.target_relocated.nowhere', { target: words }), 'warn')
+      }
+      const target = targetOf(data.target, str(data.look))
+      let next: RunView = { ...view, target: target ?? view.target, lostWhy: null, timeline: withStep(view.timeline, 'place', 'active') }
+      if (target?.overlay) {
+        next = pin(next, { kind: 'target', url: target.overlay, at: event.ts, part: null, pick: null, look: target.look }, event.seq)
+      }
+      return say(next, event, m('event.task.target_relocated', { target: words, moved: round(num(data.moved_mm)) }))
     }
     case 'task.drop_planned': {
       const kind = str(data.kind)
-      const line = kind === 'pose'
-        ? m('event.task.drop_planned.pose', { hang: round(num(data.hang_mm)) })
-        : kind === 'camera'
-          ? m('event.task.drop_planned.camera', { air: round(num(data.air_mm)) })
-          : m('event.task.drop_planned')
+      // A box's part set down below its rim (robot.place.release_in_a_box) says how far under the rim it goes.
+      const below = num(data.below_rim_mm)
+      const line = below !== null
+        ? m('event.task.drop_planned.below', { depth: round(below) })
+        : kind === 'pose'
+          ? m('event.task.drop_planned.pose', { hang: round(num(data.hang_mm)) })
+          : kind === 'camera'
+            ? m('event.task.drop_planned.camera', { air: round(num(data.air_mm)) })
+            : m('event.task.drop_planned')
       return say(view, event, line, 'info', 'tech')
     }
     case 'task.place_started': {
@@ -1111,17 +1314,28 @@ function taskEvent(view: RunView, event: RunEvent): RunView {
         timeline: withStep(view.timeline, 'place', 'active'),
         current: { ...view.current, step: 'place' },
       }
-      return say(next, event, m('event.task.place_started', { where: placeWords(plan, fallback) }))
+      // A sort places at the place the event names: the part's own rule's, else the first rule's that is that place.
+      const rules = rulesOfPlan(plan)
+      const own = currentRule(view)
+      const rule = !isSort(plan)
+        ? undefined
+        : own !== null && rules[own] && (raw === null || placeIs(rules[own].place, raw))
+          ? rules[own]
+          : rules.find((r) => placeIs(r.place, raw))
+      return say(next, event, m('event.task.place_started', { where: rule ? placeOfWords(rule.place, fallback) : placeWords(plan, fallback) }))
     }
     case 'task.placed': {
       let next: RunView = { ...view, timeline: withStep(view.timeline, 'place', 'done'), holding: false }
       next = updatePart(next, view.current.part, (p) => ({ ...p, placed: true }))
       next = { ...next, stats: computeStats(next) }
+      // `below_the_rim` false: the drop below the rim was planned, its way in refused, and the part let go over the rim.
       const line = data.line_out_refused === true
         ? m('event.task.placed.line_out_refused')
-        : data.no_sensor === true
-          ? m('event.task.placed.no_sensor')
-          : m('event.task.placed')
+        : data.below_the_rim === false
+          ? m('event.task.placed.over_the_rim')
+          : data.no_sensor === true
+            ? m('event.task.placed.no_sensor')
+            : m('event.task.placed')
       return say(next, event, line, data.line_out_refused === true ? 'warn' : 'ok')
     }
     case 'task.place_failed':
@@ -1164,6 +1378,29 @@ function taskEvent(view: RunView, event: RunEvent): RunView {
         : m('event.task.part_finished.not_placed', { part: part ?? '—' })
       return say(next, event, line, placed ? 'ok' : 'warn')
     }
+    // A sort (the owner, 2026-10-09): the rule the gripped part goes by. The part is filed under it, and counts for it
+    // once it is placed; the line names the rule in the operator's words ("Teil 3: grüne Teile → in die gelbe Kiste").
+    case 'task.rule': {
+      const part = num(data.part) ?? view.current.part
+      const said = num(data.rule)
+      const index = said !== null && Number.isInteger(said) && said >= 0 ? said : null
+      const rule = index !== null ? rulesOfPlan(plan)[index] : undefined
+      const next = updatePart(view, part, (p) => ({ ...p, rule: index }))
+      const raw = str(data.place)
+      const what = rule ? ruleWhat(rule) : (str(data.object) ?? '—')
+      const where = rule ? placeOfWords(rule.place, null) : (str(data.place_label) ?? (raw && raw.includes(':') ? raw.slice(raw.indexOf(':') + 1) : raw) ?? '—')
+      return say(next, event, m('event.task.rule', { part: part ?? '—', what, where }), 'info', 'demo', undefined, part)
+    }
+    // The parts no rule clearly claimed (the detector's "ambiguous", or a kind no rule names) stay where they lie, and
+    // are named at the end: the run's own line, never a part's.
+    case 'task.unsorted': {
+      const count = num(data.count) ?? 0
+      const labels = [...new Set(strings(data.labels))].map((label): ParamValue => (label === 'ambiguous' ? { key: 'ck.unsorted.ambiguous' } : label))
+      const line = labels.length > 0
+        ? m('event.task.unsorted', { count, labels: listMsg(labels, 'list.words') })
+        : m('event.task.unsorted.unnamed', { count })
+      return say(view, event, line, 'warn', 'demo', undefined, null)
+    }
     default:
       return view
   }
@@ -1204,6 +1441,7 @@ function pickStage(view: RunView, event: RunEvent): RunView {
         ...moving(view),
         timeline: withStep(view.timeline, 'look', 'active'),
         current: { ...view.current, attemptTotal: num(data.attempt_total), lookIndex: 0, step: 'look' },
+        standsAt: null,
       }
       return say(next, event, m('event.pick.pick_started', { total: num(data.attempt_total) }), 'info', 'tech')
     }
@@ -1223,7 +1461,12 @@ function pickStage(view: RunView, event: RunEvent): RunView {
       if (stepState(timeline, 'detect') === 'idle') timeline = withStep(timeline, 'detect', 'active')
       const next: RunView = { ...moving(view), timeline, current: { ...view.current, look, lookIndex, step: 'look' } }
       const count = num(data.segmentation_count) ?? 0
-      const line = look ? m('event.pick.perceived', { look, count }) : m('event.pick.perceived.fixed', { count })
+      // A look whose parts a task followed (robot.grasping.follow_parts) found them again with no detector asked.
+      const line = look
+        ? str(data.route) === 'followed'
+          ? m('event.pick.perceived.followed', { look, count })
+          : m('event.pick.perceived', { look, count })
+        : m('event.pick.perceived.fixed', { count })
       return say(next, event, line, 'info', 'tech')
     }
     case 'pick.ranked': {
@@ -1275,14 +1518,15 @@ function pickStage(view: RunView, event: RunEvent): RunView {
         if (str(data.blocker) === 'set_aside') return say(view, event, m('event.pick.attempt_finished.blocker'), 'info', 'demo')
         return say(view, event, m('event.pick.attempt_finished.blocker_stopped'), 'warn', 'demo')
       }
-      let next = view
-      if (action === 'look_refused') next = { ...view, timeline: withStep(view.timeline, 'look', 'failed') }
+      // Where a try left the arm that was not driven back to its look (2026-10-08): the stop card names it.
+      let next: RunView = { ...view, standsAt: str(data.stands_at) ?? view.standsAt }
+      if (action === 'look_refused') next = { ...next, timeline: withStep(view.timeline, 'look', 'failed') }
       return say(next, event, m('event.pick.attempt_finished', { action: (action ?? '—').replace(/_/g, ' ') }), 'info', 'tech')
     }
     case 'pick.pick_finished':
       return say(view, event, m('event.pick.pick_finished', { outcome: outcomeMsg(loopOutcome(str(data.outcome))) }), 'info', 'tech')
     case 'pick.cancelled':
-      return say(view, event, m('event.pick.cancelled'), 'info', 'tech')
+      return say({ ...view, standsAt: str(data.stands_at) ?? view.standsAt }, event, m('event.pick.cancelled'), 'info', 'tech')
     default:
       return view
   }

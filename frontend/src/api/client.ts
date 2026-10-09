@@ -41,6 +41,8 @@ export type TaskOptionsIn = Schemas['TaskOptionsIn']
 export type TaskOptionsOut = Schemas['TaskOptionsOut']
 export type TaskPlanOut = Schemas['TaskPlanOut']
 export type PlanPlaceOut = Schemas['PlanPlaceOut']
+export type TaskRuleIn = Schemas['TaskRuleIn']
+export type PlanRuleOut = Schemas['PlanRuleOut']
 export type PosePlaceIn = Schemas['PosePlaceIn']
 export type CameraPlaceIn = Schemas['CameraPlaceIn']
 export type CommandProvenanceIn = Schemas['CommandProvenanceIn']
@@ -71,6 +73,7 @@ export type TeachStateOut = Schemas['TeachStateOut']
 export type CommandIn = Schemas['CommandIn']
 export type CommandOut = Schemas['CommandOut']
 export type CommandPhraseOut = Schemas['CommandPhraseOut']
+export type CommandRuleOut = Schemas['CommandRuleOut']
 export type CommandStatusOut = Schemas['CommandStatusOut']
 export type MotionStackOut = Schemas['MotionStackOut']
 export type VendorReadinessOut = Schemas['VendorReadinessOut']
@@ -256,14 +259,18 @@ export const api = {
 
   // ── the contract of commit 2 (build plan 1.11) ─────────────────────────────────────────────────────────────
   //
-  // Three of these move the arm: `task`, `restart` and `home`. Each is called from exactly one click, its button
-  // says that the robot moves, and nothing in this file calls them on its own: no retry, no resend after a
-  // reconnect. A refusal comes back as the typed `ApiError`, and the server enforces every gate itself.
+  // Three of these move the arm: `task`, `restart` and `home`. Each is called from exactly one person's act: a click
+  // on a button that says the robot moves, or, for `task`, the person's Enter on a sentence read clean where the
+  // settings say Enter starts (the owner, 2026-10-08). Nothing in this file calls them on its own: no retry, no resend
+  // after a reconnect. A refusal comes back as the typed `ApiError`, and the server enforces every gate itself.
 
   /** Every typed code (stop codes, events, refusals, lights). The console's unions are generated from the same. */
   codes: () => request<CodesOut>('GET', '/v1/codes'),
 
-  /** THIS MOVES. One task: pick, place, return, look again. Start is the confirmation; 202, then events. */
+  /**
+   * THIS MOVES. One task: pick, place, return, look again. Start on the card is the confirmation, or the person's Enter
+   * on a reading the reader calls `startable`; 202, then events.
+   */
   task: (body: TaskIn) => request<RunOut>('POST', '/v1/task', body),
 
   /** "Stop after this part": a held part is still placed and the arm returns. Not wired to the arm in flight. */
@@ -341,7 +348,10 @@ export const api = {
   teachCancel: (runId: string, token: string) =>
     request<TeachStateOut>('POST', `/v1/teach/${encodeURIComponent(runId)}/cancel${query({ token })}`),
 
-  /** What a sentence asks for, read by the VLM. It creates no run and touches no cell; Start does, after a look. */
+  /**
+   * What a sentence asks for, read by the VLM (a known sentence by the server's table, with no model asked). It creates
+   * no run and touches no cell; `task` does, after a look at the card or on Enter where the answer is `startable`.
+   */
   parse: (body: CommandIn) => request<CommandOut>('POST', '/v1/commands/parse', body),
 
   commandStatus: () => request<CommandStatusOut>('GET', '/v1/commands/status'),

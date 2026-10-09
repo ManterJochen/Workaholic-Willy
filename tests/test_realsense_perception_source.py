@@ -326,5 +326,122 @@ class AWristSourceStampsTheToolPoseTests(unittest.TestCase):
         self.assertIsNone(s.acquire().tool_pose)
 
 
+# --------------------------------------------------------------------------- the colour a label names (F1)
+#: The owner's mat, a grey cube, a part between grey and white (p80 L* 77), and a red part, BGR.
+_MAT, _GREY, _PALE, _RED = (34, 40, 42), (156, 160, 162), (186, 190, 191), (40, 40, 200)
+_PROMPT = "each separate grey cube"
+
+
+class _NamingDetector(_FakeDetector):
+    """A VLM as the detector: it boxes what it is handed and names a colour when asked, or raises."""
+
+    def __init__(self, dets: list[_Det], *, answer: str = "", raises: bool = False) -> None:
+        super().__init__(dets)
+        self.answer, self.raises = answer, raises
+        self.asked: list[tuple[float, ...]] = []
+
+    def name_colour(self, image_bgr: np.ndarray, box: tuple[float, ...]) -> str:
+        self.asked.append(tuple(box))
+        if self.raises:
+            raise RuntimeError("CUDA error: out of memory")
+        return self.answer
+
+
+def _two_parts(first: tuple[int, int, int], second: tuple[int, int, int]) -> tuple[np.ndarray, list[_Det]]:
+    """Two 20 px parts on the mat, both boxed with the prompt's words, as Qwen boxed them on the cell."""
+    color = np.empty((64, 64, 3), dtype=np.uint8)
+    color[...] = _MAT
+    color[8:28, 8:28] = first
+    color[36:56, 36:56] = second
+    return color, [_Det(box=(8, 8, 28, 28), label=_PROMPT), _Det(box=(36, 36, 56, 56), label=_PROMPT)]
+
+
+def _colour_source(color: np.ndarray, detector: _FakeDetector, *, labels: tuple[str, ...] = ("grey cube",),
+                   **keywords: object) -> RealSenseVisionPerceptionSource:
+    return RealSenseVisionPerceptionSource(
+        streamer=_FakeStreamer(color, np.full((64, 64), 500, np.uint16), _K), detector=detector,
+        segmenter=_FakeSegmenter(), object_labels=labels, prompt=_PROMPT, warmup_grabs=0, **keywords)
+
+
+class AColourCheckTests(unittest.TestCase):
+    """The camera source judges every part mapped onto an object label whose words name a colour, before any fusion
+    reads it: a part of another colour keeps its mask under a label no object carries, a neighbour and no target."""
+
+    def test_a_red_part_boxed_as_a_grey_cube_is_no_grey_cube_and_keeps_its_mask(self) -> None:
+        color, dets = _two_parts(_GREY, _RED)
+        frame = _colour_source(color, _FakeDetector(dets)).acquire()
+
+        grey, red = frame.segmentations
+        self.assertEqual("grey cube", grey.label)
+        self.assertEqual("red object, not grey cube", red.label)
+        expected = np.zeros((64, 64), dtype=np.uint8)
+        expected[36:56, 36:56] = 1
+        np.testing.assert_array_equal(expected, np.asarray(red.mask), "the refused part's mask changed")
+
+    def test_an_unsure_part_is_settled_by_the_vlm_s_one_colour_word(self) -> None:
+        for answer, label in (("white", "white object, not grey cube"), ("Grey.", "grey cube"),
+                              ("", "unknown colour object, not grey cube")):
+            with self.subTest(answer=answer):
+                color, dets = _two_parts(_GREY, _PALE)
+                detector = _NamingDetector(dets, answer=answer)
+                frame = _colour_source(color, detector).acquire()
+                self.assertEqual(["grey cube", label], [seg.label for seg in frame.segmentations])
+                self.assertEqual([(36, 36, 56, 56)], detector.asked, "asked of the unsure part alone, with its box")
+
+    def test_a_question_that_raises_refuses_the_part_and_counts_as_the_detector_s_failure(self) -> None:
+        color, dets = _two_parts(_GREY, _PALE)
+        source = _colour_source(color, _NamingDetector(dets, raises=True))
+
+        frame = source.acquire()
+
+        self.assertEqual("unknown colour object, not grey cube", frame.segmentations[1].label)
+        self.assertEqual(1, source.backend.failures, "a task would read an empty look here, not a failed detector")
+        self.assertIn("naming a colour", source.backend.last_failure)
+
+    def test_a_phrase_that_names_no_colour_checks_nothing(self) -> None:
+        color, _ = _two_parts(_GREY, _RED)
+        detector = _NamingDetector([_Det(box=(36, 36, 56, 56), label="cube")], answer="white")
+        frame = _colour_source(color, detector, labels=("cube",)).acquire()
+
+        self.assertEqual(["cube"], [seg.label for seg in frame.segmentations])
+        self.assertEqual([], detector.asked)
+
+    def test_a_label_mapped_onto_no_object_is_not_judged(self) -> None:
+        color, dets = _two_parts(_GREY, _PALE)
+        detector = _NamingDetector([_Det(box=(36, 36, 56, 56), label="screwdriver")], answer="white")
+        frame = _colour_source(color, detector).acquire()
+
+        self.assertEqual(["screwdriver"], [seg.label for seg in frame.segmentations])
+        self.assertEqual([], detector.asked)
+
+    def test_log_judges_and_changes_nothing_and_off_judges_nothing(self) -> None:
+        color, dets = _two_parts(_RED, _PALE)
+        logged = _NamingDetector(dets, answer="white")
+        with self.assertLogs("src.robot.perception.realsense_source", level="INFO") as said:
+            frame = _colour_source(color, logged, colour_check="log").acquire()
+        self.assertEqual(["grey cube", "grey cube"], [seg.label for seg in frame.segmentations])
+        self.assertIn("logged only", said.output[0])
+        self.assertEqual(1, len(logged.asked), "log asks the VLM as on does")
+
+        off = _NamingDetector(dets, answer="white")
+        frame = _colour_source(color, off, colour_check="off").acquire()
+        self.assertEqual(["grey cube", "grey cube"], [seg.label for seg in frame.segmentations])
+        self.assertEqual([], off.asked)
+
+    def test_every_verdict_is_logged_with_what_the_detector_called_the_part(self) -> None:
+        color, dets = _two_parts(_GREY, _RED)
+        with self.assertLogs("src.robot.perception.realsense_source", level="INFO") as said:
+            _colour_source(color, _FakeDetector(dets)).acquire()
+
+        self.assertEqual(2, len(said.output))
+        self.assertIn("agrees", said.output[0])
+        self.assertIn("refuses it as red", said.output[1])
+        self.assertIn(f"the detector said {_PROMPT!r}", said.output[1])
+
+    def test_a_switch_that_names_no_mode_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            _colour_source(_color(), _FakeDetector([]), colour_check="sometimes")
+
+
 if __name__ == "__main__":
     unittest.main()

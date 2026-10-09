@@ -59,10 +59,13 @@ judge it, nothing moved, `RobotKinematicsError` where none is admissible), `Driv
 around), `JudgesCarriedLines` (`carried_line_refusal(pose, grip_width_mm=)`: the line `move(pose,
 linear=True)` would run, judged as if the jaws held a part, before they close on one, nothing moved),
 `JudgesGraspsAhead` (`grasp_refusal_ahead(standoff=, grasp=, lift=, grip_width_mm=)`: a whole grasp judged
-from where the arm stands before it leaves for it, each move from where the one before ends),
+from where the arm stands before it leaves for it, each move once, 2026-10-08: the line down first, from the
+configuration the move to the standoff would end on, the lift as if carrying in the world that line was judged
+in, the route to the standoff last; where the route ends on that configuration the UR driver runs it as judged
+where nothing changed since, and anywhere else the line and the lift are judged again from where it ends),
 `JudgesLinesAhead` (`lines_refusal_ahead(approach=, lines=)`: a push's move to P0 and its four lines judged
-the same way, 2026-10-03) and `SupportsHalt` (the latch "halt now" sets: `halt(reason)`, `clear_halt()`,
-`halt_state()`, a `HaltState` whose `brake` says what became of the move in flight, `none`, `pending`,
+ahead, each from where the one before ends, 2026-10-03) and `SupportsHalt` (the latch "halt now" sets:
+`halt(reason)`, `clear_halt()`, `halt_state()`, a `HaltState` whose `brake` says what became of the move in flight, `none`, `pending`,
 `braked`, `unconfirmed` or `ran_out`; every motion refused with nothing sent and every output switch raising
 `ArmHalted` until it is cleared; `halt_state_of(arm)` and `brakes_in_motion_of(arm)` read it on any arm) on the arm;
 `ObjectDetectingGripper`, `StoppableGripper`, `ReportsHoldEvidence` (`HELD`, `EMPTY` or `UNMEASURED`)

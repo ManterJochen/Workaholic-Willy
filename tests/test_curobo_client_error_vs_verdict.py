@@ -225,9 +225,17 @@ class TheBatchCheckBranchTests(unittest.TestCase):
         ):
             with self.subTest(present=name):
                 self.assertIn(name, terms)
-        for name in (".validate(", "get_scene_self_collision_distance_from_joints", "_kin."):
+        for name in (".validate(", "get_scene_self_collision_distance_from_joints"):
             with self.subTest(absent=name):
                 self.assertNotIn(name, terms)
+        # The evidence model's own kinematics (``_kin``) is read only where the planner plans on a planning model, and a
+        # sidecar that models a carried part builds none: everywhere else the spheres are the planner's, payload and all.
+        own = terms.find("if _TWO_MODELS:")
+        other = terms.find("else:", own)
+        self.assertTrue(0 <= own < terms.find("_kin.") < other < terms.find("_planner.compute_kinematics("),
+                        "the spheres judged are not the planner's wherever it plans on the robot it judges")
+        self.assertNotIn("_kin.", terms[other:])
+        self.assertIn("if _attach_spheres > 0:\n                raise PlanningModelError(", self.source)
 
         build = self.source[: self.source.find('def _terms(')]
         for name in (

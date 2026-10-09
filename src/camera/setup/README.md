@@ -19,10 +19,15 @@ touches no device until `open()`, and no driver opens a window: frames come back
 
 - `RGBDFrame`: `color` (BGR) and `depth` (millimetres), plus `captured_at_s`. The colour image must not
   be empty. Depth may be empty only when the driver cannot reach a depth stream, and otherwise matches
-  the colour size.
+  the colour size. `research` is `None`, except from a RealSense rig that records for research
+  (`realsense.record_for_research`): then a `ResearchCapture`, the frame's two infrared images, its
+  depth as the sensor sent it (device units, before the filters and the alignment) and its colour
+  metadata, copied, with the camera's `CameraFacts` (device, settings, lenses, extrinsics), read once
+  when the camera opened.
 - `StereoFrame`: `left` and `right`, both non-empty and of one size, plus `captured_at_s`.
 
 `AnyFrame` is either. `src.camera` exports all three; `RGBDFrame` also comes from `willy`.
+`ResearchCapture` and `CameraFacts` come from `src.camera.setup.image_taking`.
 
 ## The nouns
 
@@ -50,10 +55,30 @@ the depth scale the device reads back. It writes the visual preset first and the
 power and the depth units over it, and refuses to open when the device reads back other depth units than
 the rig configures. It imports `pyrealsense2` when it opens.
 
-When it opens it logs the camera's name, serial, firmware and USB link, the depth mode and that mode's
-Min-Z (`realsense_min_depth_mm`, Intel's figures: a D415 about 450 mm at 1280 x 720 and about 310 mm at
-848 x 480), and warns for a D415 at 1280 x 720 and for a USB 2 link. A request that does not start is
-raised with the RealSense cameras the SDK sees and the USB link each is on.
+When it opens it logs, to `logs/camera/rgbd.log` and the console, the camera's name, serial, firmware
+and USB link, the depth mode and that mode's Min-Z (`realsense_min_depth_mm`, Intel's figures: a D415
+about 450 mm at 1280 x 720 and about 310 mm at 848 x 480), and warns for a D415 at 1280 x 720 and for a
+USB 2 link. A request that does not start is raised with the RealSense cameras the SDK sees and the USB
+link each is on.
+
+It writes the rig's `realsense.color` block to the colour sensor (the owner, 2026-10-09): auto exposure,
+exposure, gain, auto white balance, white balance, in that order, each auto mode before its value,
+because librealsense writes its default exposure as auto exposure goes off. Every value is checked
+against the range the sensor offers before the first is written, and a null key writes nothing. The
+exposure is in the D400 colour sensor's own unit, 100 microseconds; on Windows librealsense's Media
+Foundation backend holds it as the nearest power of two of a second (39, 78, 156, 312, 625). Once the
+warm-up frames have run it reads the five back, logs them (`color_held`), and warns for a value the
+sensor holds otherwise. A colour sensor that does not offer an option the block sets, a value outside
+its range, and a camera whose colour comes off its depth imagers (a D405) refuse the open, naming the
+option and the camera, before anything is written.
+
+On a rig with `realsense.record_for_research` it asks for both infrared images beside colour and depth
+(`rs.stream.infrared` 1 and 2, Y8, at the depth resolution and frame rate), reads the camera's facts once
+(`CameraFacts`: every option of both sensors, the filters with their options, each stream's lens and
+the extrinsics depth to colour, left infrared to colour and left to right infrared, in millimetres), and
+hands every frame its `ResearchCapture`, taken off the frameset before any filter runs. A camera that
+cannot stream the infrared images refuses the open with a sentence. With the key off, the streams asked
+and the frames are what they were.
 
 `camera_moved()` drops the temporal filter's history, so the next frame holds only depth seen from where
 the camera is now. On a camera the arm carries (a rig with a `body`, or eye_in_hand extrinsics) the
@@ -81,6 +106,8 @@ no preview overlays, and hold the rig's `min_pairs` and `max_pairs`.
 | `ImportError` naming `pyrealsense2` | a RealSense rig opens on a machine without the SDK | `pip install -r requirements.txt` |
 | `RuntimeError` from `RealSenseRGBDStreamer.open()`, listing cameras | the SDK cannot start the requested streams; the message names each camera it sees and its USB link | connect the camera over USB 3, fix the serial, or ask for a mode it offers |
 | `RuntimeError` from `RealSenseRGBDStreamer.open()`, naming `depth_units_m` | the device reads back other depth units than configured; the pipeline is stopped | remove the key, or write a value the device takes |
+| `RuntimeError` from `RealSenseRGBDStreamer.open()`, naming `realsense.color.<key>` | the colour sensor does not offer the option, the value is outside its range, or the colour comes off the depth imagers; nothing was written and the pipeline is stopped | remove the key, or write a value in the range named |
+| `RuntimeError` from `RealSenseRGBDStreamer.open()`, naming `record_for_research` | the camera does not stream both infrared images at this mode, or its link cannot carry them; the pipeline is stopped | switch `record_for_research` off, or connect over USB 3 |
 | `OSError` from `WebcamPairStreamer.open()` | either camera does not open; both are released | check the two ids in the rig |
 | `FileNotFoundError` from `load_intrinsics` | the file is absent; K is never defaulted | point at the file the lens calibration wrote |
 | `ValueError` from `load_intrinsics` | unreadable JSON, a missing or non-physical focal length, non-finite distortion | recalibrate the lens |
@@ -98,12 +125,13 @@ The legend is the guide's [evidence levels](../../../docs/guide/README.md#what-v
 | `RealSenseRGBDStreamer`, its logic | run on a physical cell: a wrist D415 on a UR10 (CB3); in the suite it runs against an injected fake SDK ([`test_realsense_streamer.py`](../../../tests/test_realsense_streamer.py)) |
 | `RealSenseRGBDStreamer`, its frame processing | run on a physical cell: the same D415; in the suite it runs through the real librealsense, no camera attached ([`test_realsense_sdk_contract.py`](../../../tests/test_realsense_sdk_contract.py), [`test_a_moved_wrist_camera_forgets_the_last_pose.py`](../../../tests/test_a_moved_wrist_camera_forgets_the_last_pose.py)) |
 | `RealSenseRGBDStreamer`, what it says at open | never touched hardware; Min-Z is Intel's figure, and the messages run against a fake SDK ([`test_a_realsense_says_what_it_opened.py`](../../../tests/test_a_realsense_says_what_it_opened.py)) |
+| `RealSenseRGBDStreamer`, the colour block and the research recording | never touched hardware; pinned against a fake SDK, the names and the extrinsics convention against the real librealsense ([`test_the_colour_sensor_holds_what_its_rig_asks.py`](../../../tests/test_the_colour_sensor_holds_what_its_rig_asks.py), [`test_a_rig_recording_for_research_keeps_its_infrared_images.py`](../../../tests/test_a_rig_recording_for_research_keeps_its_infrared_images.py)) |
 
 ## Files
 
 | File | Holds |
 |---|---|
-| [`image_taking/frames.py`](image_taking/frames.py) | `RGBDFrame`, `StereoFrame`, `AnyFrame` |
+| [`image_taking/frames.py`](image_taking/frames.py) | `RGBDFrame`, `StereoFrame`, `AnyFrame`, and what a frame recorded for research carries: `ResearchCapture`, `CameraFacts` |
 | [`image_taking/rgbd.py`](image_taking/rgbd.py) | `OpenCvRGBDStreamer`, `RealSenseRGBDStreamer`, `RGBDStreamerProtocol` |
 | [`image_taking/webcam.py`](image_taking/webcam.py) | `WebcamPairStreamer` |
 | [`image_taking/single.py`](image_taking/single.py) | `SingleDeviceStreamer`, which owns the crop, split and resize of a combined stereo image |

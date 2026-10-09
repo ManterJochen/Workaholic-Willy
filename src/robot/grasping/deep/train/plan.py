@@ -54,15 +54,50 @@ __all__ = ["UNSET", "PlanOverrides", "build_plan"]
 
 @dataclass(frozen=True, slots=True)
 class PlanOverrides:
-    """What the caller chose explicitly. Every field defaults to `UNSET`.
+    """The generator training settings you choose explicitly; they outrank the recipe and the tier. Every field you
+    leave out stays ``UNSET``, which the recipe or the tier fills; the defaults named are the plan's own.
 
-    The CLI sets its own argparse defaults to `UNSET` for every flag a recipe or tier can touch,
-    which is what lets the recipe merge work without reading `sys.argv`. The four affected defaults
-    (`epochs` 12, `train_units` 4000, `refit` False, `collapse_floor_deg` 0.0) are the same on the
-    argparse parser and on `SetTrainingPlan`, so a run with no recipe resolves to those values.
+        overrides = PlanOverrides(epochs=24, folds=5, run_folds=5, refit=True)
 
-    Several fields here have no command-line flag at all and are reachable only from code:
-    `learning_rate`, `weight_decay` and `eval_units`.
+    Attributes:
+        epochs (int): Epochs per fold; default 12 (default: UNSET).
+        folds (int): Asset-disjoint folds the corpus is cut into; default 5 (default: UNSET).
+        run_folds (int): How many of them actually run: 1 compares two settings on the same held-out assets, 5 earns a
+            number worth quoting; default 1 (default: UNSET).
+        batch (int): Samples per batch; the points per sample, not the parameters, are the memory ceiling; default 4
+            (default: UNSET).
+        learning_rate (float): The learning rate; default 1e-3 (default: UNSET).
+        weight_decay (float): The weight decay; default 1e-4 (default: UNSET).
+        seed (int): The run's seed; default 0 (default: UNSET).
+        train_units (int | None): Units per epoch, ``None`` for all; a cap keeps epochs comparable across corpora;
+            default 4000 (default: UNSET).
+        eval_units (int): Held-out units each evaluation scores; default 512 (default: UNSET).
+        points (int): Points per sample cloud; default 8192 (default: UNSET).
+        refit (bool): After the folds, train one more net on every unit and ship that as the artifact; default False
+            (default: UNSET).
+        labelled_unit_share (float | None): The share of an epoch's units that carry a grasp label; ``None`` the natural
+            mix; default 0.5 (default: UNSET).
+        collapse_floor_deg (float): Stop a fold whose head proposes one direction for every seed, held-out seed spread
+            below this many degrees from epoch three on; 0 is off; default 0.0 (default: UNSET).
+        control (str | None): Replace the labels with a target derived from an input channel, ``"normal"`` or
+            ``"local"``: a control run, whose numbers are not grasping numbers; ``None`` a real run (default: UNSET).
+        target (str): Which direction the head predicts: ``"approach"`` or ``"axis"`` (the closing axis); default
+            ``"approach"`` (default: UNSET).
+        axis_mode (str): How the closing axis is written: ``"director"`` (six parameters, an eigendecode) or
+            ``"vector"``; default ``"director"`` (default: UNSET).
+        slots (int): Grasps predicted per seed; default 4 (default: UNSET).
+        slot_mixing (str): How a slot may differ from its neighbour: ``"affine"``, ``"film"`` or ``"mlp"``; default
+            ``"affine"`` (default: UNSET).
+        part_roles (bool): An affordance output, one role per grasp (empty, body, handle, grip, neck, head); default
+            False (default: UNSET).
+        generative (bool): A denoising head trained on every label instead of the slot head; default False (default:
+            UNSET).
+        crop_mm (float): A ball of points around each seed, in its own frame, of this radius in millimetres (40 to 120);
+            0 is off; default 0 (default: UNSET).
+        crop_neighbours (int): Points kept per crop; default 32 (default: UNSET).
+        backbone_width (int): The encoder's channel width; default 384, the 21.5M-parameter model (default: UNSET).
+        backbone_depth (int): The encoder's block count; default 12 (default: UNSET).
+        backbone_heads (int): Attention heads, which must divide the width; default 6 (default: UNSET).
     """
 
     epochs: int | _Unset = UNSET
@@ -92,11 +127,10 @@ class PlanOverrides:
     backbone_heads: int | _Unset = UNSET
 
     def forwarded(self) -> dict[str, Any]:
-        """Only the fields the caller actually set.
+        """Only the settings you set.
 
-        Not named `chosen`: `contracts.options.chosen` is a predicate over one value and this
-        module imports it, while this returns the whole set of chosen fields.
-        `datagen/api.py::_forwarded` is the same thing under the same name.
+        Returns:
+            dict[str, Any]: Each set field by name; the ``UNSET`` ones are left out.
         """
         return {field.name: value for field in dataclasses.fields(self)
                 if chosen(value := getattr(self, field.name))}

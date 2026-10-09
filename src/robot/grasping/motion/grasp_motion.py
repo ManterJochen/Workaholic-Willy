@@ -45,25 +45,32 @@ def _closing_axis_kept(value: object) -> "str | Pose | ClosingAxis | tuple[float
 class GraspMotion:
     """What a caller may choose about how a pick moves. A field left ``UNSET`` keeps the service's own.
 
-    ``standoff_mm`` is the distance above the grasp the approach starts from, along the reverse approach axis, and
-    ``retreat_mm`` the lift after the close. ``approach_steps`` (at least 2) and ``retreat_steps`` (at least 1) split
-    them into waypoints on an arm that keeps no line. ``pre_open_width_mm`` is how far the jaws open before the
-    approach, the hand's widest when unset, and never ``None``: the pre-open is what keeps an approach from arriving
-    with the jaws wherever the last close left them. A hand that toggles with no sensor is the one exception, and it
-    is the hand's, not this object's: it is never switched before the arm moves, it is asked where its jaws stand
-    instead, and it takes no width, so the builder drops the pre-open for it whatever this says. ``close_squeeze_mm``
-    is how far below the measured width the jaws close, ``close_speed`` (0 to 1) and ``close_force_n`` what the hand
-    is asked for, and ``align_closing_to_base_x`` yaws a symmetric top-down grasp so it closes along base X. That yaw
-    closes the jaws on faces other than the ones the grasp was chosen on, so a pick that asks for both jaw contact faces
-    (``both_faces``) refuses it before anything moves (``pick_loop.judged_faces_turned_away``): it is the simulator's aid.
+        motion = GraspMotion(closing_axis="-y", close_squeeze_mm=2.0)
+        cell = Cell.from_tree(load_tree(), motion=motion)
 
-    ``closing_axis`` chooses instead of twisting (the owner, 2026-09-30): only the grasps that already close along the
-    named axis, within ``CLOSING_AXIS_TOLERANCE_DEG`` (30 degrees) either way round, are taken, each turned half a turn
-    about its approach where that puts its closing axis the named way round, before anything judges or ranks them. So
-    the grasp judged is the grasp executed, and ``both_faces`` keeps working. A name ``Pose.tool_down`` takes (``"-y"``
-    on the owner's cell; ``radial`` and ``tangential`` read at each grasp's place) or an orientation, a quaternion
-    (x, y, z, w) or a BASE ``Pose``, whose tool +X laid onto the base XY plane is the heading. A pick none of whose
-    grasps closes along it ends ``no_valid_grasp``, saying so. Refused beside ``align_closing_to_base_x``.
+    Attributes:
+        standoff_mm (Maybe[float]): The distance above the grasp the approach starts from, along the reverse approach,
+            millimetres (default: UNSET).
+        retreat_mm (Maybe[float]): The lift after the close, millimetres (default: UNSET).
+        approach_steps (Maybe[int]): Waypoints the approach is split into on an arm that keeps no line, at least 2
+            (default: UNSET).
+        retreat_steps (Maybe[int]): Waypoints of the lift, at least 1 (default: UNSET).
+        pre_open_width_mm (Maybe[float]): How far the jaws open before the approach, millimetres; unset is the hand's
+            widest, never ``None``. A hand that toggles with no sensor is never switched before the arm moves, whatever
+            this says (default: UNSET).
+        close_squeeze_mm (Maybe[float]): How far below the measured width the jaws close, millimetres (default: UNSET).
+        close_speed (Maybe[float]): The closing speed asked of the hand, 0 to 1 (default: UNSET).
+        close_force_n (Maybe[float]): The closing force asked of the hand, newtons (default: UNSET).
+        align_closing_to_base_x (Maybe[bool]): Yaw a symmetric top-down grasp to close along base X: the simulator's
+            aid, refused beside ``both_faces`` and beside ``closing_axis`` (default: UNSET).
+        closing_axis (Maybe[ClosingAxisLike]): Take only the grasps that already close along this axis, within 30
+            degrees either way round, each turned the named way round before anything judges them: a name
+            ``Pose.tool_down`` takes (``"-y"``), a quaternion or a BASE ``Pose`` (default: UNSET).
+
+    Raises:
+        TypeError: ``pre_open_width_mm=None``, or a value of the wrong type.
+        ValueError: A negative or non-finite value, a pre-open of 0 mm, a ``close_speed`` above 1, too few steps, or
+            ``closing_axis`` beside ``align_closing_to_base_x``.
     """
 
     standoff_mm: Maybe[float] = UNSET
@@ -111,16 +118,24 @@ class GraspMotion:
             raise ValueError(f"GraspMotion: {twisted}")
 
     def standoff_and_retreat(self, standoff_mm: float, retreat_mm: float) -> tuple[float, float]:
-        """This motion's standoff and retreat where it sets them, the service's own where it does not.
+        """This motion's standoff and retreat where it sets them, the service's own where not.
 
-        A service reads it before it builds anything that also takes the standoff, so the policy and everything
-        beside it move to one standoff.
+        Args:
+            standoff_mm (float): The service's own standoff, millimetres.
+            retreat_mm (float): The service's own retreat, millimetres.
+
+        Returns:
+            tuple[float, float]: ``(standoff_mm, retreat_mm)``.
         """
         return (float(self.standoff_mm) if chosen(self.standoff_mm) else float(standoff_mm),
                 float(self.retreat_mm) if chosen(self.retreat_mm) else float(retreat_mm))
 
     def to_dict(self) -> dict[str, Any]:
-        """The fields a caller chose, by name; a field left unset is absent."""
+        """The fields a caller chose.
+
+        Returns:
+            dict[str, Any]: Each set field by name; an unset one is absent.
+        """
         return {f.name: getattr(self, f.name) for f in fields(self) if chosen(getattr(self, f.name))}
 
 

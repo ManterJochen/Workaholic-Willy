@@ -46,6 +46,14 @@ _NOT_THE_SEAM = {
     # loop raises the cap for that one ranking and gives it back, and a generator without an integer
     # cap ranks as it always did (2026-09-30). The note in protocol.py says so.
     "max_candidates",
+    # Read the same way, and optional the same way: where the cell lets SFE's fine search wait, the
+    # pick loop turns the switch off for that one ranking and gives it back, and a generator without
+    # it computes every part in full (2026-10-08). The note in protocol.py says so.
+    "sfe_fine_pass",
+    # Read the same way, and optional the same way: the rim the support-footprint stage's input loses, which the pick
+    # loop cuts off the looks it fuses as well, and a generator without it is handed no footprint (2026-10-09). The
+    # note in protocol.py says so.
+    "support_footprint_rim_mm",
 }
 
 

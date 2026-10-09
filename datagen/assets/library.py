@@ -272,12 +272,25 @@ def import_from_directory(
     license: str | None = None,
     attribution: str = "",
 ) -> list[MeshEntry]:
-    """Copy meshes for one source into the library, recording a SHA for each.
+    """Copy your own meshes into the library under the licence you declare, recording a SHA for each.
 
-    A local copy rather than a download, for meshes already on this machine: re-downloading hundreds
-    of files to end up byte-identical is cost without benefit. The SHA is what makes the copy
-    checkable either way, so an operator who fetches from the original source can confirm they hold
-    the same bytes.
+        import_from_directory("custom", "D:/parts/stl", license="own", attribution="ACME GmbH")
+
+    Args:
+        source (str): The collection to copy into, such as ``"custom"``.
+        origin (Path | str): The folder the meshes are in.
+        destination (Path | str): The library (default: "assets/meshes").
+        limit (int | None): Copy at most this many; ``None`` all (default: None).
+        license (str | None): The licence the parts are under; required for ``custom`` (``"own"`` for your own parts),
+            and audited by CI (default: None).
+        attribution (str): Who the parts are by, where the licence requires it (default: "").
+
+    Returns:
+        list[MeshEntry]: Each mesh copied, with its asset id, path and SHA.
+
+    Raises:
+        ValueError: An unsupported collection, or ``custom`` with no licence.
+        FileNotFoundError: The folder is not there, or holds no meshes.
     """
     if source not in SUPPORTED_SOURCES:
         raise ValueError(f"unsupported source {source!r}; expected one of {sorted(SUPPORTED_SOURCES)}")

@@ -78,7 +78,22 @@ class Confirmer(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class Confirmation:
-    """Whether a person let proposed words become a prompt, and which words."""
+    """Whether a person let proposed words become a prompt, and which words: speech never acts on its own.
+
+        confirmation = Confirmation.from_proposal(proposal=proposal, confirmer=TerminalConfirmer.from_parts())
+        if confirmation.confirmed is not None:
+            cell.service.set_prompt(confirmation.confirmed)
+
+    Attributes:
+        proposed (str): The words speech proposed; ``""`` when it proposed none.
+        confirmed (str | None): The text that may become a prompt; ``None`` unless the outcome is ``CONFIRMED`` or
+            ``CORRECTED``.
+        source (PromptSource): ``SPOKEN`` for the words as heard, ``TYPED`` for a correction.
+        outcome (ConfirmationOutcome): ``CONFIRMED`` (an explicit yes), ``CORRECTED`` (the person typed what they
+            meant), ``REFUSED`` (any other answer), ``NO_PERSON`` (nobody could be asked) or ``NOTHING_HEARD``.
+        language (str | None): The language Whisper heard (``"de"``, ``"en"``); ``None`` without a transcript.
+        transcript (Transcript | None): Whisper's report on what was heard; ``None`` when Whisper was not asked.
+    """
 
     #: The words speech proposed; ``""`` when it proposed none.
     proposed: str
@@ -95,18 +110,28 @@ class Confirmation:
 
     @classmethod
     def from_proposal(cls, *, proposal: Proposal, confirmer: Confirmer) -> Confirmation:
-        """Ask ``confirmer`` about what an upload or a push to talk turn proposed.
+        """Ask a person about what an upload or a push-to-talk turn proposed.
 
-        A proposal without words is NOTHING_HEARD, and nobody is asked.
+        Args:
+            proposal (Proposal): What ``shared_speech().for_config(...).propose(...)`` returned.
+            confirmer (Confirmer): Who is asked: ``TerminalConfirmer.from_parts()``, or anything with ``reply(text)``.
+
+        Returns:
+            Confirmation: The answer; a proposal without words is ``NOTHING_HEARD``, and nobody is asked.
         """
         return cls._asked(proposed=proposal.text, transcript=proposal.transcript, confirmer=confirmer)
 
     @classmethod
     def from_utterance(cls, *, utterance: Utterance, confirmer: Confirmer) -> Confirmation:
-        """Ask ``confirmer`` about what a `Listener` heard.
+        """Ask a person about what a ``Listener`` heard.
 
-        An utterance that was not HEARD, or whose transcript holds no words, is NOTHING_HEARD, and nobody
-        is asked.
+        Args:
+            utterance (Utterance): What ``listener.listen()`` returned.
+            confirmer (Confirmer): Who is asked.
+
+        Returns:
+            Confirmation: The answer; an utterance that was not ``HEARD``, or holds no words, is ``NOTHING_HEARD``, and
+                nobody is asked.
         """
         from src.models.speech.listener import ListenOutcome
 
@@ -148,7 +173,11 @@ class Confirmation:
         return self.render()
 
     def render(self) -> str:
-        """The answer in a line, the transcript indented under it. ASCII, no trailing newline."""
+        """The answer in a line, the transcript indented under it.
+
+        Returns:
+            str: ASCII, no trailing newline. ``print(confirmation)`` shows the same.
+        """
         heard = f"'{_ascii(self.proposed)}'"
         language = "" if self.language is None else f" ({_ascii(self.language)})"
         if self.outcome is ConfirmationOutcome.CONFIRMED:
@@ -170,7 +199,11 @@ class Confirmation:
         return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
-        """The machine half: plain data, the transcript as its own `to_dict()`."""
+        """The answer as plain data.
+
+        Returns:
+            dict[str, Any]: ``json.dumps`` safe; the transcript as its own ``to_dict()``.
+        """
         return {
             "proposed": self.proposed,
             "confirmed": self.confirmed,
@@ -208,7 +241,12 @@ def _is_terminal(stream: TextIO) -> bool:
 
 
 class TerminalConfirmer:
-    """Asks at the terminal the process runs in. Build it with `from_parts`; the verb is `reply()`."""
+    """Asks the person at the terminal the process runs in whether heard words become the prompt.
+
+    Args:
+        stdin (TextIO | None): Where the answer is read; ``None`` asks nobody.
+        stdout (TextIO | None): Where the question is written.
+    """
 
     def __init__(self, *, stdin: TextIO | None, stdout: TextIO | None) -> None:
         self._stdin = stdin
@@ -218,15 +256,28 @@ class TerminalConfirmer:
     def from_parts(
         cls, *, stdin: Maybe[TextIO | None] = UNSET, stdout: Maybe[TextIO | None] = UNSET
     ) -> TerminalConfirmer:
-        """The Python door. ``stdin`` and ``stdout`` UNSET are the process's own, taken when it is built."""
+        """A confirmer at this process's terminal.
+
+        Args:
+            stdin (Maybe[TextIO | None]): Where the answer is read; unset is the process's own, taken now (default:
+                UNSET).
+            stdout (Maybe[TextIO | None]): Where the question is written; unset is the process's own (default: UNSET).
+
+        Returns:
+            TerminalConfirmer: The confirmer.
+        """
         return cls(stdin=resolve("stdin", stdin, sys.stdin), stdout=resolve("stdout", stdout, sys.stdout))
 
     def reply(self, proposed: str) -> str | None:
-        """Ask once about ``proposed``.
+        """Ask once about proposed words.
 
-        y, yes, j or ja return ``proposed``. e or edit ask for the prompt and return what is typed next.
-        Anything else returns ``""``, the end of input and an empty correction included. When stdin is
-        not a terminal the answer is None, and nothing is read or written.
+        Args:
+            proposed (str): The words speech proposed.
+
+        Returns:
+            str | None: ``proposed`` for y, yes, j or ja; what is typed next for e or edit; ``""`` for anything else
+                (the end of input and an empty correction included); ``None`` when stdin is not a terminal, and nothing
+                is read or written.
         """
         stdin = self._stdin
         if stdin is None or not _is_terminal(stdin):

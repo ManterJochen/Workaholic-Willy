@@ -22,6 +22,10 @@ they are; ``metadata`` carries only the stage name and the ``score_is_undecompos
 Why SFE refused what it refused rides along too: ``support_footprint_refused`` holds one count per
 cause (``support_footprint.REFUSAL_CAUSES``), so a pick that got no grasp says whether the camera's
 neighbours, a declared body, the part's own fragments or the support stopped it.
+
+And where a caller held SFE's fine search back (``fine_pass``) and the coarse grid alone found few grasps,
+``support_footprint_fine`` says ``"deferred"``: the result is the coarse grid's, and the pick loop asks
+again in full before it takes such a part (``FINE_SEARCH_KEY``). A search that ran in full stamps nothing.
 """
 
 from __future__ import annotations
@@ -36,14 +40,20 @@ from src.robot.grasping.scoring import GraspScoreBreakdown
 
 from .support_footprint import (
     DEFAULT_FLOOR_MARGIN_MM,
+    FINE_SEARCH_DEFERRED,
     CorridorSeen,
     HandFloor,
+    SfeRunner,
     SupportFootprintCandidate,
     SupportFootprintJaw,
     generate_support_footprint_grasps,
 )
 
-__all__ = ["support_footprint_breakdowns"]
+__all__ = ["FINE_SEARCH_DEFERRED", "FINE_SEARCH_KEY", "support_footprint_breakdowns"]
+
+#: The telemetry key under which a result says SFE left its fine search for later: ``FINE_SEARCH_DEFERRED``, and only
+#: then.
+FINE_SEARCH_KEY = "support_footprint_fine"
 
 
 def _to_camera_pose(candidate: SupportFootprintCandidate,
@@ -88,6 +98,9 @@ def support_footprint_breakdowns(
     corridor_seen: CorridorSeen | None = None,
     seen_envelope: Any = None,
     hand_floor: HandFloor | None = None,
+    fine_pass: bool = True,
+    runner: SfeRunner | None = None,
+    batched: bool = False,
 ) -> tuple[list[GraspScoreBreakdown], dict]:
     """Run SFE and return camera-frame breakdowns plus its telemetry.
 
@@ -105,8 +118,21 @@ def support_footprint_breakdowns(
     build whose open hand comes nearer to one than the guard keeps is refused under ``seen_fingers``.
 
     ``hand_floor`` (``support_footprint.HandFloor``) holds the support solids the guard holds under the hand.
+
+    ``fine_pass`` off holds SFE's fine search back where the coarse grid finds few grasps; the telemetry then says
+    ``support_footprint_fine: "deferred"`` (:data:`FINE_SEARCH_KEY`). On, the default, is the search as before, and the
+    telemetry carries no such key.
+
+    ``runner`` runs SFE's units in other processes (``src.robot.grasping.workers.SfeWorkers``): the same candidates,
+    counts and telemetry as without it, and a runner that cannot answer has the part searched here. ``None``, the
+    default, runs every unit in this process.
+
+    ``batched`` makes each of SFE's closing lines build its grasps at once (``generate_support_footprint_grasps``), in
+    this process and a runner's alike: the same candidates, counts and telemetry, to the bit. Off, the default, builds
+    them one at a time, as before.
     """
     refused: dict[str, int] = {}
+    stages: dict[str, str] = {}
     candidates = generate_support_footprint_grasps(
         target_cloud_base_mm,
         support_height_mm=support_height_mm,
@@ -123,6 +149,10 @@ def support_footprint_breakdowns(
         corridor_seen=corridor_seen,
         seen_envelope=seen_envelope,
         hand_floor=hand_floor,
+        fine_pass=fine_pass,
+        stages=stages,
+        runner=runner,
+        batched=batched,
     )
     breakdowns: list[GraspScoreBreakdown] = []
     for candidate in candidates:
@@ -160,6 +190,9 @@ def support_footprint_breakdowns(
         telemetry["support_footprint_side_approaches"] = True
         # Without a seen test no tilt past the first that fits is offered, so a reader needs to know which it was.
         telemetry["support_footprint_corridor_seen"] = corridor_seen is not None
+    if stages.get("fine") == FINE_SEARCH_DEFERRED:
+        # The coarse grid's grasps alone: a reader that takes the part asks again in full first.
+        telemetry[FINE_SEARCH_KEY] = FINE_SEARCH_DEFERRED
     # What the stage was looking at, and what it planned: both in BASE, both millimetres.
     #
     # SFE plans the table clearance and the calculator's collision filter re-checks it against the

@@ -1,0 +1,8 @@
+2026-10-07 11:42:59,137 - src.models.vlm.qwen - INFO - loading VLM D:/cell/Workaholic_Willy/assets/models/hf/vlm/Qwen--Qwen3-VL-8B-Instruct (device=cuda)
+2026-10-07 11:43:09,722 - src.models.vlm.qwen - INFO - VLM Qwen/Qwen3-VL-8B-Instruct ready in 10.6 s
+2026-10-07 11:43:15,172 - src.models.vlm.qwen - INFO - VLM Qwen/Qwen3-VL-8B-Instruct answered 216 character(s) of text in 5447 ms
+2026-10-07 11:43:27,507 - src.models.vlm.qwen - INFO - VLM grounded 1 box(es) for 'yellow bin' in 3056 ms
+2026-10-07 11:43:35,122 - src.models.vlm.qwen - INFO - VLM grounded 3 box(es) for 'grey cube' in 6875 ms
+2026-10-07 11:43:43,256 - src.models.vlm.qwen - INFO - VLM grounded 3 box(es) for 'each separate grey cube' in 6744 ms
+2026-10-07 11:46:01,339 - src.models.vlm.qwen - INFO - VLM grounded 1 box(es) for 'yellow bin' in 3060 ms
+2026-10-07 11:46:57,282 - src.models.vlm.qwen - INFO - VLM grounded 3 box(es) for 'each separate grey cube' in 8201 ms

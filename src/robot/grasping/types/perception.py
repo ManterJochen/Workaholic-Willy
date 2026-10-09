@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:  # pragma: no cover (a type-only import, so this module stays dependency-light)
+    from src.camera.setup.image_taking.frames import ResearchCapture
     from src.geometry import Pose
 
 import numpy as np
@@ -67,6 +68,13 @@ class PerceptionFrame:
     #: needs the measured surface refuses rather than falling back to `depth_map`, because
     #: falling back would hand a planner a sheet and call it an obstacle.
     surface_depth_map: np.ndarray | None = None
+    #: What the camera recorded for research with this frame (the owner, 2026-10-09:
+    #: `realsense.record_for_research`): both infrared images, the depth as the sensor sent it and
+    #: the camera's facts, which the views file of the pick keeps (`record_views`).
+    #:
+    #: `None` for every camera whose rig does not record for research, and for every producer that
+    #: is not a camera. Nothing on the grasp path reads it: it is carried to the views and no further.
+    research: "ResearchCapture | None" = None
 
 
 @runtime_checkable

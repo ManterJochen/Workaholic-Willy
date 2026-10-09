@@ -51,10 +51,18 @@ def _rig_key(rig_id: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class CameraWorldPlan:
-    """Which rigs feed a cell's live planner world, primary first, and why every other rig does not.
+    """Which rigs feed a cell's live planner world, primary first, and why every other rig does not. Reads config and
+    opens nothing.
 
-    Pure: it reads config and opens nothing, so a cell that did not ask for a world opens no camera
-    for one.
+    Attributes:
+        rig_ids (tuple[str, ...]): The rigs the world is built from, the primary first; empty for no world.
+        left_out (tuple[tuple[str, str], ...]): Every other rig, with why it is not a world camera (default: ()).
+        reason (str): Why there is no world; empty when there is one (default: "").
+        asked (bool): Whether the cell asked for a world: the block and its ``perceived`` half on, and a support plane
+            declared (default: False).
+        calibrated (tuple[str, ...]): Every enabled RGB-D rig that declares its calibration; a cuRobo cell with one and
+            no world is refused (default: ()).
+        primary_rig_id (str): The primary rig's id (default: "").
     """
 
     #: The rigs the world is built from, the primary first and then in `camera.cameras.rigs` order. Empty
@@ -75,6 +83,16 @@ class CameraWorldPlan:
 
     @classmethod
     def from_config(cls, robot_cfg: "RobotConfig", rigs: Sequence[Any], *, primary_rig_id: str) -> CameraWorldPlan:
+        """The world plan of a robot section and the camera section's rigs.
+
+        Args:
+            robot_cfg (RobotConfig): The cell's robot section, ``tree.robot``.
+            rigs (Sequence[Any]): The camera section's rigs, ``tree.app_config.camera.cameras.rigs``.
+            primary_rig_id (str): ``camera.cameras.primary_rig_id``: the camera each grasp is synthesised in.
+
+        Returns:
+            CameraWorldPlan: The plan; :meth:`refusal` says why a cuRobo cell may not build on it.
+        """
         calibrated = tuple(
             str(rig.rig_id) for rig in rigs
             if bool(getattr(rig, "enabled", False)) and getattr(rig, "source", None) == "rgbd"
@@ -123,12 +141,14 @@ class CameraWorldPlan:
         return cls(tuple(wired), tuple(left_out), asked=True, calibrated=calibrated, primary_rig_id=primary)
 
     def refusal(self) -> str | None:
-        """Why a cell planning with cuRobo may not build on this plan, or ``None``.
+        """Why a cell planning with cuRobo may not build on this plan.
 
-        A calibrated enabled rig that yields no world is refused: the calibration is on the rig, so
-        the world is mandatory, and a cell built anyway would refuse every motion nothing declined. An
-        uncalibrated cell builds with no world, and every planned motion then needs a decline. The
-        caller decides whether the cell plans with cuRobo.
+        A calibrated enabled rig that yields no world is refused: the world is mandatory once the calibration is on the
+        rig, and a cell built anyway would refuse every motion nothing declined. An uncalibrated cell builds with no
+        world, and every planned motion then needs a decline.
+
+        Returns:
+            str | None: The refusal; ``None`` where it may build.
         """
         if self.rig_ids or not self.calibrated:
             return None
@@ -144,7 +164,11 @@ class CameraWorldPlan:
         return self.render()
 
     def render(self) -> str:
-        """Describe this to a person, as text, ASCII, no trailing newline."""
+        """The plan as a person reads it.
+
+        Returns:
+            str: ASCII, no trailing newline.
+        """
         if self.rig_ids:
             text = "camera world from " + ", ".join(repr(rig_id) for rig_id in self.rig_ids) + ", primary first"
         else:
@@ -154,7 +178,11 @@ class CameraWorldPlan:
         return text
 
     def to_dict(self) -> dict[str, Any]:
-        """The wire view."""
+        """The plan as plain data.
+
+        Returns:
+            dict[str, Any]: ``json.dumps`` safe.
+        """
         return {"rig_ids": list(self.rig_ids), "left_out": dict(self.left_out), "reason": self.reason,
                 "asked": self.asked, "calibrated": list(self.calibrated), "refusal": self.refusal()}
 

@@ -1,0 +1,12 @@
+2026-10-07 11:41:13,895 - SAM2 - INFO - Initializing Sam2Segmenter on device: cuda
+2026-10-07 11:43:27,874 - SAM2 - INFO - SAM2 segmentation completed in 0.366s | label=yellow bin | area=72907 px
+2026-10-07 11:43:35,239 - SAM2 - INFO - SAM2 segmentation completed in 0.117s | label=grey cube | area=3873 px
+2026-10-07 11:43:35,333 - SAM2 - INFO - SAM2 segmentation completed in 0.090s | label=grey cube | area=3245 px
+2026-10-07 11:43:35,443 - SAM2 - INFO - SAM2 segmentation completed in 0.110s | label=grey cube | area=3056 px
+2026-10-07 11:43:43,372 - SAM2 - INFO - SAM2 segmentation completed in 0.116s | label=each separate grey cube | area=3874 px
+2026-10-07 11:43:43,467 - SAM2 - INFO - SAM2 segmentation completed in 0.094s | label=each separate grey cube | area=3246 px
+2026-10-07 11:43:43,558 - SAM2 - INFO - SAM2 segmentation completed in 0.089s | label=each separate grey cube | area=3040 px
+2026-10-07 11:46:01,467 - SAM2 - INFO - SAM2 segmentation completed in 0.127s | label=yellow bin | area=73148 px
+2026-10-07 11:46:57,397 - SAM2 - INFO - SAM2 segmentation completed in 0.113s | label=each separate grey cube | area=3893 px
+2026-10-07 11:46:57,502 - SAM2 - INFO - SAM2 segmentation completed in 0.098s | label=each separate grey cube | area=3278 px
+2026-10-07 11:46:57,593 - SAM2 - INFO - SAM2 segmentation completed in 0.089s | label=each separate grey cube | area=3849 px

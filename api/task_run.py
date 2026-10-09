@@ -8,8 +8,9 @@ refusal: it returns the stop code and writes the run's ``error`` where the code 
 * :func:`drive_task` drives the library's ``run_task`` (``src/robot/execution/task.py``) with :class:`ConsoleTaskHooks`:
   the task's events on the run's stream (its English sentence the envelope's ``human``, the rest the ``data``), the
   pick loop's own stages beside them, the extended ``pick_result``, the grasp overlays (captured at ``pick.executing``
-  and after each pick, by the identity rule) and the target's, "stop after this part", "halt now" and a cell taken
-  down read by the library between its motions, and the recovery record ended at a Restart's first ``task.returned``;
+  and after each pick, by the identity rule) and the target's of each place a camera finds, "stop after this part",
+  "halt now" and a cell taken down read by the library between its motions, and the recovery record ended at a
+  Restart's first ``task.returned``;
 * :func:`drive_home` runs ``robot.home()`` or ``robot.move_joints(taught)`` through the arm's own judged verbs, unless
   the run was stopped before its move was sent; its arrival ends the recovery record;
 * :func:`drive_planner` starts cuRobo, which moves nothing.
@@ -19,15 +20,27 @@ gripped, a part placed, an arrival at the return pose. That ends the hands-off c
 then moved nothing leaves it due for the next.
 
 The plan a task runs is the resolved plan the route echoed (``TaskPlanOut``), joints included, so a Restart runs exactly
-the plan the stopped run ran, its first motion the planned move to the return pose.
+the plan the stopped run ran, its first motion the planned move to the return pose. A sort's further rules
+(``more_rules``, the owner, 2026-10-09) are part of it, each to its own place.
+
+The console remembers the bin a camera place kept (``TaskReport.kept_target``), by the phrase it was found for, and
+hands it to the next task into that phrase, a Restart included (``run_task(..., known_target=)``): a bin that stood still
+is then looked at once, at its rim, instead of surveyed (the owner, 2026-10-08: speed first). A sort's places are each
+remembered so, every bin by its own phrase (``TaskReport.kept_targets``, handed on as ``known_targets``). It is
+remembered only while the cell stands as it stood: the same built cell (a rebuild may bring another calibration), the
+same connection (a Disconnect lets a person move anything; on a cell that claims a controller, a connect takes its cell
+lock anew) and the same configuration (a camera's config may have changed) (:func:`remembered_bin`); a task that lost
+its bin, never found one or was taken down under itself leaves none, and :func:`forget_bins` forgets every one at once.
 """
 
 from __future__ import annotations
 
 import enum
 import math
+import threading
+import weakref
 from collections.abc import Mapping
-from dataclasses import fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 from api.codes import REFUSAL_STATUS, STOP_CLASS, RefusalCode, StopClass, StopCode
@@ -39,9 +52,11 @@ if TYPE_CHECKING:  # pragma: no cover
     from api.cell import Console
     from api.runs import Run
     from src.robot.core import JointPositions
-    from src.robot.execution.task import TaskPlan
+    from src.robot.execution.place_target import KeptTarget
+    from src.robot.execution.task import TaskPlan, TaskReport
 
-__all__ = ["ConsoleTaskHooks", "TaskHooks", "drive_home", "drive_planner", "drive_task", "library_plan"]
+__all__ = ["ConsoleTaskHooks", "TaskHooks", "camera_places", "drive_home", "drive_planner", "drive_task", "forget_bins",
+           "library_plan", "remembered_bin"]
 
 logger = create_logger("TaskRun", TASK_RUN_LOG_FILE, log_dir=API_LOG_DIR)
 
@@ -76,13 +91,20 @@ class TaskHooks(Protocol):
 # What a task's events carry
 # ---------------------------------------------------------------------------------------------------------------------
 
-#: The timeline step each task event puts the run on (``RunOut.step``).
+#: The timeline step each task event puts the run on (``RunOut.step``). A sort's ``task.rule`` says where the part just
+#: gripped goes: its place begins there.
 _STEP_OF_EVENT: Mapping[str, str] = {
-    "task.survey_started": "survey", "task.part_started": "look", "task.carry_started": "place",
+    "task.survey_started": "survey", "task.part_started": "look", "task.rule": "place", "task.carry_started": "place",
     "task.drop_planned": "place", "task.place_started": "place", "task.return_started": "return",
 }
-#: The task's events an operator should notice.
-_WARNINGS = frozenset({"task.target_missing", "task.target_lost", "task.place_failed", "task.return_failed"})
+#: The task's events an operator should notice: a sort's parts no rule took among them, and a place found nowhere
+#: (``task.target_relocated`` that did not find it, below).
+_WARNINGS = frozenset({"task.target_missing", "task.target_lost", "task.place_failed", "task.return_failed",
+                       "task.unsorted"})
+#: The task's events that carry a target a camera saw (``target``), whose picture is kept as its place's overlay.
+_TARGET_EVENTS = frozenset({"task.target_found", "task.target_checked", "task.target_lost", "task.target_relocated"})
+#: Where ``task.rule`` names a place a camera finds: ``target:<phrase>``.
+_CAMERA_PLACE = "target:"
 #: The task's events that say the arm moved: a part let go at the drop, an arrival at the return pose. With a pick that
 #: gripped (``pick_done``), what ends the hands-off countdown.
 _MOVED = frozenset({"task.placed", "task.returned"})
@@ -144,9 +166,34 @@ def _severity(kind: str, data: Mapping[str, Any]) -> Severity:
         return Severity.WARN
     if kind == "task.target_checked" and data.get("followed") is not True:
         return Severity.WARN
+    if kind == "task.target_relocated" and data.get("found") is not True:
+        return Severity.WARN
     if kind == "task.put_back" and data.get("outcome") != "executed":
         return Severity.WARN
     return Severity.INFO
+
+
+def _words(text: Any) -> str:
+    """How two places a camera finds are told apart, as the library tells them: trimmed, each run of blanks one space,
+    case folded."""
+    return " ".join(str(text or "").split()).casefold()
+
+
+def camera_places(plan: "Mapping[str, Any] | None") -> list[str]:
+    """The places a camera finds of a resolved plan (``TaskPlanOut``, as a run carries it), each once, in the order its
+    rules first name them, as the library tells them apart (case and blanks aside, the first spelling kept): one for a
+    task of one kind into a bin, none where every place is a taught pose. The n-th keeps its bin's overlay under
+    ``api.overlays.target_key(n)``, and the console remembers each one's bin by that phrase."""
+    if not isinstance(plan, Mapping):
+        return []
+    rules = [plan, *(rule for rule in plan.get("more_rules") or () if isinstance(rule, Mapping))]
+    places: list[str] = []
+    for rule in rules:
+        place = rule.get("place")
+        phrase = place.get("phrase") if isinstance(place, Mapping) and place.get("kind") == "camera" else None
+        if isinstance(phrase, str) and phrase.strip() and _words(phrase) not in {_words(kept) for kept in places}:
+            places.append(phrase)
+    return places
 
 
 class ConsoleTaskHooks(TaskHooks):
@@ -154,6 +201,10 @@ class ConsoleTaskHooks(TaskHooks):
 
     It also listens to the pick loop (:meth:`on_progress`, attached to the service for the task's length), so the
     task's stream carries every pick's stages and the overlay the calculator rendered when the grasp was decided.
+
+    A target's picture is kept as the overlay of its place (:func:`camera_places`): the first place a camera finds under
+    ``target``, as a task of one kind keeps its bin, each further place of a sort under its own key
+    (``api.overlays.target_key``), so one bin's check never shows over another's.
     """
 
     def __init__(self, console: "Console", run: "Run") -> None:
@@ -168,6 +219,9 @@ class ConsoleTaskHooks(TaskHooks):
         self._failures_before = 0
         self._recovery_ended = False
         self._moved = False
+        #: The places the plan's cameras find, in its rules' order, and the one the task named last (its index).
+        self._places = camera_places(run.plan)
+        self._place = 0
 
     # ---- what the operator asked ------------------------------------------------------------------------------
 
@@ -187,17 +241,25 @@ class ConsoleTaskHooks(TaskHooks):
 
     def event(self, name: str, /, **data: Any) -> None:
         """Publish one of the task's events on the run's stream: its sentence as ``human``, the rest as ``data``; a
-        target's picture kept as the run's target overlay and named by its URL."""
+        target's picture kept as the overlay of its place and named by its URL: found, followed by a check, or found
+        again after it moved (``task.target_relocated``)."""
+        from api.overlays import overlay_url, target_key  # noqa: PLC0415
+
         kind = str(name)
         said = str(data.pop("said", "") or kind)
         image = data.pop("image_png", None)
         payload = _jsonable(data)
-        if kind in ("task.target_found", "task.target_checked") and isinstance(payload.get("target"), dict):
+        place = self._place_of(kind, payload)
+        if kind in _TARGET_EVENTS and isinstance(payload.get("target"), dict):
+            key = target_key(place)
             target = _rounded_target(payload["target"])
-            keep = kind == "task.target_found" or payload.get("followed") is True
+            keep = kind != "task.target_checked" or payload.get("followed") is True
             url = None
             if keep and isinstance(image, (bytes, bytearray)) and image:
-                url = self.console.overlays.put(self.run.id, "target", bytes(image))
+                url = self.console.overlays.put(self.run.id, key, bytes(image))
+            elif keep and kind == "task.target_checked" and self.console.overlays.get(self.run.id, key) is not None:
+                # A bin followed by its rim's depth and colour brings no new picture: the one kept still shows it.
+                url = overlay_url(self.run.id, key)
             target["overlay"] = url
         if kind == "task.part_started":
             self._next_pick()
@@ -226,6 +288,27 @@ class ConsoleTaskHooks(TaskHooks):
         if record is not None and record.run_id == self.run.restart_of:
             self.console.end_recovery(self.run.id, "restart")
         self._recovery_ended = True
+
+    def _place_of(self, kind: str, payload: Mapping[str, Any]) -> int:
+        """The place a camera finds an event is about, as its index in :func:`camera_places` (0 the first), which
+        becomes the place the task named last. A target's event names it by its ``phrase`` (a check and a loss too, since
+        the review of 2026-10-09); one that says none is known by the label of the bin it saw, a sort's bins each
+        labelled with their phrase (``Located.split``); a sort's ``task.rule`` names it as ``target:<phrase>``. Any
+        other event, and one whose place is none of the plan's, is about the place named last: the first one before any
+        other is named, the one place of a task of one kind."""
+        named: Any = None
+        if kind == "task.rule":
+            where = str(payload.get("place") or "")
+            named = where.removeprefix(_CAMERA_PLACE) if where.startswith(_CAMERA_PLACE) else None
+        elif kind in _TARGET_EVENTS:
+            named = payload.get("phrase")
+            target = payload.get("target")
+            if not isinstance(named, str) and isinstance(target, Mapping):
+                named = target.get("label")
+        if isinstance(named, str):
+            self._place = next((index for index, phrase in enumerate(self._places) if _words(phrase) == _words(named)),
+                               self._place)
+        return self._place
 
     # ---- the pick loop beside it ----------------------------------------------------------------------------------
 
@@ -314,29 +397,42 @@ def library_plan(plan: Mapping[str, Any]) -> "tuple[TaskPlan, dict[str, JointPos
     """The library's ``TaskPlan`` and the taught poses it names, from the resolved plan a run carries (``TaskPlanOut``).
 
     The joints are the plan's own, as the route resolved them when the task was started, so a Restart runs exactly the
-    plan that stopped. A camera place takes its air over the rim (``air_mm``); a pose place takes none.
+    plan that stopped. A camera place takes its air over the rim (``air_mm``); a pose place takes none. The one part
+    singled out and where the parts lie (``which``, ``source``) go as asked; a plan kept without them grounds as before.
+    So do "alle Posen" (``every_look``) and how a part is carried to a camera's bin (``carry``, null the cell's); a plan
+    kept without them looks and carries as the cell did. The library refuses every look with multi-view off.
+
+    A sort's further rules (``more_rules``, the owner, 2026-10-09) become the plan's ``SortRule`` entries, each place as
+    the first's: a taught pose's joints into the poses by its name, a camera place with the same air over its rim
+    (``options.rim_air_mm``). A plan kept without them is a task of one kind, as before; one the library cannot sort
+    (one kind in two rules, a ``|`` in a phrase) raises its ``ValueError``.
     """
     from api.schemas import TaskPlanOut  # noqa: PLC0415
     from src.robot.core import JointPositions  # noqa: PLC0415
-    from src.robot.execution.task import PlaceAt, TaskOptions, TaskPlan  # noqa: PLC0415
+    from src.robot.execution.task import PlaceAt, SortRule, TaskOptions, TaskPlan  # noqa: PLC0415
 
     resolved = TaskPlanOut.model_validate(dict(plan))
     poses: dict[str, JointPositions] = {}
-    place = resolved.place
-    if place.kind == "pose":
-        if place.pose is None or place.pose_joints_deg is None:
-            raise ValueError("a pose place names no pose or no joints")
-        poses[place.pose] = JointPositions.deg(*place.pose_joints_deg)
-        place_at = PlaceAt(pose=place.pose)
-    else:
-        place_at = PlaceAt(camera=str(place.phrase), air_mm=resolved.options.rim_air_mm)
+
+    def place_at(place: Any) -> PlaceAt:
+        if place.kind == "pose":
+            if place.pose is None or place.pose_joints_deg is None:
+                raise ValueError("a pose place names no pose or no joints")
+            poses[place.pose] = JointPositions.deg(*place.pose_joints_deg)
+            return PlaceAt(pose=place.pose)
+        return PlaceAt(camera=str(place.phrase), air_mm=resolved.options.rim_air_mm)
+
+    first = place_at(resolved.place)
+    more = tuple(SortRule(object=rule.object, place=place_at(rule.place), which=rule.which, source=rule.source)
+                 for rule in resolved.more_rules)
     if resolved.return_to != "home":
         if resolved.return_joints_deg is None:
             raise ValueError(f"the return pose {resolved.return_to!r} carries no joints")
         poses[resolved.return_to] = JointPositions.deg(*resolved.return_joints_deg)
     options = resolved.options
     library = TaskPlan(
-        object=resolved.object, place=place_at, return_to=resolved.return_to, scope=resolved.scope,
+        object=resolved.object, which=resolved.which, source=resolved.source, place=first, more_rules=more,
+        return_to=resolved.return_to, scope=resolved.scope,
         options=TaskOptions(multi_view=options.multi_view, both_faces=options.both_faces,
                             closing_axis=options.closing_axis,
                             # A distance nobody asked for is the cell's, which may go longer where it opens too little.
@@ -345,7 +441,8 @@ def library_plan(plan: Mapping[str, Any]) -> "tuple[TaskPlan, dict[str, JointPos
                             rescan=options.rescan, push=options.push, clear=options.clear,
                             blocker_into_the_place=options.blocker_into_the_place,
                             record_views=options.record_views, overlay=options.overlay,
-                            pick_anything=options.pick_anything),
+                            pick_anything=options.pick_anything, every_look=options.every_look,
+                            carry=options.carry),
         first_motion=resolved.first_motion,
     )
     return library, poses
@@ -360,8 +457,148 @@ def _halted_error(console: "Console", run: "Run", sentence: str) -> str:
     return f"the arm is halted ({reason}): {sentence}"
 
 
+# ---------------------------------------------------------------------------------------------------------------------
+# The bin a task kept, for the next task into it
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Kept:
+    """A bin a task kept, and the cell it was kept on: the built cell and the connection's cell lock, held weakly (a
+    rebuilt cell's old service is not kept alive by a memory of it), and the configuration's fingerprint."""
+
+    target: "KeptTarget"
+    service: "weakref.ref[Any]"
+    lock: "weakref.ref[Any] | None"
+    fingerprint: str
+
+    def stands(self, stand: "tuple[Any, Any, str]") -> bool:
+        """Whether the cell still stands as it stood when the bin was kept: ``stand`` read now (:func:`_stand_of`). A
+        lock let go since (a Disconnect) is no longer the session's, and stands for nothing once it is collected too."""
+        service, lock, fingerprint = stand
+        if self.service() is not service or fingerprint != self.fingerprint:
+            return False
+        if self.lock is None:
+            return lock is None
+        held = self.lock()
+        return held is not None and held is lock
+
+
+#: What each console remembers, by the console's id, beside a weak reference that tells a console reborn at the same
+#: address from the one it was: phrase -> the bin kept for it.
+_KEPT: "dict[int, tuple[weakref.ref[Any], dict[str, _Kept]]]" = {}
+_KEPT_LOCK = threading.Lock()
+
+
+def _bins_of(console: "Console", *, create: bool) -> "dict[str, _Kept] | None":
+    """The bins ``console`` remembers; with ``create``, an empty memory where it has none. Under :data:`_KEPT_LOCK`."""
+    key = id(console)
+    entry = _KEPT.get(key)
+    if entry is not None and entry[0]() is console:
+        return entry[1]
+    if not create:
+        return None
+    bins: dict[str, _Kept] = {}
+    _KEPT[key] = (weakref.ref(console), bins)
+    weakref.finalize(console, _KEPT.pop, key, None)
+    return bins
+
+
+def _stand_of(console: "Console") -> "tuple[Any, Any, str] | None":
+    """The cell as it stands now: the built service, the connection's cell lock (``None`` on a cell that claims no
+    controller), and the configuration's fingerprint; ``None`` where nothing is built or the fingerprint cannot be read,
+    and then nothing is remembered or handed on."""
+    session = console.session
+    if session.service is None:
+        return None
+    try:
+        fingerprint = console.fingerprint()
+    except Exception as exc:  # noqa: BLE001 (a cell nobody can describe hands no memory on)
+        logger.warning("The configuration's fingerprint could not be read (%s: %s); no bin is remembered or handed on.",
+                       type(exc).__name__, exc)
+        return None
+    return session.service, session.cell_lock, fingerprint
+
+
+def _remembered(console: "Console", phrase: str, stand: "tuple[Any, Any, str] | None") -> "KeptTarget | None":
+    """:func:`remembered_bin` against ``stand``, the cell as a run read it once at its start."""
+    with _KEPT_LOCK:
+        bins = _bins_of(console, create=False)
+        if bins is None:
+            return None
+        kept = bins.get(phrase)
+        if kept is None:
+            return None
+        if stand is not None and kept.stands(stand):
+            return kept.target
+        bins.pop(phrase, None)
+    logger.info("The %r the last task kept is forgotten: the cell was rebuilt, disconnected or configured since.", phrase)
+    return None
+
+
+def remembered_bin(console: "Console", phrase: str) -> "KeptTarget | None":
+    """The bin the console's last task into ``phrase`` kept, while the cell stands as it stood then: the same built
+    cell, the same connection, the same configuration; ``None`` otherwise, and one that no longer stands is forgotten."""
+    return _remembered(console, str(phrase), _stand_of(console))
+
+
+def forget_bins(console: "Console", why: str) -> None:
+    """Forget every bin ``console``'s tasks kept, saying ``why``: for a Disconnect, a rebuild or a camera's config
+    written, beside what :func:`remembered_bin` reads for itself."""
+    with _KEPT_LOCK:
+        bins = _bins_of(console, create=False)
+        phrases = sorted(bins) if bins else []
+        if bins:
+            bins.clear()
+    if phrases:
+        logger.info("The bins the tasks kept (%s) are forgotten: %s", ", ".join(phrases), why)
+
+
+def _remember(console: "Console", phrase: str, target: "KeptTarget | None", report: "TaskReport",
+              stand: "tuple[Any, Any, str] | None") -> None:
+    """Keep ``target``, the bin ``report``'s task followed last for ``phrase``, for the next task into it, with the cell
+    as it stood when the task started; forget the phrase's where the task kept none, or was taken down under itself."""
+    from src.robot.execution.task import TaskStop  # noqa: PLC0415
+
+    kept: _Kept | None = None
+    if target is not None and stand is not None and report.stop is not TaskStop.DISCONNECTED:
+        service, lock, fingerprint = stand
+        try:
+            kept = _Kept(target=target, service=weakref.ref(service),
+                         lock=None if lock is None else weakref.ref(lock), fingerprint=fingerprint)
+        except TypeError:  # a service or a lock nobody can hold weakly is remembered by nothing
+            kept = None
+    if kept is None:
+        _forget(console, phrase)
+        return
+    with _KEPT_LOCK:
+        bins = _bins_of(console, create=True)
+        assert bins is not None
+        bins[phrase] = kept
+    logger.info("The %r is remembered for the next task into it: %s", phrase, kept.target.render())
+
+
+def _forget(console: "Console", phrase: str) -> None:
+    """Forget the bin remembered for ``phrase``, where one is."""
+    with _KEPT_LOCK:
+        bins = _bins_of(console, create=False)
+        if bins is not None:
+            bins.pop(phrase, None)
+
+
+def _kept_for(report: "TaskReport", phrase: str) -> "KeptTarget | None":
+    """The bin ``report``'s sort followed last for the place of ``phrase`` (``TaskReport.kept_targets``, its keys the
+    library's spelling, compared as it compares them); ``None`` where that place's bin was lost or never found."""
+    return next((kept for key, kept in report.kept_targets.items() if _words(key) == _words(phrase)), None)
+
+
 def drive_task(console: "Console", run: "Run") -> StopCode:
-    """The body of a task run: the library's ``run_task`` on the connected cell, said on the run's stream."""
+    """The body of a task run: the library's ``run_task`` on the connected cell, said on the run's stream, handed the
+    bin the last task into the same phrase kept (:func:`remembered_bin`) and remembering the one this run keeps.
+
+    A sort (the owner, 2026-10-09) is handed the bin remembered for each place a camera finds, by its phrase
+    (``known_targets``), and each place's bin is remembered from what the sort kept of it (``TaskReport.kept_targets``),
+    or forgotten where it kept none; a task of one kind hands and keeps its one bin as it always did."""
     from api.readiness import halt_reason  # noqa: PLC0415
     from src.robot.execution.task import TaskRefused, run_task  # noqa: PLC0415
 
@@ -369,12 +606,23 @@ def drive_task(console: "Console", run: "Run") -> StopCode:
     if run.plan is None:
         raise ValueError("a task run carries no plan")
     plan, poses = library_plan(run.plan)
+    phrases = camera_places(run.plan)
+    stand = _stand_of(console) if phrases else None
+    known = {phrase: _remembered(console, phrase, stand) for phrase in phrases}
+    for phrase, kept in known.items():
+        if kept is not None:
+            logger.info("Task run %s is handed the %r the last task kept, to look at again first: %s", run.id, phrase,
+                        kept.render())
     hooks = ConsoleTaskHooks(console, run)
     attach = getattr(service, "attach_progress_listener", None)
     if callable(attach):
         attach(hooks.on_progress)
     try:
-        report = run_task(service, plan, hooks=hooks, poses=poses)
+        if plan.more_rules:
+            report = run_task(service, plan, hooks=hooks, poses=poses,
+                              known_targets={phrase: kept for phrase, kept in known.items() if kept is not None})
+        else:
+            report = run_task(service, plan, hooks=hooks, poses=poses, known_target=next(iter(known.values()), None))
     except TaskRefused as refused:
         # The route refuses all of these before a run starts; met here, the cell changed in between (or the library
         # knows a rule the route does not). Nothing was commanded: no recovery record, and the code is said.
@@ -388,6 +636,11 @@ def drive_task(console: "Console", run: "Run") -> StopCode:
         run.refusal = {"code": str(refusal_code), "status": status}
         logger.warning("Task run %s refused by the library: %s", run.id, run.error)
         return StopCode.CANCELLED
+    except Exception:
+        # A run that broke off says nothing of where its bins stand now: the next task surveys them again.
+        for phrase in phrases:
+            _forget(console, phrase)
+        raise
     finally:
         if callable(attach):
             try:
@@ -395,6 +648,8 @@ def drive_task(console: "Console", run: "Run") -> StopCode:
             except Exception as exc:  # noqa: BLE001 (teardown reports, it does not propagate)
                 logger.warning("Detaching task run %s from the pick loop failed: %s: %s", run.id,
                                type(exc).__name__, exc)
+    for phrase in phrases:
+        _remember(console, phrase, _kept_for(report, phrase) if plan.more_rules else report.kept_target, report, stand)
     run.parts_placed = int(report.parts_placed)
     run.holding = bool(report.holding)
     run.attempted = max(run.attempted, int(report.picks))

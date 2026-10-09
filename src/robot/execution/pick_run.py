@@ -123,10 +123,14 @@ class PickOutcome(StrEnum):
 class PassRule:
     """When a campaign of N picks counts as a pass.
 
-    A rule object rather than a bare number. A bare `int` threshold would let the sim's 80 % and
-    this runner's unanimity look like the same kind of thing, and they are not: the sim gate also
-    refuses to take the service's own word for a success. `confirm` is where that refusal fits, and
-    it has no default that accepts.
+    A rule object rather than a bare number: the sim gate also refuses to take the service's own word for a success, and
+    ``confirm`` is where that refusal fits. It has no default that accepts.
+
+    Attributes:
+        fraction (float): The share of attempts that must succeed, from 0 to 1; 1.0 is every one (default: 1.0).
+        confirm (Callable[[Any], bool] | None): A second opinion per attempt: takes the service's report and answers
+            whether it really happened. ``None`` takes the service's own outcome as the only evidence; the sim harness
+            supplies one, since a cell with a ``NullGripper`` reports success on every run (default: None).
     """
 
     #: Fraction of attempts that must succeed, 1.0 for unanimity.
@@ -137,6 +141,14 @@ class PassRule:
     confirm: "Callable[[Any], bool] | None" = None
 
     def accepts(self, attempts: "Sequence[PickAttempt]") -> bool:
+        """Whether these attempts pass the rule.
+
+        Args:
+            attempts (Sequence[PickAttempt]): The campaign's attempts, cancelled ones included.
+
+        Returns:
+            bool: ``True`` where at least ``fraction`` of them passed; a campaign of zero passes.
+        """
         if not attempts:
             # A campaign of zero is a pass: `--runs 0` connects, moves the gripper on activation,
             # picks nothing and exits 0.
@@ -149,6 +161,11 @@ class PassRule:
         return self.render()
 
     def render(self) -> str:
+        """The rule as a person reads it.
+
+        Returns:
+            str: Such as ``"every attempt must succeed, independently confirmed"``.
+        """
         confirmed = ", independently confirmed" if self.confirm is not None else ""
         if self.fraction >= 1.0:
             return f"every attempt must succeed{confirmed}"
@@ -157,10 +174,13 @@ class PassRule:
 
 @dataclass(frozen=True, slots=True)
 class Recording:
-    """Where a campaign appends its `GraspAttemptRecord` lines, or that it appends none.
+    """Where a campaign appends its attempt records, one JSON line each, or that it appends none.
 
-    A noun rather than an optional path, so that "this run produced no corpus" is something the
-    report states rather than a `None` a reader has to notice.
+    A noun rather than an optional path, so that "this run produced no corpus" is something the report states.
+
+    Attributes:
+        path (str): The JSONL file the records are appended to; ``""`` records nothing (default: "").
+        provenance (Mapping[str, Any]): Stamped into every record: who ran it, which build, why (default: {}).
     """
 
     path: str = ""
@@ -168,16 +188,30 @@ class Recording:
 
     @property
     def enabled(self) -> bool:
+        """Whether anything is recorded: ``True`` when a path is set."""
         return bool(self.path)
 
     @classmethod
     def off(cls) -> "Recording":
-        """Log nothing. The shipped `robot.yaml` has `record_log_path: null`, so this is the
-        default state of a config-driven cell."""
+        """Record nothing: the default of a config-driven cell, whose shipped ``robot.yaml`` sets ``record_log_path:
+        null``.
+
+        Returns:
+            Recording: One with no path.
+        """
         return cls()
 
     @classmethod
     def to_file(cls, path: str, *, provenance: "Mapping[str, Any] | None" = None) -> "Recording":
+        """Append every attempt's record to a file.
+
+        Args:
+            path (str): The JSONL file; it is created if missing and appended to otherwise.
+            provenance (Mapping[str, Any] | None): Stamped into every record (default: None, none).
+
+        Returns:
+            Recording: One that records to ``path``.
+        """
         return cls(path=str(path), provenance=dict(provenance or {}))
 
     def __str__(self) -> str:
@@ -185,12 +219,46 @@ class Recording:
         return self.render()
 
     def render(self) -> str:
+        """Where the records go, as a person reads it.
+
+        Returns:
+            str: ``"recording to <path>"`` or ``"recording nothing"``.
+        """
         return f"recording to {self.path}" if self.enabled else "recording nothing"
 
 
 @dataclass(frozen=True, slots=True)
 class PickAttempt:
-    """One attempt, and what the campaign made of it."""
+    """One attempt of a campaign, and what the campaign made of it, as ``on_attempt`` gets it.
+
+    Attributes:
+        index (int): Its number in the campaign, from 1.
+        outcome (PickOutcome): ``SUCCEEDED``, ``FAILED``, ``RAISED`` (a fault of the cell stopped it) or ``CANCELLED``
+            (the campaign stopped before it started).
+        reported (str): The service's own outcome, verbatim; empty when it never ran (default: "").
+        detail (str): The service's one-line reason for a failure; empty otherwise (default: "").
+        hold_measured (bool | None): For a success: whether the hand measured the hold (``False`` rests on the close
+            command alone); ``None`` otherwise (default: None).
+        object_mm (tuple[float, float, float] | None): Where the object it went for was seen, BASE millimetres, the
+            median of its mask's surface; ``None`` where no candidate reached the arm (default: None).
+        grasp_pose (Pose | None): Where the tool closed, BASE, on a success; ``None`` otherwise (default: None).
+        looks (tuple[str, ...]): The looks it moved to before it perceived, as they read (``home``, or joints in
+            degrees); empty where it perceived from where the arm stood (default: ()).
+        put_back (HandlingReport | None): How the part went back, on a campaign that puts it back; ``None`` otherwise
+            (default: None).
+        fused_views (tuple[str, ...]): The cameras (rig ids) whose views of the object were fused into the cloud its
+            grasp was planned on, the grasp's camera first; empty for one view (default: ()).
+        fused_objects (int): How many objects of that frame gained a second camera's surface (default: 0).
+        looks_fused (tuple[str, ...]): The wrist camera's looks fused into the cloud its grasp was ranked on, the
+            ranking look first; empty on a fixed camera (default: ()).
+        jaw_faces_seen (tuple[bool, bool] | None): Whether each jaw's contact face of the chosen grasp was seen, (jaw 1,
+            jaw 2); ``None`` where no grasp was judged (default: None).
+        hand_eye_gap_mm (float | None): The hand-eye check of a wrist pick: how far apart two looks measure the part, in
+            millimetres; ``None`` where fewer than two looks shared enough of it (default: None).
+        views_file (str): Where this pick's looks were kept, with ``record_views``; empty otherwise (default: "").
+        generated_view_deg (float | None): How far the one view a wrist pick generated turned about the part, in
+            degrees; ``None`` where none was generated (default: None).
+    """
 
     index: int
     outcome: PickOutcome
@@ -239,6 +307,7 @@ class PickAttempt:
 
     @property
     def passed(self) -> bool:
+        """Whether it succeeded: ``outcome`` is ``SUCCEEDED``."""
         return self.outcome is PickOutcome.SUCCEEDED
 
     @property
@@ -251,6 +320,11 @@ class PickAttempt:
         return self.render()
 
     def render(self) -> str:
+        """The attempt as a person reads it: its outcome, then a line for each thing it measured.
+
+        Returns:
+            str: ASCII, indented to sit under a campaign's heading, no trailing newline.
+        """
         lines = [f"  run {self.index}: {self.reported or self.outcome.value}" + (
             f"  {self.detail}" if self.detail else ""
         ) + ("  hold not measured" if self.unmeasured else "")]
@@ -289,6 +363,12 @@ class PickAttempt:
         return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
+        """The attempt as plain data.
+
+        Returns:
+            dict[str, Any]: Every attribute, ``json.dumps`` safe: the outcome as its value, the grasp pose as
+                ``position_mm`` and ``quaternion_xyzw``, ``put_back`` as its outcome.
+        """
         return {
             "index": self.index,
             "outcome": self.outcome.value,
@@ -313,7 +393,19 @@ class PickAttempt:
 
 @dataclass(frozen=True, slots=True)
 class PickRunReport:
-    """What a campaign did, whether it passed, and how the cell came down."""
+    """What a campaign did, whether it passed, and how the cell came down.
+
+    Attributes:
+        requested (int): How many picks were asked for.
+        attempts (tuple[PickAttempt, ...]): Every attempt, cancelled ones included.
+        rule (PassRule): The rule it was judged by.
+        recording (Recording): Where its records went.
+        teardown (TeardownReport | None): How the cell came down; ``None`` where the campaign did not own the connect
+            (``from_service``) (default: None).
+        last (Any): The last report the service produced, for ``layers_that_ran()``; ``None`` if nothing ran (default:
+            None).
+        error (str): A refusal that stopped the campaign before or during the picks; empty otherwise (default: "").
+    """
 
     requested: int
     attempts: tuple[PickAttempt, ...]
@@ -329,6 +421,7 @@ class PickRunReport:
 
     @property
     def succeeded(self) -> int:
+        """How many attempts succeeded."""
         return sum(1 for a in self.attempts if a.passed)
 
     @property
@@ -351,14 +444,17 @@ class PickRunReport:
 
     @property
     def cancelled(self) -> int:
+        """How many attempts never started, because the campaign was asked to stop."""
         return sum(1 for a in self.attempts if a.outcome is PickOutcome.CANCELLED)
 
     @property
     def raised(self) -> bool:
+        """Whether a fault of the cell stopped the campaign (an attempt ``RAISED``)."""
         return any(a.outcome is PickOutcome.RAISED for a in self.attempts)
 
     @property
     def passed(self) -> bool:
+        """Whether the campaign passed: no refusal, no fault, and its rule accepts the attempts."""
         return not self.error and not self.raised and self.rule.accepts(self.attempts)
 
     @property
@@ -387,7 +483,11 @@ class PickRunReport:
         return self.render()
 
     def render(self) -> str:
-        """The whole campaign. ASCII, no trailing newline, no arguments."""
+        """The whole campaign as a person reads it: each attempt, the verdict, the teardown.
+
+        Returns:
+            str: ASCII, no trailing newline. ``print(report)`` shows the same.
+        """
         lines = [a.render() for a in self.attempts if a.outcome is not PickOutcome.CANCELLED]
         if self.error:
             lines.append(f"  REFUSED: {self.error}")
@@ -398,8 +498,10 @@ class PickRunReport:
     def summary(self) -> str:
         """The verdict block alone: the count, the rule it was judged by, and what was recorded.
 
-        A fragment of `render()`, which returns the whole campaign. The command-line runner prints
-        its own staged banners between the picks and the teardown and needs only this tail.
+        The command-line runner prints its own banners between the picks and the teardown and needs only this tail.
+
+        Returns:
+            str: The tail of :meth:`render`, ASCII.
         """
         lines = [f"RESULT: {self.succeeded}/{self.requested} succeeded"]
         # What the count rests on, where the gripper measured nothing: a success count that reads as
@@ -422,7 +524,12 @@ class PickRunReport:
         return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
-        """Plain data, `json.dumps`-safe with no custom encoder."""
+        """The campaign as plain data.
+
+        Returns:
+            dict[str, Any]: ``json.dumps`` safe with no custom encoder: the counts, the verdict, ``exit_code`` and each
+                attempt as :meth:`PickAttempt.to_dict` writes it.
+        """
         return {
             "requested": self.requested,
             "attempted": self.attempted,
@@ -454,18 +561,31 @@ def _checked_prompt(prompt: "Maybe[str]") -> "Maybe[str]":
 class PickRun:
     """N picks against one cell, under one connect.
 
-        from src.config import load_robot_config
-        from src.robot.execution.cell import Cell
-        from src.robot.execution.pick_run import PickRun, Recording
-
-        cell = Cell.from_robot_config(load_robot_config())
+        cell = Cell.from_tree(load_tree(), prompt="a red cube")
         report = PickRun.from_cell(cell, runs=10, recording=Recording.off()).execute()
-        print(report.render())
+        print(report)
         raise SystemExit(report.exit_code)
 
-    The two factories are `from_cell` and `from_service`, following the `from_<python-input>`
-    convention. A campaign takes the cell and owns the connect, because owning the connect is half
-    of what it knows.
+    Build it with :meth:`from_cell` (the campaign owns the connect) or :meth:`from_service` (you do), then
+    :meth:`execute`. Exactly one of ``cell`` and ``service`` is set.
+
+    Attributes:
+        cell (Cell | None): The cell the campaign builds, connects, drives and takes down (default: None).
+        service (Any): An already connected pick service, the caller owning its connect (default: None).
+        runs (int): How many picks (default: 1).
+        rule (PassRule): When the campaign passes (default: every attempt).
+        recording (Recording): Where the records go (default: off).
+        target_label (Maybe[str | None]): The label a pick target must carry (default: UNSET).
+        prompt (Maybe[str]): What the campaign picks (default: UNSET).
+        should_cancel (Callable[[], bool] | None): Asked before every attempt (default: None).
+        announce (Callable[[ConnectStage], None] | None): Called with each connect stage (default: None).
+        on_attempt (Callable[[PickAttempt], None] | None): Called as each attempt finishes (default: None).
+        look (tuple[LookPose, ...]): Where each pick looks from (default: (), the configured looks).
+        put_back (bool): Put each lifted part back (default: False).
+        view (Any): A ``LiveView``, or ``None`` (default: None).
+        both_faces (bool): Grip only once both jaw faces were seen (default: False).
+        record_views (bool): Keep each pick's looks (default: False).
+        push_mm (Maybe[float]): How far a push moves a part, in millimetres (default: UNSET).
     """
 
     #: Exactly one of these two is set. `cell` means "own the connect"; `service` means the caller
@@ -552,15 +672,49 @@ class PickRun:
         record_views: bool = False,
         push_mm: "Maybe[float]" = UNSET,
     ) -> "PickRun":
-        """A cell this campaign will build, connect, drive and take down.
+        """A campaign that builds, connects, drives and takes down a cell.
 
-        The connect happens once, outside the loop. Connecting is motion: a Robotiq activation
-        sweeps the full finger travel and a vacuum cup asserts its ejector immediately. Ten
-        campaigns of one are not one campaign of ten. A look list that names nothing raises here,
-        before any cell is built. ``view`` (a `LiveView`) shows every camera the build opened and
-        each attempt's grasp overlay; ``both_faces`` asks each pick to see both jaw contact faces of
-        its chosen grasp before gripping; ``record_views`` keeps each pick's looks; ``push_mm`` is how
-        far a push moves a part, and one above 50 mm or under 10 mm raises here; see the fields.
+        The connect happens once, outside the loop: connecting is motion (a Robotiq activation sweeps the full finger
+        travel, a vacuum cup asserts its ejector at once), so ten campaigns of one are not one campaign of ten.
+
+        Args:
+            cell (Cell): The cell, built or not; ``Cell.from_tree(tree, prompt=...)``.
+            runs (int): How many picks, under one connect; 0 connects, picks nothing and passes.
+            recording (Recording): Where each attempt's record line goes: ``Recording.to_file(path)`` or
+                ``Recording.off()``. Stated, never inherited.
+            rule (Maybe[PassRule]): When the campaign passes; unset is every attempt (default: UNSET).
+            target_label (Maybe[str | None]): The label a pick target must carry, for this campaign only; it sets the
+                filter alone, nothing the detector reads (default: UNSET).
+            prompt (Maybe[str]): What this campaign picks: the phrase every camera grounds, the labels the detector's
+                words map onto and the label filter, all set before the first pick and put back after the last (default:
+                UNSET).
+            should_cancel (Callable[[], bool] | None): Asked before every attempt; ``True`` stops the campaign, and the
+                remaining attempts are reported ``CANCELLED`` (default: None).
+            announce (Callable[[ConnectStage], None] | None): Called with each connect stage, for a console that shows
+                progress (default: None).
+            on_attempt (Callable[[PickAttempt], None] | None): Called as each attempt finishes, before the next starts
+                (default: None).
+            look (Maybe[Look]): Where each pick looks from before it perceives: joint poses (``JointPositions``, or
+                ``"home"``). A wrist camera's looks are fused one after another until the first safe grasp; a fixed
+                camera tries them in turn until one finds something. Unset: the looks the cell profile configures, else
+                the arm's home on a wrist camera, else, on a fixed camera, where it is mounted, with no motion (default:
+                UNSET).
+            put_back (bool): Put each lifted part back where it was grasped, so one part serves the whole campaign; a
+                part that does not go back stops it (default: False).
+            view (Any): A ``LiveView`` showing every camera the cell opened and each attempt's grasp overlay, or
+                ``None``. Display only; the caller closes it (default: None).
+            both_faces (bool): Grip only once both jaw contact faces of the chosen grasp were seen: the switch for
+                safety-critical processes; a wrist camera looks on for both (default: False).
+            record_views (bool): Keep each pick's looks for training (frames, tool poses, intrinsics, the fused cloud),
+                one file per pick under ``RECORD_VIEWS_DIR`` (default: False).
+            push_mm (Maybe[float]): How far a push of a failed part moves it, in millimetres, on a cell whose recovery
+                pushes; unset is the config's ``recovery.fixture.push_distance_mm`` (default: UNSET).
+
+        Returns:
+            PickRun: The campaign; nothing has moved yet. :meth:`execute` runs it.
+
+        Raises:
+            ValueError: A look list that names nothing, or ``push_mm`` above 50 mm or under 10 mm.
         """
         return cls(
             cell=cell,
@@ -599,11 +753,45 @@ class PickRun:
         record_views: bool = False,
         push_mm: "Maybe[float]" = UNSET,
     ) -> "PickRun":
-        """An already-connected service. The caller owns the connect and the teardown.
+        """A campaign on a service that is already connected; the caller owns the connect and the teardown, so the
+        report's ``teardown`` stays ``None``.
 
-        `teardown` stays `None` on the report: this factory did not bring the cell up and must not
-        claim to know how it came down. ``view``, ``both_faces``, ``record_views`` and ``push_mm``
-        are `from_cell`'s.
+        Args:
+            service (Any): The connected pick service, ``cell.service`` inside ``with cell.connected():``.
+            runs (int): How many picks, under one connect; 0 connects, picks nothing and passes.
+            recording (Recording): Where each attempt's record line goes: ``Recording.to_file(path)`` or
+                ``Recording.off()``. Stated, never inherited.
+            rule (Maybe[PassRule]): When the campaign passes; unset is every attempt (default: UNSET).
+            target_label (Maybe[str | None]): The label a pick target must carry, for this campaign only; it sets the
+                filter alone, nothing the detector reads (default: UNSET).
+            prompt (Maybe[str]): What this campaign picks: the phrase every camera grounds, the labels the detector's
+                words map onto and the label filter, all set before the first pick and put back after the last (default:
+                UNSET).
+            should_cancel (Callable[[], bool] | None): Asked before every attempt; ``True`` stops the campaign, and the
+                remaining attempts are reported ``CANCELLED`` (default: None).
+            on_attempt (Callable[[PickAttempt], None] | None): Called as each attempt finishes, before the next starts
+                (default: None).
+            look (Maybe[Look]): Where each pick looks from before it perceives: joint poses (``JointPositions``, or
+                ``"home"``). A wrist camera's looks are fused one after another until the first safe grasp; a fixed
+                camera tries them in turn until one finds something. Unset: the looks the cell profile configures, else
+                the arm's home on a wrist camera, else, on a fixed camera, where it is mounted, with no motion (default:
+                UNSET).
+            put_back (bool): Put each lifted part back where it was grasped, so one part serves the whole campaign; a
+                part that does not go back stops it (default: False).
+            view (Any): A ``LiveView`` showing every camera the cell opened and each attempt's grasp overlay, or
+                ``None``. Display only; the caller closes it (default: None).
+            both_faces (bool): Grip only once both jaw contact faces of the chosen grasp were seen: the switch for
+                safety-critical processes; a wrist camera looks on for both (default: False).
+            record_views (bool): Keep each pick's looks for training (frames, tool poses, intrinsics, the fused cloud),
+                one file per pick under ``RECORD_VIEWS_DIR`` (default: False).
+            push_mm (Maybe[float]): How far a push of a failed part moves it, in millimetres, on a cell whose recovery
+                pushes; unset is the config's ``recovery.fixture.push_distance_mm`` (default: UNSET).
+
+        Returns:
+            PickRun: The campaign; :meth:`execute` runs it.
+
+        Raises:
+            ValueError: A look list that names nothing, or ``push_mm`` above 50 mm or under 10 mm.
         """
         return cls(
             service=service,
@@ -625,7 +813,16 @@ class PickRun:
     # --- the verb ------------------------------------------------------------------------------
 
     def execute(self) -> PickRunReport:
-        """Run the campaign. Builds and connects when it owns the cell; always takes it down again."""
+        """Run the campaign: build and connect the cell when it owns it, pick ``runs`` times, and always take the cell
+        down again.
+
+        Returns:
+            PickRunReport: Every attempt, the verdict and the teardown; ``exit_code`` is 0 passed, 1 refused, 2 picked
+                and did not pass, 3 a fault of the cell stopped it.
+
+        A refusal or a fault is part of the report, never an exception: the cell still comes down. Nothing moves on its
+        own after a stop.
+        """
         if self.service is not None:
             return self._drive(self.service, teardown=None)
         if self.cell is None:  # pragma: no cover (neither factory can produce this)
@@ -938,7 +1135,7 @@ def _quietly(target: Any, method: str, *args: Any, **keywords: Any) -> None:
         logger.debug("pick run: %s.%s raised %s: %s", type(target).__name__, method, type(exc).__name__, exc)
 
 
-def keep_pick_views(service: Any, report: Any, *, name: str) -> str:
+def keep_pick_views(service: Any, report: Any, *, name: str, writer: Any = None) -> str:
     """Keep the looks of the pick that just ran on ``service`` for training (`src.robot.execution.record_views`); where
     they went, or `""`.
 
@@ -947,6 +1144,11 @@ def keep_pick_views(service: Any, report: Any, *, name: str) -> str:
     named after the pick's record (`attempt_id`), else `name`. One that cannot be written is said, and the caller goes
     on: the views are for training, and the pick they record is over. What a campaign (`PickRun(record_views=True)`)
     and a task (`TaskOptions(record_views=True)`) keep alike.
+
+    With ``writer`` (the process's background writer, `record_logging.background_writer`, a task's on a cell that writes
+    in the background) the looks are taken now, before the next pick lets them go, and written by it once the pick has
+    gone on: the file returned is where they will be, under the name the writer gives it, and one that cannot be written
+    is said in the log while the task goes on.
     """
     looks = getattr(report, "looks", ())
     looked = getattr(service, "looked_around", None)
@@ -957,10 +1159,17 @@ def keep_pick_views(service: Any, report: Any, *, name: str) -> str:
 
     telemetry = getattr(report, "telemetry", None)
     recorded = str(telemetry.get("attempt_id") or "") if isinstance(telemetry, Mapping) else ""
+    if writer is not None:
+        judged = getattr(looked, "judged", None)
+        ranked = getattr(getattr(service, "ranked_looked", None), "judged", None)
+        where = _views_file(recorded or name)
+        writer.submit(f"the looks of {recorded or name}",
+                      lambda: _write_views_to(where, views, judged, ranked, name=recorded or name))
+        return str(where)
     try:
         written = record_views(views, target_cloud_base_mm=getattr(getattr(looked, "judged", None),
                                                                     "target_cloud_base_mm", None),
-                               name=recorded or name)
+                               name=recorded or name, targets=_targets_of(views, getattr(looked, "judged", None)))
     except Exception as exc:  # noqa: BLE001 (a lost training file never stops a campaign or a task)
         logger.warning("pick run: the looks of %s were not kept: %s: %s", recorded or name, type(exc).__name__, exc)
         return ""
@@ -972,6 +1181,61 @@ def keep_pick_views(service: Any, report: Any, *, name: str) -> str:
             logger.warning("pick run: the debug pictures of %s were not drawn: %s: %s", recorded or name,
                            type(exc).__name__, exc)
     return "" if written is None else str(written)
+
+
+def _views_file(name: str) -> Path:
+    """Where the looks of the pick ``name`` will be kept: the file name `record_views` gives, decided now."""
+    import time  # noqa: PLC0415
+    import uuid  # noqa: PLC0415
+
+    from src.robot.execution.record_views import RECORD_VIEWS_DIR, _UNSAFE  # noqa: PLC0415
+
+    stem = _UNSAFE.sub("_", name).strip("._") or "pick"
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    return Path(RECORD_VIEWS_DIR) / f"{stem}-{stamp}-{uuid.uuid4().hex[:6]}.npz"
+
+
+def _write_views_to(where: Path, views: Any, judged: Any, ranked: Any, *, name: str) -> None:
+    """The background half of :func:`keep_pick_views`: the looks taken at the pick written to ``where``, and their debug
+    pictures beside it. A file that cannot be written raises, which the writer says; a picture that cannot be drawn is
+    said here."""
+    from src.robot.execution.record_views import record_views  # noqa: PLC0415
+
+    written = record_views(views, target_cloud_base_mm=getattr(judged, "target_cloud_base_mm", None), name=name,
+                           targets=_targets_of(views, judged))
+    if written is None:
+        return
+    Path(written).replace(where)
+    try:
+        _keep_debug_images(views, judged, where, ranked=ranked)
+    except Exception as exc:  # noqa: BLE001 (a debug picture never stops a campaign or a task)
+        logger.warning("pick run: the debug pictures of %s were not drawn: %s: %s", name, type(exc).__name__, exc)
+
+
+def _targets_of(views: Any, judged: Any) -> "tuple[int | None, ...]":
+    """Per look of ``views``, which of its segmentations is the part the pick went for, as the look the pick judged its
+    grasp on says it: that look's own ``target_index``, and for every other look the segmentation behind the blob its
+    view of the part was associated with (``members``, read as the pick loop reads it). ``None`` where a look did not
+    see the part or nothing was judged. What a views file of a camera recording for research keeps as each look's
+    target (``record_views``'s ``targets``, the owner, 2026-10-09)."""
+    def index(value: Any) -> int | None:
+        """``value`` as an index, None where it is no integer (a bool included)."""
+        return int(value) if isinstance(value, (int, np.integer)) and not isinstance(value, bool) else None
+
+    members = getattr(judged, "members", None)
+    members = members if isinstance(members, Mapping) else {}
+    targets: list[int | None] = []
+    for view in views:
+        if judged is not None and view is getattr(judged, "look", None):
+            targets.append(index(getattr(judged, "target_index", None)))
+            continue
+        blob = index(members.get(getattr(view, "name", None)))
+        blobs = getattr(view, "blob_objects", ())
+        if blob is not None and isinstance(blobs, tuple) and 0 <= blob < len(blobs):
+            targets.append(index(blobs[blob]))
+        else:
+            targets.append(None)
+    return tuple(targets)
 
 
 #: How many of the look's ranked grasps a debug picture draws, the chosen one first and thicker.

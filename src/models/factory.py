@@ -253,6 +253,12 @@ def _build_vlm_backend(models: PerceptionFields, *, debug_images: bool, segmente
         models.pipeline.zero_shot.segmenter,
     )
     grounder = shared_vlm().grounder_for(vlm_cfg)
+    # How the copy writes its answers is this block's, not the weights': the held copy takes it at every
+    # build, loaded or not, and loads nothing for it (src/models/vlm/qwen.py, Qwen3VLGrounder.configure).
+    grounder.configure(prompt_lookup_tokens=vlm_cfg.prompt_lookup_tokens,
+                       text_prompt_lookup_tokens=vlm_cfg.text_prompt_lookup_tokens,
+                       stop_at_answer_end=vlm_cfg.stop_at_answer_end,
+                       decode_graphs=vlm_cfg.decode_graphs)
     if vlm_cfg.preload:
         # Predictable latency and VRAM held from cell build. Raises what the load raised, as the
         # grounder's own preload did: a cell that asked for the model at build learns it is missing

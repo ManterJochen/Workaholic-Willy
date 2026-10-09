@@ -19,14 +19,34 @@ the loop: a pick that looks fresh, a place, the return to the return pose. Its r
   setup, every switch put back as found when the task ends, whatever ended it: the campaign (its push distance), the
   prompt, the closing axis, the overlay, the cancel check (halt and a cell taken down, never "stop after this part"),
   and the regions it keeps out. A Restart moves to its return pose first. A camera place then finds its bin
-  (``place_target.survey``) before the first pick.
+  (``place_target.survey``) before the first pick: the bin an earlier task kept (``known_target``, the console's for
+  the same phrase; ``known_targets`` by phrase for every place of a sort) is looked at again first, from its look, and
+  a bin that stood still is kept with one quick look at its rim; any other is surveyed from every look, as without one.
+  The survey grounds the bin alone: the parts are the pick's to count (2026-10-08).
 * **The scope.** ``once`` ends when the part is placed and the arm is back; ``until_empty`` when
-  ``empty_looks_to_end`` looks in a row saw nothing to pick; a once task that sees nothing looks once more too. A look
-  that saw only parts the task keeps out (its regions, never a part ``next_target`` skips after a failed pick) is an
-  empty one. ``max_failed_in_a_row`` failed picks in a row end it where the arm stands, and ``max_parts`` placed end it
-  (``part_limit``). The two rows count apart, as the build plan writes them (1.3.3): a failed pick does not start the
-  empty row again, nor an empty look the failed row; only a part placed starts both. A detector that failed where
-  nothing was found is ``detector_failed``, never "nothing left".
+  ``empty_looks_to_end`` looks in a row saw nothing to pick. An empty pick counts every look it perceived from (its
+  report's ``looks``), so one empty pass over a wrist camera's four looks ends either scope, and a pick of one look or
+  none counts one: a fixed camera still looks twice (the owner, 2026-10-08). A look that saw only parts the task keeps
+  out (its regions, never a part ``next_target`` skips after a failed pick) is an empty one. ``max_failed_in_a_row``
+  failed picks in a row end it where the arm stands, and ``max_parts`` placed end it (``part_limit``). The two rows
+  count apart, as the build plan writes them (1.3.3): a failed pick does not start the empty row again, nor an empty
+  look the failed row; only a part placed starts both. A detector that failed where nothing was found is
+  ``detector_failed``, never "nothing left".
+* **The check look** (``TaskOptions.check_look``, on; the owner's "Check-Look von Home", 2026-10-08). Where a placed
+  part was the only target its pick's first look counted (its report's ``targets_by_look``), the next pick is the
+  check: the first look alone, home, where the return left the arm, and no generated view, as with multi-view off. It
+  seeing nothing ends the task ``nothing_left`` at once; a part it sees is picked as any other; a part it sees and
+  fails on counts no failure, and the pick after it looks from every look again. A pick that does not count its
+  targets (a fixed camera's) is never followed by one.
+* **Following its parts** (``robot.grasping.follow_parts``, off unless the cell turns it on; the owner, 2026-10-09).
+  The first pick grounds every part; the next pick's first look finds the parts the last one kept (its first look,
+  less the part it gripped) again with SAM2 on their boxes and no detector, where nothing changed in depth and every
+  part passes every check, and is grounded as before where anything does not (``src/robot/perception/kept_scene.py``),
+  and the later looks of every pick find its first look's parts by their projected boxes. The pick after a push, a
+  blocker cleared, a recovery, a try that sent motion and failed, or the grip of a part that was not kept grounds
+  again, so does one ``refresh_every_picks`` after the last grounding, and so does the check look: the end of a task
+  is always asked of the detector. A pick that failed with nothing sent keeps what its first look saw. The memory is
+  this run's alone: a Restart starts with nothing kept.
 * **Benign ends return, problems stop.** A done, operator or ask end moves the arm to its return pose first (where the
   task moved it at all and it is not standing there); a problem stop leaves it where it stands and commands nothing
   more, an output included. Before every motion the task reads whether it may still move (the operator's halt, the
@@ -48,28 +68,56 @@ the loop: a pick that looks fresh, a place, the return to the return pose. Its r
   failed with a part possibly in the jaws ends the task holding it.
 * **The place.** A taught pose says where the part's bottom is let go (``place_target.pose_drop``); a camera place goes
   into the bin over its rim (``place_target.drop_plan``), carried to the look it was kept from, every frame held, the
-  bin checked again first (against where the survey found it), and placed without a keep-out. Either drop keeps the
-  tilt the tool gripped with, turned about the vertical only, so the hang it is raised by still bounds the part. A
-  drop refused, a bin lost or a part that does not fit puts the part back where it was gripped (``service.put_back``),
-  returns, and asks. A place counts its part placed once the jaws let go (:func:`place_released`), its line out
-  refused or not.
+  bin checked again first (against where the survey found it: its rim's depth and colour where it was last seen, the
+  detector wherever that is unsure), and placed without a keep-out. Either drop keeps the tilt the tool gripped with,
+  turned about the vertical only, so the hang it is raised by still bounds the part. A bin the check lost is looked
+  for again first (``robot.place.relocate``, on; the owner, 2026-10-09: "wenn sie dies nicht mehr tut, dann kann er
+  seine Ablage nochmal neu errechnen"): the hold of the look ends, the task drives its looks once more with the part in
+  the jaws (``place_target.relocate``), and a bin of the size the survey found and the colour it followed, standing in
+  no other place, is kept in place of the old one (``task.target_relocated``); the part is carried to the look it was
+  found from and checked there as before, the drop planned anew over it. Once per part: lost again, or found nowhere,
+  it is as before. A drop refused, a bin lost or a part that does not fit puts the part back where it was gripped
+  (``service.put_back``), returns, and asks. A place counts its part placed once the jaws let go
+  (:func:`place_released`), its line out refused or not.
+* **Set down, not dropped, never piled** (the cell's ``robot.place``, each off as shipped; the owner, 2026-10-08
+  night). Below a box's rim, from what the check read inside it, over the rim where the box reads full, the part or
+  the open hand would not stand clear of its walls, or the guard refuses the line in (``release_in_a_box``); the hang
+  from what the pick's looks read under the part (``part_bottom``); side by side on a flat place, a spot the camera
+  reads free first, else the next of the grid the task has not filled, none left putting the part back and asking
+  ``part_does_not_fit`` (``side_by_side``), each part laid at a taught pose kept out of an "until empty" task's picks;
+  and straight over the rim to a bin one of the pick's looks saw, checked on that look's frame and judged against it
+  (``carry``, or the task's own ``TaskOptions.carry``), via the look wherever that cannot be.
 * **What it keeps out of its picks** (Q4), for the whole task: a camera place's bin, its footprint grown by 10 mm, for
   both scopes; a pose place's drop, a circle of ``pose_keep_out_mm`` about it, for "until empty", where the arm's
   forward kinematics say where the taught pose puts the tool (an arm whose ``fk`` is no kinematic model, the
   rehearsal's dummy, gets none, and the log says so). No pick takes the bin or a part already placed; a look that sees
   only those is an empty one.
+* **A sort** (the owner, 2026-10-09: "Gruene Teile in die gelbe Kiste, rote in die blaue"). A plan of several rules
+  (``TaskPlan.more_rules``, up to :data:`MAX_FURTHER_RULES` :class:`SortRule` beside its own) puts each kind of part
+  where its rule says; two rules may share a place. Every place a camera finds is found before the first pick, one
+  locate of a class list per look (``place_target.survey_places``), or the task stops before its first pick naming
+  every place it is missing; each is kept out of the picks, and a check of one replaces its own region alone. Where
+  the detector looks at one bin of several, at a check or a search, it grounds them all (``together``), so a second
+  bin in view is never taken for it. Each pick grounds every rule's kind in one call (``class_list_prompt``), and the
+  part it gripped goes by the rule of the kind it went for (``task.rule``); a gripped part no rule names goes back where
+  it was gripped, and the task asks (``target_not_found``). A part no rule clearly claims stays where it lies, and the
+  end names them (``task.unsorted``): what the last empty pick's first look turned away (``ambiguous``, a word no rule
+  names), or what one locate of every part from where the arm stands sees outside every place of the task, a part of
+  no rule's kind included, whichever counts more; nothing moves for it. A sort sets every blocker aside, follows no
+  parts from pick to pick (the kept scene follows one label), judges no carry ahead of its pick (its place is known
+  only once the pick says which kind it gripped), and runs only on a cell whose perception grounds a phrase.
 
 It never asks a person, and every end of a run it started is a :class:`TaskReport`. A request this cell cannot do (an
 arm whose place cannot run, an unknown pose, a carried part nobody models, an empty object without ``pick_anything``,
-both jaw faces on a cell that turns every grasp off them) raises :class:`TaskRefused` before anything is commanded, and
-a programmer's error raises.
+both jaw faces on a cell that turns every grasp off them, a sort on a cell that grounds no phrase) raises
+:class:`TaskRefused` before anything is commanded, and a programmer's error raises.
 """
 
 from __future__ import annotations
 
 import dataclasses
-import logging
 import math
+import re
 import time
 from contextlib import ExitStack, nullcontext
 from dataclasses import dataclass, field
@@ -77,6 +125,7 @@ from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Protocol, Sequence
 
 from src.contracts import UNSET, Maybe, chosen
+from src.robot.constants import create_robot_logger
 from src.robot.core.errors import RobotError
 from src.robot.execution.pick_run import configured_looks_of, keep_pick_views
 from src.robot.execution.place_target import (
@@ -90,10 +139,12 @@ from src.robot.execution.place_target import (
     nominal_drop,
     pose_drop,
     recheck,
+    relocate,
     rim_clearance_mm,
     screen_joints,
     screen_pose,
     survey,
+    survey_places,
 )
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
@@ -102,9 +153,14 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.robot.execution.autonomous_grasp.report import AutonomousGraspReport
     from src.robot.execution.handling import HandlingReport
     from src.robot.execution.motion import MotionReport
+    from src.robot.execution.place_target import Relocated
+    from src.robot.grasping.recovery.exclusion_zones import ExclusionRegion
+    from src.robot.perception.kept_scene import KeptScene
 
 __all__ = [
+    "MAX_FURTHER_RULES",
     "PlaceAt",
+    "SortRule",
     "TaskEvent",
     "TaskHooks",
     "TaskOptions",
@@ -113,11 +169,12 @@ __all__ = [
     "TaskReport",
     "TaskStop",
     "jaws_before_a_pick",
+    "pick_phrase",
     "place_released",
     "run_task",
 ]
 
-logger = logging.getLogger(__name__)
+logger = create_robot_logger(__name__, "task.log")
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -126,7 +183,33 @@ logger = logging.getLogger(__name__)
 
 
 class TaskStop(StrEnum):
-    """Why a task ended. Each is a stop code of the console (``api.codes.StopCode``), of the class :attr:`stop_class`."""
+    """Why a task ended: each a stop code of the console (``api.codes.StopCode``), in one of four classes
+    (:attr:`stop_class`). A task that ends ``done``, ``operator`` or ``ask`` returns to its return pose first; a
+    ``problem`` leaves the arm where it stopped.
+
+    Attributes:
+        FINISHED: The task is done; the arm stands at its return pose. Class ``done``.
+        NOTHING_LEFT: Nothing matching was seen twice in a row ("until empty"). Class ``done``.
+        PART_LIMIT: The part limit (``TaskPlan.max_parts``) is reached. Class ``done``.
+        STOPPED_AFTER_PART: Stopped as asked once the part in hand was placed. Class ``operator``.
+        TARGET_NOT_FOUND: The place's target was seen from no look; nothing was picked. Class ``ask``.
+        TARGET_LOST: The target was no longer where it was found, and not found again. Class ``ask``.
+        TARGET_UNREACHABLE: The arm cannot reach the target without a collision. Class ``ask``.
+        PART_DOES_NOT_FIT: The part does not fit the opening; it is back where it was. Class ``ask``.
+        POSE_REFUSED: The screen refused one of the task's poses. Class ``ask``.
+        HALTED: Halt now: nothing was commanded after it; the arm moves again only after a person confirms the cell is
+            clear. Class ``problem``.
+        CONTROLLER_STOPPED: The controller cannot move (protective stop, emergency stop, powered off). Class
+            ``problem``.
+        HAND_NEEDS_PERSON: The hand reports a fault or an unknown state. Class ``problem``.
+        RECOVERY_NEEDS_PERSON: A push or a recovery stopped where the arm stands; a person decides. Class ``problem``.
+        PART_STILL_HELD: The place was refused before the release; the part is still in the hand. Class ``problem``.
+        RETURN_FAILED: The move to the return pose was refused. Class ``problem``.
+        FAILED_IN_A_ROW: Several picks in a row failed (``TaskPlan.max_failed_in_a_row``). Class ``problem``.
+        DETECTOR_FAILED: The detector failed, which is not "nothing found". Class ``problem``.
+        CELL_FAULT: The camera or the cell reported a fault. Class ``problem``.
+        DISCONNECTED: The cell was disconnected during the run. Class ``problem``.
+    """
 
     FINISHED = "finished"
     NOTHING_LEFT = "nothing_left"
@@ -173,7 +256,32 @@ _CLASS_OF: Mapping[TaskStop, str] = {
 
 
 class TaskEvent(StrEnum):
-    """What a task says between its motions, each an event type of the console (build plan 1.4)."""
+    """What a task says between its motions, each an event type of the console; ``TaskHooks.event`` gets them with their
+    data as keywords.
+
+    Attributes:
+        POSE_SCREENED: A taught pose of the task was screened before anything moved.
+        SURVEY_STARTED: The task began looking for its camera places.
+        TARGET_FOUND: A camera place's target was found, with its overlay.
+        TARGET_MISSING: A camera place's target was seen from no look.
+        PART_STARTED: The picks for the next part began.
+        NOTHING_FOUND: A pick found nothing to grip.
+        CARRY_STARTED: The gripped part is on its way to the place.
+        TARGET_CHECKED: The bin was looked at again before the drop, and stood where it was.
+        TARGET_LOST: The bin was not where it was found.
+        DROP_PLANNED: The drop over the target was planned.
+        PLACE_STARTED: The place began.
+        PLACED: The part was released at its place.
+        PLACE_FAILED: The place was refused or failed.
+        PUT_BACK: A part was put back where it was gripped.
+        RETURN_STARTED: The move to the return pose began.
+        RETURNED: The arm reached the return pose.
+        RETURN_FAILED: The move to the return pose was refused.
+        PART_FINISHED: One part's work ended.
+        RULE: A sort: the rule a gripped part goes by.
+        TARGET_RELOCATED: A bin that moved was found again, and the drop computed anew.
+        UNSORTED: A sort's end: how many parts no rule took, left where they lie.
+    """
 
     POSE_SCREENED = "task.pose_screened"
     SURVEY_STARTED = "task.survey_started"
@@ -193,6 +301,10 @@ class TaskEvent(StrEnum):
     RETURNED = "task.returned"
     RETURN_FAILED = "task.return_failed"
     PART_FINISHED = "task.part_finished"
+    # A sort (the owner, 2026-10-09): the rule a gripped part goes by, a place found again, the parts no rule took.
+    RULE = "task.rule"
+    TARGET_RELOCATED = "task.target_relocated"
+    UNSORTED = "task.unsorted"
 
 
 #: What a task grounds in front of the object it names, so every such part comes back in a box of its own. On a mat of
@@ -203,6 +315,24 @@ class TaskEvent(StrEnum):
 EACH_SEPARATE = "each separate"
 #: What a task that names no object grounds: every part in a box of its own.
 EVERY_PART_PHRASE = f"{EACH_SEPARATE} object"
+#: How wide a thing the end of a sort may see and still count as a part left where it lies, mm, on either side: one
+#: wider is what the parts stand on (a mat, a tray), which a locate of every part boxes too.
+LEFT_OVER_MAX_MM = 250.0
+
+
+def pick_phrase(named: str, *, which: str = "", source: str = "") -> str:
+    """What a task's picks ground on a cell that grounds a phrase (G1, the owner's speed round of 2026-10-08): the one
+    part the operator singled out, as said (``which``, "the gray cube on top of the other one": no "each separate",
+    which asks for every part of the kind and grounded both cubes of a stack); else every part of the kind named, each
+    in a box of its own, where the parts lie after it (``source``, "each separate gray cube on the black mat"); else
+    every part there ("each separate object on the black mat")."""
+    named, which, source = named.strip(), which.strip(), source.strip()
+    where = f" {source}" if source else ""
+    if which:
+        return which
+    if named:
+        return f"{EACH_SEPARATE} {named}{where}"
+    return f"{EVERY_PART_PHRASE}{where}"
 
 
 def _grounds_a_phrase(service: Any) -> bool:
@@ -232,12 +362,22 @@ class TaskRefused(ValueError):
 
 @dataclass(frozen=True)
 class PlaceAt:
-    """Where a task puts each part: a taught pose (``pose``, its name in the task's ``poses``), or a target the camera
-    finds (``camera``, an English phrase such as ``"blue bin"``), one of the two.
+    """Where a task puts each part: a taught pose, or a target the camera finds; exactly one of the two.
 
-    ``air_mm`` is the air over a camera target's rim when the jaws open, 10 to 50 mm (Q3); ``None`` is the cell's own
-    (``place_target.rim_clearance_mm``, 20 mm as shipped). A taught pose takes none: it says where the part's bottom is
-    let go.
+        PlaceAt(pose="Ablage links")                 # a taught pose, by its name in the task's poses
+        PlaceAt(camera="blue bin", air_mm=20.0)      # a bin the camera finds
+
+    Attributes:
+        pose (str | None): The name of a taught pose in the task's ``poses``: where the part's bottom is let go
+            (default: None).
+        camera (str | None): An English phrase the camera grounds, such as ``"blue bin"`` (default: None).
+        air_mm (float | None): For a camera target: the air over its rim when the jaws open, 10 to 50 mm; ``None`` is
+            the cell's own (``place_target.rim_clearance_mm``, 20 mm as shipped). A taught pose takes none (default:
+            None).
+
+    Raises:
+        ValueError: Neither or both of ``pose`` and ``camera``, an empty one, or ``air_mm`` outside 10 to 50 mm, or
+            given for a pose.
     """
 
     pose: str | None = None
@@ -260,24 +400,127 @@ class PlaceAt:
                                  f"{self.air_mm!r}")
 
 
+#: How many rules a sort holds beside the task's own first one: four in all (the owner, 2026-10-09). The command
+#: reader's own bound (``src.models.vlm.command.MAX_FURTHER_RULES``), kept here so a plan is checked without loading it.
+MAX_FURTHER_RULES = 3
+
+
+@dataclass(frozen=True)
+class SortRule:
+    """One rule of a sort ("Gruene Teile in die gelbe Kiste, rote in die blaue"): a kind of part and where it goes. A
+    plan's first rule is its own ``object`` and ``place``; its further rules are these.
+
+    Attributes:
+        object (str): The kind of part, the English phrase the detector grounds, such as ``"red cube"``.
+        place (PlaceAt): Where that kind goes.
+        which (str): The one part the operator singled out, grounded alone, as a plan's ``which`` (default: "").
+        source (str): Where the parts lie, such as ``"on the black mat"`` (default: "").
+
+    Raises:
+        TypeError: A field that is not a phrase, or a place that is not a ``PlaceAt``. The plan refuses an empty kind
+            and a phrase holding ``|`` or the word ``ambiguous`` (the detector's class list).
+    """
+
+    object: str
+    place: PlaceAt
+    which: str = ""
+    source: str = ""
+
+    def __post_init__(self) -> None:
+        for name in ("object", "which", "source"):
+            if not isinstance(getattr(self, name), str):
+                raise TypeError(f"a rule's {name} is a phrase, not {type(getattr(self, name)).__name__}")
+        if not isinstance(self.place, PlaceAt):
+            raise TypeError(f"a rule's place is a PlaceAt, not {type(self.place).__name__}")
+
+
+#: The detector's label of a box no description of a class list clearly claims, and the bar between the descriptions
+#: (``src.models.vlm.parsing.AMBIGUOUS_LABEL``, ``CLASS_LIST_SEPARATOR``): a sort's phrase may hold neither.
+_AMBIGUOUS = "ambiguous"
+_BAR = "|"
+
+
+def _words(text: Any) -> str:
+    """How a task compares two kinds of part, or two places a camera finds: trimmed, each run of blanks one space, case
+    folded (``place_target``'s own compare)."""
+    return " ".join(str(text or "").split()).casefold()
+
+
+def _class_list_refusal(text: str, what: str) -> str:
+    """Why ``text`` cannot be one description of a class list, or ``""``: ``class_list_prompt``'s own two refusals, a
+    bar, which would split it in two, and the word ``ambiguous``, which would take a box no rule claims for its own.
+    Kept here, so a plan is checked without loading a model package."""
+    if _BAR in text:
+        return (f"{what} {text!r} holds {_BAR!r}, which separates the phrases the detector is asked for in one call; a "
+                "sort grounds every rule's phrase so")
+    if _AMBIGUOUS in re.findall(r"[a-z0-9]+", text.casefold()):
+        return (f"{what} {text!r} holds the word {_AMBIGUOUS!r}, the detector's label of a part no rule clearly "
+                "claims")
+    return ""
+
+
+def _refuse_a_sort_of(rules: "Sequence[SortRule]") -> None:
+    """Raise ``ValueError`` where ``rules``, a sort's (its own first), cannot be sorted: more than
+    :data:`MAX_FURTHER_RULES` beside the first, a rule that names no kind, one kind in two rules (case and blanks aside:
+    each kind goes to one place), two rules that ground one phrase, and a phrase the detector's class list cannot hold
+    (a part's, as the picks ground it, or a place's the camera finds)."""
+    if len(rules) - 1 > MAX_FURTHER_RULES:
+        raise ValueError(f"a sort holds at most {MAX_FURTHER_RULES} rules beside its own ({MAX_FURTHER_RULES + 1} in "
+                         f"all), not {len(rules) - 1}")
+    kinds: dict[str, int] = {}
+    grounded: dict[str, int] = {}
+    for number, rule in enumerate(rules, start=1):
+        if not rule.object.strip():
+            raise ValueError(f"a sort names the kind of part of every rule, and rule {number} names none")
+        earlier = kinds.setdefault(_words(rule.object), number)
+        if earlier != number:
+            raise ValueError(f"a sort puts each kind of part in one place, and rules {earlier} and {number} both name "
+                             f"{rule.object.strip()!r}")
+        phrase = pick_phrase(rule.object, which=rule.which, source=rule.source)
+        earlier = grounded.setdefault(_words(phrase), number)
+        if earlier != number:
+            raise ValueError(f"rules {earlier} and {number} of the sort ground one phrase, {phrase!r}, so no part could "
+                             "be told whose it is")
+        why = _class_list_refusal(phrase, f"rule {number}'s part")
+        if not why and rule.place.camera is not None:
+            why = _class_list_refusal(rule.place.camera.strip(), f"rule {number}'s place")
+        if why:
+            raise ValueError(why)
+
+
 @dataclass(frozen=True)
 class TaskOptions:
     """The Advanced drawer's switches, for one task: never the cell's.
 
-    ``multi_view`` the looks as configured, ``False`` the first look only and no generated view (Q11); ``both_faces``
-    both jaw contact faces seen before a grip; ``closing_axis`` only grasps that close along it (a name
-    ``Pose.tool_down`` takes); ``push_mm`` how far a push of a failed part moves it (``None``: the cell's, which may go
-    longer where it opens too little room); ``critical_parts`` the owner's switch for this task (``None``: the cell's
-    ``recovery.critical_parts``; true clears a blocker and pushes nothing); ``record_views`` each pick's looks
-    kept for training; ``overlay`` the grasp overlay rendered during the task; ``pick_anything`` the operator's word
-    that an empty object means anything the camera sees, bin walls included (Q7 A+). ``rescan``, ``push`` and ``clear``
-    are the run's own word on recovery (the owner, 2026-10-05: the console's ticks override the config for one run):
-    ``None`` keeps the cell's ``recovery.allowed_actions``; ``push`` or ``clear`` true allows ``nudge_target``, both
-    false takes it out; ``clear`` without ``push`` clears blockers and pushes nothing (critical parts).
-    ``blocker_into_the_place`` the owner's switch for where a blocker goes (``None``: the cell's
-    ``recovery.blocker_into_the_place``): true, a task that names no object takes it as the part its pick takes and
-    sets it down where the parts go, then picks the part it blocked; false, it is set aside on the support. A task that
-    names an object sets every blocker aside (2026-10-06).
+    Attributes:
+        multi_view (bool): The looks as configured; ``False`` is the first look only and no generated view (default:
+            True).
+        both_faces (bool): Grip only once both jaw contact faces of the grasp were seen (default: False).
+        closing_axis (str | None): Grip only grasps closing along this axis, a name ``Pose.tool_down`` takes (``"-y"``);
+            ``None`` any (default: None).
+        push_mm (float | None): How far a push of a failed part moves it, millimetres; ``None`` the cell's, which may go
+            longer where it opens too little room (default: None).
+        critical_parts (bool | None): The owner's switch for this task: ``True`` clears a blocker and pushes nothing;
+            ``None`` the cell's ``recovery.critical_parts`` (default: None).
+        record_views (bool): Keep each pick's looks for training (default: False).
+        overlay (bool): Render the grasp overlay during the task (default: True).
+        pick_anything (bool): An empty object means anything the camera sees, bin walls included (default: False).
+        rescan (bool | None): The run's word on the ``rescan`` recovery; ``None`` keeps the cell's (default: None).
+        push (bool | None): The run's word on pushing (``nudge_target``); ``None`` keeps the cell's (default: None).
+        clear (bool | None): The run's word on clearing a blocker: ``True`` without ``push`` clears blockers and pushes
+            nothing; ``None`` keeps the cell's (default: None).
+        blocker_into_the_place (bool | None): Where a blocker goes: ``True``, a task that names no object takes it as
+            its part and sets it down where the parts go; ``False``, set aside on the support; ``None`` the cell's
+            (default: None). A task that names an object sets every blocker aside.
+        check_look (bool): Where the part placed was the last target its pick's first look counted, the next pick looks
+            from that first look alone, and seeing nothing there ends an "until empty" task (default: True).
+        carry (Literal["via_the_look", "over_the_rim"] | None): How a part is carried to a bin a wrist camera found:
+            ``via_the_look`` to the look it was found from, looked at again there; ``over_the_rim`` straight over;
+            ``None`` the cell's ``robot.place.carry`` (default: None).
+        every_look (bool): "Alle Posen": each pick visits every look, however safe an earlier grasp is (default: False).
+
+    Raises:
+        ValueError: ``every_look`` with ``multi_view`` off, or a ``carry`` that is neither of its two.
     """
 
     multi_view: bool = True
@@ -292,16 +535,49 @@ class TaskOptions:
     push: bool | None = None
     clear: bool | None = None
     blocker_into_the_place: bool | None = None
+    check_look: bool = True
+    carry: Literal["via_the_look", "over_the_rim"] | None = None
+    every_look: bool = False
+
+    def __post_init__(self) -> None:
+        if self.carry not in (None, "via_the_look", "over_the_rim"):
+            raise ValueError(f"a task's carry is 'via_the_look' or 'over_the_rim' (None: the cell's), not {self.carry!r}")
+        if self.every_look and not self.multi_view:
+            raise ValueError("a task asks for every look or for its first look only (multi-view off), not for both")
 
 
 @dataclass(frozen=True)
 class TaskPlan:
-    """One task: what to pick (``object``, the English phrase the detector grounds; ``""`` anything), where to put it,
-    where to go after (``home`` or a taught pose's name), and how long (``once`` or ``until_empty``).
+    """One task: what to pick, where to put it, where to go after, and how long.
 
-    ``first_motion`` is ``look`` for a new task and ``return`` for a Restart, whose first motion is the planned move to
-    the return pose. The limits are the owner's: ``max_failed_in_a_row`` (3), ``empty_looks_to_end`` (2), ``max_parts``
-    (100) and ``pose_keep_out_mm`` (150 mm about a pose place's drop for "until empty", Q4).
+        plan = TaskPlan(object="gray cube", place=PlaceAt(camera="yellow bin"), scope="until_empty")
+        report = run_task(cell.service, plan, hooks=my_hooks, poses={})
+
+    Attributes:
+        object (str): What to pick, the English phrase the detector grounds; ``""`` anything.
+        place (PlaceAt): Where each part goes.
+        return_to (str): Where the arm goes after each part: ``"home"`` or a taught pose's name (default: "home").
+        scope (Literal["once", "until_empty"]): One part, or until nothing is left (default: "once").
+        options (TaskOptions): This task's switches (default: TaskOptions()).
+        first_motion (Literal["look", "return"]): ``look`` for a new task, ``return`` for a Restart, whose first motion
+            is the planned move to the return pose (default: "look").
+        max_failed_in_a_row (int): Picks in a row that may fail before the task stops (default: 3).
+        empty_looks_to_end (int): Empty looks in a row that end an "until empty" task (default: 2).
+        max_parts (int): The most parts one task places (default: 100).
+        pose_keep_out_mm (float): How far about a pose place's drop an "until empty" task picks nothing, millimetres
+            (default: 150.0).
+        which (str): The one part the operator singled out ("the gray cube on top of the other one"), grounded alone
+            (default: "").
+        source (str): Where the parts lie ("on the black mat") (default: "").
+        more_rules (tuple[SortRule, ...]): Makes the task a sort: up to :data:`MAX_FURTHER_RULES` further rules, each
+            kind of part to its rule's place; ``()`` a task of one kind (default: ()).
+
+    Raises:
+        ValueError: A sort whose rules name no kind, a kind in two rules, a phrase holding ``|`` or ``ambiguous``, more
+            than :data:`MAX_FURTHER_RULES` further rules; a scope, first motion or limit out of its range; a
+            ``return_to`` that names nothing.
+        TypeError: A place that is not a ``PlaceAt``, a further rule that is not a ``SortRule``, a phrase that is not a
+            string.
     """
 
     object: str
@@ -314,8 +590,27 @@ class TaskPlan:
     empty_looks_to_end: int = 2
     max_parts: int = 100
     pose_keep_out_mm: float = 150.0
+    which: str = ""
+    source: str = ""
+    more_rules: "tuple[SortRule, ...]" = ()
+
+    @property
+    def rules(self) -> "tuple[SortRule, ...]":
+        """Every rule of the task, its own first (its ``object``, ``place``, ``which`` and ``source``), then its
+        ``more_rules``: one for a task of one kind."""
+        return (SortRule(self.object, self.place, self.which, self.source), *self.more_rules)
 
     def __post_init__(self) -> None:
+        if isinstance(self.more_rules, list):
+            object.__setattr__(self, "more_rules", tuple(self.more_rules))
+        if not isinstance(self.more_rules, tuple):
+            raise TypeError(f"a task's further rules are SortRules in a tuple, not {type(self.more_rules).__name__}")
+        for rule in self.more_rules:
+            if not isinstance(rule, SortRule):
+                raise TypeError(f"a further rule of a task is a SortRule, not {type(rule).__name__}")
+        for name in ("which", "source"):
+            if not isinstance(getattr(self, name), str):
+                raise TypeError(f"a task's {name} is a phrase, \"\" for none, not {type(getattr(self, name)).__name__}")
         if self.scope not in ("once", "until_empty"):
             raise ValueError(f"a task's scope is 'once' or 'until_empty', not {self.scope!r}")
         if self.first_motion not in ("look", "return"):
@@ -331,6 +626,8 @@ class TaskPlan:
             raise TypeError(f"a task's place is a PlaceAt, not {type(self.place).__name__}")
         if not str(self.return_to).strip():
             raise ValueError("return_to names home or a taught pose; it names nothing")
+        if self.more_rules:
+            _refuse_a_sort_of(self.rules)
 
 
 class TaskHooks(Protocol):
@@ -346,28 +643,72 @@ class TaskHooks(Protocol):
     """
 
     def event(self, name: TaskEvent, /, **data: Any) -> None:
+        """One of the task's events, said between its motions.
+
+        Args:
+            name (TaskEvent): Which event.
+            **data (Any): Its data: among them ``said``, the library's English sentence for it; a camera target's events
+                carry its overlay as ``image_png`` (bytes or ``None``).
+        """
         ...
 
     def pick_done(self, part: int, pick: int, report: "AutonomousGraspReport") -> None:
+        """One pick of the task ended.
+
+        Args:
+            part (int): The part's number in the task, from 1.
+            pick (int): The pick's number for that part, from 1.
+            report (AutonomousGraspReport): The pick's report; its looks' file in ``telemetry["views_file"]`` where they
+                were kept.
+        """
         ...
 
     def stop_after_part(self) -> bool:
+        """Whether the operator asked the task to stop once the part in hand is placed.
+
+        Returns:
+            bool: ``True`` stops after the part.
+        """
         ...
 
     def halted(self) -> bool:
+        """Whether "halt now" was pressed.
+
+        Returns:
+            bool: ``True`` ends the task with nothing more commanded.
+        """
         ...
 
     def abandoned(self) -> str:
+        """Why the cell is being taken down under the task.
+
+        Returns:
+            str: The reason, or ``""`` while it is not.
+        """
         ...
 
 
 @dataclass(frozen=True)
 class TaskReport:
-    """What a task did: why it ended (``stop``, said in ``sentence``), the parts it released at the place, the picks it
-    made and how many gripped, whether the program believed a part in the jaws at the end (a record only: a gate reads
-    the live hand), whether the arm stands at the task's return pose because the task's last motion was the return there
-    (``at_return``; ``False`` where the task moved nothing, or its last motion went anywhere else), and the last pick's
-    own report."""
+    """What a task did, and why it ended.
+
+    Attributes:
+        stop (TaskStop): Why it ended.
+        sentence (str): The same, as a sentence for a person.
+        parts_placed (int): Parts released at the place.
+        picks (int): Picks made.
+        succeeded (int): Picks that gripped.
+        holding (bool): Whether the program believed a part in the jaws at the end: a record only; a gate reads the live
+            hand.
+        last_report (AutonomousGraspReport | None): The last pick's own report; ``None`` if none ran.
+        at_return (bool): Whether the arm stands at the return pose because the task's last motion went there.
+        kept_target (KeptTarget | None): The bin a camera place followed last, which the next task into the same phrase
+            may take as ``known_target``; ``None`` for a pose place, or where it ended ``target_lost`` or
+            ``target_not_found`` (default: None).
+        kept_targets (Mapping[str, KeptTarget]): Every bin a camera place followed last, by its phrase, for the next
+            task's ``known_targets`` (default: {}).
+        unsorted (int): How many parts no rule of a sort claimed, left where they lie; 0 otherwise (default: 0).
+    """
 
     stop: TaskStop
     sentence: str
@@ -377,13 +718,20 @@ class TaskReport:
     holding: bool = False
     last_report: "AutonomousGraspReport | None" = None
     at_return: bool = False
+    kept_target: "KeptTarget | None" = None
+    kept_targets: "Mapping[str, KeptTarget]" = field(default_factory=dict)
+    unsorted: int = 0
 
     def __str__(self) -> str:
         """What ``print()`` shows: the text :meth:`render` returns."""
         return self.render()
 
     def render(self) -> str:
-        """The task, for a person. ASCII, no trailing newline, no arguments."""
+        """The task as a person reads it.
+
+        Returns:
+            str: ASCII, no trailing newline. ``print(report)`` shows the same.
+        """
         lines = [f"task  {self.stop.value.upper()}  {self.parts_placed} part(s) placed in {self.picks} pick(s), "
                  f"{self.succeeded} gripped", f"  {self.sentence}"]
         if not self.stop.returns:
@@ -398,7 +746,11 @@ class TaskReport:
         return "\n".join(line.encode("ascii", "backslashreplace").decode("ascii") for line in lines)
 
     def to_dict(self) -> dict[str, Any]:
-        """Plain data, ``json.dumps`` safe."""
+        """The task as plain data.
+
+        Returns:
+            dict[str, Any]: ``json.dumps`` safe.
+        """
         last = self.last_report
         return {
             "stop": self.stop.value,
@@ -410,6 +762,9 @@ class TaskReport:
             "holding": self.holding,
             "at_return": self.at_return,
             "last_report": None if last is None else last.to_dict(),
+            "kept_target": None if self.kept_target is None else self.kept_target.to_dict(),
+            "kept_targets": {str(phrase): kept.to_dict() for phrase, kept in self.kept_targets.items()},
+            "unsorted": self.unsorted,
         }
 
 
@@ -474,15 +829,38 @@ def place_released(report: "HandlingReport") -> bool:
 
 
 def run_task(service: Any, plan: TaskPlan, *, hooks: TaskHooks, poses: "Mapping[str, JointPositions]",
-             locators: "Maybe[Sequence[Any]]" = UNSET) -> TaskReport:
-    """Run ``plan`` on the connected cell ``service`` holds, saying each step to ``hooks``; what it came to.
+             locators: "Maybe[Sequence[Any]]" = UNSET, known_target: "KeptTarget | None" = None,
+             known_targets: "Mapping[str, KeptTarget | None] | None" = None) -> TaskReport:
+    """Run a task on a connected cell: pick a part, set it down, return, and look again, once or until nothing is left.
+    The operator console's Start runs exactly this.
 
-    ``poses`` are the taught poses the plan may name (place and return), joints by name. ``locators`` find a camera
-    place's target: unset, the service's own (``place_target.locators_for_service``). See the module docstring for the
-    order and the rules. Raises :class:`TaskRefused` before anything is commanded for a request this cell cannot do,
-    and a programmer's error; every other end is the report's.
+        with cell.connected():
+            report = run_task(cell.service, TaskPlan(object="gray cube", place=PlaceAt(camera="yellow bin")),
+                              hooks=my_hooks, poses={})
+        print(report)
+
+    Args:
+        service (Any): The connected pick service, ``cell.service``.
+        plan (TaskPlan): What to do.
+        hooks (TaskHooks): What the task says between its motions, and asks: stop after the part, halted, abandoned.
+        poses (Mapping[str, JointPositions]): The taught poses the plan may name (place and return), joints by name.
+        locators (Maybe[Sequence[Any]]): What finds a camera place's target; unset is the service's own cameras
+            (default: UNSET).
+        known_target (KeptTarget | None): The bin an earlier task kept (its report's ``kept_target``): a camera place
+            into the same phrase looks at it again first, from its look; in a sort, the first camera place's (default:
+            None).
+        known_targets (Mapping[str, KeptTarget | None] | None): The bins earlier tasks kept, by phrase (a report's
+            ``kept_targets``), each looked at again first by the place of its phrase (default: None).
+
+    Returns:
+        TaskReport: Why it ended, the parts placed, the picks, whether the arm is back. Every end but a refusal is the
+            report's.
+
+    Raises:
+        TaskRefused: A request this cell cannot do (an unknown pose, a refused route, ...), raised before anything is
+            commanded; ``code`` is the console's refusal code.
     """
-    return _Task(service, plan, hooks, poses, locators).run()
+    return _Task(service, plan, hooks, poses, locators, known_target, known_targets).run()
 
 
 class _Ended(Exception):
@@ -493,16 +871,90 @@ class _Ended(Exception):
         self.report = report
 
 
+@dataclass(eq=False)
+class _Place:
+    """One place of a task's rules, as the task follows it: where it is (``at``, the first rule's word for it) and the
+    rules that put their parts there (``rules``, indices into ``TaskPlan.rules``; two rules may share one, the owner,
+    2026-10-09).
+
+    A camera place keeps the bin its survey found (``surveyed``, what every check measures against, a bin found again
+    in its stead), the sighting the drops go to now (``kept``), the region of it kept out of the picks (``region``, as
+    ``keep_out_region`` returned it: a check of this place replaces it alone), what its last check read where the part
+    goes (``inside``), the air over its rim (``air_mm``), and whether its bin was lost and found nowhere (``lost``). A
+    pose place keeps where its taught pose puts the tool (``tcp``) and the circle about its drop ("until empty",
+    ``region``). Either keeps the spots of a flat place this task laid a part on, each its middle and how far the part
+    reached from it (``spots``)."""
+
+    at: PlaceAt
+    rules: "list[int]"
+    air_mm: float
+    surveyed: "KeptTarget | None" = None
+    kept: "KeptTarget | None" = None
+    region: "ExclusionRegion | None" = None
+    inside: Any = None
+    spots: "list[tuple[tuple[float, float], float]]" = field(default_factory=list)
+    tcp: "Pose | None" = None
+    lost: bool = False
+
+    @property
+    def where(self) -> str:
+        """The place as the task's events name it: ``pose:<name>`` or ``target:<phrase>``."""
+        return f"pose:{self.at.pose}" if self.at.pose is not None else f"target:{self.at.camera}"
+
+    @property
+    def named(self) -> str:
+        """What names it: the taught pose's name, or the phrase the camera finds it by."""
+        return str(self.at.pose if self.at.pose is not None else self.at.camera).strip()
+
+
+def _places_of(plan: TaskPlan, tree: Any) -> "list[_Place]":
+    """The places of ``plan``'s rules, each once, in the order the rules first name them: one for a task of one kind. A
+    camera place is one phrase, case and blanks aside; a pose place one name."""
+    places: list[_Place] = []
+    for index, rule in enumerate(plan.rules):
+        at = rule.place
+        same = next((place for place in places if place.at.pose == at.pose and (
+            at.pose is not None or _words(place.at.camera) == _words(at.camera))), None)
+        if same is not None:
+            same.rules.append(index)
+            continue
+        air = float(at.air_mm) if at.air_mm is not None else rim_clearance_mm(tree)
+        places.append(_Place(at=at, rules=[index], air_mm=air))
+    return places
+
+
+def _known_targets_of(known: Any) -> "dict[str, KeptTarget]":
+    """The bins earlier tasks kept, by the camera phrase each was found for, as handed in (``None`` entries left out);
+    anything that is no such map, and an entry that is no ``KeptTarget``, is a programmer's error: raised."""
+    if known is None:
+        return {}
+    if not isinstance(known, Mapping):
+        raise TypeError(f"the known targets are the bins earlier tasks kept by their phrases, not {type(known).__name__}")
+    bins: dict[str, KeptTarget] = {}
+    for phrase, kept in known.items():
+        if kept is None:
+            continue
+        if not isinstance(kept, KeptTarget):
+            raise TypeError(f"a known target is the KeptTarget an earlier task kept, not {type(kept).__name__}")
+        bins[str(phrase)] = kept
+    return bins
+
+
 class _Task:
     """One run of :func:`run_task`: the cell, the plan, and what happened so far."""
 
     def __init__(self, service: Any, plan: TaskPlan, hooks: TaskHooks, poses: "Mapping[str, JointPositions]",
-                 locators: "Maybe[Sequence[Any]]") -> None:
+                 locators: "Maybe[Sequence[Any]]", known_target: "KeptTarget | None" = None,
+                 known_targets: "Mapping[str, KeptTarget | None] | None" = None) -> None:
         self.service = service
         self.plan = plan
         self.hooks = hooks
         self.poses = dict(poses)
         self.chosen_locators = locators
+        if known_target is not None and not isinstance(known_target, KeptTarget):
+            raise TypeError(f"a known target is the KeptTarget an earlier task kept, not {type(known_target).__name__}")
+        self.known_target = known_target
+        self.known_targets = _known_targets_of(known_targets)
         orchestrator = service.runtime.orchestrator
         self.orchestrator = orchestrator
         self.arm = orchestrator.arm
@@ -517,13 +969,17 @@ class _Task:
         # the cell declares its longest part's length past the fingertips.
         self.fingertips_mm = _fingertips_past_the_tcp_mm(tree)
         self.hang_mm = self.fingertips_mm + (self.length_mm or 0.0)
-        place = plan.place
-        self.air_mm = float(place.air_mm) if place.air_mm is not None else rim_clearance_mm(tree)
         self.locators: list[Any] = []
-        # The bin the survey found, which every check measures against, and the sighting of it the drops go to now.
-        self.surveyed: KeptTarget | None = None
-        self.kept: KeptTarget | None = None
-        self.place_tcp: "Pose | None" = None
+        # The places of the task's rules, each once (one for a task of one kind), and what the task keeps of each: the
+        # bin a camera place's survey found and the sighting of it the drops go to now, where a taught pose puts the
+        # tool, the spots a part was laid on. Whether the task sorts (several rules, the owner, 2026-10-09).
+        self.places = _places_of(plan, tree)
+        self.sorts = bool(plan.more_rules)
+        # How the parts are set down (robot.place, the owner, 2026-10-08 night): the cell's rules and the open hand.
+        self.rules = _place_rules(tree)
+        self.open_hand = _open_hand_of(tree)
+        # How many parts no rule of a sort clearly claimed, as its last look saw them (task.unsorted).
+        self.unsorted = 0
         self.robot: Any = None
         self.moved = False
         self.at_return = False
@@ -534,6 +990,20 @@ class _Task:
         self.last_report: Any = None
         self.part_number = 0
         self.part_since = time.monotonic()
+        # The parts this task follows from pick to pick (robot.grasping.follow_parts, the owner, 2026-10-09): the cell's
+        # block where it follows, and what the last pick kept. This run's alone: a Restart is a new run, and grounds.
+        self.follow = _follow_parts_of(tree, service)
+        self.memory: "KeptScene | None" = None
+        if self.follow is not None and self.sorts:
+            # The kept scene follows one label (the target's), and a sort's picks ground every rule's kind in one call.
+            logger.info("task: a sort follows no parts from pick to pick (robot.grasping.follow_parts is on): what a pick "
+                        "keeps follows one label, and a sort's picks ground every rule's kind; every pick grounds them")
+            self.follow = None
+        if self.follow is not None:
+            logger.info("task: follows its parts from pick to pick (robot.grasping.follow_parts: refresh_every_picks "
+                        "%d, max_shift_mm %g, max_creep_mm %g); the first pick and every trigger ground them",
+                        int(self.follow.refresh_every_picks), float(self.follow.max_shift_mm),
+                        float(self.follow.max_creep_mm))
 
     # ---- the whole task ---------------------------------------------------------------------------------------
 
@@ -566,7 +1036,7 @@ class _Task:
         self._hand_before("before its first motion")
         if self.plan.first_motion == "return":
             self._return()
-        if self.plan.place.camera is not None:
+        if self._camera_places():
             if self.hooks.stop_after_part():
                 # No part is in hand yet: the task ends here, back at its return pose where it moved at all.
                 return self._finish(TaskStop.STOPPED_AFTER_PART, "the task stopped before its first pick, as the "
@@ -574,21 +1044,31 @@ class _Task:
             self._survey()
         once = self.plan.scope == "once"
         empty = failed = 0
+        # Whether the next pick is the check look (the owner, 2026-10-08): set where the part placed last was the only
+        # target its pick's first look counted, taken back by the pick it sets.
+        check = False
         while True:
             if self.hooks.stop_after_part():
                 return self._finish(TaskStop.STOPPED_AFTER_PART, "the task stopped after the part, as the operator "
                                                                  "asked")
             self._go_on_or_end()
             self._hand_before("before the pick")
-            if self.kept is not None and not self.kept.on_the_wrist:
-                self._check_a_fixed_cameras_target()
+            self._check_a_fixed_cameras_target()
             if self.part_number != self.parts_placed + 1:
                 self.part_number, self.part_since = self.parts_placed + 1, time.monotonic()
             self.picks += 1
             self._say(TaskEvent.PART_STARTED, f"Looking for part {self.part_number}"
                                               + (" of 1." if once else "."),
                       part=self.part_number, of=1 if once else None, pick=self.picks)
-            report, failures_before = self._pick()
+            from src.robot.execution.motion import expecting_next  # noqa: PLC0415
+
+            # The carry after the pick, judged while the jaws close where the arm does (robot.motion.judge_next_leg). A
+            # sort's place is known only once the pick says which kind it gripped: nothing is judged ahead.
+            first = self.places[0]
+            carry = first.kept.look if not self.sorts and first.at.pose is None and first.kept is not None else None
+            with expecting_next(self.arm, carry):
+                report, failures_before = self._pick(check=check)
+            checked, check = check, False
             self._stop_on_what_the_pick_said(report)
             kept_out = _only_kept_out(report)
             if _found_nothing(report) or kept_out:
@@ -596,15 +1076,24 @@ class _Task:
                     return self._problem(TaskStop.DETECTOR_FAILED, (
                         "the detector failed while the pick looked, so 'nothing found' is no answer: "
                         + _summary(report)))
-                empty += 1
+                # Every look the empty pick perceived from is an empty look: one empty pass over the looks ends it.
+                looks = _looks_that_saw_nothing(report)
+                empty += looks
                 self._say(TaskEvent.NOTHING_FOUND,
                           ("Only parts this task keeps out were seen" if kept_out else "Nothing matching was seen")
+                          + (" from the check look" if checked else f" from {looks} look(s)")
                           + f" ({empty} empty look(s) in a row).",
-                          part=self.part_number, empty_in_a_row=empty, only_excluded=kept_out)
+                          part=self.part_number, empty_in_a_row=empty, only_excluded=kept_out, looks=looks,
+                          check_look=checked)
+                if checked:
+                    return self._finish(TaskStop.NOTHING_LEFT, (
+                        f"nothing to pick is left: the part placed last was the only {self._what()} its pick's first "
+                        f"look counted, and the check look from there saw none, or only where the task keeps out; "
+                        f"{self.parts_placed} part(s) placed") + self._unsorted_after(report))
                 if empty >= self.plan.empty_looks_to_end:
                     return self._finish(TaskStop.NOTHING_LEFT, (
                         f"nothing to pick is left: {empty} looks in a row saw {self._what()} nowhere, or only where "
-                        f"the task keeps out; {self.parts_placed} part(s) placed"))
+                        f"the task keeps out; {self.parts_placed} part(s) placed") + self._unsorted_after(report))
                 continue
             # The two rows count apart (build plan 1.3.3): a failed pick leaves the row of empty looks standing, as an
             # empty look leaves the row of failures; only a part placed starts both again. Alternating the two still
@@ -616,6 +1105,17 @@ class _Task:
                     return self._problem(TaskStop.PART_STILL_HELD, (
                         f"the pick failed and {held}, so no further pick starts with it in the jaws: "
                         + _summary(report)))
+                # The pick's move back to its look did not run, and the arm stands where its last grasp left it (S2,
+                # 2026-10-08): no pick starts from there, whose looks would be judged on that frame alone.
+                stands = _stands_at(report)
+                if stands:
+                    return self._problem(TaskStop.RECOVERY_NEEDS_PERSON, (
+                        f"the pick's move back to its look did not run, and the arm stands where the pick left it "
+                        f"({stands}); no pick starts from there, nothing more is commanded and a person decides what "
+                        "happens next: " + _summary(report)))
+                if checked:
+                    # The check look saw a part it did not pick: no failure, and the next pick looks from every look.
+                    continue
                 failed += 1
                 if failed >= self.plan.max_failed_in_a_row:
                     return self._problem(TaskStop.FAILED_IN_A_ROW, (
@@ -632,21 +1132,24 @@ class _Task:
                     f"the pick gripped the part and {unmodelled}, so every carry, the place and a put back would be "
                     "planned as if the hand were empty; the task stops where the arm stands with the part in the "
                     "jaws, and a person takes it"))
-            self._place(report)
+            self._place(report, self._place_of_the_part(report))
             if once:
                 return self._finish(TaskStop.FINISHED, "the part is placed and the arm is back "
                                     + ("home" if self.plan.return_to == "home" else f"at {self._return_said()}"))
             if self.parts_placed >= self.plan.max_parts:
                 return self._finish(TaskStop.PART_LIMIT, (
                     f"{self.parts_placed} parts placed, the most one task places; start another to go on"))
+            # The part placed was the only target its pick's first look counted: the next pick checks from there alone.
+            check = self.plan.options.check_look and _targets_at_the_first_look(report) == 1
 
     # ---- refusals before anything moves -------------------------------------------------------------------
 
     def _refuse_the_plan(self) -> None:
-        place = self.plan.place
-        if place.pose is not None and place.pose not in self.poses:
-            raise TaskRefused("unknown_pose", f"the place names the pose {place.pose!r}, and no pose of that name was "
-                                              f"taught ({', '.join(sorted(self.poses)) or 'none is'})")
+        for place in self.places:
+            name = place.at.pose
+            if name is not None and name not in self.poses:
+                raise TaskRefused("unknown_pose", f"the place names the pose {name!r}, and no pose of that name was "
+                                                  f"taught ({', '.join(sorted(self.poses)) or 'none is'})")
         if self.plan.return_to != "home" and self.plan.return_to not in self.poses:
             raise TaskRefused("unknown_pose", f"the task returns to the pose {self.plan.return_to!r}, and no pose of "
                                               "that name was taught")
@@ -684,6 +1187,13 @@ class _Task:
                 raise TaskRefused("object_required", (
                     "the task names no object, and this cell's detector grounds a phrase: an empty one picks anything "
                     "the camera sees, bin walls included; name the object, or say pick_anything"))
+        if self.sorts and not _grounds_a_phrase(self.service):
+            # The rule of a part is the kind its pick went for, as the detector called it: words only a cell that
+            # grounds a phrase has.
+            raise TaskRefused("bad_request", (
+                "a sort tells its kinds apart by the detector's words, and this cell's perception grounds no phrase "
+                "(the rehearsal scene, or a detector of fixed classes), so no part could be told whose rule it goes "
+                "by; name one kind of part, or sort on a cell that grounds a phrase"))
         axis = self.plan.options.closing_axis
         refusal_of = getattr(self.service, "closing_axis_refusal", None)
         if axis is not None and callable(refusal_of):
@@ -704,7 +1214,7 @@ class _Task:
                 distance(push)
             except ValueError as exc:
                 raise TaskRefused("push_distance_refused", str(exc)) from None
-        if self.plan.place.camera is not None:
+        if self._camera_places():
             self.locators = self._locators()
 
     def _locators(self) -> list[Any]:
@@ -732,11 +1242,12 @@ class _Task:
 
     def _screen(self) -> None:
         refused: list[str] = []
-        place = self.plan.place.pose
-        if place is not None:
+        for place in self.places:
+            if place.at.pose is None:
+                continue
             screen = self._screen_place(place)
             if screen.is_error:
-                refused.append(f"the place pose {place!r}: {screen.detail}")
+                refused.append(f"the place pose {place.at.pose!r}: {screen.detail}")
         if self.plan.return_to != "home":
             name = self.plan.return_to
             screen = screen_joints(self.arm, self.poses[name])
@@ -748,19 +1259,20 @@ class _Task:
             self._end(TaskStop.POSE_REFUSED, "no move goes to a pose the task uses, so it moved nothing: "
                       + "; ".join(refused))
 
-    def _screen_place(self, name: str) -> Any:
+    def _screen_place(self, place: _Place) -> Any:
         import numpy as np  # noqa: PLC0415
 
         from src.geometry import Frame, Pose  # noqa: PLC0415
         from src.robot.execution.place_target import Screen  # noqa: PLC0415
 
+        name = str(place.at.pose)
         try:
             at = self.arm.fk(self.poses[name])
         except (RobotError, RuntimeError, OSError, ValueError) as exc:
             screen = Screen(None, "guard_refused", f"the arm cannot say where the pose puts the tool: "
                                                    f"{type(exc).__name__}: {exc}")
         else:
-            self.place_tcp = at
+            place.tcp = at
             # Where the tool stands for the longest part the cell declares: the taught pose raised by its hang below the
             # tool (the fingertips' reach and the declared length past them), and the configuration the arm would choose
             # for it (the place goes to a pose, not to the taught joints).
@@ -812,12 +1324,17 @@ class _Task:
             undo.callback(_quietly, "putting the cell's prompt back", self.service.set_prompt, previous)
         elif _grounds_a_phrase(self.service):
             # Every part the task asks for in a box of its own: "each separate green part" grounds every green part, the
-            # phrase alone one of them. The detector echoes the phrase, which maps onto the object the task named; a
-            # task that names none takes every part it grounds, called "object" where the detector's words allow.
+            # phrase alone one of them; where they lie after it, and the one part singled out alone (pick_phrase). The
+            # detector echoes the phrase, which maps onto the object the task named (a which names its noun); a task
+            # that names none takes every part it grounds, called "object" where the detector's words allow.
             from src.robot.execution.autonomous_grasp.prompt import PickPrompt  # noqa: PLC0415
 
-            prompt = (PickPrompt(phrase=f"{EACH_SEPARATE} {named}", target_label=named, object_labels=(named,))
-                      if named else PickPrompt(phrase=EVERY_PART_PHRASE, target_label=None, object_labels=("object",)))
+            if self.sorts:
+                prompt = self._sort_prompt(PickPrompt)
+            else:
+                phrase = pick_phrase(named, which=self.plan.which, source=self.plan.source)
+                prompt = (PickPrompt(phrase=phrase, target_label=named, object_labels=(named,))
+                          if named else PickPrompt(phrase=phrase, target_label=None, object_labels=("object",)))
             previous = self.service.set_prompt(prompt)
             undo.callback(_quietly, "putting the cell's prompt back", self.service.set_prompt, previous)
         if options.closing_axis is not None:
@@ -834,20 +1351,41 @@ class _Task:
                               was)
         self.service.set_cancel_check(self._cancelled)
         undo.callback(_quietly, "taking the cancel check back", self.service.set_cancel_check, None)
-        if self.plan.place.pose is not None and self.plan.scope == "until_empty" and self.place_tcp is not None:
-            from src.robot.grasping.recovery.exclusion_zones import ExclusionRegion  # noqa: PLC0415
+        from src.robot.grasping.recovery.exclusion_zones import ExclusionRegion  # noqa: PLC0415
 
+        for place in self.places:
+            if place.at.pose is None or self.plan.scope != "until_empty" or place.tcp is None:
+                continue
             if _kinematic(self.arm):
-                drop_xy = (float(self.place_tcp.position_mm[0]), float(self.place_tcp.position_mm[1]))
-                zones.keep_out_region(ExclusionRegion.circle(
-                    drop_xy, self.plan.pose_keep_out_mm, reason=f"the drop at pose {self.plan.place.pose!r}"))
+                drop_xy = (float(place.tcp.position_mm[0]), float(place.tcp.position_mm[1]))
+                place.region = zones.keep_out_region(ExclusionRegion.circle(
+                    drop_xy, self.plan.pose_keep_out_mm, reason=f"the drop at pose {place.at.pose!r}"))
             else:
                 # An fk that answers where the arm stands says nothing of where the pose puts the tool: a circle about
                 # it would keep out whatever lies under the arm now (the rehearsal's one part), not the drop.
                 logger.warning(
                     "task: no keep-out circle about the drop at pose %r: %s has no forward kinematics of its own "
                     "(has_native_fk is False), so where the pose puts the tool is not known, and a part set down "
-                    "there may be picked again", self.plan.place.pose, type(self.arm).__name__)
+                    "there may be picked again", place.at.pose, type(self.arm).__name__)
+
+    def _sort_prompt(self, prompt_type: Any) -> Any:
+        """What a sort's picks ground (the owner, 2026-10-09): every rule's kind in one call, each a phrase of one class
+        list (``class_list_prompt``: "each separate green part | each separate red part"), the detector's words mapped
+        onto the kinds (``object_labels``), and a target any of them (``target_labels``, where the cell's prompt takes
+        it): a part no rule clearly claims (the detector's ``ambiguous``, or a word no rule names) is no target."""
+        # Here, not at the module's top: a task of one kind loads no model package.
+        from src.models.vlm.qwen import class_list_prompt  # noqa: PLC0415
+
+        rules = self.plan.rules
+        phrase = class_list_prompt([pick_phrase(rule.object, which=rule.which, source=rule.source) for rule in rules])
+        kinds = tuple(rule.object.strip() for rule in rules)
+        keywords: dict[str, Any] = {"phrase": phrase, "target_label": None, "object_labels": kinds}
+        if "target_labels" in {item.name for item in dataclasses.fields(prompt_type)}:
+            keywords["target_labels"] = kinds
+        else:
+            logger.warning("task: this cell's pick prompt takes no target_labels, so the pick's gate passes every part "
+                           "it grounds; a part no rule names is put back after its pick")
+        return prompt_type(**keywords)
 
     def _cancelled(self) -> bool:
         """What the service and its pick loop ask before every attempt and look: halt, or a cell taken down; never the
@@ -932,20 +1470,34 @@ class _Task:
             return configured
         return HOME if getattr(self.service, "perceives_from_the_wrist", False) is True else None
 
-    def _pick(self) -> "tuple[Any, int]":
+    def _pick(self, *, check: bool = False) -> "tuple[Any, int]":
         options = self.plan.options
         keywords: dict[str, Any] = {}
         look = self._looks()
         if look is not None:
             keywords["look"] = look
-        if not options.multi_view:
+        if not options.multi_view or check:
+            # The check look is a pick with multi-view off (Q11): its first look alone, where the return left the arm,
+            # and no generated view.
             keywords["multi_view"] = False
+        elif options.every_look:
+            # "Alle Posen": every look of the pick, however safe an earlier one's grasp; never the check look's.
+            keywords["every_look"] = True
         if options.both_faces:
             keywords["both_faces"] = True
+        if self.follow is not None:
+            # The cell follows its parts: the later looks find the first look's parts by their projected boxes, and the
+            # first look follows what the last pick kept, where it hands any on.
+            keywords["follow_looks"] = True
+            memory = self._handed(check)
+            if memory is not None:
+                keywords["follow"] = memory
         before = self._detector_failures()
         report = self.service.pick(**keywords)  # inside the task's asking_nobody (run)
         self.moved, self.at_return = True, False
         self.last_report = report
+        # What the next pick follows: this pick's first look, less the part it gripped, or nothing on a trigger.
+        self.memory = self._kept_after(report)
         if options.record_views:
             report = self._with_views(report)
             self.last_report = report
@@ -953,6 +1505,68 @@ class _Task:
             self.holding = True
         self.hooks.pick_done(self.part_number, self.picks, report)
         return report, before
+
+    def _handed(self, check: bool) -> "KeptScene | None":
+        """What this pick's first look follows (``robot.grasping.follow_parts``): the parts the last pick kept, or
+        ``None`` where it grounds them again. The check look always grounds: the end of a task is always asked of the
+        detector (the owner, 2026-10-09). So does a pick ``refresh_every_picks`` picks after the last grounding."""
+        memory = self.memory
+        if memory is None or check:
+            return None
+        every = int(getattr(self.follow, "refresh_every_picks", 0) or 0)
+        if every > 0 and self.picks - memory.grounded_at_pick >= every:
+            logger.info("task: pick %d grounds its parts again: %d pick(s) since the grounding at pick %d "
+                        "(refresh_every_picks %d)", self.picks, self.picks - memory.grounded_at_pick,
+                        memory.grounded_at_pick, every)
+            return None
+        return memory
+
+    def _kept_after(self, report: Any) -> "KeptScene | None":
+        """What the pick after ``report``'s follows: the parts its first look grounded or followed, less the part it
+        gripped (``KeptScene.of_look``, ``without``); ``None`` where the next pick grounds them again.
+
+        The owner's triggers (2026-10-09): a push, a blocker cleared, a recovery, a try that sent motion and failed (a
+        grip that closed on nothing among them), the arm left where a try left it, a gripped part that was not among
+        the kept parts, and no part left to keep. A pick that failed with nothing sent keeps the scene as its first look
+        saw it. A halt, a stop or a disconnect ends the task, and the memory with it.
+        """
+        if self.follow is None:
+            return None
+        why = _why_grounded_again(report)
+        looked = getattr(self.service, "looked_around", None)
+        if not why and looked is None:
+            why = "the pick kept no looks"
+        if why:
+            logger.info("task: the pick after pick %d grounds its parts again: %s", self.picks, why)
+            return None
+        from src.robot.perception.kept_scene import KeptScene  # noqa: PLC0415
+
+        zones = getattr(getattr(self.service, "campaign", None), "zones", None)
+        regions = tuple(zones.regions()) if zones is not None and callable(getattr(zones, "regions", None)) else ()
+        judged = getattr(looked, "judged", None)
+        try:
+            kept = KeptScene.of_look(
+                looked, label=getattr(self.orchestrator, "target_label", None), regions=regions,
+                prompt=str(getattr(getattr(self.orchestrator, "perception", None), "prompt", "") or ""),
+                pick=self.picks, support_mm=getattr(judged, "support_height_mm", None),
+                workspace=getattr(self.tree, "workspace_limits", None), max_shift_mm=float(self.follow.max_shift_mm),
+                max_creep_mm=float(self.follow.max_creep_mm), before=self.memory)
+            if kept is not None and bool(getattr(report, "succeeded", False)):
+                kept = kept.without(getattr(judged, "target_cloud_base_mm", None))
+                if kept is None:
+                    why = "the part it gripped is not among the parts its first look kept"
+        except Exception as exc:  # noqa: BLE001 (a memory that cannot be built grounds a pick, never ends a task)
+            logger.exception("task: what pick %d kept could not be read", self.picks)
+            kept, why = None, f"what it kept could not be read ({type(exc).__name__}: {exc})"
+        if kept is not None and not kept.parts:
+            kept, why = None, "every part its first look kept is taken: the end is asked of the detector"
+        if kept is None:
+            logger.info("task: the pick after pick %d grounds its parts again: %s", self.picks,
+                        why or "its first look kept no part to follow")
+        else:
+            logger.info("task: the pick after pick %d follows %d part(s) kept from look %s (grounded at pick %d)",
+                        self.picks, len(kept.parts), kept.look, kept.grounded_at_pick)
+        return kept
 
     def _asking_nobody(self) -> Any:
         from src.robot.core.gripper import toggle_without_sensor_of  # noqa: PLC0415
@@ -963,10 +1577,17 @@ class _Task:
             if callable(asking) else nullcontext()
 
     def _with_views(self, report: Any) -> Any:
-        """``report`` with where its looks were kept in ``telemetry['views_file']``, where they were."""
+        """``report`` with where its looks were kept in ``telemetry['views_file']``, where they were.
+
+        On a cell that writes in the background (``writes_in_the_background``, a real cell's), the looks are taken now,
+        before the next pick lets them go, and written by the process's background writer while the task goes on; the
+        file said is where they will be."""
+        from src.robot.execution.autonomous_grasp.record_logging import background_writer  # noqa: PLC0415
         from src.robot.execution.autonomous_grasp.report import AutonomousGraspReport  # noqa: PLC0415
 
-        where = keep_pick_views(self.service, report, name=f"task-part{self.part_number}-pick{self.picks}")
+        writer = background_writer() if getattr(self.service, "writes_in_the_background", False) is True else None
+        where = keep_pick_views(self.service, report, name=f"task-part{self.part_number}-pick{self.picks}",
+                                writer=writer)
         if not where or not isinstance(report, AutonomousGraspReport):
             return report
         return dataclasses.replace(report, telemetry={**dict(report.telemetry), "views_file": where})
@@ -996,25 +1617,166 @@ class _Task:
         hand = getattr(report, "gripper_fault", "")
         if isinstance(hand, str) and hand:
             self._problem(TaskStop.HAND_NEEDS_PERSON, f"the gripper needs a person, so the task stops: {hand}")
-        if getattr(report, "needs_person", False) is True:
+        # A pick that says where its last grasp left the arm needs a person too (``report.needs_person``), but the task
+        # names that place itself, after it asked whether the hand still holds a part (``_drive``).
+        if getattr(report, "needs_person", False) is True and not _stands_at(report):
             self._problem(TaskStop.RECOVERY_NEEDS_PERSON, (
                 "a recovery stopped where the arm stands, so the task stops; nothing more is commanded and a person "
                 "decides what happens next: " + _summary(report)))
 
+    # ---- the rule of each part (a sort, the owner, 2026-10-09) ---------------------------------------------------
+
+    def _place_of_the_part(self, report: Any) -> _Place:
+        """Where the part a pick gripped goes: a task of one kind's one place; in a sort, the place of the rule whose kind
+        the pick went for (the label of the part it gripped, ``PickReport.target_label``, case and blanks aside), said
+        (``task.rule``). A part whose kind no rule names, or a pick that does not say, goes back where it was gripped
+        and the task asks (``target_not_found``): the pick's gate lets no such part through, and nobody can say where
+        one goes."""
+        if not self.sorts:
+            return self.places[0]
+        label = getattr(getattr(report, "pick_report", None), "target_label", "")
+        label = label.strip() if isinstance(label, str) else ""
+        rules = self.plan.rules
+        index = next((number for number, rule in enumerate(rules) if label and _words(rule.object) == _words(label)),
+                     None)
+        if index is None:
+            said = f"the pick gripped a part the detector called {label!r}" if label else \
+                "the pick gripped a part and did not say which kind it went for"
+            self._put_back_and_ask(report, TaskStop.TARGET_NOT_FOUND, (
+                f"{said}, and no rule of the sort names its kind ({self._what()}), so nobody can say where it goes"))
+        assert index is not None  # narrowed: a part no rule names went back above
+        rule = rules[index]
+        place = next(place for place in self.places if index in place.rules)
+        kind = rule.object.strip()
+        goes = f"to pose {place.at.pose!r}" if place.at.pose is not None else f"into the {place.named}"
+        self._say(TaskEvent.RULE, f"Part {self.part_number} is {_a(kind)} {kind}: it goes {goes}.",
+                  part=self.part_number, rule=index, object=kind, place=place.where, place_label=place.named)
+        return place
+
+    def _unsorted_after(self, report: Any) -> str:
+        """In a sort that ends with nothing left: the parts left where they lie that no rule clearly claims, said
+        (``task.unsorted``) and counted on the report; what the finishing sentence adds, ``""`` for none and for a task
+        of one kind (the owner, 2026-10-09: "liegen lassen, am Ende nennen").
+
+        Two counts, the larger said: what the last empty pick's first look saw that no rule clearly claims
+        (``PickReport.unclaimed_labels``: the detector's ``ambiguous``, a word no rule names), whose words the sentence
+        names, and what one locate of every part from where the arm stands sees outside every place of the task
+        (:meth:`_left_where_they_lie`), which counts a part of no rule's kind too: the sort's class list never boxes
+        it."""
+        if not self.sorts:
+            return ""
+        labels = getattr(getattr(report, "pick_report", None), "unclaimed_labels", ())
+        labels = tuple(str(label) for label in labels) if isinstance(labels, (tuple, list)) else ()
+        left = self._left_where_they_lie()
+        count = max(len(labels), left or 0)
+        logger.info("task: the sort left %d part(s) where they lie: %d label(s) no rule claims at the last pick's first "
+                    "look, %s by one locate of every part", count, len(labels),
+                    "none counted" if left is None else f"{left} seen")
+        if count <= 0:
+            return ""
+        self.unsorted = count
+        named = sorted(set(labels))
+        said = f"{count} part(s) no rule clearly claims stay where they lie" + (f" ({', '.join(named)})" if named
+                                                                              else "")
+        self._say(TaskEvent.UNSORTED, f"{said}.", count=count, labels=named)
+        return f"; {said}"
+
+    def _left_where_they_lie(self) -> "int | None":
+        """How many parts the camera sees from where the arm stands at the end of a sort, outside every place the task
+        keeps out (its bins, the circles about its drops, the parts it laid there): one locate of every part, where the
+        parts lie as the first rule says (:func:`pick_phrase` with no object), and nothing moved. A thing wider than
+        :data:`LEFT_OVER_MAX_MM` on a side is what the parts stand on, and one outside the cell's workspace
+        (``robot.workspace_limits``) no part of the task's, a marker or a tool beside it: neither is a part left. ``None``
+        where nothing could be counted: no camera to look with, or a locate that raised, said in the log and never a
+        reason to fail a task that finished."""
+        import numpy as np  # noqa: PLC0415
+
+        locators = list(self.locators)
+        if not locators:
+            try:
+                locators = list(locators_for_service(self.service))
+            except Exception as exc:  # noqa: BLE001 (a count of what is left never fails a task that finished)
+                logger.info("task: what the sort left is not counted: no camera to look with (%s: %s)",
+                            type(exc).__name__, exc)
+                return None
+        wrist = [locator for locator in locators if bool(getattr(locator, "on_the_wrist", False))]
+        if not (wrist or locators):
+            return None
+        locator = (wrist or locators)[0]
+        phrase = pick_phrase("", source=self.plan.source)
+        zones = getattr(getattr(self.service, "campaign", None), "zones", None)
+        regions = tuple(zones.regions()) if zones is not None and callable(getattr(zones, "regions", None)) else ()
+        try:
+            located = locator.locate(phrase)
+        except Exception as exc:  # noqa: BLE001 (a count of what is left never fails a task that finished)
+            logger.warning("task: what the sort left is not counted: the locate of %r raised %s: %s", phrase,
+                           type(exc).__name__, exc)
+            return None
+        # Only what stands in the cell's workspace is a part left (robot.workspace_limits): a marker, a tool or a cable
+        # beside it is no part of the task's (the review of 2026-10-09).
+        limits = getattr(self.tree, "workspace_limits", None)
+        try:
+            box = None if limits is None else tuple(float(getattr(limits, name)) for name in (
+                "x_min", "x_max", "y_min", "y_max", "z_min", "z_max"))
+        except (AttributeError, TypeError, ValueError):
+            box = None
+        count = 0
+        for obj in tuple(getattr(located, "objects", ()) or ()):
+            centre = getattr(obj, "centre_mm", None)
+            points = np.asarray(getattr(obj, "points_base_mm", np.empty((0, 3))), dtype=np.float64).reshape(-1, 3)
+            if centre is None or not points.shape[0]:
+                continue
+            if any(region.contains(centre) for region in regions):
+                continue
+            if float(np.max(np.ptp(points[:, :2], axis=0))) > LEFT_OVER_MAX_MM:
+                continue
+            if box is not None and not (box[0] <= float(centre[0]) <= box[1] and box[2] <= float(centre[1]) <= box[3]
+                                        and box[4] <= float(centre[2]) <= box[5]):
+                continue
+            count += 1
+        return count
+
     # ---- the camera's target --------------------------------------------------------------------------------
 
-    def _survey(self) -> None:
-        from src.robot.execution.looks import HOME, look_label, looks_of  # noqa: PLC0415
+    def _camera_places(self) -> "list[_Place]":
+        """The task's places a camera finds, in the order its rules first name them."""
+        return [place for place in self.places if place.at.camera is not None]
 
-        phrase = str(self.plan.place.camera)
+    def _others(self, place: _Place) -> "tuple[str, ...]":
+        """The phrases of every camera place but ``place``: where the detector looks at one bin of several, it grounds
+        them all in one locate (``together``), so a second bin in view is never taken for this one (the owner,
+        2026-10-09). None for a task of one camera place, whose locates are as they always were."""
+        return tuple(str(other.at.camera) for other in self._camera_places() if other is not place)
+
+    def _task_looks(self) -> "tuple[Any, ...]":
+        """The looks a camera place is looked for from: the cell's own (home, on a wrist that names none), the first
+        alone with multi-view off (Q11)."""
+        from src.robot.execution.looks import HOME, looks_of  # noqa: PLC0415
+
         configured = self._looks()
         looks = tuple(looks_of(configured)) if configured is not None else (HOME,)
-        if not self.plan.options.multi_view:
-            looks = looks[:1]
+        return looks if self.plan.options.multi_view else looks[:1]
+
+    def _known_for(self, place: _Place, *, first: bool) -> "KeptTarget | None":
+        """The bin an earlier task kept for ``place``: the caller's ``known_target`` for the first camera place, else
+        the one ``known_targets`` names by its phrase; ``None`` where none was handed in."""
+        if first and self.known_target is not None:
+            return self.known_target
+        return next((kept for phrase, kept in self.known_targets.items() if _words(phrase) == _words(place.at.camera)),
+                    None)
+
+    def _survey(self) -> None:
+        from src.robot.execution.looks import look_label  # noqa: PLC0415
+
+        places = self._camera_places()
+        phrases = [str(place.at.camera) for place in places]
+        phrase = phrases[0]
+        named = _listed([f"the {each}" for each in phrases], "and")
+        looks = self._task_looks()
         wrist = any(bool(getattr(locator, "on_the_wrist", False)) for locator in self.locators)
-        self._say(TaskEvent.SURVEY_STARTED, f"Looking for the {phrase} "
+        self._say(TaskEvent.SURVEY_STARTED, f"Looking for {named} "
                   + (f"from {len(looks)} look(s) " if wrist else "with the fixed camera ") + "before the first pick.",
-                  phrase=phrase, looks=[look_label(look) for look in looks] if wrist else [])
+                  phrase=phrase, phrases=phrases, looks=[look_label(look) for look in looks] if wrist else [])
         before = self._detector_failures()
         self._go_on_or_end()
         stop_asked: list[bool] = []
@@ -1031,177 +1793,591 @@ class _Task:
             return ""
 
         try:
-            found = survey(self.arm, self.locators, phrase, object_phrase=self.plan.object, looks=looks,
-                           may_move=may_move)
+            # The bins alone: the pick grounds every part with its own phrase and counts them itself, so a count here
+            # was one more grounding for a chat line (2026-10-08). A bin an earlier task kept is looked at first. The
+            # places of a sort are found together, one locate of all those still missing per look (2026-10-09).
+            if len(places) == 1:
+                found: Any = survey(self.arm, self.locators, phrase, looks=looks, may_move=may_move,
+                                    known=self._known_for(places[0], first=True))
+            else:
+                found = survey_places(self.arm, self.locators, phrases, looks=looks, may_move=may_move, known={
+                    str(place.at.camera): self._known_for(place, first=index == 0)
+                    for index, place in enumerate(places)})
         except (RobotError, RuntimeError, OSError, ValueError) as exc:
             self.moved = self.moved or wrist
-            self._problem(TaskStop.CELL_FAULT, f"the camera could not look for the {phrase} ({type(exc).__name__}: "
-                                               f"{exc})")
+            self._problem(TaskStop.CELL_FAULT, f"the camera could not look for {named} ({type(exc).__name__}: {exc})")
         if wrist and (found.looks_tried or found.refused or found.stopped is not None):
             self.moved, self.at_return = True, False
         if found.halted:
             # Ended before a motion: said as what stopped it, a halt or a Disconnect before the operator's stop.
             stopped = self._may_not_move()
             if stopped is None and stop_asked:
-                self._finish(TaskStop.STOPPED_AFTER_PART, f"the task stopped while it looked for the {phrase}, as the "
+                self._finish(TaskStop.STOPPED_AFTER_PART, f"the task stopped while it looked for {named}, as the "
                                                           "operator asked; nothing was picked")
             self._problem(*(stopped or (TaskStop.HALTED, found.halted)))
         if found.stopped is not None:
             self._after_a_failed_motion(TaskStop.CELL_FAULT, (
-                f"the arm did not reach look {found.stopped_look} while it looked for the {phrase}, and nothing else "
+                f"the arm did not reach look {found.stopped_look} while it looked for {named}, and nothing else "
                 f"was commanded after it: {found.stopped.status.value}: {found.stopped.message}"))
-        if found.kept is None:
+        # Every place as a survey of its own: a task of one place's is the survey itself. Every place a camera finds is
+        # found before the first pick, or the task picks nothing and names each place it is missing (2026-10-09).
+        each = [(place, found if len(places) == 1 else found.survey_of(str(place.at.camera))) for place in places]
+        missing = [(place, one) for place, one in each if one.kept is None]
+        if missing:
             if self._detector_failures() > before:
-                self._problem(TaskStop.DETECTOR_FAILED, f"the detector failed while the task looked for the {phrase}, "
-                                                        "so 'not found' is no answer")
-            self._say(TaskEvent.TARGET_MISSING, f"No {phrase} was seen from "
-                      + (f"{len(found.looks_tried)} look(s)" if wrist else "the fixed camera")
-                      + ": the task picks nothing.", phrase=phrase, looks_tried=list(found.looks_tried))
+                self._problem(TaskStop.DETECTOR_FAILED, f"the detector failed while the task looked for {named}, so "
+                                                        "'not found' is no answer")
+            for place, one in missing:
+                self._say(TaskEvent.TARGET_MISSING, f"No {place.at.camera} was seen from "
+                          + (f"{len(one.looks_tried)} look(s)" if wrist else "the fixed camera")
+                          + ": the task picks nothing.", phrase=str(place.at.camera), looks_tried=list(one.looks_tried))
             self._finish(TaskStop.TARGET_NOT_FOUND, (
-                f"no {phrase} was seen from {', '.join(found.looks_tried) or 'where the camera stands'}; nothing was "
-                "picked"))
-        kept = found.kept
-        assert kept is not None  # narrowed: a survey with no target ended the task above
-        said = f"Found the {kept.label}" + ("" if kept.score is None else f" ({kept.score:.2f})")
-        said += f" at look {kept.look_label}" if kept.look_label else " with the fixed camera"
-        if found.parts_seen is not None:
-            said += f"; {found.parts_seen} {self.plan.object}(s) seen outside it"
-        self._say(TaskEvent.TARGET_FOUND, said + ".", target=kept.to_dict(), look=kept.look_label,
-                  parts_seen=found.parts_seen, image_png=kept.image_png)
-        nominal = nominal_drop(self.arm, kept, hang_mm=self.hang_mm, air_mm=self.air_mm,
-                               standoff_mm=self.standoff_mm, natural_axis=self.natural)
-        if not nominal.ok:
-            self._finish(TaskStop.TARGET_UNREACHABLE, f"{nominal.reason}; nothing was picked")
-        self.kept = self.surveyed = kept
-        self.service.campaign.zones.keep_out_region(kept.keep_out_region())
+                f"no {' and no '.join(str(place.at.camera) for place, _one in missing)} was seen from "
+                f"{', '.join(found.looks_tried) or 'where the camera stands'}; nothing was picked"))
+        zones = self.service.campaign.zones
+        for place, one in each:
+            kept = one.kept
+            assert kept is not None  # narrowed: a survey that missed a place ended the task above
+            known = one.known if one.known is not None and one.known.followed else None
+            said = f"Found the {kept.label}" + ("" if kept.score is None else f" ({kept.score:.2f})")
+            said += f" at look {kept.look_label}" if kept.look_label else " with the fixed camera"
+            if known is not None and known.by == "depth":
+                said += ", where the last task left it: its rim reads in depth and colour as it did"
+            elif known is not None:
+                said += f", {0.0 if known.moved_mm is None else known.moved_mm:.0f} mm from where the last task left it"
+            self._say(TaskEvent.TARGET_FOUND, said + ".", target=kept.to_dict(), look=kept.look_label,
+                      parts_seen=one.parts_seen, known=known is not None, by="" if known is None else known.by,
+                      image_png=kept.image_png, phrase=str(place.at.camera))
+            nominal = nominal_drop(self.arm, kept, hang_mm=self.hang_mm, air_mm=place.air_mm,
+                                   standoff_mm=self.standoff_mm, natural_axis=self.natural)
+            if not nominal.ok:
+                self._finish(TaskStop.TARGET_UNREACHABLE, f"{nominal.reason}; nothing was picked")
+            place.kept = place.surveyed = kept
+            place.region = zones.keep_out_region(kept.keep_out_region())
 
-    def _check(self) -> TargetCheck:
-        # Against the bin the survey found, never a later sighting: a bin that creeps is followed only within the bound
-        # of where it was found, and its size and rim are that bin's.
-        assert self.kept is not None and self.surveyed is not None  # only a camera place checks its target
+    def _check(self, place: _Place) -> TargetCheck:
+        # Against the bin the survey found (or found again in its stead), never a later sighting: a bin that creeps is
+        # followed only within the bound of where it was found, and its size and rim are that bin's. Its rim is read
+        # first where it was last seen; where the detector looks, it grounds every place of a sort (together).
+        assert place.kept is not None and place.surveyed is not None  # only a camera place checks its target
         before = self._detector_failures()
         try:
-            check = recheck(self.locators, self.surveyed)
+            check = recheck(self.locators, place.surveyed, last=place.kept, inside=self._reads_where_the_part_goes(),
+                            together=self._others(place))
         except (RobotError, RuntimeError, OSError, ValueError) as exc:
-            self._problem(TaskStop.CELL_FAULT, f"the camera could not look at the {self.kept.label} again "
+            self._problem(TaskStop.CELL_FAULT, f"the camera could not look at the {place.kept.label} again "
                                                f"({type(exc).__name__}: {exc})")
         if check.seen is None and self._detector_failures() > before:
             self._problem(TaskStop.DETECTOR_FAILED, f"the detector failed while the task looked at the "
-                                                    f"{self.kept.label} again, so 'not seen' is no answer")
-        image = check.seen.image_png if check.seen is not None else None
-        self._say(TaskEvent.TARGET_CHECKED, _checked_said(self.kept.label, check), moved_mm=check.moved_mm,
-                  followed=check.followed, target=None if check.seen is None else check.seen.to_dict(),
-                  image_png=image)
-        if check.kept is not None:
-            zones = self.service.campaign.zones
-            zones.forget_regions()
-            zones.keep_out_region(check.kept.keep_out_region())
-            self.kept = check.kept
+                                                    f"{place.kept.label} again, so 'not seen' is no answer")
+        self._checked(place, check)
         return check
 
+    def _checked(self, place: _Place, check: TargetCheck) -> None:
+        """Say a check of ``place``'s target (``task.target_checked``), and follow what it followed: its region kept out
+        in place of the place's last, its sighting the one the drops go to, and what it read where the part goes."""
+        assert place.kept is not None
+        image = check.seen.image_png if check.seen is not None else None
+        self._say(TaskEvent.TARGET_CHECKED, _checked_said(place.kept.label, check), moved_mm=check.moved_mm,
+                  followed=check.followed, by=check.by, target=None if check.seen is None else check.seen.to_dict(),
+                  phrase=str(place.at.camera or ""), image_png=image)
+        if check.kept is not None:
+            self._keep(place, check.kept)
+        place.inside = check.inside
+        if check.inside is not None:
+            logger.info("task: the %s's check read %s", place.kept.label, check.inside.said)
+
+    def _keep(self, place: _Place, kept: KeptTarget) -> None:
+        """Follow ``kept`` as ``place``'s bin: its region kept out of the picks in place of the place's own last one,
+        every other place's region kept (the sorting map's F4, 2026-10-09: no pick takes a sorted part back out of
+        another rule's bin), and the sighting the drops go to."""
+        zones = self.service.campaign.zones
+        if place.region is not None:
+            zones.forget_region(place.region)
+        place.region = zones.keep_out_region(kept.keep_out_region())
+        place.kept = kept
+
+    def _reads_where_the_part_goes(self) -> bool:
+        """Whether a check of the camera place's target reads where the part goes on the frame it checks on: a box's
+        inside for a part set down below its rim (``robot.place.release_in_a_box``), a flat top's spots for parts laid
+        side by side (``robot.place.side_by_side``)."""
+        return self.rules.release_in_a_box == "below_the_rim" or bool(self.rules.side_by_side)
+
     def _check_a_fixed_cameras_target(self) -> None:
-        """A fixed camera's target is looked at again before each pick, while the arm stands clear of its view."""
-        assert self.kept is not None
-        check = self._check()
-        if check.kept is None:
-            self._say(TaskEvent.TARGET_LOST, f"{_lost_said(self.kept.label, check)}: the task ends before the next "
-                                             "pick.", look=None, why=check.why)
-            self._finish(TaskStop.TARGET_LOST, f"the {self.kept.label} was lost before the pick: {check.render()}")
+        """A fixed camera's targets are looked at again before each pick, while the arm stands clear of its view: every
+        camera place it keeps. A bin lost there is looked for again where the camera stands (:meth:`_found_again`), and
+        only one found nowhere ends the task."""
+        for place in self._camera_places():
+            kept = place.kept
+            if kept is None or kept.on_the_wrist:
+                continue
+            check = self._check(place)
+            if check.kept is not None:
+                continue
+            found = self._found_again(place, check)
+            if found is not None and found.kept is not None:
+                continue
+            place.lost = True
+            nowhere = "" if found is None else ", and was found nowhere"
+            self._say(TaskEvent.TARGET_LOST, f"{_lost_said(kept.label, check)}{nowhere}: the task ends before the next "
+                                             "pick.", look=None, why=check.why,
+                      phrase=str(place.at.camera or ""))
+            self._finish(TaskStop.TARGET_LOST, f"the {kept.label} was lost before the pick{nowhere}: {check.render()}")
+
+    def _found_again(self, place: _Place, check: TargetCheck) -> "Relocated | None":
+        """Look for ``place``'s bin again where ``check`` lost it (``place_target.relocate``; the owner, 2026-10-09:
+        "wenn sie dies nicht mehr tut, dann kann er seine Ablage nochmal neu errechnen"), say what that came to
+        (``task.target_relocated``), and keep a bin found again in the old one's stead: its region in place of the old,
+        the bin every later check measures against, the sighting the drop goes to. ``None`` where the cell keeps the
+        old rule (``robot.place.relocate`` off) and nothing was looked for.
+
+        On a wrist the task drives the search's looks, the part in its jaws, each through the arm's judged verb with a
+        halt or a cell taken down read first: a look refused before anything was sent is skipped and said, one that may
+        have moved the arm ends the task where it stands as a carry that failed does. A fixed camera locates where it
+        stands, and nothing moves. A bin standing in another place's region (every other place's, the circles about
+        taught drops among them; never its own) is not taken for it, nor one of another size or colour."""
+        if not self.rules.relocate:
+            return None
+        from src.robot.execution.generated_view import refused_before_sending  # noqa: PLC0415
+        from src.robot.execution.looks import look_label, move_to_look  # noqa: PLC0415
+        from src.robot.execution.motion import MotionOutcome  # noqa: PLC0415
+
+        surveyed, last = place.surveyed, place.kept
+        assert surveyed is not None and last is not None  # a camera place found its bin before its first pick
+        label = last.label
+        avoid = [other.region for other in self.places if other is not place and other.region is not None]
+        search = relocate(self.locators, surveyed, looks=self._task_looks(), check=check, last=last, avoid=avoid,
+                          together=self._others(place))
+        before = self._detector_failures()
+        for look in search:
+            if look is not None:
+                self._go_on_or_end()
+                moved = move_to_look(self.arm, look)
+                self.at_return = False
+                if not moved.ok:
+                    if moved.outcome is MotionOutcome.CAMERA_WORLD_UNAVAILABLE:
+                        self._problem(TaskStop.CELL_FAULT, f"a camera could not vouch for the cell on the way to look "
+                                                           f"{look_label(look)}, where the {label} was looked for "
+                                                           f"again: {moved.message}")
+                    if refused_before_sending(moved):
+                        search.skip(look, f"{moved.status.value}: {moved.message}")
+                        continue
+                    self._after_a_failed_motion(TaskStop.PART_STILL_HELD, (
+                        f"the carry to look {look_label(look)}, where the {label} was looked for again, failed with "
+                        f"the part in the jaws, and the arm may have moved part of the way: {moved.status.value}: "
+                        f"{moved.message}"))
+            try:
+                search.at(look)
+            except (RobotError, RuntimeError, OSError, ValueError) as exc:
+                self._problem(TaskStop.CELL_FAULT, f"the camera could not look for the {label} again "
+                                                   f"({type(exc).__name__}: {exc})")
+        found = search.result()
+        if found.kept is None and self._detector_failures() > before:
+            self._problem(TaskStop.DETECTOR_FAILED, f"the detector failed while the task looked for the {label} again, "
+                                                    "so 'found nowhere' is no answer")
+        if found.kept is not None:
+            self._keep(place, found.kept)
+            place.surveyed = found.kept
+        self._say(TaskEvent.TARGET_RELOCATED, _relocated_said(label, found), **found.to_dict(),
+                  image_png=None if found.kept is None else found.kept.image_png)
+        return found
 
     # ---- the place ------------------------------------------------------------------------------------------
 
-    def _place(self, report: Any) -> None:
-        if self.plan.place.pose is not None:
-            name = self.plan.place.pose
-            drop = pose_drop(self.arm, self.poses[name], report.grasp_pose, part_bottom_mm=self.part_bottom_mm,
-                             length_mm=self.length_mm, standoff_mm=self.standoff_mm, fingertips_mm=self.fingertips_mm)
-            self._said_drop(drop)
+    def _place(self, report: Any, place: _Place) -> None:
+        if place.at.pose is not None:
+            name = place.at.pose
+            drop = self._pose_drop(report, place)
+            self._said_drop(drop, place)
             if not drop.ok:
-                self._put_back_and_ask(report, TaskStop.POSE_REFUSED, f"the part was not set down at pose {name!r}: "
-                                                                      f"{drop.reason}")
-            self._place_at(drop, f"pose:{name}")
+                stop = TaskStop.PART_DOES_NOT_FIT if drop.refusal == "does_not_fit" else TaskStop.POSE_REFUSED
+                self._put_back_and_ask(report, stop, f"the part was not set down at pose {name!r}: {drop.reason}")
+            self._place_at(drop, place)
             return
-        kept = self.kept
+        kept = place.kept
         assert kept is not None  # a camera place found its target before its first pick
         if kept.look is None:  # a fixed camera's: checked before the pick, while the arm stood out of its view
-            self._drop_into(report)
+            self._drop_into(report, place)
             return
+        if self._carry() == "over_the_rim" and self._over_the_rim(report, place):
+            return
+        self._via_the_look(report, place)
+
+    def _via_the_look(self, report: Any, place: _Place) -> None:
+        """Carry the part to the look ``place``'s bin was kept from, hold every frame taken there, check the bin, and
+        drop the part into it. A bin the check lost is looked for again (:meth:`_found_again`), the hold of this look
+        ended first, so the frames held next are those of the look the arm stands at: found, the part is carried to the
+        look it was found from and the bin is checked there as before, the drop planned anew over it. Once per part:
+        lost again or found nowhere, or with ``robot.place.relocate`` off, the part goes back where it was gripped and
+        the task asks."""
         from src.robot.core.keep_out import holding_views  # noqa: PLC0415
         from src.robot.execution.generated_view import refused_before_sending  # noqa: PLC0415
         from src.robot.execution.looks import move_to_look  # noqa: PLC0415
         from src.robot.execution.motion import MotionOutcome  # noqa: PLC0415
 
-        self._say(TaskEvent.CARRY_STARTED, f"Carrying the part to look {kept.look_label} to check the "
-                                           f"{kept.label} before the drop.", to_look=kept.look_label)
-        self._go_on_or_end()
-        moved = move_to_look(self.arm, kept.look)
-        self.at_return = False
-        if not moved.ok:
-            if moved.outcome is MotionOutcome.CAMERA_WORLD_UNAVAILABLE:
-                self._problem(TaskStop.CELL_FAULT, f"a camera could not vouch for the cell on the way to look "
-                                                   f"{kept.look_label}: {moved.message}")
-            if refused_before_sending(moved):
-                self._go_on_or_end()
-                self._put_back_and_ask(report, TaskStop.TARGET_UNREACHABLE, (
-                    f"the arm could not carry the part to look {kept.look_label}, where the {kept.label} is checked: "
-                    f"{moved.status.value}: {moved.message}"))
-            self._after_a_failed_motion(TaskStop.PART_STILL_HELD, (
-                f"the carry to look {kept.look_label} failed with the part in the jaws, and the arm may have moved "
-                f"part of the way: {moved.status.value}: {moved.message}"))
-        with holding_views(self.arm) as held:
-            if not held:
-                # Not seen: the bin cannot be checked against frames the world does not hold. The console's three
-                # words for a lost target (not_seen, moved_too_far, footprint_changed); the sentence says the frames.
-                self._say(TaskEvent.TARGET_LOST, f"The frames of look {kept.look_label} could not be held in the "
-                                                 "arm's world, so the bin is not checked there: the part goes back "
-                                                 "where it was grasped.", look=kept.look_label, why="not_seen")
-                self._put_back_and_ask(report, TaskStop.TARGET_LOST, (
-                    f"the arm's world could not hold the frames of look {kept.look_label}, so the {kept.label}'s walls "
-                    "would not be in the world the part goes in against"))
-            check = self._check()
-            if check.kept is None:
-                self._say(TaskEvent.TARGET_LOST, f"{_lost_said(kept.label, check)}: the part goes back where it was "
-                                                 "grasped.", look=kept.look_label, why=check.why)
-                self._put_back_and_ask(report, TaskStop.TARGET_LOST, f"the {kept.label} was lost at the drop: "
-                                                                     f"{check.render()}")
-            self._drop_into(report)
+        searched = False
+        while True:
+            kept = place.kept
+            assert kept is not None and kept.look is not None  # a bin a wrist camera keeps, from one of its looks
+            self._say(TaskEvent.CARRY_STARTED, f"Carrying the part to look {kept.look_label} to check the "
+                                               f"{kept.label} before the drop.", to_look=kept.look_label)
+            self._go_on_or_end()
+            moved = move_to_look(self.arm, kept.look)
+            self.at_return = False
+            if not moved.ok:
+                if moved.outcome is MotionOutcome.CAMERA_WORLD_UNAVAILABLE:
+                    self._problem(TaskStop.CELL_FAULT, f"a camera could not vouch for the cell on the way to look "
+                                                       f"{kept.look_label}: {moved.message}")
+                if refused_before_sending(moved):
+                    self._go_on_or_end()
+                    self._put_back_and_ask(report, TaskStop.TARGET_UNREACHABLE, (
+                        f"the arm could not carry the part to look {kept.look_label}, where the {kept.label} is "
+                        f"checked: {moved.status.value}: {moved.message}"))
+                self._after_a_failed_motion(TaskStop.PART_STILL_HELD, (
+                    f"the carry to look {kept.look_label} failed with the part in the jaws, and the arm may have moved "
+                    f"part of the way: {moved.status.value}: {moved.message}"))
+            with holding_views(self.arm) as held:
+                if not held:
+                    # Not seen: the bin cannot be checked against frames the world does not hold. The console's three
+                    # words for a lost target (not_seen, moved_too_far, footprint_changed); the sentence says the frames.
+                    place.lost = True
+                    self._say(TaskEvent.TARGET_LOST, f"The frames of look {kept.look_label} could not be held in the "
+                                                     "arm's world, so the bin is not checked there: the part goes back "
+                                                     "where it was grasped.", look=kept.look_label, why="not_seen",
+                              phrase=str(place.at.camera or ""))
+                    self._put_back_and_ask(report, TaskStop.TARGET_LOST, (
+                        f"the arm's world could not hold the frames of look {kept.look_label}, so the {kept.label}'s "
+                        "walls would not be in the world the part goes in against"))
+                check = self._check(place)
+                if check.kept is not None:
+                    self._drop_into(report, place)
+                    return
+                if searched or not self.rules.relocate:
+                    self._lost_at_the_drop(report, place, kept, check)
+            # The bin was lost, and the hold of this look has ended: the search moves the arm to its looks.
+            searched = True
+            found = self._found_again(place, check)
+            if found is None or found.kept is None:
+                self._lost_at_the_drop(report, place, kept, check, nowhere=True)
 
-    def _drop_into(self, report: Any) -> None:
-        kept = self.kept
+    def _lost_at_the_drop(self, report: Any, place: _Place, kept: KeptTarget, check: TargetCheck, *,
+                          nowhere: bool = False) -> None:
+        """End the task asking (``target_lost``) for a bin the check before the drop lost (``kept``, the sighting the
+        task followed; ``nowhere``: looked for again and found nowhere): the part goes back where it was gripped."""
+        place.lost = True
+        again = ", and it was found nowhere" if nowhere else ""
+        self._say(TaskEvent.TARGET_LOST, f"{_lost_said(kept.label, check)}{again}: the part goes back where it was "
+                                         "grasped.", look=kept.look_label, why=check.why,
+                  phrase=str(place.at.camera or ""))
+        self._put_back_and_ask(report, TaskStop.TARGET_LOST, (
+            f"the {kept.label} was lost at the drop{' and found nowhere' if nowhere else ''}: {check.render()}"))
+
+    def _drop_into(self, report: Any, place: _Place) -> None:
+        kept = place.kept
         assert kept is not None
-        grasp = report.grasp_pose
-        if grasp is not None:
-            cloud = getattr(getattr(getattr(self.service, "looked_around", None), "judged", None),
-                            "target_cloud_base_mm", None)
-            drop = drop_plan(self.arm, kept, grasp, part_bottom_mm=self.part_bottom_mm, air_mm=self.air_mm,
-                             standoff_mm=self.standoff_mm, natural_axis=self.natural, part_cloud_mm=cloud)
-        elif self.length_mm is not None:
-            drop = nominal_drop(self.arm, kept, hang_mm=self.hang_mm, air_mm=self.air_mm,
-                                standoff_mm=self.standoff_mm, natural_axis=self.natural)
-        else:
-            drop = DropPlan(kind="camera", pose=None, standoff_mm=self.standoff_mm, rim_mm=kept.rim_mm,
-                            air_mm=self.air_mm, refusal="unreachable", reason=(
-                                "the pick reported no grasp pose and safety.planning_world.payload.length_mm is "
-                                "undeclared, so how far the part hangs is unknown and nothing is set down blind"))
-        self._said_drop(drop)
+        drop = self._camera_drop(report, place)
+        self._said_drop(drop, place)
         if not drop.ok:
             stop = TaskStop.PART_DOES_NOT_FIT if drop.refusal == "does_not_fit" else TaskStop.TARGET_UNREACHABLE
             self._put_back_and_ask(report, stop, f"the part was not set down in the {kept.label}: {drop.reason}")
-        self._place_at(drop, f"target:{self.plan.place.camera}")
+        self._place_at(drop, place)
 
-    def _said_drop(self, drop: DropPlan) -> None:
-        self._say(TaskEvent.DROP_PLANNED, _drop_said(drop, self.kept.label if self.kept is not None else ""),
+    def _camera_drop(self, report: Any, place: _Place, *, inside: Any = UNSET) -> DropPlan:
+        """The drop into ``place``'s target (``place_target.drop_plan``), the hang from what the part stood on
+        (:meth:`_part_bottom`): below a box's rim (``robot.place.release_in_a_box``) from what the last check read inside
+        it (``inside``, the check's where given), at the next free spot of a flat top (``robot.place.side_by_side``);
+        straight down with the declared length where the pick reported no grasp; nothing set down blind with neither."""
+        kept = place.kept
+        assert kept is not None
+        grasp = report.grasp_pose
+        if grasp is None:
+            if self.length_mm is not None:
+                return nominal_drop(self.arm, kept, hang_mm=self.hang_mm, air_mm=place.air_mm,
+                                    standoff_mm=self.standoff_mm, natural_axis=self.natural)
+            return DropPlan(kind="camera", pose=None, standoff_mm=self.standoff_mm, rim_mm=kept.rim_mm,
+                            air_mm=place.air_mm, refusal="unreachable", reason=(
+                                "the pick reported no grasp pose and safety.planning_world.payload.length_mm is "
+                                "undeclared, so how far the part hangs is unknown and nothing is set down blind"))
+        cloud = _judged_cloud(self.service)
+        keywords: dict[str, Any] = {
+            "part_bottom_mm": self._part_bottom(grasp).mm, "air_mm": place.air_mm, "standoff_mm": self.standoff_mm,
+            "natural_axis": self.natural, "part_cloud_mm": cloud}
+        if self.rules.release_in_a_box == "below_the_rim":
+            keywords.update(below_rim_mm=float(self.rules.below_the_rim_mm),
+                            inside=place.inside if not chosen(inside) else inside,
+                            opening_margin_mm=float(self.rules.opening_margin_mm), hand=self.open_hand)
+        if not (self.rules.side_by_side and kept.opening_mm is None):
+            return drop_plan(self.arm, kept, grasp, **keywords)
+        from src.robot.execution.place_target import top_spot_reader, top_spots  # noqa: PLC0415
+
+        part, reach = self._reach(grasp, cloud)
+        if reach is None:
+            logger.warning("task: nothing says how far the part reaches, so it is set down over the middle of the %s, "
+                           "as before, not beside the parts there", kept.label)
+            return drop_plan(self.arm, kept, grasp, **keywords)
+        pitch = self._pitch(reach)
+        candidates = top_spots(kept, pitch_mm=pitch, reach_mm=part if part is not None else reach)
+        read = top_spot_reader(place.inside if not chosen(inside) else inside)
+        return self._at_a_spot(candidates, reach, part, read, "camera", f"the {kept.label}",
+                               lambda spot: drop_plan(self.arm, kept, grasp, spot=spot, **keywords), place.spots)
+
+    def _pose_drop(self, report: Any, place: _Place) -> DropPlan:
+        """The drop at ``place``'s taught pose (``place_target.pose_drop``), the hang from what the part stood on
+        (:meth:`_part_bottom`, which keeps the set-down air over the taught point where it was measured): with
+        ``robot.place.side_by_side`` on, at the first spot of the place about the taught pose the camera reads free, or
+        where it reads none, that this task has not filled (:meth:`_at_a_spot`)."""
+        from src.robot.perception.locator import SET_DOWN_AIR_MM  # noqa: PLC0415
+
+        name = str(place.at.pose)
+        grasp = report.grasp_pose
+        bottom = self._part_bottom(grasp)
+        keywords: dict[str, Any] = {
+            "part_bottom_mm": bottom.mm, "length_mm": self.length_mm, "standoff_mm": self.standoff_mm,
+            "fingertips_mm": self.fingertips_mm, "air_mm": float(SET_DOWN_AIR_MM) if bottom.measured else 0.0}
+        taught = self.poses[name]
+        if not self.rules.side_by_side:
+            return pose_drop(self.arm, taught, grasp, **keywords)
+        from src.robot.execution.place_target import (  # noqa: PLC0415
+            _heading_of,
+            grid_spots,
+            look_points,
+            views_spot_reader,
+        )
+
+        at = place.tcp
+        part, reach = self._reach(grasp, _judged_cloud(self.service)) if grasp is not None else (None, None)
+        if at is None or not _kinematic(self.arm) or reach is None:
+            logger.warning("task: the part is let go at pose %r itself, as before, not beside the parts there: %s", name,
+                           "nothing says how far the part reaches" if reach is None
+                           else "the arm does not say where the taught pose puts the tool")
+            return pose_drop(self.arm, taught, grasp, **keywords)
+        grid = self.rules.grid
+        xy = (float(at.position_mm[0]), float(at.position_mm[1]))
+        candidates = grid_spots(xy, _heading_of(at) or 0.0, rows=int(grid.rows), columns=int(grid.columns),
+                                pitch_mm=self._pitch(reach))
+        looked = getattr(self.service, "looked_around", None)
+        judged = getattr(looked, "judged", None)
+        read = views_spot_reader(look_points(getattr(looked, "views", ())), getattr(judged, "support_model", None), xy)
+        return self._at_a_spot(candidates, reach, part, read, "pose", f"the place about pose {name!r}",
+                               lambda spot: pose_drop(self.arm, taught, grasp, spot=spot, **keywords), place.spots)
+
+    def _at_a_spot(self, candidates: "Sequence[tuple[float, float]]", reach: float, part: "float | None", read: Any,
+                   kind: str, where: str, drop_at: "Callable[[Any], DropPlan]",
+                   laid: "Sequence[tuple[tuple[float, float], float]]") -> DropPlan:
+        """The drop at the first of ``candidates`` a part reaching ``reach`` lies on clear of the parts this task laid
+        there (``laid``, the place's spots) and of what the camera reads (``read``, ``None`` where no camera reads the
+        place), ``drop_at`` a spot: a spot whose drop no configuration reaches is passed over for the next. None free is
+        a drop of ``kind`` that ``does_not_fit`` (``where`` says the place); free ones none reaches, the last
+        ``unreachable`` one."""
+        from src.robot.execution.place_target import choose_spot  # noqa: PLC0415
+
+        margin = float(self.rules.spacing_margin_mm)
+        remaining = list(candidates)
+        refused: "DropPlan | None" = None
+        why = "the place has no spot"
+        while remaining:
+            spot, why = choose_spot(remaining, reach_mm=reach, margin_mm=margin, placed=laid, read=read)
+            if spot is None:
+                break
+            drop = drop_at(spot)
+            if drop.ok:
+                logger.info("task: the part is laid at (%.0f, %.0f) mm on %s, the spot the %s chose", spot.xy[0],
+                            spot.xy[1], where, spot.by)
+                return dataclasses.replace(drop, spot_reach_mm=part if part is not None else reach)
+            refused = drop
+            remaining = [xy for xy in remaining if (float(xy[0]), float(xy[1])) != spot.xy]
+        if refused is not None:
+            return refused
+        return DropPlan(kind=kind, pose=None, standoff_mm=self.standoff_mm, refusal="does_not_fit",
+                        reason=f"{where} has no spot left the part lies on beside the others: {why}")
+
+    def _part_bottom(self, grasp: "Pose | None") -> Any:
+        """What the part's hang below the tool is measured from (``robot.place.part_bottom``): the declared support, or
+        what the pick's own looks read under the part (``place_target.part_bottom``), where that stands below the
+        grasp."""
+        from src.robot.execution.place_target import PartBottom, part_bottom  # noqa: PLC0415
+
+        declared = PartBottom(self.part_bottom_mm, False, f"the declared support at {self.part_bottom_mm:.1f} mm")
+        if self.rules.part_bottom != "measured" or grasp is None:
+            return declared
+        judged = getattr(getattr(self.service, "looked_around", None), "judged", None)
+        bottom = part_bottom(getattr(judged, "target_cloud_base_mm", None), getattr(judged, "support_model", None),
+                             declared_mm=self.part_bottom_mm)
+        if bottom.measured and float(grasp.position_mm[2]) - bottom.mm <= 0.0:
+            logger.warning("task: the part's bottom read at %.1f mm does not stand below the grasp at %.1f mm, so its "
+                           "hang is measured from %s", bottom.mm, float(grasp.position_mm[2]), declared.said)
+            return declared
+        logger.info("task: the part's hang is measured from %s", bottom.said)
+        return bottom
+
+    def _reach(self, grasp: "Pose", cloud: Any) -> "tuple[float | None, float | None]":
+        """How far the part reaches from the tool (``place_target.part_reach_mm``) and how far it or the open hand
+        reaches, whichever is more, mm; ``None`` for what nobody can say."""
+        from src.robot.execution.place_target import part_reach_mm  # noqa: PLC0415
+
+        part = part_reach_mm(cloud, grasp)
+        hand = self.open_hand.reach_mm if self.open_hand is not None else None
+        known = [value for value in (part, hand) if value is not None]
+        return part, (max(known) if known else None)
+
+    def _pitch(self, reach: float) -> float:
+        """How far apart two spots of a flat place stand: the cell's grid spacing, else twice what a part reaches and
+        the spacing margin."""
+        spacing = self.rules.grid.spacing_mm
+        return float(spacing) if spacing is not None else 2.0 * float(reach) + float(self.rules.spacing_margin_mm)
+
+    def _carry(self) -> str:
+        """How the part is carried to a bin a wrist camera found: the task's ``carry``, else the cell's."""
+        return str(self.plan.options.carry or self.rules.carry)
+
+    def _over_the_rim(self, report: Any, place: _Place) -> bool:
+        """Carry the part straight over the rim to ``place``'s bin (``carry`` ``over_the_rim``, the motion map's C8, the
+        owner's switch of 2026-10-08 night), and place it; ``True`` once the part was placed, put back, or the task ended.
+        ``False`` where it goes via the bin's look instead, as before, the part still in the jaws and the arm where it
+        stood or straight above it, said in the log.
+
+        Where one of the pick's looks was the bin's (``place_target.the_bins_look``), the bin is checked on that look's
+        frame, its rim's depth and colour as a check at the look reads them first, with no detector and no new frame
+        (``recheck_on_look``), and the drop planned from it. The arm's world holds the pick's frames again for the place
+        (``hold_pick_views_again``), so the line into the bin is judged against the walls that look saw. The part goes up,
+        then straight over to the drop's standoff, each a line the guard judges sample by sample, at one height: its
+        bottom the rim air and ``robot.place.rim_floor_margin_mm`` over the rim and over everything the pick's looks saw
+        on the way (``highest_on_the_way``, the part's own place left out), never lower than the standoff or where it
+        stands. A bin unsure on that frame, a way the looks did not see, a world that cannot hold the frames again, a
+        drop refused there, or a line refused before anything was sent carry the part via the look instead; a line that
+        failed once sent ends the task where the arm stands, as a carry to the look does."""
+        import numpy as np  # noqa: PLC0415
+
+        from src.geometry import Frame, Pose  # noqa: PLC0415
+        from src.robot.execution.generated_view import refused_before_sending  # noqa: PLC0415
+        from src.robot.execution.motion import MotionOutcome  # noqa: PLC0415
+        from src.robot.execution.place_target import (  # noqa: PLC0415
+            WAY_SEEN_SHARE,
+            highest_on_the_way,
+            look_points,
+            recheck_on_look,
+            the_bins_look,
+        )
+
+        kept, surveyed = place.kept, place.surveyed
+        assert kept is not None and surveyed is not None
+
+        def via_the_look(why: str) -> bool:
+            logger.info("task: the part is carried to look %s, not straight over the rim: %s", kept.look_label, why)
+            return False
+
+        grasp = report.grasp_pose
+        world = getattr(self.arm, "live_planner_world", None)
+        again, forget = getattr(world, "hold_pick_views_again", None), getattr(world, "forget_pick_views", None)
+        if grasp is None:
+            return via_the_look("the pick reported no grasp pose, so how far the part hangs is not known")
+        if not (callable(again) and callable(forget)):
+            return via_the_look("the arm's world cannot hold the frames of the pick's looks again for the place")
+        looked = getattr(self.service, "looked_around", None)
+        view = the_bins_look(looked, kept)
+        if view is None:
+            return via_the_look(f"none of the pick's looks was look {kept.look_label}, where the {kept.label} was found")
+        try:
+            check, unsure = recheck_on_look(view, surveyed, last=kept, inside=self._reads_where_the_part_goes())
+        except (RobotError, RuntimeError, OSError, ValueError) as exc:
+            return via_the_look(f"the pick's look could not be read again ({type(exc).__name__}: {exc})")
+        if check is None:
+            return via_the_look(f"the {kept.label} is not sure on the pick's look {kept.look_label}: {unsure}")
+        drop = self._camera_drop(report, place, inside=check.inside)
+        if not drop.ok or drop.pose is None or drop.hang_mm is None:
+            return via_the_look(f"the drop planned on the pick's look was not one to take: {drop.reason}")
+        here = self.arm.get_tcp_pose()
+        cloud = _judged_cloud(self.service)
+        _part, reach = self._reach(grasp, cloud)
+        matrix = np.asarray(drop.pose.to_matrix(), dtype=np.float64)
+        standoff = matrix[:3, 3] - matrix[:3, 2] * float(drop.standoff_mm)
+        part_xy = None if cloud is None else np.asarray(cloud, dtype=np.float64).reshape(-1, 3)[:, :2]
+        top, seen = highest_on_the_way(look_points(getattr(looked, "views", ())), here.position_mm[:2], standoff[:2],
+                                       reach_mm=(reach or 0.0) + float(self.rules.spacing_margin_mm),
+                                       leave_out_xy=part_xy, leave_out_mm=10.0)
+        if seen < WAY_SEEN_SHARE:
+            return via_the_look(f"the pick's looks read {seen:.0%} of the way to the {kept.label}, and at least "
+                                f"{WAY_SEEN_SHARE:.0%} must be read")
+        floor = max(float(kept.rim_mm), float("-inf") if top is None else top) + place.air_mm \
+            + float(self.rules.rim_floor_margin_mm) + float(drop.hang_mm)
+        height = max(floor, float(standoff[2]), float(here.position_mm[2]))
+        up = Pose(position_mm=np.array([float(here.position_mm[0]), float(here.position_mm[1]), height]),
+                  quaternion_xyzw=np.asarray(here.quaternion_xyzw, dtype=np.float64), frame=Frame.BASE,
+                  label="up over the rim floor")
+        over = Pose(position_mm=np.array([float(standoff[0]), float(standoff[1]), height]),
+                    quaternion_xyzw=np.asarray(drop.pose.quaternion_xyzw, dtype=np.float64), frame=Frame.BASE,
+                    label=f"over the {kept.label}")
+        if not bool(again()):
+            forget()
+            return via_the_look("the arm's world held none of the pick's frames to hold again")
+        try:
+            self._checked(place, check)
+            self._say(TaskEvent.CARRY_STARTED, f"Carrying the part straight over to the {kept.label}, its bottom "
+                                               f"{height - float(drop.hang_mm) - float(kept.rim_mm):.0f} mm over the rim.",
+                      to_look=None, over_the_rim=True)
+            lines = ([up] if height > float(here.position_mm[2]) + 0.5 else []) + [over]
+            for line in lines:
+                self._go_on_or_end()
+                moved = self.robot.move(line, linear=True)
+                self.at_return = False
+                if moved.ok:
+                    continue
+                if moved.outcome is MotionOutcome.CAMERA_WORLD_UNAVAILABLE:
+                    self._problem(TaskStop.CELL_FAULT, f"a camera could not vouch for the cell on the carry over the "
+                                                       f"rim: {moved.message}")
+                if refused_before_sending(moved):
+                    return via_the_look(f"the line {line.label} was refused before anything was sent "
+                                        f"({moved.status.value}: {moved.message})")
+                self._after_a_failed_motion(TaskStop.PART_STILL_HELD, (
+                    f"the carry over the rim failed with the part in the jaws, and the arm may have moved part of the "
+                    f"way: {moved.status.value}: {moved.message}"))
+            self._said_drop(drop, place)
+            self._place_at(drop, place)
+            return True
+        finally:
+            forget()
+
+    def _said_drop(self, drop: DropPlan, place: _Place) -> None:
+        self._say(TaskEvent.DROP_PLANNED, _drop_said(drop, place.kept.label if place.kept is not None else ""),
                   **drop.to_event())
 
-    def _place_at(self, drop: DropPlan, where: str) -> None:
+    def _laid(self, drop: DropPlan, where: str, place: _Place) -> None:
+        """Keep the spot a part was let go at on ``place`` (``robot.place.side_by_side``): the next part lies clear of
+        it, and in an "until empty" task at a taught pose no pick takes it back (a circle about it kept out, Q4, as the
+        drop's own)."""
+        assert drop.spot_xy is not None
+        reach = float(drop.spot_reach_mm or 0.0)
+        place.spots.append((drop.spot_xy, reach))
+        if drop.kind == "pose" and self.plan.scope == "until_empty":
+            from src.robot.grasping.recovery.exclusion_zones import ExclusionRegion  # noqa: PLC0415
+
+            self.service.campaign.zones.keep_out_region(ExclusionRegion.circle(
+                drop.spot_xy, reach + float(self.rules.spacing_margin_mm) / 2.0,
+                reason=f"the part laid at ({drop.spot_xy[0]:.0f}, {drop.spot_xy[1]:.0f}) mm by {where}"))
+
+    def _place_at(self, drop: DropPlan, place: _Place) -> None:
         from src.robot.execution.handling import HandlingOutcome  # noqa: PLC0415
 
         assert drop.pose is not None
         self._go_on_or_end()
+        where = place.where
         kind, _, name = where.partition(":")
         self._say(TaskEvent.PLACE_STARTED, f"Placing the part at {name!r}." if kind == "pose"
-                  else f"Placing the part in the {self.kept.label if self.kept is not None else name}.", place=where)
-        placed = self.robot.place(drop.pose, standoff_mm=self.standoff_mm)
+                  else f"Placing the part in the {place.kept.label if place.kept is not None else name}.", place=where)
+        from src.robot.execution.motion import expecting_next  # noqa: PLC0415
+
+        # The way back after the place, judged while the jaws open where the arm does (robot.motion.judge_next_leg).
+        to = self.plan.return_to
+        with expecting_next(self.arm, "home" if to == "home" else self.poses[to]):
+            if drop.instead is None:
+                placed = self.robot.place(drop.pose, standoff_mm=self.standoff_mm)
+            else:
+                from src.robot.execution import handling  # noqa: PLC0415
+
+                # A drop below a box's rim: where the guard refuses the line into the box before anything is sent, the
+                # part is let go over the rim instead, from the same standoff (Robot.place's own verb, with the drop over
+                # it).
+                placed = handling.place(self.robot, drop.pose, standoff_mm=drop.standoff_mm, instead=drop.instead)
         self.at_return = False
         if not place_released(placed):
             self._say(TaskEvent.PLACE_FAILED, f"The place did not let the part go: {placed.outcome.value}: "
@@ -1221,11 +2397,19 @@ class _Task:
         self.holding = False
         line_out = placed.outcome is not HandlingOutcome.EXECUTED
         no_sensor = self._no_sensor(placed)
+        below: dict[str, Any] = {}
+        if drop.instead is not None:
+            # Which line in ran: the one into the box, or the one to the drop over its rim.
+            below = {"below_the_rim": len(placed.poses) >= 2 and placed.poses[1] is drop.pose}
         self._say(TaskEvent.PLACED, "Placed: the jaws opened at the drop"
+                  + ("" if not below or below["below_the_rim"]
+                     else " over the rim: the line into the box was refused before anything was sent")
                   + (" (no sensor: the release is not measured)" if no_sensor else "")
                   + ("; the line out after it was refused, and the arm stands where the release left it" if line_out
                      else "") + ".",
-                  outcome=placed.outcome.value, no_sensor=no_sensor, line_out_refused=line_out)
+                  outcome=placed.outcome.value, no_sensor=no_sensor, line_out_refused=line_out, **below)
+        if drop.spot_xy is not None:
+            self._laid(drop, where, place)
         if placed.outcome is HandlingOutcome.CAMERA_WORLD_UNAVAILABLE:
             self._problem(TaskStop.CELL_FAULT, f"a camera could not vouch for the cell on the place's line out, after "
                                                f"the part was let go: {placed.message}")
@@ -1328,9 +2512,17 @@ class _Task:
 
     def _report(self, stop: TaskStop, sentence: str) -> TaskReport:
         (logger.info if stop.returns else logger.error)("task %s: %s", stop.value, sentence)
+        # The bin followed last, for the next task into the same phrase; none where it was lost or never found: the first
+        # camera place's, none where the task ended so, and every camera place's by its phrase, each of its own.
+        cameras = self._camera_places()
+        first = cameras[0].kept if cameras else None
+        kept = None if stop in (TaskStop.TARGET_LOST, TaskStop.TARGET_NOT_FOUND) else first
+        kept_targets = {str(place.at.camera).strip(): place.kept for place in cameras
+                        if place.kept is not None and not place.lost}
         return TaskReport(stop=stop, sentence=sentence, parts_placed=self.parts_placed, picks=self.picks,
                           succeeded=self.succeeded, holding=self.holding, last_report=self.last_report,
-                          at_return=self.at_return)
+                          at_return=self.at_return, kept_target=kept, kept_targets=kept_targets,
+                          unsorted=self.unsorted)
 
     # ---- helpers ---------------------------------------------------------------------------------------------
 
@@ -1338,6 +2530,8 @@ class _Task:
         self.hooks.event(name, said=said.encode("ascii", "backslashreplace").decode("ascii"), **data)
 
     def _what(self) -> str:
+        if self.sorts:
+            return _listed([repr(rule.object.strip()) for rule in self.plan.rules], "or")
         return repr(self.plan.object) if self.plan.object.strip() else "anything to pick"
 
     def _robot(self) -> Any:
@@ -1417,6 +2611,28 @@ def _declared_length_mm(tree: Any) -> "float | None":
     return length if length is not None and length > 0.0 else None
 
 
+def _place_rules(tree: Any) -> Any:
+    """How the cell sets its parts down (``robot.place``), every default where its tree carries none: what a task did
+    before the block existed."""
+    from src.config.schema.robot.place_schema import RobotPlaceConfig  # noqa: PLC0415
+
+    rules = getattr(tree, "place", None)
+    return rules if isinstance(rules, RobotPlaceConfig) else RobotPlaceConfig()
+
+
+def _open_hand_of(tree: Any) -> Any:
+    """The open hand the cell names (``place_target.OpenHand``), ``None`` where none resolves."""
+    from src.robot.execution.place_target import OpenHand  # noqa: PLC0415
+
+    return OpenHand.of(tree)
+
+
+def _judged_cloud(service: Any) -> Any:
+    """The cloud of the part the last pick gripped, fused over its looks (``looked_around.judged``), BASE mm; ``None``
+    where the pick kept none."""
+    return getattr(getattr(getattr(service, "looked_around", None), "judged", None), "target_cloud_base_mm", None)
+
+
 def _found_nothing(report: Any) -> bool:
     from src.robot.execution.autonomous_grasp.service import found_nothing  # noqa: PLC0415
 
@@ -1431,6 +2647,61 @@ def _only_kept_out(report: Any) -> bool:
     return bool(only_kept_out(report))
 
 
+def _looks_that_saw_nothing(report: Any) -> int:
+    """The looks an empty pick perceived from (``report.looks``: the visited ones; a refused look is not among them). A
+    pick handed no look, or a report that names none, is one look."""
+    looks = getattr(report, "looks", ()) or ()
+    return max(1, len(looks)) if isinstance(looks, tuple) else 1
+
+
+def _targets_at_the_first_look(report: Any) -> "int | None":
+    """How many targets the first look of ``report``'s pick saw (``telemetry['targets_by_look']``, the pick loop's count:
+    past the label gate, no surface, none kept out), or ``None`` where the pick does not say: a fixed camera's."""
+    telemetry = getattr(report, "telemetry", None)
+    counts = telemetry.get("targets_by_look") if isinstance(telemetry, Mapping) else None
+    if not isinstance(counts, (list, tuple)) or not counts:
+        return None
+    first = counts[0]
+    return first if isinstance(first, int) and not isinstance(first, bool) else None
+
+
+def _follow_parts_of(tree: Any, service: Any = None) -> Any:
+    """The cell's ``robot.grasping.follow_parts`` block where it follows its parts (``enabled``), else ``None``: the one
+    the built cell carries (``BinPickingOrchestrator.follow_parts``, set at the build), else the tree's, for a service
+    built without the overlays; a cell that says nothing grounds every pick, as before."""
+    orchestrator = getattr(getattr(service, "runtime", None), "orchestrator", None)
+    built = getattr(orchestrator, "follow_parts", UNSET) if orchestrator is not None else UNSET
+    if "follow_parts" in getattr(type(orchestrator), "__dataclass_fields__", {}) and built is not UNSET:
+        block = built
+    else:
+        block = getattr(getattr(tree, "grasping", None), "follow_parts", None)
+    return block if getattr(block, "enabled", False) is True else None
+
+
+def _why_grounded_again(report: Any) -> str:
+    """Why the pick after ``report``'s grounds its parts again rather than follow them, or ``""``: the pick pushed a
+    part, cleared a blocker, ran a recovery, sent a try that failed (a grip that closed on nothing among them) or left
+    the arm where a try left it, each a scene that may have changed where the camera has not looked."""
+    attempts = tuple(getattr(getattr(report, "pick_report", None), "attempts", ()) or ())
+    telemetry = getattr(report, "telemetry", None)
+    telemetry = telemetry if isinstance(telemetry, Mapping) else {}
+    if any(getattr(attempt, "push", None) for attempt in attempts) or telemetry.get("pushes"):
+        return "it pushed a part"
+    if any(getattr(attempt, "blocker", None) for attempt in attempts):
+        return "it cleared a blocker"
+    if getattr(report, "recovery_actions", ()) or telemetry.get("recovery_trail_actions"):
+        return "a recovery ran"
+    tries = [row for attempt in attempts for row in (getattr(attempt, "tries", ()) or ())]
+    sent = [bool(row.get("sent")) if isinstance(row, Mapping) else True for row in tries]
+    done = bool(getattr(report, "succeeded", False))
+    if (any(sent) and not done) or (done and any(sent[:-1])):
+        return "a try sent motion and failed"
+    stands = getattr(getattr(report, "pick_report", None), "stands_at", "")
+    if isinstance(stands, str) and stands:
+        return f"the arm stands where a try left it ({stands})"
+    return ""
+
+
 def _kinematic(arm: Any) -> bool:
     """Whether ``arm.fk`` is a kinematic model, so it says where a pose puts the tool: every arm but one whose
     capabilities say it has none (``has_native_fk`` False: the dummy, whose fk answers where it stands)."""
@@ -1439,10 +2710,14 @@ def _kinematic(arm: Any) -> bool:
 
 def _carried_part_unmodelled(arm: Any) -> str:
     """Why the part a pick just gripped is not carried by the planner, or ``""`` where it is: what the pick's attach
-    left in force (``payload_model``), on an arm that models a carried part at all. Reads only."""
-    from src.robot.core.arm_capabilities import CarriesPayload, PayloadModel  # noqa: PLC0415
+    left in force (``payload_model``), on an arm that models a carried part at all. Reads only. A cell that chose to
+    model no carried part (``chose_no_carried_part``) carries it as it chose, judged as an empty hand: the owner fixed
+    this on the cell, 2026-10-08, where every pick stopped ``part_still_held`` after its grip."""
+    from src.robot.core.arm_capabilities import CarriesPayload, PayloadModel, chose_no_carried_part  # noqa: PLC0415
 
     if not isinstance(arm, CarriesPayload):
+        return ""
+    if chose_no_carried_part(arm):
         return ""
     try:
         model = arm.payload_model()
@@ -1454,6 +2729,13 @@ def _carried_part_unmodelled(arm: Any) -> str:
         return ("the planner declined to carry it (payload_model filter_only: only the self filter takes it out of what "
                 "the cameras see)")
     return f"nothing models it: the planner carries no part (payload_model {getattr(model, 'value', model)})"
+
+
+def _stands_at(report: Any) -> str:
+    """Where a pick's last grasp left the arm when its move back to the look did not run (``PickReport.stands_at``,
+    e.g. "standoff of grasp 2"); ``""`` for every other pick."""
+    stands = getattr(getattr(report, "pick_report", None), "stands_at", "")
+    return stands if isinstance(stands, str) else ""
 
 
 def _summary(report: Any) -> str:
@@ -1501,6 +2783,9 @@ def _checked_said(label: str, check: TargetCheck) -> str:
     if check.seen is None:
         return f"The {label} was not seen where it was kept."
     moved = 0.0 if check.moved_mm is None else check.moved_mm
+    if check.followed and check.by == "depth":
+        where = "where it was kept" if moved < 0.5 else f"where it was last seen, {moved:.0f} mm from where it was kept"
+        return f"The {label} stands {where}: its rim reads in depth and colour as it did, so the detector was not asked."
     if check.followed:
         return f"The {label} moved {moved:.0f} mm since it was kept, within {check.bound_mm:.0f} mm: followed."
     if check.why == "moved_too_far":
@@ -1518,18 +2803,52 @@ def _lost_said(label: str, check: TargetCheck) -> str:
     return f"The {label} is not where it was kept (another size, {moved:.0f} mm away)"
 
 
+def _relocated_said(label: str, found: "Relocated") -> str:
+    """``task.target_relocated`` for a person: where the lost target was found again, or that it was found nowhere."""
+    if found.kept is None:
+        if not found.looks_tried:
+            return f"The {label} was found nowhere: the camera saw none, and no other look was left to look from."
+        return (f"The {label} was found nowhere: none of its size and colour was seen from "
+                f"{', '.join(found.looks_tried)}.")
+    moved = 0.0 if found.moved_mm is None else found.moved_mm
+    where = ("where the check saw it" if found.by == "check"
+             else f"at look {found.kept.look_label}" if found.kept.look_label else "with the fixed camera")
+    return f"Found the {label} again {where}, {moved:.0f} mm from where it was kept: the drop is planned anew over it."
+
+
+def _listed(items: "Sequence[str]", last: str) -> str:
+    """``items`` as a person lists them, ``last`` the word before the last one: "a", "a and b", "a, b and c"."""
+    items = list(items)
+    if len(items) < 2:
+        return "".join(items)
+    return f"{', '.join(items[:-1])} {last} {items[-1]}"
+
+
+def _a(word: str) -> str:
+    """The article before ``word``: "an orange part", "a green part"."""
+    return "an" if word[:1].casefold() in ("a", "e", "i", "o", "u") else "a"
+
+
 def _drop_said(drop: DropPlan, label: str) -> str:
     """``task.drop_planned`` for a person."""
     if not drop.ok:
         return f"No drop: {drop.reason}."
     hang = 0.0 if drop.hang_mm is None else drop.hang_mm
+    spot = "" if drop.spot_xy is None else (f", at the spot ({drop.spot_xy[0]:.0f}, {drop.spot_xy[1]:.0f}) mm the "
+                                            f"{drop.spot_by} chose beside the parts there")
     if drop.kind == "pose":
-        return f"The drop stands {hang:.0f} mm above the taught pose: the part's hang."
+        kept_air = "" if not drop.air_mm else f" and {drop.air_mm:.0f} mm of air"
+        return f"The drop stands {hang:.0f} mm above the taught pose: the part's hang{kept_air}{spot}."
     air = 0.0 if drop.air_mm is None else drop.air_mm
     rim = 0.0 if drop.rim_mm is None else drop.rim_mm
-    return (f"The drop is over the middle of the {label or 'target'}: its rim at {rim:.0f} mm, the part hanging "
-            f"{hang:.0f} mm, {air:.0f} mm of air" + (", turned along the cell's natural closing axis" if drop.turned
-                                                       else "") + ".")
+    turned = ", turned along the cell's natural closing axis" if drop.turned else ""
+    if drop.below_rim_mm is not None:
+        return (f"The part is set down in the {label or 'target'}: its bottom {drop.below_rim_mm:.0f} mm under the rim at "
+                f"{rim:.0f} mm, the part hanging {hang:.0f} mm{turned}; over the rim, should the line in be refused.")
+    where = "on" if drop.spot_xy is not None else "over the middle of"
+    over = f", over the rim and not below it: {drop.over_the_rim_why}" if drop.over_the_rim_why else ""
+    return (f"The drop is {where} the {label or 'target'}: its rim at {rim:.0f} mm, the part hanging {hang:.0f} mm, "
+            f"{air:.0f} mm of air{turned}{spot}{over}.")
 
 
 def _motion_note(moved: Any) -> str:

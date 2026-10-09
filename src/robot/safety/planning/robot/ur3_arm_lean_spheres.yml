@@ -1,0 +1,182 @@
+_provenance:
+  what: ur3 arm links, planning only
+  model: lean
+  source: ur3_collision_meshes.npz
+  generated_by: scripts/curobo/fit_planning_spheres.py
+  recipe: 'NVIDIA''s UR pattern, fitted: a few spheres along each body''s axis, each
+    the body''s thickness there plus the reach asked, held to a hole allowance instead
+    of a complete cover; a planning model only, every check, the evidence and the
+    exact guard stay on the cover fit'
+  asked_for: scripts/curobo/fit_planning_spheres.py ARM_PLAN / HAND_PLAN, per body
+  seed: 0
+  bodies:
+  - body: shoulder
+    frame: 1
+    why: NVIDIA's one shoulder sphere; the CB3's housings take four at 30 mm reach
+    spheres: 1
+    reach_mm: 30.0
+    hole_mm: 20.0
+    radii_mm:
+    - 72.2
+    fresh_uncovered_max_mm: 14.66
+    fresh_reach_max_mm: 29.849
+    fresh_samples: 20000
+    sample_spacing_mm: 3.817
+    seconds: 27.7
+  - body: upper_arm
+    frame: 2
+    why: NVIDIA's chain of seven along the arm's axis; nine at 30 mm reach
+    spheres: 3
+    reach_mm: 30.0
+    hole_mm: 20.0
+    radii_mm:
+    - 70.0
+    - 61.6
+    - 60.3
+    fresh_uncovered_max_mm: 12.791
+    fresh_reach_max_mm: 29.797
+    fresh_samples: 20000
+    sample_spacing_mm: 5.952
+    seconds: 35.0
+  - body: forearm
+    frame: 3
+    why: NVIDIA's chain of seven; the forearm meets a bin wall, so 25 mm reach
+    spheres: 3
+    reach_mm: 25.0
+    hole_mm: 15.0
+    radii_mm:
+    - 54.1
+    - 48.1
+    - 53.7
+    fresh_uncovered_max_mm: 14.302
+    fresh_reach_max_mm: 24.825
+    fresh_samples: 20000
+    sample_spacing_mm: 4.369
+    seconds: 30.9
+  - body: wrist_1
+    frame: 4
+    why: NVIDIA's one sphere on the joint
+    spheres: 1
+    reach_mm: 25.0
+    hole_mm: 15.0
+    radii_mm:
+    - 51.8
+    fresh_uncovered_max_mm: 13.594
+    fresh_reach_max_mm: 24.781
+    fresh_samples: 20000
+    sample_spacing_mm: 2.704
+    seconds: 24.1
+  - body: wrist_2
+    frame: 5
+    why: NVIDIA's one sphere on the joint
+    spheres: 1
+    reach_mm: 25.0
+    hole_mm: 15.0
+    radii_mm:
+    - 55.1
+    fresh_uncovered_max_mm: 0.201
+    fresh_reach_max_mm: 24.782
+    fresh_samples: 20000
+    sample_spacing_mm: 2.704
+    seconds: 23.8
+  - body: wrist_3
+    frame: 6
+    why: NVIDIA's flange sphere; the hand and the camera are bodies of their own
+    spheres: 1
+    reach_mm: 30.0
+    hole_mm: 15.0
+    radii_mm:
+    - 46.2
+    fresh_uncovered_max_mm: -2.66
+    fresh_reach_max_mm: 29.819
+    fresh_samples: 20000
+    sample_spacing_mm: 1.955
+    seconds: 8.4
+  dh_m:
+  - - 0.0
+    - 0.1519
+    - 1.570796327
+  - - -0.24365
+    - 0.0
+    - 0.0
+  - - -0.21325
+    - 0.0
+    - 0.0
+  - - 0.0
+    - 0.11235
+    - 1.570796327
+  - - 0.0
+    - 0.08535
+    - -1.570796327
+  - - 0.0
+    - 0.0819
+    - 0.0
+collision_spheres:
+  shoulder:
+    frame: 1
+    spheres:
+    - center:
+      - -0.002742
+      - -0.019437
+      - 6.0e-05
+      radius: 0.072181
+  upper_arm:
+    frame: 2
+    spheres:
+    - center:
+      - 0.231928
+      - -0.001334
+      - 0.112215
+      radius: 0.070035
+    - center:
+      - 0.118877
+      - 0.001348
+      - 0.119585
+      radius: 0.061599
+    - center:
+      - 0.014337
+      - -0.001113
+      - 0.115636
+      radius: 0.060263
+  forearm:
+    frame: 3
+    spheres:
+    - center:
+      - 0.006359
+      - -0.001706
+      - 0.032743
+      radius: 0.054091
+    - center:
+      - 0.112134
+      - 0.000455
+      - 0.023311
+      radius: 0.048106
+    - center:
+      - 0.19617
+      - -0.000752
+      - 0.034161
+      radius: 0.053718
+  wrist_1:
+    frame: 4
+    spheres:
+    - center:
+      - -0.004464
+      - -0.019587
+      - -2.2e-05
+      radius: 0.051814
+  wrist_2:
+    frame: 5
+    spheres:
+    - center:
+      - -0.00136
+      - 0.004563
+      - 0.001441
+      radius: 0.055098
+  wrist_3:
+    frame: 6
+    spheres:
+    - center:
+      - -0.006314
+      - 0.000193
+      - -0.024302
+      radius: 0.046248

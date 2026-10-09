@@ -435,6 +435,35 @@ class WhatIsHeldAndForHowLongTests(unittest.TestCase):
         self.assertEqual(0, gone.held)
         self.assertFalse(_covered(_boxes(gone), _BESIDE_CENTRE), gone.render())
 
+    def test_a_place_over_the_rim_holds_the_pick_s_frames_again_once(self) -> None:
+        """The place that carries its part straight over a bin's rim (``robot.place.carry: over_the_rim``, 2026-10-09)
+        judges the way in against what the pick's looks saw: the frames the pick held when it ended are held again,
+        once, and a new pick's hold forgets them."""
+        world, camera = _world()
+        world.hold_pick_views()
+        _ask(world, camera, _TOOL_A, stamp=100.0)
+        _ask(world, camera, _TOOL_B, stamp=101.0)
+        world.forget_pick_views()
+        self.assertEqual(0, world.held_view_count)
+
+        self.assertTrue(world.hold_pick_views_again())
+
+        self.assertEqual(2, world.held_view_count, "the pick's two looks, held again")
+        again = _ask(world, camera, _TOOL_STANDOFF, stamp=102.0)
+        self.assertTrue(_covered(_boxes(again), _BESIDE_CENTRE), again.render())
+        world.forget_pick_views()
+        self.assertTrue(world.hold_pick_views_again(), "the place's own frames are kept aside in their turn")
+        world.hold_pick_views()
+        self.assertFalse(world.hold_pick_views_again(), "a new pick's hold forgets what the last pick left")
+
+    def test_no_frames_to_hold_again_without_a_pick_that_held_some(self) -> None:
+        world, _ = _world()
+
+        self.assertFalse(world.hold_pick_views_again())
+        world.hold_pick_views()
+        world.forget_pick_views()
+        self.assertFalse(world.hold_pick_views_again(), "a pick that held nothing leaves nothing")
+
     def test_a_new_hold_starts_the_pick_afresh(self) -> None:
         """A hold does not nest: a second start drops what the first held, which belongs to a pick that ended."""
         world, camera = _world()

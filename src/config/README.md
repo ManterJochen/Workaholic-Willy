@@ -129,6 +129,10 @@ radians twin, because a look is where the arm goes next and its unit must be sai
 looks override it. A wrist camera fuses the looks until its grasp is safe; a fixed camera's arm is moved
 to them too, and its pick stops at the first look that finds something. The loader cannot tell radians
 from small degrees, so the desk check (`real_cell --check`) flags a look that reads as radians.
+`robot.grasping.weak_look_trigger` (off as shipped) has a wrist pick go on past a look whose view of its part is weak:
+depth on less than 85 % of its mask, a part tall for its footprint with no side seen, or two height plateaus at least
+15 mm apart. `robot.grasping.hide_own_places` (off as shipped) paints the regions a task keeps out (its bin, the circles
+about its drops) out of the copy of each frame its detector reads; it needs a declared `grasping.support`.
 
 `robot.natural_closing_axis` says how the hand and its camera naturally stand: a name (`"-y"`, `radial`,
 ...) or a quaternion `[x, y, z, w]`, of which only the heading of the tool +X counts. Every camera grasp
@@ -143,6 +147,16 @@ no newline, no `" #"`), when it was taught, its screen (`clear` or `band`) and a
 and its label, and two poses sharing a word, whatever the case, are refused at load. `robot.default_place_pose`
 names the one a task places at when its command names no target, or `null`; a name that is no pose of the tree is
 refused at load. Layers merge a pose key by key, so a task screens every pose again before it moves.
+
+`robot.place` ([`schema/robot/place_schema.py`](schema/robot/place_schema.py)) says how a task sets its parts down,
+every key but one as shipped what a task did before it: `release_in_a_box` (`over_the_rim`, or `below_the_rim` by
+`below_the_rim_mm`, 10 to 50, and `opening_margin_mm` clear of the walls), `part_bottom` (`declared_support`, or
+`measured` from what the pick's looks read under the part), `side_by_side` with `spacing_margin_mm` and the `grid`
+about a taught pose (`rows`, `columns`, `spacing_mm`), and `carry` (`via_the_look`, or `over_the_rim` with
+`rim_floor_margin_mm`). The one key on as shipped is `relocate` (the owner, 2026-10-09): a bin the check before a drop
+no longer finds where it stood is looked for again from the task's looks and the drop planned anew over it, and only a
+bin found nowhere puts the part back and asks; off, every lost bin does. A depth past the owner's 10 to 50 mm, a value
+no key knows and a grid of no rows are refused at load.
 
 `robot.ur.brake_on_halt` decides what the console's "halt now" does to a move already in flight: off, as shipped,
 every move is sent as it always was and the move in flight runs to its end; on, it is braked under control. Either

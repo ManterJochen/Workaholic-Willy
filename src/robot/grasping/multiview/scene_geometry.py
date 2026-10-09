@@ -115,6 +115,10 @@ class ObservedView:
     #: Empty is the old shape and stays valid: fusing a surface onto an object the primary already
     #: found needs no segmentation at all, so a caller that only fuses passes masks and nothing else.
     segmentations: tuple[Any, ...] = ()
+    #: Per mask, in the same order, the pixels the support-footprint stage may build its footprint from: the mask less
+    #: its rim (``generation.footprint_rim``, ``robot.grasping.geometry.footprint_rim_mm``, 2026-10-09). Read only by a
+    #: fusion asked for footprints (``fuse_scene_geometry(primary_footprints=...)``); empty, the masks themselves.
+    footprints: tuple[np.ndarray, ...] = ()
 
     def segmentation(self, index: int) -> "Any | None":
         """The segmentation behind mask ``index``, or ``None`` when this view carries only masks."""
@@ -132,12 +136,18 @@ class FusedSceneGeometry:
 
     ``neighbour_clouds_base_mm`` is the same idea for the other side of the pick, what object ``i``
     would collide with. It is empty unless the caller asked for it.
+
+    ``footprint_clouds_base_mm`` is ``clouds_base_mm`` less every view's rim: the same views, by the
+    same association, each mask's footprint (``ObservedView.footprints``) in place of the mask, for
+    the support-footprint stage alone (``robot.grasping.geometry.footprint_rim_mm``, 2026-10-09).
+    :data:`None` where ``clouds_base_mm`` holds none, and empty unless the caller asked for it.
     """
 
     clouds_base_mm: tuple[np.ndarray | None, ...]
     views_used: tuple[str, ...]
     associations: tuple[SceneAssociation, ...]
     neighbour_clouds_base_mm: tuple[np.ndarray | None, ...] = ()
+    footprint_clouds_base_mm: tuple[np.ndarray | None, ...] = ()
 
     @property
     def objects_fused(self) -> int:
@@ -162,6 +172,13 @@ class FusedSceneGeometry:
     def neighbour_for(self, index: int) -> np.ndarray | None:
         if 0 <= index < len(self.neighbour_clouds_base_mm):
             return self.neighbour_clouds_base_mm[index]
+        return None
+
+    def footprint_for(self, index: int) -> np.ndarray | None:
+        """The fused footprint of object ``index`` (its cloud less every view's rim), or ``None``. Bounds-safe as
+        :meth:`cloud_for` is."""
+        if 0 <= index < len(self.footprint_clouds_base_mm):
+            return self.footprint_clouds_base_mm[index]
         return None
 
 
@@ -454,6 +471,38 @@ def _fused_member_cloud(
     return np.vstack(parts) if len(parts) > 1 else None
 
 
+def _fused_footprints(
+    primary_footprints: Sequence[np.ndarray],
+    primary_clouds: Sequence[np.ndarray],
+    depth_map: np.ndarray,
+    intrinsics: np.ndarray,
+    camera_to_base: np.ndarray,
+    view_footprints: Sequence[Sequence[np.ndarray]],
+    associations: Sequence[SceneAssociation],
+    gained: Sequence[bool],
+) -> tuple[np.ndarray | None, ...]:
+    """Every primary object's footprint fused as its cloud was: its own footprint first, then the footprint of each
+    view's blob the association gave it, in view order, as ``fuse_scene_clouds`` stacks the clouds. ``None`` where the
+    object gained nothing, as its cloud is; a primary mask with no footprint gives its own cloud."""
+    out: list[np.ndarray | None] = []
+    for index, gain in enumerate(gained):
+        if not gain:
+            out.append(None)
+            continue
+        own = (to_base_mm(primary_footprints[index], depth_map, intrinsics, camera_to_base)
+               if index < len(primary_footprints) else np.asarray(primary_clouds[index], dtype=np.float64))
+        parts = [np.asarray(own, dtype=np.float64).reshape(-1, 3)]
+        for footprints, association in zip(view_footprints, associations, strict=True):
+            matched = association.assignment[index]
+            if matched is None:
+                continue
+            cloud = np.asarray(footprints[matched], dtype=np.float64).reshape(-1, 3)
+            if cloud.size:
+                parts.append(cloud)
+        out.append(np.vstack(parts))
+    return tuple(out)
+
+
 def fuse_scene_geometry(
     primary_masks: Sequence[np.ndarray],
     primary_depth_map: np.ndarray,
@@ -468,6 +517,7 @@ def fuse_scene_geometry(
     with_neighbours: bool = False,
     neighbour_voxel_mm: float = 8.0,
     score_voxel_mm: float = 0.0,
+    primary_footprints: "Sequence[np.ndarray] | None" = None,
 ) -> FusedSceneGeometry:
     """Fuse every primary object with whatever the other cameras can confirm about it.
 
@@ -483,6 +533,13 @@ def fuse_scene_geometry(
     is not that object, as :func:`_neighbour_clouds` builds it, which is the obstacle side of the
     same observation. It is off by default: it costs a second pass over every candidate cloud, and a
     caller that only feeds the generator has no use for it.
+
+    ``primary_footprints``, where given, are each primary mask less its rim, in the same order
+    (``generation.footprint_rim``, ``robot.grasping.geometry.footprint_rim_mm``): the result then
+    carries :attr:`FusedSceneGeometry.footprint_clouds_base_mm`, every fused object's cloud built
+    again from footprints, by the association the clouds made, each view's ``footprints`` in place of
+    its masks (a view with none gives its masks). The association reads the clouds alone, so the
+    clouds, the associations and the neighbours are the same with footprints asked for as without.
     """
 
     primary_clouds = [
@@ -494,20 +551,28 @@ def fuse_scene_geometry(
         return FusedSceneGeometry((), (), ())
 
     candidates: list[ViewCandidates] = []
+    view_footprints: list[tuple[np.ndarray, ...]] = []
     used: list[str] = []
     for view in other_views:
-        clouds = tuple(
-            cloud
-            for cloud in (
+        placed = [
+            (index, cloud)
+            for index, cloud in enumerate(
                 to_base_mm(mask, view.depth_map, view.intrinsics, view.camera_to_base)
                 for mask in view.masks
             )
             if cloud.size
-        )
-        if not clouds:
+        ]
+        if not placed:
             continue
-        candidates.append(ViewCandidates(view.name, clouds))
+        candidates.append(ViewCandidates(view.name, tuple(cloud for _index, cloud in placed)))
         used.append(view.name)
+        if primary_footprints is not None:
+            # Numbered as the association numbers the view's blobs: the masks that placed a point.
+            view_footprints.append(tuple(
+                to_base_mm(view.footprints[index], view.depth_map, view.intrinsics, view.camera_to_base)
+                if index < len(view.footprints) else cloud
+                for index, cloud in placed
+            ))
 
     if not candidates:
         # Not an error, since a one-camera cell is a legitimate deployment, but it means
@@ -544,7 +609,13 @@ def fuse_scene_geometry(
         if with_neighbours
         else ()
     )
-    result = FusedSceneGeometry(fused_or_none, tuple(used), associations, neighbours)
+    footprints = (
+        _fused_footprints(primary_footprints, primary_clouds, primary_depth_map, primary_intrinsics,
+                          primary_camera_to_base, view_footprints, associations, gained)
+        if primary_footprints is not None
+        else ()
+    )
+    result = FusedSceneGeometry(fused_or_none, tuple(used), associations, neighbours, footprints)
     logger.info(
         "Fused %d/%d object(s) from view(s) %s (metric=%s, neighbours=%s, %d neighbour point(s))",
         result.objects_fused,

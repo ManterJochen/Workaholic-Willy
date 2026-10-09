@@ -19,7 +19,8 @@ Protocol, one JSON object per line:
   startup -> {"status":"ready","joint_names":[...],"default_q":[...],"dt":float,"start_pos_m":[...],
               "start_quat_wxyz":[...],"descriptor":{...}|null,"arm_descriptor_sha256":hex,
               "urdf_sha256":hex|null,"composed_sha256":hex,"bodies":[...],"wrist_bodies":[...]?,
-              "wrist_bodies_sha256":hex?,"measure_only":true?,"refusal":{...}?}
+              "wrist_bodies_sha256":hex?,"planning":{...}?,"planning_sha256":hex?,"measure_only":true?,
+              "refusal":{...}?}
               |   {"status":"error","reason":str,"refusal":{...}?}
 
 The robot config is loaded once and composed as one dict by ``_curobo_body_links``: the
@@ -28,6 +29,18 @@ sha256 fields over configs are canonical JSON, and the URDF one is over the file
 kinematics resolved with line endings normalised. A wrist camera's body is loaded on top,
 and ``composed_sha256`` is taken over the config without it, the one the combination
 evidence names.
+
+A client that asks for a planning model (``WILLY_CUROBO_PLANNING_MODEL``, ``_curobo_planning``)
+gets the planner, its IK and its graph planner built from it, and everything that judges (check_js,
+explain_js, the start and goal checks in front of a plan, the ready gate) on the config above, the
+evidence model, whose hashes stay what they are. The ready line then says ``planning``, the model's
+name, spheres and self pairs beside the evidence model's, and ``planning_sha256``, the hash of the
+config the planner loaded; a model it could not build is reported under ``planning`` with the
+reason it ``refused``, and the planner is built on the evidence model. Two switches more, both off
+unless the client asks: ``WILLY_CUROBO_WORLD_IN_PLACE=1`` writes a world of boxes alone into the
+planner's storage in one call (``_curobo_world``), and ``WILLY_CUROBO_JOINT_FINETUNE`` runs a joint
+plan with fewer time-optimal passes than cuRobo's three (``_curobo_cspace``). ``WILLY_CUROBO_TIMING=1``
+prints a ``[timing]`` line per request on stderr.
   request <- {"start_joints":[6 rad],"goal_pos_m":[x,y,z],"goal_quat_wxyz":[w,x,y,z]}
              {"cmd":"fk","joints":[6 rad]}   |   {"cmd":"shutdown"}
              {"cmd":"check_js","joints":[[6 rad],...],"clearance_m":float?,"report_refused":bool?,"name_pairs":bool?,
@@ -94,6 +107,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from typing import Any
 
 ROBOT = sys.argv[1] if len(sys.argv) > 1 else "ur5e.yml"
@@ -291,6 +305,13 @@ try:
         canonical_sha256,
         compose_for_cell,
     )
+    from _curobo_cspace import (  # type: ignore[import-not-found]
+        CUROBO_FINETUNE_PASSES,
+        PlannedAttempts,
+        finetune_passes,
+        plan_cspace,
+        timing_asked,
+    )
     from _curobo_margin import ENV_SELF_COLLISION_MARGIN_MM  # type: ignore[import-not-found]
     from _curobo_pairs import (  # type: ignore[import-not-found]
         SphereLayout,
@@ -309,6 +330,13 @@ try:
         graph_planner_without_retract,
         requested_clearance_m,
     )
+    from _curobo_planning import (  # type: ignore[import-not-found]
+        ENV_PLANNING_MODEL,
+        PlanningModelError,
+        planning_config,
+        planning_row,
+        read_payload,
+    )
     from _curobo_protocol import (  # type: ignore[import-not-found]
         ENV_MEASURE_ONLY,
         IGNORE_PERCEIVED_KEY,
@@ -325,6 +353,12 @@ try:
         WHERE_GOAL,
         WHERE_PATH,
         WHERE_START,
+    )
+    from _curobo_world import (  # type: ignore[import-not-found]
+        InPlaceRefused,
+        boxes_only,
+        in_place_asked,
+        register_boxes_in_place,
     )
     from curobo._src.robot.types.self_collision_params import (  # type: ignore[import-not-found]
         SelfCollisionKinematicsCfg,
@@ -439,6 +473,50 @@ try:
     # Over the evidence config: the loaded one without the wrist camera, which for a cell
     # without one is the loaded config itself.
     _composed_sha256 = canonical_sha256(_EVIDENCE)
+    # The evidence model's kinematics, built before the planner: the planning model below is placed
+    # in the URDF it resolved.
+    _kin = Kinematics(KinematicsCfg.from_data_dict(copy.deepcopy(_COMPOSED)))
+    # Line endings normalised, because a URDF written in text mode on Windows carries CRLF and is the same robot.
+    _urdf_path = getattr(_kin.config.generator_config, "urdf_path", None)
+    _urdf_sha256 = None
+    _urdf_text = None
+    if isinstance(_urdf_path, str) and os.path.isfile(_urdf_path):
+        with open(_urdf_path, "rb") as _urdf_file:
+            _urdf_bytes = _urdf_file.read()
+        _urdf_sha256 = hashlib.sha256(_urdf_bytes.replace(b"\r\n", b"\n")).hexdigest()
+        _urdf_text = _urdf_bytes.decode("utf-8")
+    # The robot the planner plans with: the evidence model, or a planning model the client sent
+    # (_curobo_planning), which every judgement below leaves alone. A model this sidecar cannot
+    # build is said, and the planner is built on the evidence model as it always was.
+    _PLANNING = _COMPOSED
+    _PLANNING_READY: dict = {}
+    _planning_sent = os.environ.get(ENV_PLANNING_MODEL)
+    if _planning_sent:
+        _planning_name = "?"
+        try:
+            _payload = read_payload(_planning_sent)
+            _planning_name = str(_payload["model"])
+            if _attach_spheres > 0:
+                raise PlanningModelError("this sidecar models a carried part, which only the planner's own kinematics "
+                                         "carries, so the evidence model's check would not see it")
+            if _urdf_text is None:
+                raise PlanningModelError("the kinematics resolved no URDF to place the planning model's arm in")
+            _PLANNING = planning_config(_raw, _payload, urdf_text=_urdf_text, evidence=_COMPOSED,
+                                        margin_mm=_margin_mm, default_q=_chosen_q)
+            _planning_row = planning_row(_planning_name, _PLANNING, _COMPOSED)
+            _PLANNING_READY = {"planning": _planning_row, "planning_sha256": _planning_row["sha256"]}
+            print(f"[planning] {_planning_name}: {_planning_row['spheres']} sphere(s), {_planning_row['self_pairs']} "
+                  f"self pair(s), where the evidence model judges with {_planning_row['evidence_spheres']} and "
+                  f"{_planning_row['evidence_self_pairs']}; every judgement stays on the evidence model",
+                  file=sys.stderr, flush=True)
+        except Exception as _exc:  # noqa: BLE001 (a planning model is never a reason for a planner not to start)
+            _PLANNING = _COMPOSED
+            _said_why = str(_exc) if isinstance(_exc, PlanningModelError) else f"{type(_exc).__name__}: {_exc}"
+            _PLANNING_READY = {"planning": {"model": _planning_name, "refused": _said_why}}
+            print(f"[planning] !! {_planning_name} not built, the planner plans on the evidence model: {_said_why}",
+                  file=sys.stderr, flush=True)
+    #: Whether the planner holds another robot than the one every judgement reads.
+    _TWO_MODELS = _PLANNING is not _COMPOSED
     # cuRobo's own graph planner config with one change: no roadmap is seeded through the
     # retract. Handed in as a dict, which MotionPlannerCfg.create takes in place of a path;
     # it is a planner setting and no part of the robot, so none of the hashes above moves.
@@ -447,7 +525,7 @@ try:
     )
     _planner = MotionPlanner(
         MotionPlannerCfg.create(
-            robot=copy.deepcopy(_COMPOSED),
+            robot=copy.deepcopy(_PLANNING),
             scene_model={"cuboid": _world},
             collision_cache=_collision_cache,
             graph_planner_config=_graph,
@@ -456,23 +534,41 @@ try:
     print(f"[cache] {_collision_cache}", file=sys.stderr, flush=True)
     print("[graph] roadmaps seed from the start and the goal alone, never through the retract",
           file=sys.stderr, flush=True)
+    # How a joint plan runs and how a world is registered: cuRobo's own way unless the client
+    # asked otherwise (_curobo_cspace, _curobo_world), and a [timing] line per request where asked.
+    _JOINT_FINETUNE = finetune_passes(os.environ)
+    _TIMING = timing_asked(os.environ)
+    _WORLD_IN_PLACE = in_place_asked(os.environ)
+    if _JOINT_FINETUNE != CUROBO_FINETUNE_PASSES:
+        print(f"[plan_js] {_JOINT_FINETUNE} time-optimal pass(es) after the first, where cuRobo runs "
+              f"{CUROBO_FINETUNE_PASSES}: the arm runs the positions and never the timing", file=sys.stderr, flush=True)
+    if _WORLD_IN_PLACE:
+        _in_place_too = boxes_only({}, mesh_slots=MESH_CACHE, voxel_reserved=_collision_cache.get("voxel") is not None)
+        print("[world] boxes registered in place" if _in_place_too else
+              "[world] !! boxes registered through update_world: this planner reserved mesh or grid storage, which "
+              "only update_world clears", file=sys.stderr, flush=True)
     _planner.warmup(enable_graph=True, num_warmup_iterations=_WARMUP_ITERATIONS)
     _DT = float(_planner.trajopt_solver.config.interpolation_dt)
     _N = len(_planner.joint_names)
-    _kin = Kinematics(KinematicsCfg.from_data_dict(copy.deepcopy(_COMPOSED)))
     _default_q = _planner.default_joint_state.position.squeeze().cpu().tolist()
-    # Line endings normalised, because a URDF written in text mode on Windows carries CRLF and is the same robot.
-    _urdf_path = getattr(_kin.config.generator_config, "urdf_path", None)
-    _urdf_sha256 = None
-    if isinstance(_urdf_path, str) and os.path.isfile(_urdf_path):
-        with open(_urdf_path, "rb") as _urdf_file:
-            _urdf_sha256 = hashlib.sha256(_urdf_file.read().replace(b"\r\n", b"\n")).hexdigest()
 
     def _fk(joints: list) -> tuple[list, list]:
         q = torch.tensor(joints, device="cuda", dtype=torch.float32).reshape(1, -1)
         st = _kin.compute_kinematics(JointState.from_position(q, joint_names=_kin.joint_names))
         p = st.tool_poses.get_link_pose(_kin.tool_frames[0])
         return p.position.squeeze().cpu().tolist(), p.quaternion.squeeze().cpu().tolist()
+
+    def _clock() -> float:
+        """The wall clock in milliseconds; where timing was asked, once the GPU has done what was asked of it."""
+        if _TIMING:
+            torch.cuda.synchronize()
+        return time.perf_counter() * 1000.0
+
+    def _say_timing(what: str, *parts: tuple, note: str = "") -> None:
+        """One ``[timing]`` line on stderr, ``what`` and its parts in milliseconds, where WILLY_CUROBO_TIMING asked."""
+        if _TIMING:
+            said = ", ".join(f"{name} {float(took):.1f} ms" for name, took in parts)
+            print(f"[timing] {what}: {said}{f' ({note})' if note else ''}", file=sys.stderr, flush=True)
 
     # One judgement, asked three times: by the ready gate below, by the start and goal checks
     # in front of each plan, and by check_js. Three separate copies of it would be three
@@ -526,6 +622,11 @@ try:
         a wall passes it. An activation distance of 0.0 makes a zero mean that the spheres do
         not penetrate, not that they keep any clearance; ``clearance_m`` asks the world term
         for that clearance, and leaves the robot's own two terms as they are.
+
+        Where the planner plans on a planning model, its spheres are not the robot this judges,
+        so they come from ``_kin``, the evidence model's own kinematics, which the checker's pairs
+        and the pair names are laid out for. No carried part can be missed there: a sidecar that
+        models one builds no planning model.
         """
         cq = torch.tensor(rows, device="cuda", dtype=torch.float32)
         if cq.ndim != 2 or cq.shape[0] == 0 or cq.shape[1] != _N:
@@ -533,9 +634,14 @@ try:
                              f"got shape {tuple(cq.shape)}")
         cq = cq.unsqueeze(0)
         h = int(cq.shape[1])
-        spheres = _planner.compute_kinematics(
-            JointState.from_position(cq, joint_names=_planner.joint_names)
-        ).robot_spheres.reshape(1, h, -1, 4)
+        if _TWO_MODELS:
+            spheres = _kin.compute_kinematics(
+                JointState.from_position(cq, joint_names=_kin.joint_names)
+            ).robot_spheres.clone().reshape(1, h, -1, 4)
+        else:
+            spheres = _planner.compute_kinematics(
+                JointState.from_position(cq, joint_names=_planner.joint_names)
+            ).robot_spheres.reshape(1, h, -1, 4)
         bound = _CHECKER.get_bound(cq).reshape(1, h, -1).sum(dim=-1).reshape(-1)
         self_hit = _CHECKER.get_self_collision(spheres).reshape(1, h, -1).sum(dim=-1).reshape(-1)
         world_hit = _world_term(spheres, clearance_m).reshape(1, h, -1).sum(dim=-1).reshape(-1)
@@ -645,7 +751,7 @@ _emit({"status": "ready", "joint_names": list(_planner.joint_names), "default_q"
        "dt": _DT, "start_pos_m": _sp, "start_quat_wxyz": _sq,
        "descriptor": _descriptor if isinstance(_descriptor, dict) else None,
        "arm_descriptor_sha256": _arm_descriptor_sha256, "urdf_sha256": _urdf_sha256,
-       "composed_sha256": _composed_sha256, "bodies": _body_rows, **_WRIST, **_MEASURING})
+       "composed_sha256": _composed_sha256, "bodies": _body_rows, **_WRIST, **_PLANNING_READY, **_MEASURING})
 
 for _line in sys.stdin:
     _line = _line.strip()
@@ -682,6 +788,7 @@ for _line in sys.stdin:
             _emit({"success": False, "planner_error": False, "reason": _MEASURE_ONLY_REASON})
             continue
         try:
+            _began = _clock()
             # Judged before it is planned. A start the planner cannot leave and a goal it
             # cannot hold both come back as "no collision-free plan", which sends an
             # operator looking at the scene for a reason that is in the arm.
@@ -692,6 +799,7 @@ for _line in sys.stdin:
                 print(f"[plan_js] {_refusal_sentence(_refused)}", file=sys.stderr, flush=True)
                 _emit({"success": False, "planner_error": False,
                        "reason": _refusal_sentence(_refused), "refusal": _refused})
+                _say_timing("plan_js", ("start and goal judged, refused", _clock() - _began))
                 continue
             q0 = torch.tensor(req["start_joints"], device="cuda", dtype=torch.float32).unsqueeze(0)
             qg = torch.tensor(req["goal_joints"], device="cuda", dtype=torch.float32).unsqueeze(0)
@@ -705,16 +813,32 @@ for _line in sys.stdin:
             #
             # The same seed for every plan: the same request in the same world gets the
             # same plan, so a move a person watched once is the move it makes again.
+            _judged = _clock()
             _planner.reset_seed()
-            result = _planner.plan_cspace(
-                goal, start, max_attempts=_JOINT_PLAN_MAX_ATTEMPTS, enable_graph_attempt=_PLAN_GRAPH_FROM,
-            )
+            _attempts = PlannedAttempts()
+            if _JOINT_FINETUNE == CUROBO_FINETUNE_PASSES:
+                # cuRobo's own loop, today's plan to the bit.
+                result = _planner.plan_cspace(
+                    goal, start, max_attempts=_JOINT_PLAN_MAX_ATTEMPTS, enable_graph_attempt=_PLAN_GRAPH_FROM,
+                )
+            else:
+                # The same loop with fewer time-optimal passes, whose timing the arm never runs.
+                result = plan_cspace(
+                    _planner, goal, start, max_attempts=_JOINT_PLAN_MAX_ATTEMPTS,
+                    enable_graph_attempt=_PLAN_GRAPH_FROM, finetune_attempts=_JOINT_FINETUNE,
+                    succeeded=lambda _result: bool(torch.count_nonzero(_result.success) > 0), attempts=_attempts,
+                )
+            _planned = _clock()
             ok = result is not None and bool(result.success.any())
             print(f"[plan_js] goal={[round(x, 3) for x in req['goal_joints']]} -> "
                   f"{'OK' if ok else 'FAIL'}", file=sys.stderr, flush=True)
+            _optimised = (f"optimiser {1000.0 * float(result.solve_time):.0f} of cuRobo's "
+                          f"{1000.0 * float(result.total_time):.0f}" if result is not None else "nothing ran")
             if not ok:
                 _emit({"success": False, "planner_error": False,
                        "reason": "no collision-free joint-space plan"})
+                _say_timing("plan_js", ("start and goal judged", _judged - _began), ("plan, FAIL", _planned - _judged),
+                            note=f"{_optimised}; {_attempts.render() if _attempts.ran else 'cuRobo own loop'}")
                 continue
             # reshape(-1, N) as the Cartesian branch does, because position carries a
             # leading batch dimension and tolist() without it emits [[[q...], [q...]]],
@@ -723,6 +847,9 @@ for _line in sys.stdin:
             # 1 waypoint for a pi shoulder rotation.
             traj = result.get_interpolated_plan().position.reshape(-1, _N).cpu().tolist()
             _emit({"success": True, "trajectory": traj, "dt": _DT})
+            _say_timing("plan_js", ("start and goal judged", _judged - _began), ("plan, OK", _planned - _judged),
+                        (f"{len(traj)} waypoints out", _clock() - _planned),
+                        note=f"{_optimised}; {_attempts.render() if _attempts.ran else 'cuRobo own loop'}")
         except Exception as exc:  # noqa: BLE001 (report, never take the sidecar down mid-session)
             # planner_error=True means the call failed and the planner never rendered a
             # verdict. The distinction is not cosmetic, as the note on the client
@@ -751,6 +878,7 @@ for _line in sys.stdin:
         # bench, the declared fixtures and meshes and a distance field stay in. Never while a part
         # may be carried: only this planner models it.
         try:
+            _began = _clock()
             _clearance = requested_clearance_m(req)
             # Decided by _curobo_perceived alone, which the CPU suite runs: None for a plain check, which is judged in
             # the whole world with no storage touched; refused while this sidecar may hold a carried part.
@@ -800,6 +928,7 @@ for _line in sys.stdin:
                 _said = f"[check_js] judged with the camera's {len(_aside)} box(es) set aside, and put back"
                 print(_said, file=sys.stderr, flush=True)
             _emit(_reply)
+            _say_timing("check_js", (f"{len(req['joints'])} sample(s) judged", _clock() - _began))
         except WorldRestoreError as exc:
             # A box the camera saw did not come back into the world as it was. Every later plan and check would
             # judge a world nobody can vouch for, so this sidecar answers the call as failed and exits: the client
@@ -958,6 +1087,7 @@ for _line in sys.stdin:
         # meshes still go: they are true whatever the camera did, and the caller refuses
         # the motion on the reason.
         try:
+            _began = _clock()
             world = {c["name"]: {"dims": list(c["dims_m"]), "pose": list(c["pose"])} for c in req["cuboids"]}
             meshes = req.get("meshes") or []
             mesh_block = {
@@ -980,13 +1110,28 @@ for _line in sys.stdin:
                 else:
                     world_scene["voxel"], count = _field_block(voxels)
                     reply.update({"voxels_set": count, "reason": ""})
-            _planner.update_world(SceneCfg.create(world_scene))
+            # Boxes alone, on a planner that holds nothing else, go into its storage in one call where the client
+            # asked (_curobo_world): the same slots as update_world fills, without a device sync per box. Everything
+            # else is registered by update_world, as it always was.
+            _how = "through update_world"
+            if _WORLD_IN_PLACE and boxes_only(world_scene, mesh_slots=MESH_CACHE,
+                                              voxel_reserved=_collision_cache.get("voxel") is not None):
+                try:
+                    register_boxes_in_place(_planner.scene_collision_checker, SceneCfg.create(world_scene),
+                                            _planner.graph_planner)
+                    _how = "in place"
+                except InPlaceRefused as _refused_in_place:
+                    print(f"[world] {_refused_in_place}", file=sys.stderr, flush=True)
+            if _how != "in place":
+                _planner.update_world(SceneCfg.create(world_scene))
             # Remembered because registering voxels replaces the world too, and the
             # declared world has to go back underneath them or the bench disappears the
             # moment a camera speaks.
             _LAST_CUBOIDS = world
             _LAST_MESHES = mesh_block
             _emit(reply)
+            _say_timing("set_world", (f"{len(world)} box(es) and {len(meshes)} mesh(es) registered {_how}",
+                                      _clock() - _began))
         except Exception as exc:  # noqa: BLE001
             _emit({"world_set": None, "reason": f"{type(exc).__name__}: {exc}"})
         continue

@@ -132,10 +132,28 @@
       "additionalProperties": false,
       "description": "Post-Stop dwell and steady-state gating.\n\nA temporal check, does the controller report steady state, rather than the per-target spatial\ncheck the other guards make, so it sits outside the per-move :class:`SafetyPreflight` pipeline.\n\n``require_steady_before_motion`` and ``steady_timeout_s`` are consumed by\n:class:`GraspExecutionPolicy`: before every commanded approach, grasp and retreat move the policy\nblocks on ``arm.wait_until_steady(steady_timeout_s)`` and fails closed on timeout.\n``dwell_after_stop_s`` is not enforced; there is no exercised Stop or E-stop path in the runtime.",
       "properties": {
+        "gate_at": {
+          "default": "verb",
+          "enum": [
+            "verb",
+            "send"
+          ],
+          "title": "Gate At",
+          "type": "string"
+        },
         "require_steady_before_motion": {
           "default": true,
           "title": "Require Steady Before Motion",
           "type": "boolean"
+        },
+        "steady_signal": {
+          "default": "is_steady",
+          "enum": [
+            "is_steady",
+            "joint_speeds"
+          ],
+          "title": "Steady Signal",
+          "type": "string"
         },
         "steady_timeout_s": {
           "default": 5.0,
@@ -436,7 +454,7 @@
     },
     "GraspingDeepGeneratorConfig": {
       "additionalProperties": false,
-      "description": "The learned 6-DoF grasp generator, what `grasping.calculator: deep` selects.\n\nDifferent from `deep_ranker` in the one way that matters: the ranker scores candidates the\nanalytic stack proposed and changes no order, this one proposes them instead of the analytic\nstack. There is no shadow mode for a generator, either it is the source of candidates or it is\nnot running.\n\nIt fails closed. `calculator: deep` with no readable artifact refuses to build the cell rather\nthan falling back to `geometric`: a cell that asked for the learned generator and quietly got\nthe analytic one would file the analytic one's numbers under the learned one's name.\n\nThe score it attaches is not a probability. The v1 net has no calibrated P(hold) head: the\ncorpus carries no physics until it is shaken, and `held_jaw_v1` already ranks proposals at\n0.8947 AUROC. Generator proposes, scorer ranks, and each is promoted on its own evidence.",
+      "description": "The learned 6-DoF grasp generator, what `grasping.calculator: deep` selects.\n\nDifferent from `deep_ranker` in the one way that matters: the ranker scores candidates the\nanalytic stack proposed and changes no order, this one proposes them instead of the analytic\nstack. This build has no shadow mode for a generator: either it is the source of candidates or\nit is not running. A promotion record names `shadow` and `ab` for a proof that has not reached\n`active`, and a cell builds a generator at `active` alone.\n\nIt fails closed. `calculator: deep` with no readable artifact refuses to build the cell rather\nthan falling back to `geometric`: a cell that asked for the learned generator and quietly got\nthe analytic one would file the analytic one's numbers under the learned one's name. A cell\nalso refuses an artifact whose proof has not passed (the owner's decision of 2026-10-09): no\nfinished models ship, every customer trains their own, and a trained generator drives a cell\nonly once the promotion record beside it says its proof passed at `active`\n(`deep/promotion.py`). Nothing writes one yet, so today every artifact refuses a cell, and the\nladder and the simulation runners still build it to measure it.\n\nThe score it attaches is not a probability. The v1 net has no calibrated P(hold) head: the\ncorpus carries no physics until it is shaken. A scorer fitted on shaken holds, `held_jaw_v1`,\nreached 0.8947 AUROC on analytic candidates with folds that share meshes and 0.8758 with no test\nmesh trained on (the 2026-10-09 review), and it was never scored on this generator's proposals.\nGenerator proposes, scorer ranks, and each is promoted on its own evidence.",
       "properties": {
         "artifact_path": {
           "anyOf": [
@@ -448,7 +466,7 @@
             }
           ],
           "default": null,
-          "description": "Path to the generator's `.pt`, written by `python -m src.robot.grasping.deep train`. The card beside it is committed; the weights are not, exactly as the ranker's trees are not. Null (default) means the learned generator cannot be selected; `calculator: deep` then refuses. Both generator families are accepted here: a `grasp_generator` from `deep train` and a `set_grasp_generator` from `deep train-set`. The calculator branches on the artifact's own `kind`, so the file decides which decoder runs.",
+          "description": "Path to the generator's `.pt`, written by `python -m src.robot.grasping.deep train-set`. The card beside it is committed; the weights are not, exactly as the ranker's trees are not. Null (default) means the learned generator cannot be selected; `calculator: deep` then refuses. One family is accepted here, a `set_grasp_generator`; a file of the binned family, retired on 2026-09-04, is refused by name. A cell also refuses an artifact whose promotion record beside it (`<stem>.promotion.json`) does not say its proof passed at `active` (2026-10-09); nothing writes one yet.",
           "title": "Artifact Path"
         },
         "device": {
@@ -478,7 +496,7 @@
     },
     "GraspingDeepRankerConfig": {
       "additionalProperties": false,
-      "description": "The learned grasp ranker, in shadow: it computes, the telemetry records, the order never changes.\n\nMeasured on 1,611 (scene, view, object) units of `v1_proof`, out of fold and grouped by object\nso no scored object was ever trained on:\n\n    random (expected)   54.4 %      the calculator's own order   51.6 %\n    this ranker         84.1 %      best possible               100.0 %\n\n\"top-1 is valid\": the first candidate physically closes. Not \"the grasp holds\": the label is\nthe analytic verdict this stack computes, and the pilot's hold rate is 5.62 % where validity\nthere is 48.8 %. Those are different questions and only a shake answers the second, which is\nwhy nothing here promotes anything.\n\nShadow, for a measured reason. A ranker fitted on aletheia's shaken corpus beat the calculator\nby 17.7 pp on the same units and still lost to picking at random, because the failure it has to\npredict is `finger_collision` and its features cannot see the surroundings. What this logs is\n``would_change_top1``: whether turning it on would do anything, answered on every real pick.\n\nEnabling it adds telemetry keys and changes no decision. That is what the wiring guard checks: a\nflag whose runtime is unchanged fails, and telemetry is the runtime here.",
+      "description": "The learned grasp ranker, in shadow: it computes, the telemetry records, the order never changes.\n\nMeasured on 1,611 (scene, view, object) units of `v1_proof`, out of fold, with the folds cut by\nplacement (a scene and an instance) and not by mesh: the corpus places each mesh many times over,\nso a scored mesh can sit in the training folds in another placement (the 2026-10-09 review):\n\n    random (expected)   54.4 %      the calculator's own order   51.6 %\n    this ranker         84.1 %      best possible               100.0 %\n\nPooled over the candidates of every evaluation configuration, not the support-footprint stage's\nlist alone. Cut by mesh, its AUROC goes from 0.9188 to 0.9054; and the same recipe fitted on\nshaken holds, with no test mesh trained on, chose among SFE's own candidates as well as SFE's\norder did and no better, +0.000 (95 % CI -0.027 to +0.027).\n\n\"top-1 is valid\": the first candidate physically closes. Not \"the grasp holds\": the label is\nthe analytic verdict this stack computes, and the pilot's hold rate is 5.62 % where validity\nthere is 48.8 %. Those are different questions and only a shake answers the second, which is\nwhy nothing here promotes anything.\n\nShadow, for a measured reason. A ranker fitted on aletheia's shaken corpus beat the calculator\nby 17.7 pp on the same units and still lost to picking at random, because the failure it has to\npredict is `finger_collision` and its features cannot see the surroundings. What this logs is\n``would_change_top1``: whether turning it on would do anything, answered on every real pick.\n\nEnabling it adds telemetry keys and changes no decision. That is what the wiring guard checks: a\nflag whose runtime is unchanged fails, and telemetry is the runtime here.",
       "properties": {
         "artifact_dir": {
           "default": "${WILLY_PROJECT_ROOT}/assets/models/grasp_ranker/v1",
@@ -578,6 +596,40 @@
       "title": "GraspingFeasibilityConfig",
       "type": "object"
     },
+    "GraspingFollowPartsConfig": {
+      "additionalProperties": false,
+      "description": "A task asks the detector once and then follows its parts (``src/robot/perception/kept_scene.py``).\n\nEvery pick of a task used to ground its first look again: Qwen boxing every part on the mat, 13 s at the median on\nthe owner's cell (2026-10-07/08), to find the parts where the last pick left them. On, a task's next pick finds them\nagain with SAM2 on their boxes and no detector, where nothing changed in depth and every part stands where it stood\nor within ``max_shift_mm``, its mask in its footprint, at its top and of its colour; all or nothing per frame, and\nany doubt grounds the frame as before (the owner, 2026-10-09). The first pick and a Restart ground; so does the pick\nafter a push, a blocker cleared, a recovery, a try that sent motion and failed, a part gripped that was not kept,\nand every end check of an \"until empty\" task. The later looks of each pick find its first look's parts by their\nprojected boxes. Off, the default: every pick grounds every look, as before. The guard judges every motion against\nfresh depth either way.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "max_creep_mm": {
+          "default": 20.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 40.0,
+          "title": "Max Creep Mm",
+          "type": "number"
+        },
+        "max_shift_mm": {
+          "default": 10.0,
+          "exclusiveMinimum": 0.0,
+          "maximum": 15.0,
+          "title": "Max Shift Mm",
+          "type": "number"
+        },
+        "refresh_every_picks": {
+          "default": 0,
+          "maximum": 1000,
+          "minimum": 0,
+          "title": "Refresh Every Picks",
+          "type": "integer"
+        }
+      },
+      "title": "GraspingFollowPartsConfig",
+      "type": "object"
+    },
     "GraspingGeometryStageConfig": {
       "additionalProperties": false,
       "description": "Which geometry stage proposes grasp candidates.\n\n``support_footprint`` (the default) reconstructs the target as its visible footprint extruded\nonto the calibrated support plane and then solves for an anchor height that clears the surface.\n``silhouette`` anchors on the visible surface and lets the collision filter throw the result\naway, which cannot work when the constraint is the support surface: a filter can refuse, it\ncannot relocate a grasp.\n\nMeasured through the real calculator on the D5 gate subset (n=354), against ground-truth geometry:\n\n=====================  ===========  ==========  ==========\nstage                  precision    top-1       coverage\n=====================  ===========  ==========  ==========\nsilhouette             22.08 %      24.29 %     28.53 %\nsupport_footprint      63.59 %      43.50 %     53.67 %\nsupport_footprint      64.60 %      55.93 %     64.69 %\n+ fused target cloud\n=====================  ===========  ==========  ==========\n\nPer family, top-1 against the silhouette stage: packed 26.6 -> 44.1 %, pile 11.1 -> 35.2 %,\nsparse 30.3 -> 55.6 %. ``bin`` went 12.5 -> 8.3 % on this subset (n=24, two objects against\nthree); on the full 270-scene set (n=152) the same stage measured 27.6 % against 14.5 %.\n\nIt needs a BASE-frame support plane and a CAMERA->BASE transform. Without both it cannot place\nthe table, so it does not run and the silhouette stage stands: a runner that builds the service\nthrough ``from_components`` without a frame resolver gets the silhouette stage, and the\n``geometry_stage`` telemetry key says which one ran.",
@@ -603,6 +655,14 @@
           "maximum": 50.0,
           "minimum": 0.0,
           "title": "Depth Band Near Pct",
+          "type": "number"
+        },
+        "footprint_rim_mm": {
+          "default": 0.0,
+          "description": "The rim a part's mask loses for the cloud the support-footprint stage builds its footprint from, millimetres at the part (src/robot/grasping/generation/footprint_rim.py): the mask eroded by ceil(rim * fx / z) px, z the part's median depth and fx the colour lens's, never more than 30 % of the mask, a look's own input and the looks the pick loop fuses alike. The full mask stays for everything else: the jaw faces, the association of looks, the kept scene, the colour check, the planner world's hold-out and the neighbours. The D415 smears a part's far edge into a ramp of depths the mask's outer ~3 px lie on, and the footprint's hull follows them. Measured offline (2026-10-09) on 23 grey cubes the owner's cell recorded from 5 look poses on 2026-10-07: the centre the grasp closes on lay 2.53 mm off at the median, 2.5 mm of it away from the camera; through the calculator with 2.0 (3 px, 4 nearer than 609 mm) and inflate_mm 1.25 giving the faces back, 0.77 mm, and the footprint's sides within 0.8 mm. Pair it with inflate_mm: the rim alone leaves the sides 1.8 and 3.0 mm short. Default 0.0 = SFE's input as before; the owner, 2026-10-09: 'Ja, f\u00fcr Montag' (2.0 with inflate_mm 1.25, at the cell's test).",
+          "maximum": 10.0,
+          "minimum": 0.0,
+          "title": "Footprint Rim Mm",
           "type": "number"
         },
         "grasp_depth_reference": {
@@ -633,7 +693,7 @@
         },
         "inflate_mm": {
           "default": 0.0,
-          "description": "Push every reconstructed face outward by this much. A depth image loses the grazing rim of a curved surface, so the measured footprint is systematically smaller than the object and every consequence of that is one-sided (an under-estimated span, a finger that clips a flank on the way in). Non-zero biases the estimate in the safe direction. Default 0.0 = the measurement above, which was taken without it.",
+          "description": "Push every reconstructed face outward by this much. A depth image loses the grazing rim of a curved surface, so the measured footprint is systematically smaller than the object and every consequence of that is one-sided (an under-estimated span, a finger that clips a flank on the way in). Non-zero biases the estimate in the safe direction. Default 0.0 = the measurement above, which was taken without it. It gives back the faces footprint_rim_mm takes: 1.25 with a 2 mm rim is what the owner's cell was measured with.",
           "maximum": 50.0,
           "minimum": 0.0,
           "title": "Inflate Mm",
@@ -1602,6 +1662,29 @@
       "title": "GripperConfig",
       "type": "object"
     },
+    "HeldWorldConfig": {
+      "additionalProperties": false,
+      "description": "Where a pick or a place judges a motion in the world it already holds rather than in a new camera frame.\n\nEach is the owner's decision (2026-10-09: \"altes Bild, weil sich in der Kiste so oder so nichts ver\u00e4ndert\"), off by\ndefault, which takes a new frame for every motion as before. A held world is the world the last refresh built, the\ncameras' frames and boxes of that moment: every judgement still runs in it, the exact guard on every sample and the\nplanner against that world; only no new frame is taken.\n\n* ``standoff``: at a standoff the line down to a grasp, or the line in to a place, is judged in the world held from\n  before the arm left for the standoff. A grasp judged ahead holds the world its line down was judged in at the look,\n  and the route to the standoff is judged in it too; a place holds the world its route to the standoff was judged\n  in. A standoff frame in a bin had no depth on 12 of 88 arrivals, and flipped a line down 0.05 mm short of the\n  guard distance that had passed ahead (map2 O2).\n* ``carry``: the world the line down was judged in, held at the part, is held for the joint move a task declared\n  after the pick (the carry to the bin's look), judged while the jaws close (``robot.motion.judge_next_leg``).\n* ``drop``: the world the line in was judged in is held through the release: the line out is judged in it, while the\n  jaws open where ``robot.motion.judge_next_leg`` says so, and the joint move a task declared after the place (the\n  return) is judged in it too.\n\n``carry`` acts only through ``robot.motion.judge_next_leg``: a leg not judged ahead is judged as it runs, in a world\nof its own.",
+      "properties": {
+        "carry": {
+          "default": false,
+          "title": "Carry",
+          "type": "boolean"
+        },
+        "drop": {
+          "default": false,
+          "title": "Drop",
+          "type": "boolean"
+        },
+        "standoff": {
+          "default": false,
+          "title": "Standoff",
+          "type": "boolean"
+        }
+      },
+      "title": "HeldWorldConfig",
+      "type": "object"
+    },
     "IkQualitySafetyConfig": {
       "additionalProperties": false,
       "description": "IK-solution-quality guard configuration.\n\nThe guard runs once the driver has produced a joint solution, and rejects:\n\n* NaN or wrong-DoF solutions outright,\n* solutions differing from the current pose by more than ``max_jump_rad`` on\n  any axis, since a jump that large signals a wrap-around ambiguity,\n* solutions whose Jacobian condition number exceeds ``max_condition_number``\n  or whose smallest singular value falls below ``min_singular_value``, both\n  near-singular configurations,\n* solutions inside ``limit_proximity_deg`` of the configured joint limits,\n  which the joint-limit guard also covers when enabled and this one still\n  catches when it is not.",
@@ -1617,6 +1700,15 @@
           "minimum": 0.0,
           "title": "Limit Proximity Deg",
           "type": "number"
+        },
+        "line_ik": {
+          "default": "controller",
+          "enum": [
+            "controller",
+            "local"
+          ],
+          "title": "Line Ik",
+          "type": "string"
         },
         "max_condition_number": {
           "default": 250.0,
@@ -1638,6 +1730,15 @@
           "maximum": 1.0,
           "title": "Min Singular Value",
           "type": "number"
+        },
+        "singularity_fk": {
+          "default": "controller",
+          "enum": [
+            "controller",
+            "dh"
+          ],
+          "title": "Singularity Fk",
+          "type": "string"
         }
       },
       "title": "IkQualitySafetyConfig",
@@ -2278,10 +2379,53 @@
       "title": "PerceivedWorldConfig",
       "type": "object"
     },
+    "PlaceGridConfig": {
+      "additionalProperties": false,
+      "description": "The spots a flat place lays its parts out on where no camera reads it: ``rows`` x ``columns`` about the taught\npose, along the taught tool's heading, the nearest the taught pose first.",
+      "properties": {
+        "columns": {
+          "default": 3,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Columns",
+          "type": "integer"
+        },
+        "rows": {
+          "default": 3,
+          "maximum": 20,
+          "minimum": 1,
+          "title": "Rows",
+          "type": "integer"
+        },
+        "spacing_mm": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0.0,
+              "maximum": 1000.0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Spacing Mm"
+        }
+      },
+      "title": "PlaceGridConfig",
+      "type": "object"
+    },
     "PlannedMotionSafetyConfig": {
       "additionalProperties": false,
       "description": "How a cuRobo UR cell chooses the path of a move, and how far a planned path may wander.\n\nA move goes to the configuration of its goal nearest the arm, on the branch the arm holds, and it runs the\nstraight joint line there wherever that line is clear; cuRobo plans only where it is not, and never chooses the\ngoal. Both keys bound that choice.\n\n``line_clearance_mm`` is how far every configuration of a straight joint line has to stay from the planner's\nworld, the declared cell and the camera's, before the line runs instead of a plan. A line that comes closer is\nplanned around rather than driven along: the camera sees obstacles that only the planner holds, and a line that\ngrazes one by a millimetre passes a check that asks only for no penetration. Where only the boxes a camera saw come\ncloser, the planner is asked again with them set aside, and with a hand known empty and open the exact guard decides\nthem at ``self_collision.perceived_min_distance_mm`` (Option 1). The default is 10 mm, the distance at\nwhich cuRobo's own optimiser starts pushing its plans away from an obstacle (``optimizer_collision_activation_\ndistance`` at its default of 0.01 m, which the sidecar does not change), so a line is held to the clearance a plan\nis shaped to keep; it is also the local guard's shipped ``self_collision.min_distance_mm``, which the guard keeps\nfrom the arm itself and from a declared fixture. From a box a camera saw, already its surface grown by\n``planning_world.perceived.margin_mm``, the guard keeps ``self_collision.perceived_min_distance_mm`` (5 mm). It is\nnot a certified distance, and 0 judges a line at no penetration, which is how a planned path is judged.\n\n``max_detour_deg`` is how far any joint of a cuRobo path may swing beyond the span between where it starts and\nwhere it ends. A plan past it is not run: the next nearest configuration is planned to instead, and where none\nis left the move is refused naming the joint. 45 degrees admits a plan that bends a joint around a bin wall and\nrefuses the plan that swings the base or a wrist the long way round, which is what twisted a cable-carrying arm on\nthe owner's cell (2026-09-24).\n\n``mesh_first`` (on) lets the exact mesh guard judge a straight line and a goal configuration alone (the owner,\n2026-10-07: \"einfach mit den meshes pr\u00fcfen und nicht mit kugeln\"): where it accepts every sample, at its own\ndistances, the line runs and cuRobo's spheres are not asked; cuRobo plans only where the guard refuses the straight\nline, and the guard judges every sample of that plan. It applies only where the guard holds everything the planner\nwould judge the motion against: the arm, the hand, the wrist cameras and the declared fixtures both hold, and the\ncamera's boxes the guard holds from the same refresh. Where the planner holds more, both authorities judge, as\nbefore: a mesh its world declares, a distance field of the camera's points, a carried part, on a cell that models\none a hand not known empty and open, and the declared support plane wherever a part of the arm or the hand past\nthe shoulder comes within the guard's ``min_distance_mm`` of its top on the exact meshes. On the real cell the spheres refused lines the meshes kept\n18 mm clear, and every refusal cost a report over thousands of sphere pairs before the guard could decide.",
       "properties": {
+        "finetune_passes": {
+          "default": 3,
+          "maximum": 3,
+          "minimum": 0,
+          "title": "Finetune Passes",
+          "type": "integer"
+        },
         "line_clearance_mm": {
           "default": 3.0,
           "maximum": 100.0,
@@ -2300,6 +2444,15 @@
           "default": true,
           "title": "Mesh First",
           "type": "boolean"
+        },
+        "planning_spheres": {
+          "default": "",
+          "enum": [
+            "",
+            "lean"
+          ],
+          "title": "Planning Spheres",
+          "type": "string"
         }
       },
       "title": "PlannedMotionSafetyConfig",
@@ -2372,6 +2525,9 @@
           "title": "Enabled",
           "type": "boolean"
         },
+        "hold": {
+          "$ref": "#/$defs/HeldWorldConfig"
+        },
         "include_fixtures": {
           "default": true,
           "title": "Include Fixtures",
@@ -2389,6 +2545,11 @@
         },
         "perceived": {
           "$ref": "#/$defs/PerceivedWorldConfig"
+        },
+        "register_in_place": {
+          "default": false,
+          "title": "Register In Place",
+          "type": "boolean"
         },
         "require_registration": {
           "default": true,
@@ -2545,6 +2706,11 @@
           "$ref": "#/$defs/RobotGraspingApproachValidationConfig",
           "description": "Dense-mode swept-volume approach/retreat validator. Default disabled (byte-identical); independent of fusion (it needs only the per-frame neighbour masks)."
         },
+        "batched_builds": {
+          "default": false,
+          "title": "Batched Builds",
+          "type": "boolean"
+        },
         "calculator": {
           "default": "geometric",
           "description": "Which grasp generator ranks candidates. 'geometric' is the analytic stack; 'deep' is the learned 6-DoF generator, which additionally takes the geometric candidates as seeds. Fails closed when 'deep' is selected without weights.",
@@ -2553,6 +2719,25 @@
             "deep"
           ],
           "title": "Calculator",
+          "type": "string"
+        },
+        "colour_check": {
+          "default": "on",
+          "enum": [
+            "on",
+            "log",
+            "off"
+          ],
+          "title": "Colour Check",
+          "type": "string"
+        },
+        "colour_check_clipped": {
+          "default": "exclude",
+          "enum": [
+            "keep",
+            "exclude"
+          ],
+          "title": "Colour Check Clipped",
           "type": "string"
         },
         "decision": {
@@ -2575,6 +2760,19 @@
         "feasibility": {
           "$ref": "#/$defs/GraspingFeasibilityConfig"
         },
+        "fine_pass_waits": {
+          "default": true,
+          "title": "Fine Pass Waits",
+          "type": "boolean"
+        },
+        "first_good_part": {
+          "default": true,
+          "title": "First Good Part",
+          "type": "boolean"
+        },
+        "follow_parts": {
+          "$ref": "#/$defs/GraspingFollowPartsConfig"
+        },
         "fusion": {
           "$ref": "#/$defs/RobotGraspingFusionConfig"
         },
@@ -2582,9 +2780,21 @@
           "$ref": "#/$defs/GraspingGeometryStageConfig",
           "description": "Which stage proposes grasp candidates. Default 'support_footprint', measured 43.50 % top-1 against the silhouette stage's 24.29 % through the real calculator."
         },
+        "good_part_score": {
+          "default": 0.75,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Good Part Score",
+          "type": "number"
+        },
         "gripper_geometry": {
           "$ref": "#/$defs/GraspingGripperGeometryConfig",
           "description": "Gripper collision envelope the calculator filters grasp candidates against (parallel-jaw or suction-cup). Unset on a cell naming a hand: that hand's registry numbers. Unset on a cell naming none: parallel_jaw with the 2F-85 dims -> byte-identical."
+        },
+        "hide_own_places": {
+          "default": false,
+          "title": "Hide Own Places",
+          "type": "boolean"
         },
         "isotropic_radial_closing": {
           "default": false,
@@ -2645,6 +2855,25 @@
         },
         "watchdog": {
           "$ref": "#/$defs/GraspingWatchdogConfig"
+        },
+        "weak_look_trigger": {
+          "default": false,
+          "title": "Weak Look Trigger",
+          "type": "boolean"
+        },
+        "workers": {
+          "anyOf": [
+            {
+              "const": "auto",
+              "type": "string"
+            },
+            {
+              "minimum": 0,
+              "type": "integer"
+            }
+          ],
+          "default": 0,
+          "title": "Workers"
         }
       },
       "title": "RobotGraspingConfig",
@@ -2674,6 +2903,100 @@
         }
       },
       "title": "RobotGraspingFusionConfig",
+      "type": "object"
+    },
+    "RobotMotionConfig": {
+      "additionalProperties": false,
+      "description": "When the next leg of a pick or a place is judged: as it runs, or ahead while the arm waits or moves.\n\n``judge_next_leg`` (map4 motion C7, the owner, 2026-10-09):\n\n* ``\"off\"``, the default and today's behaviour: every leg is judged when the arm stands at its start, and the jaws'\n  stroke is waited out before anything else is asked.\n* ``\"in_settles\"``: the change of the jaws goes out once, as ever, and while their stroke is waited out the next leg\n  is judged: the line out of a place, and, in a world held across the stroke (``safety.planning_world.hold``), the\n  joint move a task declared after the pick or the place. Nothing is sent before the stroke is over.\n* ``\"in_settles_and_motion\"``: as ``\"in_settles\"``, and a declared joint move not judged in a stroke is judged on a\n  second thread while the line before it runs, on an arm that watches its sends (``robot.ur.brake_on_halt``: a halt\n  brakes the line in flight). Elsewhere it falls back to ``\"in_settles\"`` and says so once in the log.\n\nA leg judged ahead runs only where the arm stands within 0.5 mm of where it was judged from and nothing else it was\njudged on changed since (the world's refresh, the carried part, the hand, the camera's boxes, a halt); otherwise it\nis judged again where the arm stands. Judging ahead sends nothing and switches no output.",
+      "properties": {
+        "judge_next_leg": {
+          "default": "off",
+          "enum": [
+            "off",
+            "in_settles",
+            "in_settles_and_motion"
+          ],
+          "title": "Judge Next Leg",
+          "type": "string"
+        }
+      },
+      "title": "RobotMotionConfig",
+      "type": "object"
+    },
+    "RobotPlaceConfig": {
+      "additionalProperties": false,
+      "description": "How a task sets its parts down: into a box, on a flat place, and the carry to a box. See the module docstring.",
+      "properties": {
+        "below_the_rim_mm": {
+          "default": 30.0,
+          "maximum": 50.0,
+          "minimum": 10.0,
+          "title": "Below The Rim Mm",
+          "type": "number"
+        },
+        "carry": {
+          "default": "via_the_look",
+          "enum": [
+            "via_the_look",
+            "over_the_rim"
+          ],
+          "title": "Carry",
+          "type": "string"
+        },
+        "grid": {
+          "$ref": "#/$defs/PlaceGridConfig"
+        },
+        "opening_margin_mm": {
+          "default": 10.0,
+          "maximum": 50.0,
+          "minimum": 0.0,
+          "title": "Opening Margin Mm",
+          "type": "number"
+        },
+        "part_bottom": {
+          "default": "declared_support",
+          "enum": [
+            "declared_support",
+            "measured"
+          ],
+          "title": "Part Bottom",
+          "type": "string"
+        },
+        "release_in_a_box": {
+          "default": "over_the_rim",
+          "enum": [
+            "over_the_rim",
+            "below_the_rim"
+          ],
+          "title": "Release In A Box",
+          "type": "string"
+        },
+        "relocate": {
+          "default": true,
+          "title": "Relocate",
+          "type": "boolean"
+        },
+        "rim_floor_margin_mm": {
+          "default": 15.0,
+          "maximum": 100.0,
+          "minimum": 0.0,
+          "title": "Rim Floor Margin Mm",
+          "type": "number"
+        },
+        "side_by_side": {
+          "default": false,
+          "title": "Side By Side",
+          "type": "boolean"
+        },
+        "spacing_margin_mm": {
+          "default": 20.0,
+          "maximum": 200.0,
+          "minimum": 0.0,
+          "title": "Spacing Margin Mm",
+          "type": "number"
+        }
+      },
+      "title": "RobotPlaceConfig",
       "type": "object"
     },
     "RobotRLConfig": {
@@ -2999,6 +3322,11 @@
           "maximum": 500.0,
           "title": "Tool Radius Mm",
           "type": "number"
+        },
+        "whole_path_judge": {
+          "default": false,
+          "title": "Whole Path Judge",
+          "type": "boolean"
         }
       },
       "title": "SelfCollisionSafetyConfig",
@@ -4080,6 +4408,9 @@
       "default": null,
       "title": "Look Joint Positions Deg"
     },
+    "motion": {
+      "$ref": "#/$defs/RobotMotionConfig"
+    },
     "motion_limits": {
       "$ref": "#/$defs/MotionLimitsConfig"
     },
@@ -4120,6 +4451,9 @@
       ],
       "default": null,
       "title": "Natural Closing Axis"
+    },
+    "place": {
+      "$ref": "#/$defs/RobotPlaceConfig"
     },
     "rl": {
       "$ref": "#/$defs/RobotRLConfig"

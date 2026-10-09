@@ -50,9 +50,17 @@ _A_FUSED_CELL = (
 
 @dataclass(frozen=True, slots=True)
 class CameraFusionPlan:
-    """The cameras a cell fuses into each object's cloud before it grasps, primary first, or what it is missing.
+    """The cameras a cell fuses into each object's cloud before it grasps, primary first, or what it is missing to.
+    Reads config and opens nothing, so it answers at a desk.
 
-    Pure: it reads config and opens nothing, so it answers at a desk as well as at the cell.
+    Attributes:
+        cameras (tuple[str, ...]): The rig ids whose views are fused, the primary first; empty when anything is missing
+            (default: ()).
+        missing (tuple[str, ...]): What the tree lacks to fuse, one clause each, in the order a person fixes them; empty
+            when it can (default: ()).
+        on_the_wrist (tuple[str, ...]): The rigs among ``cameras`` on the wrist, placed by the arm's pose at the shutter
+            (default: ()).
+        primary_rig_id (str): The camera each grasp is synthesised in, the others fused onto it (default: "").
     """
 
     #: The rigs whose views are fused, the primary first and then the others in id order, the order the cell opens
@@ -67,7 +75,17 @@ class CameraFusionPlan:
 
     @classmethod
     def from_tree(cls, tree: "LoadedTree") -> "CameraFusionPlan":
-        """The plan of a loaded tree. A tree that did not load raises its own refusal (``ConfigError``)."""
+        """The fusion plan of a loaded tree.
+
+        Args:
+            tree (LoadedTree): A loaded tree, ``load_tree()``.
+
+        Returns:
+            CameraFusionPlan: The plan; :meth:`refusal` says why it cannot fuse.
+
+        Raises:
+            ConfigError: The tree did not load.
+        """
         cameras = tree.app_config.camera.cameras
         return cls.from_config(tree.robot, cameras.rigs, primary_rig_id=cameras.primary_rig_id)
 
@@ -75,7 +93,16 @@ class CameraFusionPlan:
     def from_config(
         cls, robot_cfg: "RobotConfig", rigs: Sequence[Any], *, primary_rig_id: str,
     ) -> "CameraFusionPlan":
-        """The plan of a robot section and the camera section's rigs, as :class:`CameraWorldPlan` takes them."""
+        """The fusion plan of a robot section and the camera section's rigs.
+
+        Args:
+            robot_cfg (RobotConfig): The cell's robot section, ``tree.robot``.
+            rigs (Sequence[Any]): The camera section's rigs, ``tree.app_config.camera.cameras.rigs``.
+            primary_rig_id (str): ``camera.cameras.primary_rig_id``: the camera each grasp is synthesised in.
+
+        Returns:
+            CameraFusionPlan: The plan.
+        """
         fusion = getattr(getattr(robot_cfg, "grasping", None), "fusion", None)
         geometry = getattr(fusion, "geometry", None)
         primary = str(primary_rig_id or "")
@@ -112,8 +139,11 @@ class CameraFusionPlan:
                    primary_rig_id=primary)
 
     def refusal(self) -> str | None:
-        """Why this cell cannot fuse, in one sentence naming what is missing and then what a fused cell needs; else
-        ``None``."""
+        """Why this cell cannot fuse its cameras.
+
+        Returns:
+            str | None: One sentence naming what is missing and what a fused cell needs; ``None`` where it can fuse.
+        """
         if not self.missing:
             return None
         return f"this cell cannot fuse its cameras before a grasp: {'; '.join(self.missing)}. {_A_FUSED_CELL}"
@@ -123,7 +153,11 @@ class CameraFusionPlan:
         return self.render()
 
     def render(self) -> str:
-        """Describe this to a person, as text, ASCII, no trailing newline."""
+        """The plan as a person reads it.
+
+        Returns:
+            str: ASCII, no trailing newline.
+        """
         if self.missing:
             return "no camera fusion: " + "; ".join(self.missing)
         labels = [self._label(cam_id) for cam_id in self.cameras]
@@ -131,7 +165,11 @@ class CameraFusionPlan:
         return f"fusing {named} into each object's cloud before its grasp is planned"
 
     def to_dict(self) -> dict[str, Any]:
-        """The wire view."""
+        """The plan as plain data.
+
+        Returns:
+            dict[str, Any]: ``cameras``, ``missing``, ``on_the_wrist``, ``primary_rig_id`` and the refusal.
+        """
         return {"cameras": list(self.cameras), "missing": list(self.missing), "on_the_wrist": list(self.on_the_wrist),
                 "primary_rig_id": self.primary_rig_id, "refusal": self.refusal()}
 

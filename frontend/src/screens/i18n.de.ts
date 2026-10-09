@@ -234,6 +234,30 @@ const de = {
   'st.talk.space': 'Leertaste',
   'st.talk.current': 'Jetzt: {key}',
   'st.talk.applies': 'Gilt ab dem nächsten Öffnen des Cockpits.',
+  'st.task.title': 'Auftrag',
+  'st.task.lede':
+    'Wie ein getippter oder gesprochener Auftrag startet, für diesen Browser. Was gegriffen wird und wohin, sagt der Satz; diese Einstellungen gelten, wo er nichts sagt. Den Modus legen sie fest.',
+  'st.task.start': 'Start',
+  'st.task.start.enter': 'Enter startet sofort',
+  'st.task.start.card': 'Erst die Karte',
+  'st.task.start.hint':
+    'Sofort: Ist der Satz klar und die Zelle bereit, fährt der Roboter nach Enter los; sonst öffnet sich die Karte und sagt warum. Erst die Karte: Enter liest nur, Start auf der Karte startet.',
+  'st.task.scope': 'Modus',
+  'st.task.scope.hint': 'Gilt für jeden Auftrag, den Enter startet; „alle“ im Satz ändert ihn nicht.',
+  'st.task.looks': 'Blicke',
+  'st.task.looks.hint':
+    'Wie oft der Arm für jeden Griff schaut. Bei Bedarf: weiter, solange der Griff unsicher ist. Alle Posen: jede eingestellte Pose, für schwierige Teile; kostet Zeit. Die Karte kann es für ihren Auftrag ändern.',
+  'st.task.place': 'Ablegen ohne Angabe',
+  'st.task.place.default': 'Standard-Ablage der Zelle',
+  'st.task.place.camera': 'Kamera sucht …',
+  'st.task.place.phrase': 'Was die Kamera sucht',
+  'st.task.place.placeholder': 'englisch, z. B. yellow bin',
+  'st.task.place.hint': 'Nennt der Satz keinen Ort, legt Willy das Teil hier ab.',
+  'st.task.anything': 'Kein Teil genannt',
+  'st.task.anything.ask': 'Karte fragt',
+  'st.task.anything.all': 'Alles',
+  'st.task.anything.hint':
+    '„Alles“ setzt auf der Karte das Häkchen „alles, was die Kamera sieht, auch Kistenwände“. Ein solcher Auftrag startet nie auf Enter: Start auf der Karte.',
 
   // ── the history ────────────────────────────────────────────────────────────────────────────────────────────
   'hs.lede':

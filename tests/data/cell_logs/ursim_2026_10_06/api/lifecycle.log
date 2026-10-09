@@ -1,0 +1,13 @@
+2026-10-06 15:18:13,134 - CellSession - INFO - Cell released: nothing is built, nothing is connected.
+2026-10-06 15:18:13,222 - CellSession - INFO - Connect preview issued for arm=URRobotArm gripper=JawIOGripper: 1 motion warning(s), 0 blocker(s); config fingerprint 533a6e04aea8127a, valid until 2026-10-06T13:23:13+00:00.
+2026-10-06 15:18:13,318 - CellSession - INFO - Connecting: arm=URRobotArm, then gripper=JawIOGripper. THIS MOVES; acknowledged by token.
+2026-10-06 15:18:16,872 - CellSession - ERROR - Connect FAILED (RobotConnectionError: gripper.tool_frame.source is 'willy', which expects the controller's tool register to hold nothing (a bare flange), but the controller is actually running a tool frame 157.0 mm / 90.0 deg away from that (tolerance 10.0 mm). Commanding motion now would drive the arm off by that much on every pose. Either the pendant's TCP is not what this config says, or the cell is really in 'polyscope' mode, or ur.model ('ur10') is not the arm on the other end. This is derived from THAT model's DH table, so a wrong model produces a wrong distance here. Derived as inv(DH flange) @ getForwardKinematics; no PolyScope read required.); rolled back.
+2026-10-06 15:18:17,564 - CellSession - INFO - Cell released: nothing is built, nothing is connected.
+2026-10-06 15:19:02,390 - CellSession - INFO - Cell released: nothing is built, nothing is connected.
+2026-10-06 15:19:02,479 - CellSession - INFO - Connect preview issued for arm=URRobotArm gripper=JawIOGripper: 1 motion warning(s), 0 blocker(s); config fingerprint b483058ec9d86b58, valid until 2026-10-06T13:24:02+00:00.
+2026-10-06 15:19:02,572 - CellSession - INFO - Connecting: arm=URRobotArm, then gripper=JawIOGripper. THIS MOVES; acknowledged by token.
+2026-10-06 15:19:03,950 - CellSession - INFO - Arm connected (URRobotArm).
+2026-10-06 15:19:03,965 - CellSession - INFO - Gripper connected (JawIOGripper).
+2026-10-06 15:19:03,965 - CellSession - INFO - Cell connected.
+2026-10-06 15:23:20,684 - CellSession - INFO - Cell disconnected (gripper first, then arm); now built.
+2026-10-06 15:23:20,904 - CellSession - INFO - Cell released: nothing is built, nothing is connected.

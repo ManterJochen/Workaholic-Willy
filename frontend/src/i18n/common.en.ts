@@ -86,6 +86,13 @@ const en: Record<keyof typeof de, string> = {
   'scope.inline.once': 'once',
   'scope.inline.until_empty': 'until empty',
 
+  'looks.first': 'First look only',
+  'looks.when_needed': 'When needed',
+  'looks.every': 'Every look',
+  'looks.inline.first': 'the first only',
+  'looks.inline.when_needed': 'when needed',
+  'looks.inline.every': 'every one',
+
   'verdict.clear': 'clear',
   'verdict.band': 'clear, with a short straight start',
   'verdict.guard_refused': 'refused by the collision check',
@@ -167,6 +174,11 @@ const en: Record<keyof typeof de, string> = {
   'chat.gap': '{dropped|# event|# events} lost: what happened before this is missing here.',
   'chat.summary': '{command} → {title}',
   'chat.lost': 'The server no longer knows this run (restarted?): how it ended cannot be seen here. Check the arm at the cell.',
+
+  'list.rule': '{what} → {where}',
+  'list.rules': '{first} · {rest}',
+  'list.words': '{first}, {rest}',
+  'list.quoted': '“{text}”',
 
   'screen.cockpit.lede': 'The live image, the conversation and the steps in one place. The robot moves only after a click on Start.',
   'screen.setup.lede': 'Check, build, connect: then the cell is ready.',

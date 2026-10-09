@@ -48,11 +48,18 @@ camera world takes an occlusion shadow for free space and the guard would judge 
 that same free shadow.
 
 Pure and deterministic: numpy, and SciPy's KD-tree where present for the side-approach clearance (a
-NumPy scan otherwise, the same answer). BASE millimetres throughout, Z up along the support normal.
+NumPy scan otherwise, the same answer). BASE millimetres throughout, Z up along the support normal. A part's
+search is planned once and run in independent units, one closing line at one height each, merged in the order
+they run (:func:`plan_support_footprint`, :func:`run_units`, :func:`rank_found`), so any process may run any of
+them and the answer is the same: a cell's worker processes do (``src.robot.grasping.workers``). Where asked
+(``batched``), a closing line's builds are made at once, one numpy pass per check (:func:`_build_many`), with the
+same answer to the bit.
 """
 
 from __future__ import annotations
 
+import functools
+import logging
 import math
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Final
@@ -66,18 +73,33 @@ from src.robot.grasping.collision import ParallelJawGripperModel
 from src.robot.grasping.geometry.grasp_frame import pose_from_grasp_axes
 
 __all__ = [
+    "COARSE",
     "DEFAULT_FLOOR_MARGIN_MM",
     "DEFAULT_MAX_CANDIDATES",
+    "FINE",
+    "FINE_SEARCH_DEFERRED",
     "REFUSAL_CAUSES",
+    "ROLLED",
     "SIDE_APPROACH_SCORE_WEIGHTS",
     "CorridorSeen",
     "HandFloor",
+    "SfeInputs",
+    "SfePlan",
+    "SfeRunner",
+    "SfeRunnerFailed",
+    "SfeUnit",
     "SupportFootprintCandidate",
     "SupportFootprintJaw",
     "SupportPrism",
+    "batched_builds_hold",
     "generate_support_footprint_grasps",
+    "plan_support_footprint",
+    "rank_found",
     "reconstruct_support_prism",
+    "run_units",
 ]
+
+_LOG = logging.getLogger(__name__)
 
 _EPS = 1e-9
 
@@ -128,6 +150,18 @@ _FINE_RADIAL: Final[int] = 12
 _FINE_ROLL_DEG: Final[tuple[float, ...]] = (10.0, -10.0, 20.0, -20.0)
 #: Where along the perpendicular extent to place the closing line: the middle and both thirds.
 _FRACS = (0.0, -0.35, 0.35)
+#: How far inside the part's faces a closing line's span is read where every build on the line is refused for the
+#: aperture at once (:func:`_wider_than_the_hand_closes`), millimetres: a rounding in the two ways the span is measured
+#: never decides a verdict.
+_SPAN_SURE_MM: Final[float] = 1e-6
+#: How near its threshold a number may lie that a closing line's builds, made all at once (:func:`_build_many`), decide a
+#: verdict by and no candidate carries, millimetres or radians of the friction cone, before that build is made by
+#: ``_build`` alone instead: a product over many points rounds its last bit, about 1e-13 mm here, as it likes. Every
+#: number a candidate carries is made one build at a time and needs none.
+_BATCH_SURE: Final[float] = 1e-6
+#: What :func:`generate_support_footprint_grasps` says in ``stages`` where it left the fine search for later
+#: (``fine_pass``), under the key ``"fine"``.
+FINE_SEARCH_DEFERRED: Final[str] = "deferred"
 
 #: Every cause a refused build is counted under, ``generate_support_footprint_grasps(refusals=...)``. An obstacle
 #: refusal names the set it met: ``seen_*`` the points a caller handed as observed (``obstacle_points_base_mm``),
@@ -177,6 +211,29 @@ class HandFloor:
     #: How much nearer than ``distance_mm`` a finger comes to the reading (``scene_obstacles.finger_floor_drop_mm``).
     finger_floor_drop_mm: float = 0.0
 
+    def __post_init__(self) -> None:
+        """Read every solid once, as :meth:`at` and :meth:`highest_mm` read them on every call before: its centre, its
+        turn, its half extents and its up, a finger's drop under its top (:meth:`_drop`), and the highest top. SFE asks
+        the floor of every build, and reading the solids again was 29 % of a boxed-in part's search (2026-10-08); the
+        same arrays, read by the same expressions, so the same arithmetic and the same bits."""
+        read = []
+        for solid in self.solids:
+            turn = np.asarray(solid.rotation, dtype=np.float64).reshape(3, 3)
+            read.append((np.asarray(solid.centre_mm, dtype=np.float64).reshape(3), turn,
+                         np.asarray(solid.half_extents_mm, dtype=np.float64).reshape(3), turn[:, 2],
+                         self._drop(solid, True)))
+        tops = [float(np.asarray(solid.centre_mm, dtype=np.float64)[2]
+                      + (np.abs(np.asarray(solid.rotation, dtype=np.float64).reshape(3, 3))
+                         @ np.asarray(solid.half_extents_mm, dtype=np.float64))[2]) for solid in self.solids]
+        object.__setattr__(self, "_read", tuple(read))
+        object.__setattr__(self, "_highest_mm", max(tops) + float(self.distance_mm) if tops else -math.inf)
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        """Pickled as what it is built from, and read again where it is unpickled (a worker process,
+        ``src.robot.grasping.workers``): what :meth:`__post_init__` reads is views of the solids' arrays, which a pickle
+        would turn into copies of another layout."""
+        return (type(self), (self.solids, self.distance_mm, self.fingers_to_the_reading, self.finger_floor_drop_mm))
+
     def _drop(self, solid: Any, fingers: bool) -> float:
         """How far under ``solid``'s top a finger keeps the distance from: its band, its allowance and the finger
         floor's drop where the fingers go to the reading, nothing otherwise."""
@@ -188,10 +245,7 @@ class HandFloor:
     @property
     def highest_mm(self) -> float:
         """No point stands under the floor at or above this height, millimetres; ``-inf`` with no solid."""
-        tops = [float(np.asarray(solid.centre_mm, dtype=np.float64)[2]
-                      + (np.abs(np.asarray(solid.rotation, dtype=np.float64).reshape(3, 3))
-                         @ np.asarray(solid.half_extents_mm, dtype=np.float64))[2]) for solid in self.solids]
-        return max(tops) + float(self.distance_mm) if tops else -math.inf
+        return self._highest_mm  # type: ignore[attr-defined, no-any-return]
 
     def at(self, xy: np.ndarray, *, fingers: bool = False) -> np.ndarray:
         """The floor over each of ``(N, 2)`` BASE points, millimetres: the highest top face over it and the distance, a
@@ -199,11 +253,7 @@ class HandFloor:
         over it."""
         points = np.asarray(xy, dtype=np.float64).reshape(-1, 2)
         out = np.full(points.shape[0], -math.inf)
-        for solid in self.solids:
-            centre = np.asarray(solid.centre_mm, dtype=np.float64).reshape(3)
-            turn = np.asarray(solid.rotation, dtype=np.float64).reshape(3, 3)
-            half = np.asarray(solid.half_extents_mm, dtype=np.float64).reshape(3)
-            up = turn[:, 2]
+        for centre, turn, half, up, finger_drop in self._read:  # type: ignore[attr-defined]
             if up[2] <= 1e-6:
                 continue   # a box on its side has no top face to stand over
             offset = points - centre[:2]
@@ -211,7 +261,7 @@ class HandFloor:
             z = centre[2] + (half[2] - offset @ up[:2]) / up[2]
             local = np.column_stack([offset, z - centre[2]]) @ turn
             over = np.all(np.abs(local[:, :2]) <= half[:2] + 1e-9, axis=1)
-            drop = self._drop(solid, fingers) / up[2]
+            drop = (finger_drop if fingers else 0.0) / up[2]
             out[over] = np.maximum(out[over], z[over] - drop)
         return out + float(self.distance_mm)
 
@@ -220,6 +270,41 @@ class HandFloor:
         pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
         pts = pts[pts[:, 2] < self.highest_mm]
         return bool(pts.shape[0]) and bool((pts[:, 2] < self.at(pts[:, :2], fingers=fingers)).any())
+
+    def under_many(self, points: np.ndarray, asked: np.ndarray, *, fingers: bool = False) -> np.ndarray:
+        """:meth:`under` for many builds at once: ``(N, P, 3)`` BASE points and which of them are asked (``asked``,
+        ``(N, P)``) in, one ``int8`` per build out: 0 where none stands under the floor, 1 where one does, 2 where a
+        point lies within :data:`_BATCH_SURE` of a solid's top face or of the edge of the face it stands over, which
+        only :meth:`under` decides.
+
+        :meth:`at`'s arithmetic, on every point asked at once: its two products may round their last bit another way
+        over many points than over one build's (``support_footprint._build_many`` asks every build of a closing line at
+        once), and the band covers that.
+        """
+        out = np.zeros(points.shape[0], dtype=np.int8)
+        asked = asked & (points[:, :, 2] < self.highest_mm)
+        owner = np.nonzero(asked)[0]
+        pts = points[asked]
+        if not pts.shape[0]:
+            return out
+        floor = np.full(pts.shape[0], -math.inf)
+        unsure = np.zeros(pts.shape[0], dtype=bool)
+        for centre, turn, half, up, finger_drop in self._read:  # type: ignore[attr-defined]
+            if up[2] <= 1e-6:
+                continue   # a box on its side has no top face to stand over
+            offset = pts[:, :2] - centre[:2]
+            z = centre[2] + (half[2] - offset @ up[:2]) / up[2]
+            local = np.column_stack([offset, z - centre[2]]) @ turn
+            edge = np.abs(local[:, :2]) - (half[:2] + 1e-9)
+            over = np.all(edge <= 0.0, axis=1)
+            unsure |= np.any(np.abs(edge) < _BATCH_SURE, axis=1)
+            drop = (finger_drop if fingers else 0.0) / up[2]
+            floor[over] = np.maximum(floor[over], z[over] - drop)
+        gap = pts[:, 2] - (floor + float(self.distance_mm))
+        unsure |= np.abs(gap) < _BATCH_SURE
+        out[owner[unsure]] = 2
+        out[owner[(gap < 0.0) & ~unsure]] = 1
+        return out
 
 #: How the five margins are blended with side approaches on, in the order of ``_SCORE_WEIGHTS``: friction-cone slack
 #: 0.35, aperture left 0.20, clearance 0.35, upright 0, centred 0.10. Upright weighs nothing, because the owner wants the
@@ -461,9 +546,17 @@ def _poly_area(hull: np.ndarray) -> float:
     return float(abs(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1))) / 2.0)
 
 
+def _cross3(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """``np.cross`` of two 3-vectors: the same three products and differences in the same order, so the same bits, a
+    signed zero included, without numpy's general path, which was a quarter of a boxed-in part's search (2026-10-08)."""
+    a0, a1, a2 = float(a[0]), float(a[1]), float(a[2])
+    b0, b1, b2 = float(b[0]), float(b[1]), float(b[2])
+    return np.array([a1 * b2 - a2 * b1, a2 * b0 - a0 * b2, a0 * b1 - a1 * b0])
+
+
 def _rodrigues(vector: np.ndarray, axis: np.ndarray, angle: float) -> np.ndarray:
     k = axis / max(float(np.linalg.norm(axis)), _EPS)
-    return (vector * np.cos(angle) + np.cross(k, vector) * np.sin(angle)
+    return (vector * np.cos(angle) + _cross3(k, vector) * np.sin(angle)
             + k * (k @ vector) * (1.0 - np.cos(angle)))
 
 
@@ -776,6 +869,25 @@ class _Obstacles:
         idx = np.clip(np.searchsorted(keys, flat), 0, keys.size - 1)
         return bool((keys[idx] == flat).any())
 
+    def hits_many(self, points: np.ndarray, owner: np.ndarray, count: int,
+                  keys: "np.ndarray | None" = None) -> np.ndarray:
+        """:meth:`hits` (against ``keys`` where given, :meth:`hits_among`) for ``count`` builds at once: ``(M, 3)``
+        points and the build each belongs to (``owner``) in, one ``bool`` per build out. The same cells of the same
+        points, so the same answer."""
+        out = np.zeros(count, dtype=bool)
+        table = self.keys if keys is None else keys
+        if self.keys is None or table is None or table.size == 0 or not points.shape[0]:
+            return out
+        k = np.floor((points - self.origin) / self.cell).astype(np.int64)
+        ok = (k >= 0).all(axis=1) & (k < self.dims).all(axis=1)
+        k, owner = k[ok], owner[ok]
+        if not k.shape[0]:
+            return out
+        flat = k[:, 0] * self.dims[1] * self.dims[2] + k[:, 1] * self.dims[2] + k[:, 2]
+        idx = np.clip(np.searchsorted(table, flat), 0, table.size - 1)
+        out[owner[table[idx] == flat]] = True
+        return out
+
 
 class _ObstacleSet:
     """Two obstacle grids, because two kinds of obstacle deserve two dilations.
@@ -837,6 +949,23 @@ class _ObstacleSet:
             refusals[causes[name]] = refusals.get(causes[name], 0) + 1
         return bool(met)
 
+    def met_many(self, points: np.ndarray, asked: np.ndarray, *,
+                 counting: bool) -> "tuple[np.ndarray, np.ndarray | None]":
+        """:meth:`refuse` for many builds at once, counting nothing yet: ``(N, P, 3)`` points and which of them are
+        asked (``(N, P)``) in; whether each build meets an obstacle out and, where ``counting``, which sets it met,
+        ``(N, 3)`` in :meth:`met`'s order (``seen``, ``declared``, ``own``), else ``None``. :meth:`hits` where nobody
+        counts and :meth:`met` where somebody does, as :meth:`refuse` asks them: the same cells, the same answer."""
+        count = points.shape[0]
+        owner = np.nonzero(asked)[0]
+        flat = points[asked]
+        seen = self.sparse.hits_many(flat, owner, count)
+        if not counting:
+            return seen | self.rigid.hits_many(flat, owner, count), None
+        assert self.declared is not None and self.own is not None, "label() the set before asking whom a hit met"
+        sets = np.column_stack([seen, self.rigid.hits_many(flat, owner, count, self.declared),
+                                self.rigid.hits_many(flat, owner, count, self.own)])
+        return np.asarray(sets.any(axis=1), dtype=bool), sets
+
 
 class _Room:
     """How far a corridor stays from the nearest obstacle point, up to the room that scores in full.
@@ -884,6 +1013,27 @@ class _Room:
             least = min(least, float(np.sqrt(np.einsum("ijk,ijk->ij", delta, delta).min())))
         return least if least <= _CLEARANCE_FULL_MM else math.inf
 
+    def least_many(self, samples: np.ndarray, asked: np.ndarray) -> np.ndarray:
+        """:meth:`least_mm` for many builds at once: ``(N, P, 3)`` samples and which of them are asked (``(N, P)``)
+        in, one distance per build out. The tree answers each point by itself, so asking all at once and taking each
+        build's least gives each build's own number."""
+        out = np.full(samples.shape[0], math.inf)
+        if self.points is None:
+            return out
+        if self.tree is None:
+            for build in range(samples.shape[0]):
+                out[build] = self.least_mm(samples[build][asked[build]])
+            return out
+        flat = samples[asked]
+        if not flat.shape[0]:
+            return out
+        distances, _ = self.tree.query(flat, k=1, distance_upper_bound=_CLEARANCE_FULL_MM)
+        per_build = asked.sum(axis=1)
+        starts = np.concatenate([[0], np.cumsum(per_build)[:-1]])
+        some = per_build > 0
+        out[some] = np.minimum.reduceat(distances, starts[some])
+        return np.where(out <= _CLEARANCE_FULL_MM, out, math.inf)
+
 
 @dataclass(frozen=True, slots=True)
 class _Side:
@@ -915,6 +1065,22 @@ def _refused(refusals: dict[str, int] | None, cause: str) -> "SupportFootprintCa
     if refusals is not None:
         refusals[cause] = refusals.get(cause, 0) + 1
     return None
+
+
+def _wider_than_the_hand_closes(prism: SupportPrism, anchor_xy: np.ndarray, mid_z: float, axis: np.ndarray,
+                                jaw: SupportFootprintJaw) -> bool:
+    """Whether every build anchored at ``anchor_xy`` that closes along the horizontal ``axis`` is refused for the
+    aperture, whatever its height, tilt and side.
+
+    ``_build`` measures a grasp's span over nine samples of the pad face, the anchor itself among them, and takes the
+    widest, so a grasp never spans less than the line through its anchor; and the anchor stands inside the part, so the
+    span check before the aperture's passes. Where that line, read :data:`_SPAN_SURE_MM` inside the faces, spans more
+    than the hand closes on, every build on it is refused for the aperture and nothing else. The heights SFE anchors at
+    all stand inside the part's height, where a horizontal line's span does not depend on them.
+    """
+    inner = prism.line_span(np.array([anchor_xy[0], anchor_xy[1], mid_z]), axis, margin_mm=-_SPAN_SURE_MM)
+    return (inner is not None and inner[0] <= 0.0 <= inner[1]
+            and inner[1] - inner[0] > jaw.aperture_mm - jaw.width_safety_mm)
 
 
 # --------------------------------------------------------------------------- one candidate
@@ -976,7 +1142,7 @@ def _rolled(axis: np.ndarray, approach: np.ndarray, roll_deg: float) -> tuple[np
     roll returns them as they are."""
     if roll_deg == 0.0:
         return axis, approach
-    binormal = np.cross(approach, axis)
+    binormal = _cross3(approach, axis)
     binormal /= max(float(np.linalg.norm(binormal)), _EPS)
     angle = math.radians(roll_deg)
     turned_axis = _rodrigues(axis, binormal, angle)
@@ -1039,7 +1205,7 @@ def _build(prism: SupportPrism, anchor: np.ndarray, axis: np.ndarray, approach: 
            refusals: dict[str, int] | None = None, side: _Side | None = None, tilt_deg: float = 0.0,
            seen: Any = None, floor: HandFloor | None = None,
            ) -> SupportFootprintCandidate | None:
-    binormal = np.cross(approach, axis)
+    binormal = _cross3(approach, axis)
     binormal /= max(float(np.linalg.norm(binormal)), _EPS)
     contacts = _pad_contacts(prism, anchor, axis, approach, binormal, jaw)
     if contacts is None:
@@ -1160,6 +1326,931 @@ def _build(prism: SupportPrism, anchor: np.ndarray, axis: np.ndarray, approach: 
         contact_angle_rad=float(worst), clearance_mm=float(low - support_height_mm))
 
 
+# --------------------------------------------------------------------------- a closing line's builds at once
+
+
+#: What a batched answer says of one build (:meth:`HandFloor.under_many`, ``SeenEnvelope.refuses_many``,
+#: ``SeenInTheFrame.unseen_many``): no, yes, or a number within its guard band of the threshold, which ``_build``
+#: decides alone.
+_NO, _YES, _UNSURE = 0, 1, 2
+#: Why :func:`_build_many` refused a build, by code: ``_KEPT`` it did not; ``_CORRIDOR`` and ``_FINGERS`` an obstacle
+#: on the way in or at the closed fingers, counted by the sets it met; ``_BY_ITSELF`` a number within :data:`_BATCH_SURE`
+#: of its threshold, so ``_build`` makes it alone; the rest the cause they count under (:data:`_MANY_CAUSES`).
+_KEPT, _SPAN, _APERTURE, _CONE, _TABLE, _CORRIDOR, _FINGERS, _SEEN, _PRISM, _UNSEEN, _BY_ITSELF = range(11)
+_MANY_CAUSES: Final[Mapping[int, str]] = {_SPAN: "span", _APERTURE: "aperture", _CONE: "cone", _TABLE: "table",
+                                          _SEEN: "seen_fingers", _PRISM: "prism", _UNSEEN: "unseen_corridor"}
+
+
+def _dots(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Each row's dot product of ``(N, 3)`` ``a`` and ``b``, one row at a time through a stacked ``np.matmul``: the
+    BLAS call ``a[n] @ b[n]`` makes, so its bits. An elementwise sum agreed with it in two cases of three
+    (2026-10-08)."""
+    return np.matmul(a[:, None, :], b[:, :, None])[:, 0, 0]
+
+
+def _cross_many(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """:func:`_cross3` of each row of ``(N, 3)`` ``a`` and ``b``: the same three products and differences."""
+    return np.column_stack([a[:, 1] * b[:, 2] - a[:, 2] * b[:, 1], a[:, 2] * b[:, 0] - a[:, 0] * b[:, 2],
+                            a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]])
+
+
+def _rodrigues_many(vectors: np.ndarray, axes: np.ndarray, angles: Sequence[Any]) -> np.ndarray:
+    """:func:`_rodrigues` of each row, ``vectors[n]`` turned about ``axes[n]`` by ``angles[n]``: the same elementwise
+    arithmetic, each dot product and length the row's own (:func:`_dots`), and each angle's cosine and sine taken one
+    at a time as numpy scalars, as there, so that no vectorised sine of this machine's numpy can round otherwise."""
+    cos = np.array([np.cos(angle) for angle in angles], dtype=np.float64)
+    sin = np.array([np.sin(angle) for angle in angles], dtype=np.float64)
+    k = axes / np.maximum(np.sqrt(_dots(axes, axes)), _EPS)[:, None]
+    return (vectors * cos[:, None] + _cross_many(k, vectors) * sin[:, None]
+            + k * _dots(k, vectors)[:, None] * (1.0 - cos)[:, None])
+
+
+class _Ladder:
+    """Every build one closing axis makes in one search, in :func:`_run_unit`'s order (each tilt, its sides, each roll),
+    worked out at once by :func:`_ladder`: a row per build, the same axis, approach and binormal ``_build`` works with,
+    the prism's faces against the axis (``_pad_contacts``' ``a``), the tilt off vertical the build is asked with, and the
+    rows of each tilt (:attr:`rungs`), the ladder's rungs in order."""
+
+    __slots__ = ("axis", "approach", "binormal", "back", "facing", "off_vertical", "rungs", "size")
+
+    def __init__(self, axis: np.ndarray, approach: np.ndarray, binormal: np.ndarray, facing: np.ndarray,
+                 off_vertical: list[float], rungs: list[np.ndarray]) -> None:
+        self.axis = axis
+        self.approach = approach
+        self.binormal = binormal
+        #: The axis the far pad closes along, for its contact's angle (``-axis`` in ``_build``).
+        self.back = -axis
+        self.facing = facing
+        self.off_vertical = off_vertical
+        self.rungs = rungs
+        self.size = int(axis.shape[0])
+
+
+def _ladder(prism: SupportPrism, axis: np.ndarray, tilts: Sequence[float], rolls: Sequence[float]) -> _Ladder:
+    """Every build of the closing ``axis`` over ``tilts``, both sides and ``rolls``, to the bit what :func:`_run_unit`
+    and ``_build`` make of each: ``_run_unit``'s tilt (:func:`_rodrigues`) and :func:`_rolled`, then ``_build``'s
+    binormal and ``_pad_contacts``' faces, on every row at once."""
+    order = [(index, tilt, sign, roll) for index, tilt in enumerate(tilts)
+             for sign in ((1.0,) if tilt == 0.0 else (1.0, -1.0)) for roll in rolls]
+    count = len(order)
+    axes = np.tile(np.asarray(axis, dtype=np.float64), (count, 1))
+    tilted = _rodrigues_many(np.tile(np.array([0.0, 0.0, -1.0]), (count, 1)), axes,
+                             [sign * np.radians(tilt) for _, tilt, sign, _ in order])
+    tilted = tilted / np.sqrt(_dots(tilted, tilted))[:, None]
+    turned, approach = axes.copy(), tilted.copy()
+    rolled = np.array([roll != 0.0 for *_, roll in order], dtype=bool)
+    if rolled.any():
+        # ``_rolled``: the axis and the approach turned about the hand's binormal, each made a unit again.
+        about = _cross_many(tilted[rolled], axes[rolled])
+        about = about / np.maximum(np.sqrt(_dots(about, about)), _EPS)[:, None]
+        angles = [math.radians(roll) for *_, roll in order if roll != 0.0]
+        turned_axis = _rodrigues_many(axes[rolled], about, angles)
+        turned_approach = _rodrigues_many(tilted[rolled], about, angles)
+        turned[rolled] = turned_axis / np.maximum(np.sqrt(_dots(turned_axis, turned_axis)), _EPS)[:, None]
+        approach[rolled] = turned_approach / np.maximum(np.sqrt(_dots(turned_approach, turned_approach)), _EPS)[:, None]
+    binormal = _cross_many(approach, turned)
+    binormal = binormal / np.maximum(np.sqrt(_dots(binormal, binormal)), _EPS)[:, None]
+    facing = np.matmul(prism.normals[None], turned[:, :2, None])[:, :, 0]
+    # The ladder's own tilt where nothing rolls, read back off the approach where it does (``_run_unit``).
+    off_vertical = [float(tilt) if roll == 0.0 else
+                    math.degrees(math.acos(max(-1.0, min(1.0, -float(approach[row, 2])))))
+                    for row, (_, tilt, _, roll) in enumerate(order)]
+    tilt_of = np.array([index for index, *_ in order])
+    return _Ladder(turned, approach, binormal, facing, off_vertical,
+                   [np.nonzero(tilt_of == index)[0] for index in range(len(tilts))])
+
+
+def _normals_at(prism: SupportPrism, points: np.ndarray) -> np.ndarray:
+    """:meth:`SupportPrism.normal_at` of each row of ``(N, 3)`` points: each row's own product (a stacked
+    ``np.matmul``), the same face chosen."""
+    slack = prism.offsets[None, :] - np.matmul(prism.normals[None], points[:, :2, None])[:, :, 0]
+    nearest = np.argmin(np.abs(slack), axis=1)
+    best = np.abs(slack[np.arange(points.shape[0]), nearest])
+    normal = np.zeros((points.shape[0], 3))
+    normal[:, 0] = prism.normals[nearest, 0]
+    normal[:, 1] = prism.normals[nearest, 1]
+    top = np.abs(points[:, 2] - prism.z1)
+    on_top = top < best
+    normal[on_top] = np.array([0.0, 0.0, 1.0])
+    best = np.where(on_top, top, best)
+    normal[np.abs(points[:, 2] - prism.z0) < best] = np.array([0.0, 0.0, -1.0])
+    return normal
+
+
+def _fingers_many(contacts: np.ndarray, approach: np.ndarray, binormal: np.ndarray, jaw: SupportFootprintJaw,
+                  lengths: np.ndarray, widths: np.ndarray) -> np.ndarray:
+    """:func:`_finger_points` of each row: ``(N, len(lengths) * 3, 3)``, the same elementwise arithmetic and order."""
+    tip = contacts + jaw.finger_ahead_mm * approach
+    grid = (tip[:, None, None, :] - lengths[None, :, None, None] * approach[:, None, None, :]
+            + widths[None, None, :, None] * binormal[:, None, None, :])
+    return grid.reshape(contacts.shape[0], -1, 3)
+
+
+def _inside_many(prism: SupportPrism, normals_t: np.ndarray, points: np.ndarray, asked: np.ndarray,
+                 margin_mm: float) -> np.ndarray:
+    """Whether one of each build's ``(N, P, 3)`` points that are ``asked`` lies inside the prism grown by ``margin_mm``
+    (:meth:`SupportPrism.contains`): :data:`_NO`, :data:`_YES`, or :data:`_UNSURE` where a point's nearest face lies
+    within :data:`_BATCH_SURE` of it, since a product over many builds' points rounds its last bit as it likes."""
+    out = np.zeros(points.shape[0], dtype=np.int8)
+    asked = asked & (points[:, :, 2] >= prism.z0 - margin_mm) & (points[:, :, 2] <= prism.z1 + margin_mm)
+    owner = np.nonzero(asked)[0]
+    flat = points[asked]
+    if not flat.shape[0]:
+        return out
+    worst = ((flat[:, :2] @ normals_t) - (prism.offsets + margin_mm)).max(axis=1)
+    unsure = np.abs(worst) <= _BATCH_SURE
+    out[owner[unsure]] = _UNSURE
+    out[owner[(worst <= 0.0) & ~unsure]] = _YES
+    return out
+
+
+def _unseen_one(seen: CorridorSeen, points: np.ndarray) -> int:
+    """``_build``'s question to a seen test of another kind than SFE's own, for one build: :data:`_YES` where a point is
+    unseen."""
+    said = np.asarray(seen(points), dtype=bool).reshape(-1)
+    if said.shape[0] != points.shape[0]:
+        raise ValueError(f"corridor_seen answered {said.shape[0]} verdict(s) for {points.shape[0]} point(s)")
+    return _NO if bool(said.all()) else _YES
+
+
+def _name_the_sets(met: dict[int, tuple[str, ...]], index: np.ndarray, hit: np.ndarray, sets: "np.ndarray | None",
+                   causes: Mapping[str, str]) -> None:
+    """Into ``met``, by build, the causes each build ``index[k]`` that ``hit`` an obstacle counts under: one per set it
+    met (``sets``, :meth:`_ObstacleSet.met_many`), in :meth:`_ObstacleSet.met`'s order. Nothing where nobody counts."""
+    if sets is None:
+        return
+    for k in np.nonzero(hit)[0].tolist():
+        met[int(index[k])] = tuple(causes[name] for name, on in zip(("seen", "declared", "own"), sets[k]) if on)
+
+
+@functools.lru_cache(maxsize=None)
+def _stacked_products_hold(faces: int, closed_points: int) -> str:
+    """Why this process's numpy cannot make a closing line's builds at once to the bit, or ``""`` where it can.
+
+    :func:`_build_many` makes every number a candidate carries by the products ``_build`` makes, one build at a time
+    through a stacked ``np.matmul``: a 3-vector's dot product and length, the prism's ``faces`` against a closing axis
+    and a contact, the pads' nine samples and the ``closed_points`` of the closed fingers against the faces. That is
+    the same BLAS call where numpy hands every item of a stack to it as it hands one product, as numpy 2.4 with OpenBLAS
+    does on the desk it was measured on (2026-10-08, 100 % of every shape); asked once per process and shape here, on
+    seeded numbers, because another machine's BLAS may take another path.
+    """
+    rng = np.random.default_rng(20261009 + 1000 * faces + closed_points)
+    a, b = rng.standard_normal((48, 3)), rng.standard_normal((48, 3))
+    normals = rng.standard_normal((faces, 2))
+    samples = rng.standard_normal((48, 9, 3)) * 50.0
+    closed = rng.standard_normal((12, closed_points, 3)) * 50.0
+    checks = (
+        ("a 3-vector's dot product", _dots(a, b), [x @ y for x, y in zip(a, b)]),
+        ("a 3-vector's length", np.sqrt(_dots(a, a)), [np.linalg.norm(x) for x in a]),
+        ("the faces against an axis", np.matmul(normals[None], a[:, :2, None])[:, :, 0], [normals @ x[:2] for x in a]),
+        ("the pads against the faces", np.matmul(samples[:, :, :2], normals.T), [s[:, :2] @ normals.T for s in samples]),
+        ("the fingers against the faces", np.matmul(closed[:, :, :2], normals.T),
+         [c[:, :2] @ normals.T for c in closed]),
+    )
+    for what, stacked, one_at_a_time in checks:
+        if np.asarray(stacked, dtype=np.float64).tobytes() != np.asarray(one_at_a_time, dtype=np.float64).tobytes():
+            return f"numpy's stacked product of {what} rounds otherwise than one at a time here"
+    return ""
+
+
+def batched_builds_hold(jaw: SupportFootprintJaw | None = None) -> str:
+    """Why this process cannot make SFE's builds at once to the bit (``generate_support_footprint_grasps(batched=)``),
+    or ``""`` where it can: numpy's stacked products asked on seeded numbers of the shapes a part's search stacks, the
+    closed fingers of ``jaw`` (the library's own where ``None``) against footprints of 4 to 24 faces. A cell asks it
+    when its calculator is built (``robot.grasping.batched_builds``) and says the answer; every part's own shapes are
+    asked again before its first build, once per process, and where they do not hold its builds are made one at a time.
+    """
+    jaw = jaw or SupportFootprintJaw.from_model()
+    closed_points = 6 * int(np.arange(0.0, jaw.finger_reach_mm + 6.0, 6.0).size)
+    for faces in (4, 6, 8, 12, 16, 24):
+        why = _stacked_products_hold(faces, closed_points)
+        if why:
+            return why
+    return ""
+
+
+class _Batch:
+    """What every build :func:`_build_many` makes of one plan shares, worked out once (:meth:`SfePlan.batch`): the
+    pads' and fingers' offsets and lengths as ``_build`` makes them, the score's weights and the friction cone, which of
+    the floor, the camera's boxes and the seen test answer for many builds at once (SFE's own kinds; another kind is
+    asked one build at a time), and why the builds are made one at a time here instead (``refused``, ``""`` where not).
+    """
+
+    __slots__ = ("normals_t", "across", "along", "closed_lengths", "open_lengths", "widths", "weights", "cone",
+                 "floor_many", "envelope_many", "rays_many", "refused")
+
+    def __init__(self, plan: "SfePlan") -> None:
+        from src.robot.grasping.generation.scene_obstacles import SeenEnvelope, SeenInTheFrame  # noqa: PLC0415
+
+        jaw, inputs = plan.jaw, plan.inputs
+        _obstacles, side, _every_tilt = plan.grids()
+        self.normals_t = plan.prism.normals.T
+        half_width = jaw.finger_width_mm / 2.0
+        self.across = np.array([-half_width, 0.0, half_width])
+        self.along = np.array([-jaw.pad_behind_mm, 0.0, jaw.pad_ahead_mm])
+        self.closed_lengths = np.arange(0.0, jaw.finger_reach_mm + 6.0, 6.0)
+        self.open_lengths = np.arange(0.0, (jaw.finger_reach_mm + 80.0) + 8.0, 8.0)
+        self.widths = np.linspace(-jaw.finger_width_mm / 2.0, jaw.finger_width_mm / 2.0, 3)
+        self.weights = (inputs.score_weights if inputs.score_weights is not None
+                        else _SCORE_WEIGHTS if side is None else SIDE_APPROACH_SCORE_WEIGHTS)
+        self.cone = jaw.cone_rad
+        self.floor_many = type(inputs.hand_floor) is HandFloor
+        self.envelope_many = type(inputs.seen_envelope) is SeenEnvelope
+        self.rays_many = side is not None and type(side.seen) is SeenInTheFrame
+        self.refused = _stacked_products_hold(int(plan.prism.normals.shape[0]), 6 * int(self.closed_lengths.size))
+
+
+def _build_many(plan: "SfePlan", anchors: np.ndarray, ladder: _Ladder, rows: np.ndarray, *,
+                counting: bool) -> "tuple[list[SupportFootprintCandidate | None], list[tuple[str, ...]]]":
+    """``_build`` for many builds at once, build ``n`` anchored at ``anchors[n]`` on rung ``rows[n]`` of ``ladder``: each
+    build's candidate or ``None``, and where ``counting`` the causes each refused one counts under, in ``_build``'s
+    order.
+
+    ``_build``'s checks run in ``_build``'s order, each over every build still standing: the pads' span and the
+    aperture, the friction cone, the closed fingers over the support and the floor with the palm, the open fingers over
+    the floor, the obstacles on the way in and at the fingers, the camera's boxes, a finger inside the part, the unseen
+    corridor. Every number a candidate carries is made by ``_build``'s own arithmetic, each product one build at a time
+    through a stacked ``np.matmul``, and the score by ``_build``'s own expressions, per survivor: the same bits. The
+    numbers that only decide a verdict and are made over many builds' points at once (the floor, the open fingers in
+    the part, the corridor's pixels and depth, the camera's boxes, the cone's angle) are held :data:`_BATCH_SURE` off
+    their thresholds; a build nearer one is made by ``_build`` alone, which decides it as it always did. A floor, an
+    envelope or a seen test of another kind than SFE's own is asked one build at a time, as ``_build`` asks it.
+    """
+    count = int(anchors.shape[0])
+    if not count:
+        return [], []
+    batch = plan.batch()
+    prism, jaw, inputs = plan.prism, plan.jaw, plan.inputs
+    obstacles, side, _every_tilt = plan.grids()
+    support, floor, envelope = inputs.support_height_mm, inputs.hand_floor, inputs.seen_envelope
+    cause = np.zeros(count, dtype=np.int8)
+    met: dict[int, tuple[str, ...]] = {}
+    axis, approach, binormal = ladder.axis[rows], ladder.approach[rows], ladder.binormal[rows]
+    facing = ladder.facing[rows]
+
+    # The pads (``_pad_contacts``): every build's nine samples clipped against the prism at once.
+    origins = (anchors[:, None, None, :] + batch.across[None, :, None, None] * binormal[:, None, None, :]
+               + batch.along[None, None, :, None] * approach[:, None, None, :]).reshape(count, 9, 3)
+    reach = prism.offsets[None, None, :] - np.matmul(origins[:, :, :2], batch.normals_t)
+    level = np.abs(facing) < 1e-12
+    ok = ~np.any(level[:, None, :] & (reach < 0.0), axis=2)
+    with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+        t = reach / np.where(level, np.nan, facing)[:, None, :]
+        hi = np.min(np.where(((~level) & (facing > 0))[:, None, :], t, np.inf), axis=2)
+        lo = np.max(np.where(((~level) & (facing < 0))[:, None, :], t, -np.inf), axis=2)
+        heights = origins[:, :, 2]
+        tipped = np.abs(axis[:, 2]) > 1e-12
+        if tipped.any():
+            # A closing axis tilted out of the horizontal leaves the part through its top or its foot as well.
+            t1 = (prism.z0 - heights[tipped]) / axis[tipped, 2][:, None]
+            t2 = (prism.z1 - heights[tipped]) / axis[tipped, 2][:, None]
+            lo[tipped] = np.maximum(lo[tipped], np.minimum(t1, t2))
+            hi[tipped] = np.minimum(hi[tipped], np.maximum(t1, t2))
+        ok &= (lo <= hi) & (heights >= prism.z0) & (heights <= prism.z1)
+        every = np.arange(count)
+        enter = np.argmin(np.where(ok, lo, np.inf), axis=1)
+        leave = np.argmax(np.where(ok, hi, -np.inf), axis=1)
+        t_enter, t_exit = lo[every, enter], hi[every, leave]
+        contact_b = origins[every, enter] + t_enter[:, None] * axis
+        contact_a = origins[every, leave] + t_exit[:, None] * axis
+        span = t_exit - t_enter
+        # A build whose samples all miss the part has no span: its numbers above are a missing contact's, never read.
+        cause[~ok.any(axis=1)] = _SPAN
+        alive = cause == _KEPT
+        bad = alive & ~((t_enter - 2.0 <= 0.0) & (0.0 <= t_exit + 2.0))
+        cause[bad] = _SPAN
+        alive &= ~bad
+        bad = alive & ((span > jaw.aperture_mm - jaw.width_safety_mm) | (span < jaw.min_width_mm))
+        cause[bad] = _APERTURE
+        alive &= ~bad
+
+    # The friction cone: the contacts' faces against the axis, each build's own product.
+    toward_a = np.full(count, np.nan)
+    toward_b = np.full(count, np.nan)
+    index = np.nonzero(alive)[0]
+    if index.size:
+        toward_a[index] = _dots(_normals_at(prism, contact_a[index]), axis[index])
+        toward_b[index] = _dots(_normals_at(prism, contact_b[index]), ladder.back[rows[index]])
+        worst = np.maximum(np.arccos(np.clip(toward_a[index], -1.0, 1.0)),
+                           np.arccos(np.clip(toward_b[index], -1.0, 1.0)))
+        unsure = np.abs(worst - batch.cone) < _BATCH_SURE
+        cause[index[unsure]] = _BY_ITSELF
+        cause[index[(worst > batch.cone) & ~unsure]] = _CONE
+        index = index[(worst <= batch.cone) & ~unsure]
+
+    # The closed fingers, each standing on the axis at its contact, over the support (and the palm where it is asked).
+    low = np.full(count, np.nan)
+    closed = np.zeros((0, 0, 3))
+    if index.size:
+        x, a, b, at = axis[index], approach[index], binormal[index], anchors[index]
+        half_thickness = jaw.finger_thickness_mm / 2.0
+        on_a = _dots(contact_a[index] - at, x)
+        on_b = _dots(contact_b[index] - at, x)
+        closed = np.concatenate([
+            _fingers_many((at + on_a[:, None] * x) + half_thickness * x, a, b, jaw, batch.closed_lengths, batch.widths),
+            _fingers_many((at + on_b[:, None] * x) - half_thickness * x, a, b, jaw, batch.closed_lengths, batch.widths),
+        ], axis=1)
+        lowest = closed[:, :, 2].min(axis=1)
+        if inputs.palm_aware:
+            back = a[:, 2]
+            across = (jaw.aperture_mm / 2.0 + jaw.finger_thickness_mm) * np.abs(x[:, 2])
+            lowest = np.minimum(lowest, at[:, 2] + np.minimum(back * -jaw.finger_behind_mm,
+                                                               back * -(jaw.finger_behind_mm + jaw.palm_depth_mm))
+                                - (jaw.palm_width_mm / 2.0) * np.abs(b[:, 2]) - across)
+        low[index] = lowest
+        bad = lowest < support + jaw.table_clearance_mm
+        cause[index[bad]] = _TABLE
+        index, closed = index[~bad], closed[~bad]
+
+    # The solid the guard holds under the hand: the closed fingers and the palm's corners.
+    if floor is not None and index.size:
+        x, a, b, at = axis[index], approach[index], binormal[index], anchors[index]
+        half_x = jaw.aperture_mm / 2.0 + jaw.finger_thickness_mm
+        half_y = jaw.palm_width_mm / 2.0
+        backs = (-jaw.finger_behind_mm, -(jaw.finger_behind_mm + jaw.palm_depth_mm))
+        corners = np.stack([((at + (sx * half_x) * x) + (sy * half_y) * b) + back * a
+                            for sx in (-1.0, 1.0) for sy in (-1.0, 1.0) for back in backs], axis=1)
+        if batch.floor_many:
+            fingers_say = floor.under_many(closed, np.ones(closed.shape[:2], dtype=bool), fingers=True)
+            palm_says = floor.under_many(corners, np.ones(corners.shape[:2], dtype=bool))
+        else:
+            fingers_say = np.array([_YES if floor.under(closed[k].copy(), fingers=True) else _NO
+                                    for k in range(index.size)], dtype=np.int8)
+            palm_says = np.array([_NO if fingers_say[k] == _YES else _YES if floor.under(corners[k].copy()) else _NO
+                                  for k in range(index.size)], dtype=np.int8)
+        under = (fingers_say == _YES) | (palm_says == _YES)
+        unsure = ~under & ((fingers_say == _UNSURE) | (palm_says == _UNSURE))
+        cause[index[under]] = _TABLE
+        cause[index[unsure]] = _BY_ITSELF
+        keep = ~(under | unsure)
+        index, closed = index[keep], closed[keep]
+
+    # The open fingers on their way in, the points over the support asked: over the floor first.
+    swept = np.zeros((0, 0, 3))
+    kept = np.zeros((0, 0), dtype=bool)
+    if index.size:
+        x, a, b, at = axis[index], approach[index], binormal[index], anchors[index]
+        open_half = jaw.aperture_mm / 2.0
+        swept = np.concatenate([_fingers_many(at + open_half * x, a, b, jaw, batch.open_lengths, batch.widths),
+                                _fingers_many(at - open_half * x, a, b, jaw, batch.open_lengths, batch.widths)], axis=1)
+        kept = swept[:, :, 2] >= support
+        if floor is not None:
+            says = (floor.under_many(swept, kept, fingers=True) if batch.floor_many else
+                    np.array([_YES if floor.under(swept[k][kept[k]], fingers=True) else _NO
+                              for k in range(index.size)], dtype=np.int8))
+            cause[index[says == _YES]] = _TABLE
+            cause[index[says == _UNSURE]] = _BY_ITSELF
+            keep = says == _NO
+            index, closed, swept, kept = index[keep], closed[keep], swept[keep], kept[keep]
+
+    # The obstacles: the way in first, then the closed fingers, as ``_build`` asks them.
+    if index.size:
+        hit, sets = obstacles.met_many(swept, kept, counting=counting)
+        cause[index[hit]] = _CORRIDOR
+        _name_the_sets(met, index, hit, sets, _CORRIDOR_CAUSES)
+        index, closed, swept, kept = index[~hit], closed[~hit], swept[~hit], kept[~hit]
+    if index.size:
+        hit, sets = obstacles.met_many(closed, np.ones(closed.shape[:2], dtype=bool), counting=counting)
+        cause[index[hit]] = _FINGERS
+        _name_the_sets(met, index, hit, sets, _FINGER_CAUSES)
+        index, closed, swept, kept = index[~hit], closed[~hit], swept[~hit], kept[~hit]
+
+    # The boxes the camera world builds of the neighbours.
+    if envelope is not None and index.size:
+        if batch.envelope_many:
+            says = envelope.refuses_many(anchors[index], np.stack([axis[index], binormal[index], approach[index]],
+                                                                  axis=2))
+        else:
+            says = np.array([_YES if envelope.refuses(anchors[k].copy(), np.column_stack([axis[k], binormal[k],
+                                                                                         approach[k]])) else _NO
+                             for k in index.tolist()], dtype=np.int8)
+        cause[index[says == _YES]] = _SEEN
+        cause[index[says == _UNSURE]] = _BY_ITSELF
+        keep = says == _NO
+        index, closed, swept, kept = index[keep], closed[keep], swept[keep], kept[keep]
+
+    # A finger inside the part: closed (one build's product at a time, so exact), open, then at the pre-grasp width.
+    margin = -1.0 - prism.inflate
+    if index.size:
+        inside = np.all(np.matmul(closed[:, :, :2], batch.normals_t) <= prism.offsets + margin, axis=2)
+        inside &= (closed[:, :, 2] >= prism.z0 - margin) & (closed[:, :, 2] <= prism.z1 + margin)
+        bad = inside.any(axis=1)
+        cause[index[bad]] = _PRISM
+        index, swept, kept = index[~bad], swept[~bad], kept[~bad]
+    if index.size:
+        says = _inside_many(prism, batch.normals_t, swept, kept, margin)
+        cause[index[says == _YES]] = _PRISM
+        cause[index[says == _UNSURE]] = _BY_ITSELF
+        keep = says == _NO
+        index, swept, kept = index[keep], swept[keep], kept[keep]
+    if index.size:
+        narrow = np.minimum(jaw.aperture_mm, span[index] + 10.0) / 2.0
+        asked_narrow = narrow < jaw.aperture_mm / 2.0 - 0.5
+        if asked_narrow.any():
+            some = index[asked_narrow]
+            x, a, b, at = axis[some], approach[some], binormal[some], anchors[some]
+            width = narrow[asked_narrow][:, None]
+            pre = np.concatenate([_fingers_many(at + width * x, a, b, jaw, batch.open_lengths, batch.widths),
+                                  _fingers_many(at - width * x, a, b, jaw, batch.open_lengths, batch.widths)], axis=1)
+            says = _inside_many(prism, batch.normals_t, pre, pre[:, :, 2] >= support, margin)
+            cause[some[says == _YES]] = _PRISM
+            cause[some[says == _UNSURE]] = _BY_ITSELF
+            keep = np.ones(index.size, dtype=bool)
+            keep[np.nonzero(asked_narrow)[0][says != _NO]] = False
+            index, swept, kept = index[keep], swept[keep], kept[keep]
+
+    # With side approaches, only space a depth ray saw counts as clear for a tilted build; and the room each keeps.
+    room = np.full(count, math.inf)
+    if side is not None and index.size:
+        if side.seen is not None:
+            off_vertical = np.array([ladder.off_vertical[row] for row in rows[index].tolist()])
+            asked_seen = (off_vertical >= _SEEN_FROM_TILT_DEG - 1e-6) & kept.any(axis=1)
+            if asked_seen.any():
+                some = index[asked_seen]
+                rays: Any = side.seen   # SFE's own seen test where ``rays_many`` says so (``SeenInTheFrame``)
+                says = (rays.unseen_many(swept[asked_seen], kept[asked_seen]) if batch.rays_many else
+                        np.array([_unseen_one(side.seen, swept[k][kept[k]])
+                                  for k in np.nonzero(asked_seen)[0].tolist()], dtype=np.int8))
+                cause[some[says == _YES]] = _UNSEEN
+                cause[some[says == _UNSURE]] = _BY_ITSELF
+                keep = np.ones(index.size, dtype=bool)
+                keep[np.nonzero(asked_seen)[0][says != _NO]] = False
+                index, swept, kept = index[keep], swept[keep], kept[keep]
+        if index.size:
+            room[index] = side.room.least_many(swept, kept)
+
+    # The candidates, each finished by ``_build``'s own expressions on its own numbers.
+    found: list[SupportFootprintCandidate | None] = [None] * count
+    w = batch.weights
+    for build in index.tolist():
+        row = int(rows[build])
+        worst_angle = max(float(np.arccos(np.clip(toward_a[build], -1.0, 1.0))),
+                          float(np.arccos(np.clip(toward_b[build], -1.0, 1.0))))
+        t_in, t_out = float(t_enter[build]), float(t_exit[build])
+        width_mm = t_out - t_in
+        anchor, turned, leaning = anchors[build], ladder.axis[row], ladder.approach[row]
+        cone_slack = 1.0 - worst_angle / batch.cone
+        width_margin = 1.0 - width_mm / jaw.aperture_mm
+        seated = _seated(prism, anchor, leaning, jaw)
+        if side is None:
+            table_margin = seated
+        else:
+            table_margin = 0.5 * seated + 0.5 * min(1.0, float(room[build]) / _CLEARANCE_FULL_MM)
+        upright = max(0.0, float(-leaning @ np.array([0.0, 0.0, 1.0])))
+        centred = 1.0 - min(1.0, abs(t_in + t_out) / max(width_mm, 1.0))
+        score = (w[0] * cone_slack + w[1] * width_margin + w[2] * table_margin
+                 + w[3] * upright + w[4] * centred)
+        found[build] = SupportFootprintCandidate(
+            score=float(score), position_mm=anchor.copy(), approach=leaning.copy(),
+            closing_axis=turned.copy(), grip_width_mm=float(width_mm + 2.0),
+            contact_angle_rad=float(worst_angle), clearance_mm=float(float(low[build]) - support))
+
+    # What the band left undecided ``_build`` makes alone; what was refused says why.
+    causes: list[tuple[str, ...]] = [()] * count
+    for build in range(count):
+        code = int(cause[build])
+        if code == _BY_ITSELF:
+            row = int(rows[build])
+            counted: "dict[str, int] | None" = {} if counting else None
+            found[build] = _build(prism, anchors[build].copy(), ladder.axis[row], ladder.approach[row], jaw, obstacles,
+                                  support, palm_aware=inputs.palm_aware, score_weights=inputs.score_weights,
+                                  refusals=counted, side=side, tilt_deg=ladder.off_vertical[row], seen=envelope,
+                                  floor=floor)
+            if counted:
+                causes[build] = tuple(name for name, times in counted.items() for _ in range(times))
+        elif counting and code in (_CORRIDOR, _FINGERS):
+            causes[build] = met[build]
+        elif counting and code != _KEPT:
+            causes[build] = (_MANY_CAUSES[code],)
+    return found, causes
+
+
+# --------------------------------------------------------------------------- one part's search, in units
+
+
+#: The three searches of a part, in the order SFE runs them (:attr:`SfePlan.searches`): the coarse grid, whose refusals
+#: are counted; the fine grid, every 7.5 degrees of tilt with each face's closing axis turned inside the friction cone;
+#: and the coarse grid with each closing axis rolled out of the horizontal. The last two run only where the coarse grid
+#: found fewer than ``_FINE_BELOW`` grasps and the fine pass is not left for later.
+COARSE: Final[int] = 0
+FINE: Final[int] = 1
+ROLLED: Final[int] = 2
+#: How many heights one closing line is tried at, at most; each is a unit of its own (:data:`SfeUnit`).
+_MOST_HEIGHTS: Final[int] = 6
+
+#: One unit of a part's search: ``(search, axis, place, height)``, the indices of :data:`COARSE`, :data:`FINE` or
+#: :data:`ROLLED`, of that search's closing axis, of the place along the part (``_FRACS``) and of the line's height.
+#: Every unit runs on its own, in any process, and the units are merged in this order, the order SFE runs them in.
+SfeUnit = tuple[int, int, int, int]
+
+
+class SfeRunnerFailed(RuntimeError):
+    """A runner could not answer for a part's units (``generate_support_footprint_grasps(runner=...)``): the part is
+    searched in this process, from the start, and nothing the runner answered is kept. The runner says why, once."""
+
+
+#: Who runs a part's units elsewhere (``src.robot.grasping.workers.SfeWorkers``): handed the plan and some of its units,
+#: it answers every unit's grasps, by unit, and the refusals the coarse ones counted where the plan counts; or it raises
+#: :class:`SfeRunnerFailed`. SFE merges what it answers as it merges its own units.
+SfeRunner = Callable[["SfePlan", "Sequence[SfeUnit]"],
+                     "tuple[Mapping[SfeUnit, Sequence[SupportFootprintCandidate]], Mapping[str, int]]"]
+
+
+@dataclass(frozen=True, eq=False)
+class SfeInputs:
+    """What one part's search is worked out from, as :func:`generate_support_footprint_grasps` was handed it: the
+    target's cloud and every keyword that shapes the search, and whether its refusals are counted (``counting``).
+
+    Plain data, picklable where ``corridor_seen`` is (``scene_obstacles.SeenInTheFrame``), so that a worker process
+    works out the same plan from it (:func:`plan_support_footprint`).
+    """
+
+    cloud_base_mm: np.ndarray
+    support_height_mm: float = 0.0
+    jaw: SupportFootprintJaw | None = None
+    obstacle_points_base_mm: np.ndarray | None = None
+    rigid_obstacle_points_base_mm: np.ndarray | None = None
+    max_candidates: int = DEFAULT_MAX_CANDIDATES
+    height_offsets_mm: tuple[float, ...] = (4.0, 14.0)
+    inflate_mm: float = 0.0
+    palm_aware: bool = False
+    score_weights: tuple[float, float, float, float, float] | None = None
+    floor_margin_mm: float = DEFAULT_FLOOR_MARGIN_MM
+    counting: bool = False
+    side_approaches: bool = False
+    corridor_seen: CorridorSeen | None = None
+    seen_envelope: Any = None
+    hand_floor: HandFloor | None = None
+    #: Whether a closing line's builds are made at once (:func:`_build_many`) rather than one at a time: the same
+    #: grasps, counts and stages, to the bit, in any process that runs the units.
+    batched: bool = False
+
+
+class _Line:
+    """One closing line of a search, at one place along the part: its axis, its middle, the heights its grasps are
+    anchored at, highest first, and whether the hand closes across it at all (:func:`_wider_than_the_hand_closes`)."""
+
+    __slots__ = ("axis", "mid", "heights", "wider")
+
+    def __init__(self, axis: np.ndarray, mid: np.ndarray, heights: tuple[float, ...], wider: bool) -> None:
+        self.axis = axis
+        self.mid = mid
+        self.heights = heights
+        self.wider = wider
+
+
+class SfePlan:
+    """One part's search, worked out before its first unit (:func:`plan_support_footprint`): the prism, the declared
+    points with the part's own low fragments, and each search's closing axes, tilts and rolls (:attr:`searches`).
+
+    The obstacle grids and the side approaches' room are built by the first unit that builds a grasp
+    (:meth:`grids`), each line once (:meth:`line`): a process that only plans and ranks the part builds neither.
+    :attr:`inputs` are what it was worked out from, so any process works out the same plan from them.
+    """
+
+    __slots__ = ("inputs", "jaw", "prism", "rigid", "searches", "_grids", "_lines", "_batch", "_ladders")
+
+    def __init__(self, inputs: SfeInputs, jaw: SupportFootprintJaw, prism: SupportPrism,
+                 rigid: np.ndarray | None) -> None:
+        self.inputs = inputs
+        self.jaw = jaw
+        self.prism = prism
+        self.rigid = rigid
+        #: By :data:`COARSE`, :data:`FINE` and :data:`ROLLED`: the closing axes, the tilts and the rolls.
+        self.searches: tuple[tuple[list[np.ndarray], tuple[float, ...], tuple[float, ...]], ...] = (
+            (closing_axes(prism), _TILTS_DEG, (0.0,)),
+            (closing_axes(prism, radial=_FINE_RADIAL, yaw_offsets_deg=_FINE_YAW_DEG), _FINE_TILTS_DEG, (0.0,)),
+            (closing_axes(prism), _TILTS_DEG, _FINE_ROLL_DEG),
+        )
+        self._grids: "tuple[_ObstacleSet, _Side | None, bool] | None" = None
+        self._lines: dict[tuple[int, int, int], _Line | None] = {}
+        self._batch: "_Batch | None" = None
+        self._ladders: dict[tuple[int, int], _Ladder] = {}
+
+    def units(self, search: int) -> list[SfeUnit]:
+        """Every unit of ``search``, in the order SFE runs them: each closing axis, each place along the part, each
+        height. A height the line does not have is a unit that builds nothing."""
+        axes = self.searches[search][0]
+        return [(search, i, j, k) for i in range(len(axes)) for j in range(len(_FRACS)) for k in range(_MOST_HEIGHTS)]
+
+    def grids(self) -> "tuple[_ObstacleSet, _Side | None, bool]":
+        """The obstacle grids, the side approaches' room (``None`` without them), and whether every tilt that fits is a
+        candidate: built once, by the first unit that asks."""
+        if self._grids is None:
+            inputs = self.inputs
+            # Where the boxes the camera world builds of the neighbours are known (``seen_envelope``), the guard's own
+            # distance from them decides (``seen_fingers`` in ``_build``): every point is inside its box, the world's
+            # margin from its sides. The sparse grid then keeps the hand off the points alone, on a fine grid: grown 12
+            # mm on 12 mm cells it refused every finger within 12 to 24 mm of a neighbour, twice what the guard keeps,
+            # and lost 1100 of 1250 builds of a cylinder whose posts stood 15 mm clear of its fingers (the grasp bench,
+            # 2026-10-05). Without the boxes it stands in for them as it always did.
+            obstacles = _ObstacleSet(
+                _Obstacles(inputs.obstacle_points_base_mm) if inputs.seen_envelope is None
+                else _Obstacles(inputs.obstacle_points_base_mm, cell_mm=SEEN_POINTS_CELL_MM,
+                                margin_mm=SEEN_POINTS_CELL_MM),
+                _Obstacles(self.rigid, cell_mm=4.0, margin_mm=0.0),
+            )
+            if inputs.counting:
+                obstacles.label(declared=inputs.rigid_obstacle_points_base_mm, own=self.prism.trimmed)
+            side = (_Side(seen=inputs.corridor_seen, room=_Room(inputs.obstacle_points_base_mm, self.rigid))
+                    if inputs.side_approaches else None)
+            # Every tilt that fits is a candidate only where a depth ray can vouch for the space a tilt sweeps.
+            self._grids = (obstacles, side, side is not None and side.seen is not None)
+        return self._grids
+
+    def line(self, search: int, axis_index: int, frac_index: int) -> _Line | None:
+        """The closing line of ``search`` along its closing axis ``axis_index`` at place ``frac_index``, worked out once;
+        ``None`` where the line misses the part."""
+        key = (search, axis_index, frac_index)
+        if key not in self._lines:
+            self._lines[key] = self._line(search, axis_index, frac_index)
+        return self._lines[key]
+
+    def batch(self) -> _Batch:
+        """What every build made at once shares (:func:`_build_many`): worked out once, by the first line that asks."""
+        if self._batch is None:
+            self._batch = _Batch(self)
+        return self._batch
+
+    def ladder(self, search: int, axis_index: int, axis: np.ndarray) -> _Ladder:
+        """Every build of ``search`` along its closing axis ``axis_index`` (``axis``, as its lines hold it), worked out
+        once for every place along the part (:func:`_ladder`)."""
+        key = (search, axis_index)
+        if key not in self._ladders:
+            _axes, tilts, rolls = self.searches[search]
+            self._ladders[key] = _ladder(self.prism, axis, tilts, rolls)
+        return self._ladders[key]
+
+    def _line(self, search: int, axis_index: int, frac_index: int) -> _Line | None:
+        axes, tilts, rolls = self.searches[search]
+        prism, jaw, inputs = self.prism, self.jaw, self.inputs
+        support_height_mm, hand_floor = inputs.support_height_mm, inputs.hand_floor
+        reach_across = jaw.aperture_mm / 2.0 + jaw.finger_thickness_mm
+        raw_axis = axes[axis_index]
+        a2 = raw_axis[:2] / max(float(np.linalg.norm(raw_axis[:2])), _EPS)
+        axis = np.array([a2[0], a2[1], 0.0])
+        perp = np.array([-a2[1], a2[0]])
+        ext_perp = float((prism.hull @ perp).max() - (prism.hull @ perp).min())
+        base_xy = prism.centre + _FRACS[frac_index] * (ext_perp / 2.0) * perp
+        mid_z = (prism.z0 + prism.z1) / 2.0
+        span_xy = prism.line_span(np.array([base_xy[0], base_xy[1], mid_z]), axis)
+        if span_xy is None:
+            return None
+        mid = base_xy + ((span_xy[0] + span_xy[1]) / 2.0) * a2
+        # Where the guard's solid under the grasp lets the hand come down to (``hand_floor``).
+        floor_fingers = -math.inf if hand_floor is None else float(hand_floor.at(mid[None, :], fingers=True)[0])
+        floor_palm = -math.inf if hand_floor is None else float(hand_floor.at(mid[None, :])[0])
+        # Near the top, and at the part's middle height, where a grasp sits best (``_seated``).
+        heights = [prism.z1 - dz for dz in inputs.height_offsets_mm] + [(prism.z0 + prism.z1) / 2.0]
+        # Solve for the height at which the gripper still clears the support, per tilt. This is the step the silhouette
+        # generator has no equivalent of: it anchors first and is filtered afterwards, and a filter cannot move a grasp
+        # somewhere legal.
+        for tilt in tilts:
+            c, s = np.cos(np.radians(tilt)), np.sin(np.radians(tilt))
+            # The solve has to know what the check knows: teaching ``_build`` about the palm without teaching this
+            # would only make SFE lose candidates, and the stage exists because it can move a grasp somewhere legal
+            # where a filter can only refuse. The palm's own requirement is (palm_width/2)*sin - finger_behind*cos: it
+            # is far below the finger term when the approach is vertical (the palm sits behind the fingers) and
+            # overtakes it as the grasp tilts. The finger's own: its tip ``finger_ahead`` down the approach, and half
+            # its width further where the approach tilts (``_build``'s fingers).
+            base = support_height_mm + jaw.table_clearance_mm
+            need = max(base, floor_fingers) + jaw.finger_ahead_mm * c + (jaw.finger_width_mm / 2.0) * s
+            if inputs.palm_aware or hand_floor is not None:
+                # Over the held solid the palm is checked whatever ``palm_aware`` says (``_build``), against the whole
+                # solid where a finger keeps the distance from the reading.
+                need = max(need, max(base, floor_palm) + (jaw.palm_width_mm / 2.0) * s - jaw.finger_behind_mm * c)
+            # A rolled hand stands its lower open finger lower by its reach across the axis.
+            for roll in rolls:
+                rolled_need = need + reach_across * abs(math.sin(math.radians(roll)))
+                if support_height_mm + 2.0 < rolled_need <= prism.z1 - 2.0:
+                    heights.append(rolled_need + 0.5)
+        # A height is only worth trying once; the solve often lands on the same millimetre.
+        heights = sorted({round(z, 1) for z in heights
+                          if support_height_mm + 2.0 < z < prism.z1}, reverse=True)[:_MOST_HEIGHTS]
+        # A line the hand cannot close across is refused for the aperture whole (:func:`_wider_than_the_hand_closes`):
+        # only where nothing rolls, so the closing axis stays the line.
+        unrolled = all(roll == 0.0 for roll in rolls)
+        wider = bool(unrolled and heights and _wider_than_the_hand_closes(prism, mid, mid_z, axis, jaw))
+        return _Line(axis, mid, tuple(heights), wider)
+
+
+def plan_support_footprint(inputs: SfeInputs) -> SfePlan | None:
+    """Work out one part's search from ``inputs``: the prism, and the target's low fragments joined to the declared
+    points. ``None`` where the cloud is too sparse to reconstruct, which a search answers with no grasp."""
+    jaw = inputs.jaw or SupportFootprintJaw.from_model()
+    prism = reconstruct_support_prism(inputs.cloud_base_mm, inputs.support_height_mm, inflate_mm=inputs.inflate_mm,
+                                      floor_margin_mm=inputs.floor_margin_mm)
+    if prism is None:
+        return None
+    rigid = inputs.rigid_obstacle_points_base_mm
+    if prism.trimmed.shape[0]:
+        rigid = (prism.trimmed if rigid is None or np.size(rigid) == 0
+                 else np.vstack([np.asarray(rigid, dtype=np.float64).reshape(-1, 3), prism.trimmed]))
+    return SfePlan(inputs, jaw, prism, rigid)
+
+
+def _run_unit(plan: SfePlan, unit: SfeUnit, counted: "dict[str, int] | None") -> list[SupportFootprintCandidate]:
+    """The grasps one unit of ``plan`` builds, in the order it builds them: every tilt, side and roll at the unit's
+    height on its line, a tilt's grasps ending the ladder where it found one (unless every tilt that fits is a
+    candidate). Each refused build is counted into ``counted`` where it is given."""
+    search, axis_index, frac_index, height_index = unit
+    line = plan.line(search, axis_index, frac_index)
+    if line is None or height_index >= len(line.heights):
+        return []
+    _axes, tilts, rolls = plan.searches[search]
+    if line.wider:
+        # Every build at this height is refused for the aperture, and counted as it would have been.
+        if counted is not None:
+            builds = sum(1 if tilt == 0.0 else 2 for tilt in tilts) * len(rolls)
+            counted["aperture"] = counted.get("aperture", 0) + builds
+        return []
+    obstacles, side, every_tilt = plan.grids()
+    inputs, prism, jaw, axis = plan.inputs, plan.prism, plan.jaw, line.axis
+    found: list[SupportFootprintCandidate] = []
+    anchor = np.array([line.mid[0], line.mid[1], line.heights[height_index]])
+    for tilt in tilts:
+        signs = (1.0,) if tilt == 0.0 else (1.0, -1.0)
+        hit = False
+        for sign in signs:
+            tilted = _rodrigues(np.array([0.0, 0.0, -1.0]), axis, sign * np.radians(tilt))
+            tilted /= float(np.linalg.norm(tilted))
+            for roll in rolls:
+                rolled_axis, approach = _rolled(axis, tilted, roll)
+                # The ladder's own tilt where nothing rolls: read back off the approach, 15 degrees came out 14.999999,
+                # and the space the tilt sweeps went unasked.
+                off_vertical = (float(tilt) if roll == 0.0 else
+                                math.degrees(math.acos(max(-1.0, min(1.0, -float(approach[2]))))))
+                candidate = _build(prism, anchor, rolled_axis, approach, jaw, obstacles, inputs.support_height_mm,
+                                   palm_aware=inputs.palm_aware, score_weights=inputs.score_weights, refusals=counted,
+                                   side=side, tilt_deg=off_vertical, seen=inputs.seen_envelope,
+                                   floor=inputs.hand_floor)
+                if candidate is not None:
+                    found.append(candidate)
+                    hit = True
+        if hit and not every_tilt:
+            break   # tilts are in preference order: the first that works is the one
+    return found
+
+
+def _line_built_many(plan: SfePlan, line_key: tuple[int, int, int], heights: Sequence[int], *,
+                     counting: bool) -> "dict[SfeUnit, tuple[list[SupportFootprintCandidate], list[str]]]":
+    """The units of one closing line at ``heights``, all their builds made at once (:func:`_build_many`): each unit's
+    grasps, and where ``counting`` the causes its refused builds count under, in the order :func:`_run_unit` builds and
+    counts them. Every build at once where every tilt that fits is a candidate; else the ladder one tilt at a time over
+    the heights that found no grasp yet, so that no build is made which :func:`_run_unit`'s ladder ends before."""
+    search, axis_index, frac_index = line_key
+    answer: dict[SfeUnit, tuple[list[SupportFootprintCandidate], list[str]]] = {
+        (search, axis_index, frac_index, height): ([], []) for height in heights}
+    line = plan.line(search, axis_index, frac_index)
+    if line is None:
+        return answer
+    standing = [height for height in heights if height < len(line.heights)]
+    if not standing:
+        return answer
+    _axes, tilts, rolls = plan.searches[search]
+    if line.wider:
+        # Every build at these heights is refused for the aperture, and counted as it would have been.
+        builds = sum(1 if tilt == 0.0 else 2 for tilt in tilts) * len(rolls)
+        for height in standing:
+            answer[(search, axis_index, frac_index, height)] = ([], ["aperture"] * builds if counting else [])
+        return answer
+    _obstacles, _side, every_tilt = plan.grids()
+    ladder = plan.ladder(search, axis_index, line.axis)
+    anchor_at = {height: np.array([line.mid[0], line.mid[1], line.heights[height]]) for height in standing}
+    made: dict[int, list[tuple[SupportFootprintCandidate | None, tuple[str, ...]]]] = {h: [] for h in standing}
+    open_heights = list(standing)
+    for rung in ([np.arange(ladder.size)] if every_tilt else ladder.rungs):
+        if not open_heights:
+            break
+        anchors = np.repeat(np.stack([anchor_at[height] for height in open_heights]), rung.size, axis=0)
+        candidates, causes = _build_many(plan, anchors, ladder, np.tile(rung, len(open_heights)), counting=counting)
+        still_open = []
+        for k, height in enumerate(open_heights):
+            mine = range(k * rung.size, (k + 1) * rung.size)
+            made[height].extend((candidates[n], causes[n]) for n in mine)
+            if all(candidates[n] is None for n in mine):
+                still_open.append(height)   # tilts are in preference order: the first that works is the one
+        open_heights = still_open
+    for height in standing:
+        answer[(search, axis_index, frac_index, height)] = (
+            [candidate for candidate, _ in made[height] if candidate is not None],
+            [cause for candidate, why in made[height] if candidate is None for cause in why])
+    return answer
+
+
+def _run_units_many(plan: SfePlan, units: Sequence[SfeUnit],
+                    refusals: "dict[str, int] | None") -> dict[SfeUnit, list[SupportFootprintCandidate]]:
+    """:func:`run_units` with each closing line's builds made at once (:func:`_line_built_many`): every line's heights
+    asked are made first, then each unit is answered and its refused builds counted in the order given, as
+    :func:`run_units` answers and counts them. Nothing is counted before every build is made, so a pass that could
+    not be made leaves ``refusals`` as it was."""
+    counting = plan.inputs.counting and refusals is not None
+    lines: dict[tuple[int, int, int], list[int]] = {}
+    for search, axis_index, frac_index, height in units:
+        asked = lines.setdefault((search, axis_index, frac_index), [])
+        if height not in asked:
+            asked.append(height)
+    made: dict[SfeUnit, tuple[list[SupportFootprintCandidate], list[str]]] = {}
+    for line_key, heights in lines.items():
+        made.update(_line_built_many(plan, line_key, sorted(heights), counting=counting and line_key[0] == COARSE))
+    answered: dict[SfeUnit, list[SupportFootprintCandidate]] = {}
+    for unit in units:
+        found, causes = made[unit]
+        if refusals is not None and counting and unit[0] == COARSE:
+            for cause in causes:
+                refusals[cause] = refusals.get(cause, 0) + 1
+        answered[unit] = list(found)
+    return answered
+
+
+#: Why this process made SFE's builds one at a time where it was asked to make them at once, each said once.
+_SAID: set[str] = set()
+
+
+def run_units(plan: SfePlan, units: Sequence[SfeUnit],
+              refusals: "dict[str, int] | None" = None) -> dict[SfeUnit, list[SupportFootprintCandidate]]:
+    """Run ``units`` of ``plan`` here, in the order given: every unit's grasps, by unit. The refused builds of the coarse
+    search are counted into ``refusals`` where the plan counts (``SfeInputs.counting``); the fine and rolled searches
+    count none, so a count stays the coarse grid's, whichever part it is asked of.
+
+    Where the plan asks for it (``SfeInputs.batched``), each closing line's builds are made at once
+    (:func:`_build_many`): the same grasps and counts, to the bit. Where this process's numpy cannot make them so
+    (:func:`_stacked_products_hold`), or making them so fails, the units are run one build at a time from the start,
+    said once in the log, and the answer is the one of before."""
+    counting = plan.inputs.counting and refusals is not None
+    if plan.inputs.batched:
+        try:
+            why = plan.batch().refused
+            if not why:
+                return _run_units_many(plan, units, refusals if counting else None)
+        except Exception as exc:  # noqa: BLE001 (one build at a time answers instead, from the start)
+            why = f"making them at once failed ({type(exc).__name__}: {exc})"
+        if why not in _SAID:
+            _SAID.add(why)
+            _LOG.warning("SFE makes its builds one at a time: %s; the grasps are the same", why)
+    return {unit: _run_unit(plan, unit, refusals if counting and unit[0] == COARSE else None) for unit in units}
+
+
+def rank_found(plan: SfePlan, found: Sequence[SupportFootprintCandidate]) -> list[SupportFootprintCandidate]:
+    """The search's end: ``found`` ranked, by score or with side approaches each run within :data:`_TIE_SCORE` of its
+    best vertical first (:func:`_upright_first`), a grasp near one kept before it left out, ``max_candidates`` at most.
+    """
+    ranked = sorted(found, key=lambda c: -c.score) if not plan.inputs.side_approaches else _upright_first(list(found))
+    kept: list[SupportFootprintCandidate] = []
+    for candidate in ranked:
+        duplicate = any(
+            float(np.linalg.norm(candidate.position_mm - k.position_mm)) < 4.0
+            and abs(float(candidate.closing_axis @ k.closing_axis)) > 0.995
+            and float(candidate.approach @ k.approach) > 0.995
+            for k in kept
+        )
+        if not duplicate:
+            kept.append(candidate)
+        if len(kept) >= plan.inputs.max_candidates:
+            break
+    return kept
+
+
+def _merged(by_unit: Mapping[SfeUnit, Sequence[SupportFootprintCandidate]]) -> list[SupportFootprintCandidate]:
+    """Every unit's grasps, the units in their own order: the order SFE builds them in, whoever ran which."""
+    return [candidate for unit in sorted(by_unit) for candidate in by_unit[unit]]
+
+
+def _units_run(plan: SfePlan, units: list[SfeUnit], refusals: "dict[str, int] | None",
+               runner: "SfeRunner | None") -> dict[SfeUnit, list[SupportFootprintCandidate]]:
+    """``units`` run here (``runner`` ``None``) or by ``runner``, whose counts join ``refusals``."""
+    if runner is None:
+        return run_units(plan, units, refusals)
+    by_unit, counted = runner(plan, units)
+    missing = [unit for unit in units if unit not in by_unit]
+    if missing:
+        # Never a part of a search: the part is searched here in full instead.
+        raise SfeRunnerFailed(f"the runner answered {len(units) - len(missing)} of {len(units)} units")
+    if refusals is not None:
+        for cause, count in counted.items():
+            refusals[cause] = refusals.get(cause, 0) + int(count)
+    return {unit: list(by_unit[unit]) for unit in units}
+
+
+def _searched(plan: SfePlan, *, fine_pass: bool, refusals: "dict[str, int] | None", stages: "dict[str, str] | None",
+              runner: "SfeRunner | None") -> list[SupportFootprintCandidate]:
+    """The search of ``plan``: its coarse units; the fine and rolled ones where the coarse grid found fewer than
+    ``_FINE_BELOW`` grasps and ``fine_pass`` does not leave them for later; each merged in unit order, then ranked."""
+    found = _merged(_units_run(plan, plan.units(COARSE), refusals, runner))
+    if len(found) < _FINE_BELOW and not fine_pass:
+        # Few grasps on the coarse grid, and the caller holds the fine search back: the coarse grid's grasps, said so.
+        if stages is not None:
+            stages["fine"] = FINE_SEARCH_DEFERRED
+    elif len(found) < _FINE_BELOW:
+        # Few grasps on the coarse grid: the finer one, every 7.5 degrees of tilt, each face's closing axis turned
+        # inside the friction cone, a round part's fan every 15 degrees (the owner, 2026-10-06: "die Orientierung
+        # feiner"); and each face's closing axis tilted out of the horizontal, one finger higher than the other, on the
+        # coarse ladder of tilts (the owner, 2026-10-06: "die geneigte Schliessachse"). Their refusals are not counted,
+        # so a count stays the coarse grid's, whichever part it is asked of.
+        found += _merged(_units_run(plan, plan.units(FINE) + plan.units(ROLLED), None, runner))
+    return rank_found(plan, found)
+
+
 def generate_support_footprint_grasps(
     cloud_base_mm: np.ndarray,
     *,
@@ -1178,6 +2269,10 @@ def generate_support_footprint_grasps(
     corridor_seen: CorridorSeen | None = None,
     seen_envelope: Any = None,
     hand_floor: HandFloor | None = None,
+    fine_pass: bool = True,
+    stages: dict[str, str] | None = None,
+    runner: "SfeRunner | None" = None,
+    batched: bool = False,
 ) -> list[SupportFootprintCandidate]:
     """Ranked candidates in BASE, from a masked target cloud and the rest of the scene as obstacles.
 
@@ -1212,6 +2307,27 @@ def generate_support_footprint_grasps(
     nearer their top than the guard's distance (``table``), and the height solve starts from it, so a grasp sits as low
     as the guard admits and no lower. ``None`` holds the support clearance over the reading alone, as before.
 
+    ``fine_pass`` off leaves the fine search for later: where the coarse grid finds fewer than ``_FINE_BELOW`` grasps,
+    the coarse grid's grasps are returned as they are and ``stages``, where given, says so
+    (``stages["fine"] = FINE_SEARCH_DEFERRED``). The fine search is most of what a part with few grasps costs (88 to
+    93 % of the time on a cylinder boxed in by four cubes; it is what made one part on the owner's cell take 24 s,
+    2026-10-08), and a pick that already holds another part's full result need not wait for it. On, the default, the
+    search is the one it always was, and ``stages`` is left as it was given.
+
+    The search is one function of independent units (:data:`SfeUnit`): it is planned (:func:`plan_support_footprint`),
+    its units run (:func:`run_units`), merged in unit order and ranked (:func:`rank_found`). ``runner``
+    (:data:`SfeRunner`, ``src.robot.grasping.workers.SfeWorkers``) runs them in other processes; ``None``, the default,
+    runs every unit here, in order. The coarse units go first and the fine and rolled ones only where the merged coarse
+    grasps ask for them, so a runner gives the same grasps, the same counts and the same ``stages`` as this process. A
+    runner that cannot answer (:class:`SfeRunnerFailed`) has the part searched here from the start, and nothing it
+    answered is kept.
+
+    ``batched`` makes each closing line's builds at once, in one numpy pass per check (:func:`_build_many`), wherever
+    the units run, a runner's processes included: the same grasps, counts and ``stages`` to the bit, and a build whose
+    deciding number lies within :data:`_BATCH_SURE` of its threshold made by ``_build`` alone. The recorded boxed-in
+    Zollstock's full search took 0.22 instead of 2.2 s on the desk, a boxed-in cube's 0.24 instead of 3.7 s
+    (2026-10-09). Off, the default, makes every build one at a time, as before.
+
     Returns an empty list when the cloud is too sparse to reconstruct or admits no legal grasp,
     which is a real answer and not a failure. Refusing beats proposing a grasp that goes under the
     support surface.
@@ -1219,130 +2335,27 @@ def generate_support_footprint_grasps(
     if refusals is not None:
         for cause in REFUSAL_CAUSES:
             refusals.setdefault(cause, 0)
-    jaw = jaw or SupportFootprintJaw.from_model()
-    prism = reconstruct_support_prism(cloud_base_mm, support_height_mm, inflate_mm=inflate_mm,
-                                      floor_margin_mm=floor_margin_mm)
-    if prism is None:
+    plan = plan_support_footprint(SfeInputs(
+        cloud_base_mm, support_height_mm=support_height_mm, jaw=jaw, obstacle_points_base_mm=obstacle_points_base_mm,
+        rigid_obstacle_points_base_mm=rigid_obstacle_points_base_mm, max_candidates=max_candidates,
+        height_offsets_mm=height_offsets_mm, inflate_mm=inflate_mm, palm_aware=palm_aware, score_weights=score_weights,
+        floor_margin_mm=floor_margin_mm, counting=refusals is not None, side_approaches=side_approaches,
+        corridor_seen=corridor_seen, seen_envelope=seen_envelope, hand_floor=hand_floor, batched=bool(batched)))
+    if plan is None:
         return []
-    rigid = rigid_obstacle_points_base_mm
-    if prism.trimmed.shape[0]:
-        rigid = (prism.trimmed if rigid is None or np.size(rigid) == 0
-                 else np.vstack([np.asarray(rigid, dtype=np.float64).reshape(-1, 3), prism.trimmed]))
-    # Where the boxes the camera world builds of the neighbours are known (``seen_envelope``), the guard's own distance
-    # from them decides (``seen_fingers`` below): every point is inside its box, the world's margin from its sides. The
-    # sparse grid then keeps the hand off the points alone, on a fine grid: grown 12 mm on 12 mm cells it refused every
-    # finger within 12 to 24 mm of a neighbour, twice what the guard keeps, and lost 1100 of 1250 builds of a cylinder
-    # whose posts stood 15 mm clear of its fingers (the grasp bench, 2026-10-05). Without the boxes it stands in for
-    # them as it always did.
-    obstacles = _ObstacleSet(
-        _Obstacles(obstacle_points_base_mm) if seen_envelope is None
-        else _Obstacles(obstacle_points_base_mm, cell_mm=SEEN_POINTS_CELL_MM, margin_mm=SEEN_POINTS_CELL_MM),
-        _Obstacles(rigid, cell_mm=4.0, margin_mm=0.0),
-    )
-    if refusals is not None:
-        obstacles.label(declared=rigid_obstacle_points_base_mm, own=prism.trimmed)
-    side = _Side(seen=corridor_seen, room=_Room(obstacle_points_base_mm, rigid)) if side_approaches else None
-    # Every tilt that fits is a candidate only where a depth ray can vouch for the space a tilt sweeps.
-    every_tilt = side is not None and side.seen is not None
-    found: list[SupportFootprintCandidate] = []
-
-    def search(axes: Sequence[np.ndarray], tilts: Sequence[float], counted: "dict[str, int] | None",
-               rolls: Sequence[float] = (0.0,)) -> None:
-        """Every anchor, height, tilt and roll along ``axes``, each grasp that builds into ``found``."""
-        reach_across = jaw.aperture_mm / 2.0 + jaw.finger_thickness_mm
-        for raw_axis in axes:
-            a2 = raw_axis[:2] / max(float(np.linalg.norm(raw_axis[:2])), _EPS)
-            axis = np.array([a2[0], a2[1], 0.0])
-            perp = np.array([-a2[1], a2[0]])
-            ext_perp = float((prism.hull @ perp).max() - (prism.hull @ perp).min())
-            for frac in _FRACS:
-                base_xy = prism.centre + frac * (ext_perp / 2.0) * perp
-                mid_z = (prism.z0 + prism.z1) / 2.0
-                span_xy = prism.line_span(np.array([base_xy[0], base_xy[1], mid_z]), axis)
-                if span_xy is None:
-                    continue
-                mid = base_xy + ((span_xy[0] + span_xy[1]) / 2.0) * a2
-                # Where the guard's solid under the grasp lets the hand come down to (``hand_floor``).
-                floor_fingers = -math.inf if hand_floor is None else float(hand_floor.at(mid[None, :], fingers=True)[0])
-                floor_palm = -math.inf if hand_floor is None else float(hand_floor.at(mid[None, :])[0])
-                # Near the top, and at the part's middle height, where a grasp sits best (``_seated``).
-                heights = [prism.z1 - dz for dz in height_offsets_mm] + [(prism.z0 + prism.z1) / 2.0]
-                # Solve for the height at which the gripper still clears the support, per tilt. This is
-                # the step the silhouette generator has no equivalent of: it anchors first and is
-                # filtered afterwards, and a filter cannot move a grasp somewhere legal.
-                for tilt in tilts:
-                    c, s = np.cos(np.radians(tilt)), np.sin(np.radians(tilt))
-                    # The solve has to know what the check knows: teaching ``_build`` about the palm
-                    # without teaching this would only make SFE lose candidates, and the stage exists
-                    # because it can move a grasp somewhere legal where a filter can only refuse. The
-                    # palm's own requirement is (palm_width/2)*sin - finger_behind*cos: it is far below
-                    # the finger term when the approach is vertical (the palm sits behind the fingers)
-                    # and overtakes it as the grasp tilts. The finger's own: its tip ``finger_ahead`` down the
-                    # approach, and half its width further where the approach tilts (``_build``'s fingers).
-                    base = support_height_mm + jaw.table_clearance_mm
-                    need = max(base, floor_fingers) + jaw.finger_ahead_mm * c + (jaw.finger_width_mm / 2.0) * s
-                    if palm_aware or hand_floor is not None:
-                        # Over the held solid the palm is checked whatever ``palm_aware`` says (``_build``), against the
-                        # whole solid where a finger keeps the distance from the reading.
-                        need = max(need, max(base, floor_palm)
-                                   + (jaw.palm_width_mm / 2.0) * s - jaw.finger_behind_mm * c)
-                    # A rolled hand stands its lower open finger lower by its reach across the axis.
-                    for roll in rolls:
-                        rolled_need = need + reach_across * abs(math.sin(math.radians(roll)))
-                        if support_height_mm + 2.0 < rolled_need <= prism.z1 - 2.0:
-                            heights.append(rolled_need + 0.5)
-                # A height is only worth trying once; the solve often lands on the same millimetre.
-                heights = sorted({round(z, 1) for z in heights
-                                  if support_height_mm + 2.0 < z < prism.z1}, reverse=True)[:6]
-                for z in heights:
-                    anchor = np.array([mid[0], mid[1], z])
-                    for tilt in tilts:
-                        signs = (1.0,) if tilt == 0.0 else (1.0, -1.0)
-                        hit = False
-                        for sign in signs:
-                            tilted = _rodrigues(np.array([0.0, 0.0, -1.0]), axis, sign * np.radians(tilt))
-                            tilted /= float(np.linalg.norm(tilted))
-                            for roll in rolls:
-                                rolled_axis, approach = _rolled(axis, tilted, roll)
-                                # The ladder's own tilt where nothing rolls: read back off the approach, 15 degrees came
-                                # out 14.999999, and the space the tilt sweeps went unasked.
-                                off_vertical = (float(tilt) if roll == 0.0 else
-                                                math.degrees(math.acos(max(-1.0, min(1.0, -float(approach[2]))))))
-                                candidate = _build(prism, anchor, rolled_axis, approach, jaw, obstacles,
-                                                   support_height_mm, palm_aware=palm_aware,
-                                                   score_weights=score_weights, refusals=counted,
-                                                   side=side, tilt_deg=off_vertical, seen=seen_envelope,
-                                                   floor=hand_floor)
-                                if candidate is not None:
-                                    found.append(candidate)
-                                    hit = True
-                        if hit and not every_tilt:
-                            break   # tilts are in preference order: the first that works is the one
-
-    search(closing_axes(prism), _TILTS_DEG, refusals)
-    if len(found) < _FINE_BELOW:
-        # Few grasps on the coarse grid: the finer one, every 7.5 degrees of tilt, each face's closing axis turned
-        # inside the friction cone, a round part's fan every 15 degrees (the owner, 2026-10-06: "die Orientierung
-        # feiner"). Its refusals are not counted, so a count stays the coarse grid's, whichever part it is asked of.
-        search(closing_axes(prism, radial=_FINE_RADIAL, yaw_offsets_deg=_FINE_YAW_DEG), _FINE_TILTS_DEG, None)
-        # And each face's closing axis tilted out of the horizontal, one finger higher than the other, on the coarse
-        # ladder of tilts (the owner, 2026-10-06: "die geneigte Schliessachse").
-        search(closing_axes(prism), _TILTS_DEG, None, rolls=_FINE_ROLL_DEG)
-
-    if side is None:
-        found.sort(key=lambda c: -c.score)
-    else:
-        found = _upright_first(found)
-    kept: list[SupportFootprintCandidate] = []
-    for candidate in found:
-        duplicate = any(
-            float(np.linalg.norm(candidate.position_mm - k.position_mm)) < 4.0
-            and abs(float(candidate.closing_axis @ k.closing_axis)) > 0.995
-            and float(candidate.approach @ k.approach) > 0.995
-            for k in kept
-        )
-        if not duplicate:
-            kept.append(candidate)
-        if len(kept) >= max_candidates:
-            break
-    return kept
+    if runner is not None:
+        counted: dict[str, int] = {}
+        said: dict[str, str] = {}
+        try:
+            kept = _searched(plan, fine_pass=fine_pass, refusals=counted if refusals is not None else None,
+                             stages=said, runner=runner)
+        except SfeRunnerFailed:
+            pass   # the runner said why: the part is searched here, from the start, and nothing it answered is kept
+        else:
+            if refusals is not None:
+                for cause, count in counted.items():
+                    refusals[cause] = refusals.get(cause, 0) + count
+            if stages is not None:
+                stages.update(said)
+            return kept
+    return _searched(plan, fine_pass=fine_pass, refusals=refusals, stages=stages, runner=None)

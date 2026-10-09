@@ -129,16 +129,19 @@ class RefusedBeforeAnythingMovesTests(unittest.TestCase):
 
     def test_a_cell_that_chose_no_carried_part_runs_its_task(self) -> None:
         """The owner, 2026-10-07: "er lässt mich nicht fahren, wenn ich payload nicht aktiviert habe". A cell whose
-        ``payload.enabled`` is false judges a closed hand as an empty one (2026-10-05), and its task carries so."""
+        ``payload.enabled`` is false judges a closed hand as an empty one (2026-10-05), and its task carries so: the pick's
+        attach models nothing there (``PayloadModel.NONE``), and the task places the part. Red before the owner's fix of
+        2026-10-08: every pick on the cell stopped ``part_still_held`` after its grip."""
+        from src.robot.core.arm_capabilities import PayloadModel
         from src.robot.execution.task import TaskStop
 
         log: list[Any] = []
         arm = TaskArm(log, declined="safety.planning_world.payload.enabled is false, so neither the planner nor the "
-                                    "self filter models a part in the gripper")
+                                    "self filter models a part in the gripper", attaches=PayloadModel.NONE)
         arm.config = SimpleNamespace(safety=SimpleNamespace(planning_world=SimpleNamespace(payload=SimpleNamespace(enabled=False))))  # type: ignore[attr-defined]
         ran = run(["part"], arm=arm)
         self.assertIs(TaskStop.FINISHED, ran.report.stop, ran.report.sentence)
-        self.assertEqual(1, ran.report.picks)
+        self.assertEqual((1, 1), (ran.report.picks, ran.report.parts_placed))
 
     def test_an_arm_whose_place_and_return_cannot_run_is_refused_before_it_picks(self) -> None:
         """``Robot.place`` and ``Robot.home`` refuse an arm whose motions no planner judges (``route_of``), so a part

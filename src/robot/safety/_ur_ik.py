@@ -27,6 +27,12 @@ coincide and are returned once. A pose out of reach has no solution and returns 
 
 Pure numpy, no config and no logger. Joints are radians in UR order, base to wrist 3, and each comes back in
 ``(-pi, pi]``; which of its full turns to command is the caller's choice.
+
+The controller's own chain. A calibrated arm's controller solves on its own DH rows, not on the table
+(:class:`~src.robot.safety._ur_kinematics.URDhChain`), and :func:`ur_chain_ik_nearest` answers what its
+``getInverseKinematics(pose, qnear)`` answers: the closed form on the table for the configuration nearest ``qnear``, then
+Newton on the controller's rows. A line judged sample by sample is solved here rather than by one round trip per sample
+where ``robot.safety.ik_quality.line_ik`` says so, and the controller is asked at two of its samples whether it agrees.
 """
 
 from __future__ import annotations
@@ -37,13 +43,15 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ._ur_kinematics import UR_DH_TABLES_M, URDhRow, ur_link_transforms_mm
+from ._ur_kinematics import UR_DH_TABLES_M, URDhChain, URDhRow, ur_link_transforms_mm
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
 __all__ = [
     "BRANCH_POINT_TOL_RAD",
+    "CONTROLLER_AGREEMENT_RAD",
+    "ChainSolution",
     "IK_SOLUTION_TOL_MM",
     "IK_SOLUTION_TOL_RAD",
     "NearestGoal",
@@ -51,7 +59,9 @@ __all__ = [
     "nearest_goals",
     "nearest_turn",
     "ur_branch",
+    "ur_chain_ik_nearest",
     "ur_flange_ik",
+    "ur_pose_matrix_m",
 ]
 
 #: How far a returned solution may put the flange from the goal. A solution the Newton step brings to the goal is
@@ -394,3 +404,141 @@ def nearest_goals(
             time_s=max(moves) / speed,
         ))
     return tuple(sorted(goals, key=lambda goal: (goal.time_s, goal.total_rad, goal.branch)))
+
+
+#: How far the configuration solved here for one sample may stand from the controller's own answer to the same question,
+#: on every joint, radians (the owner, 2026-10-09: the judged configurations equal today's to this). Measured on URSim
+#: CB3 3.15.8, on the nominal chain and on a calibrated one, 5.7e-10 rad at worst over 1292 samples of 40 random lines:
+#: the controller's own tolerance, 1e-10 m, seen through the arm's Jacobian.
+CONTROLLER_AGREEMENT_RAD = 1e-6
+
+#: How much nearer the seed, radians, the nearest solution has to stand than any other before it is the one the controller
+#: answers whatever its measure of near: the least largest-joint turn to any other solution, less the sum of every joint's
+#: turn to the nearest. ``getInverseKinematics(pose, qnear)`` answers the solution nearest ``qnear`` by a measure UR does not
+#: publish: on URSim it took the nearest by the sum of squares in 57 of 60 seeds placed where the sum of squares, the sum
+#: and the largest turn disagree, and the nearest by the sum in the other three. Past this gap all three name one solution.
+#: Along the cell's kind of line (tool down over the bench, a seed 3 mm back) it was never under 1.3 rad.
+_NEAREST_GAP_RAD = 0.05
+#: Newton on the controller's chain stops once the flange stands this close to the goal, metres and radians.
+_CHAIN_RESIDUAL = 1e-12
+#: The least singular value of the flange's Jacobian, metres and radians, at which a solution here is held to be the
+#: controller's: it solves to 1e-10 m, and two solutions of one goal can stand 1e-10 m over this apart.
+_CHAIN_LEAST_SIGMA = 1e-3
+#: How far Newton may take a solution from the table's before it counts as another root than the one meant, radians, where
+#: the table has no other solution to measure against; with others, a quarter of the way to the nearest of them.
+_CHAIN_POLISH_RAD = 0.05
+#: Every joint of a UR turns +-2 pi, and the controller answers none beyond.
+_JOINT_REACH_RAD = 2.0 * math.pi
+
+
+def ur_pose_matrix_m(pose: "Sequence[float]") -> np.ndarray:
+    """A UR pose ``[x, y, z, rx, ry, rz]``, metres and a rotation vector, as the 4x4 in metres the controller means by it."""
+    p = [float(v) for v in pose]
+    if len(p) != 6 or not all(math.isfinite(v) for v in p):
+        raise ValueError(f"a UR pose is six finite numbers, metres and a rotation vector, got {pose!r}")
+    T = np.eye(4, dtype=np.float64)
+    T[:3, 3] = p[:3]
+    angle = math.sqrt(p[3] * p[3] + p[4] * p[4] + p[5] * p[5])
+    if angle > 0.0:
+        k = np.asarray(p[3:], dtype=np.float64) / angle
+        K = np.array([[0.0, -k[2], k[1]], [k[2], 0.0, -k[0]], [-k[1], k[0], 0.0]], dtype=np.float64)
+        T[:3, :3] = np.eye(3) + math.sin(angle) * K + (1.0 - math.cos(angle)) * (K @ K)
+    return T
+
+
+@dataclass(frozen=True, slots=True)
+class ChainSolution:
+    """What :func:`ur_chain_ik_nearest` answers: the configuration, or ``None`` and why it vouches for none."""
+
+    joints: "tuple[float, ...] | None"
+    why_not: str = ""
+
+
+def _chain_residual(chain: URDhChain, joints: np.ndarray, goal_m: np.ndarray) -> np.ndarray:
+    """The six-vector from where ``chain`` puts the flange at ``joints`` to ``goal_m``, metres and radians."""
+    reached = chain.flange_m(joints)
+    rotation = _rotation_vector(goal_m[:3, :3] @ reached[:3, :3].T)
+    return np.concatenate([goal_m[:3, 3] - reached[:3, 3], rotation])
+
+
+def _chain_jacobian(chain: URDhChain, joints: np.ndarray) -> np.ndarray:
+    """The geometric Jacobian of ``chain``'s flange, metres and radians."""
+    frames = chain.frames_m(joints)
+    end = frames[-1][:3, 3]
+    columns = [np.concatenate([np.cross(frame[:3, 2], end - frame[:3, 3]), frame[:3, 2]]) for frame in frames[:-1]]
+    return np.stack(columns, axis=1)
+
+
+def ur_chain_ik_nearest(
+    model: str,
+    chain: URDhChain,
+    flange_m: "np.ndarray | Sequence[Sequence[float]]",
+    seed: "Sequence[float]",
+) -> ChainSolution:
+    """The configuration of ``chain`` that puts its flange at ``flange_m`` nearest ``seed``, as the controller answers it.
+
+    What ``getInverseKinematics(pose, qnear=seed)`` answers on a controller whose kinematics ``chain`` is, for the
+    flange that pose and its active TCP mean: the closed form on ``model``'s nominal table (:func:`ur_flange_ik`), every
+    solution on its full turn nearest ``seed``, the nearest of them by the sum of squares, then Newton on ``chain`` to
+    :data:`_CHAIN_RESIDUAL`. ``flange_m`` is a 4x4 in metres in the base frame, the flange, not a TCP.
+
+    It vouches only where the answer cannot be another than the controller's, and otherwise says why not, so the caller
+    asks the controller as before: where no configuration of the table reaches the pose; where another solution stands
+    within :data:`_NEAREST_GAP_RAD` of being as near the seed; where Newton does not bring the flange onto the goal, or
+    takes the solution a quarter of the way to the table's next solution (:data:`_CHAIN_POLISH_RAD` where there is none);
+    where a joint lands beyond +-2 pi; and where the arm stands so near a singularity (:data:`_CHAIN_LEAST_SIGMA`) that
+    two solvers of one goal can part by more than :data:`CONTROLLER_AGREEMENT_RAD`. Raises ``ValueError`` for a seed
+    that is not six finite joints or a goal that is no finite 4x4.
+    """
+    near = np.asarray([float(v) for v in seed], dtype=np.float64)
+    if near.shape != (6,) or not np.all(np.isfinite(near)):
+        raise ValueError(f"a seed is six finite joint values, got {seed!r}")
+    goal = np.asarray(flange_m, dtype=np.float64)
+    if goal.shape != (4, 4) or not np.all(np.isfinite(goal)):
+        raise ValueError(f"the flange goal has to be a finite 4x4 transform in metres, got shape {goal.shape}")
+    goal_mm = goal.copy()
+    goal_mm[:3, 3] *= 1000.0
+    solutions = ur_flange_ik(model, goal_mm, q6_if_singular=float(near[5]))
+    if solutions is None:
+        return ChainSolution(None, f"robot.ur.model {model!r} has no nominal table to solve from")
+    if not solutions:
+        return ChainSolution(None, "no configuration of the nominal table reaches this pose")
+    turned = sorted(
+        (near + np.asarray([_wrapped(q - s) for q, s in zip(solution, near)], dtype=np.float64) for solution in solutions),
+        key=lambda q: float(np.sum((q - near) ** 2)),
+    )
+    guess = turned[0]
+    allowed = _CHAIN_POLISH_RAD
+    if len(turned) > 1:
+        gap = min(float(np.max(np.abs(other - near))) for other in turned[1:]) - float(np.sum(np.abs(guess - near)))
+        if gap < _NEAREST_GAP_RAD:
+            return ChainSolution(None, (
+                f"another configuration stands about as near the seed (a gap of {gap:.3f} rad by the strictest "
+                "measure), and which of them the controller answers is not known here"))
+        allowed = min(float(np.max(np.abs(other - guess))) for other in turned[1:]) / 4.0
+    q = guess.copy()
+    residual = _chain_residual(chain, q, goal)
+    for _ in range(8):
+        if float(np.max(np.abs(residual))) <= _CHAIN_RESIDUAL:
+            break
+        try:
+            q = q + np.linalg.solve(_chain_jacobian(chain, q), residual)
+        except np.linalg.LinAlgError:
+            return ChainSolution(None, "the chain's Jacobian is singular on the way to this pose")
+        residual = _chain_residual(chain, q, goal)
+    off = float(np.max(np.abs(residual)))
+    if not off <= _CHAIN_RESIDUAL:
+        return ChainSolution(None, f"Newton on the controller's chain left the flange {off:.1e} m or rad off the pose")
+    polished = float(np.max(np.abs(q - guess)))
+    if polished > allowed:
+        return ChainSolution(None, (
+            f"Newton on the controller's chain turned a joint {polished:.3f} rad from the table's solution, more than "
+            f"the {allowed:.3f} rad that keeps it nearer that solution than any other, so it may have found another"))
+    if float(np.max(np.abs(q))) > _JOINT_REACH_RAD:
+        return ChainSolution(None, "a joint of the nearest configuration lies beyond the two full turns a UR joint has")
+    sigma = float(np.linalg.svd(_chain_jacobian(chain, q), compute_uv=False)[-1])
+    if sigma < _CHAIN_LEAST_SIGMA:
+        return ChainSolution(None, (
+            f"the arm stands near a singularity here (least singular value {sigma:.1e}), where two solvers of one pose "
+            "can part"))
+    return ChainSolution(tuple(float(v) for v in q))

@@ -1098,7 +1098,8 @@ class TheFramesOfTheLooksAreKeptOnlyWhenAskedTests(unittest.TestCase):
     (``src/robot/execution/record_views.py``); off by default."""
 
     def test_a_look_around_asked_to_keeps_its_looks_in_the_campaigns_layout(self) -> None:
-        from src.robot.execution.record_views import RECORD_VIEWS_FORMAT
+        # A file none of whose looks a camera recorded for research is format 1, byte for byte (format 2, 2026-10-09).
+        from src.robot.execution.record_views import RECORD_VIEWS_FORMAT_WITHOUT_RESEARCH
 
         built = _arm(EAST, WEST)
         with tempfile.TemporaryDirectory() as folder, \
@@ -1110,7 +1111,7 @@ class TheFramesOfTheLooksAreKeptOnlyWhenAskedTests(unittest.TestCase):
             self.assertTrue(written.name.startswith("look_around-a_part"), written.name)
             self.assertIn(written.name, located.render())
             with np.load(written, allow_pickle=False) as views:
-                self.assertEqual(RECORD_VIEWS_FORMAT, int(views["format"]))
+                self.assertEqual(RECORD_VIEWS_FORMAT_WITHOUT_RESEARCH, int(views["format"]))
                 self.assertEqual([EAST.label, WEST.label], views["labels"].tolist())
                 self.assertEqual([f"wrist@{EAST.label}", f"wrist@{WEST.label}"], views["views"].tolist())
                 for index, look in enumerate((EAST, WEST)):

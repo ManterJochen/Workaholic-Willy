@@ -1,0 +1,30 @@
+2026-10-12 09:01:50,011 - CuroboUrPlanner - INFO - judged path executed on UR: 2 moveJ
+2026-10-12 09:01:50,600 - URRobotArm - INFO - the world is held (the line down from the standoff, in the world of its look): judged against the 129 box(es) the last refresh registered
+2026-10-12 09:01:50,700 - URRobotArm - INFO - mesh first: the exact guard alone judged 109 sample(s) of the line to approach_03 clear; cuRobo was not asked
+2026-10-12 09:01:51,000 - URRobotArm - INFO - the line to approach_03: 28 configuration(s) solved here on the controller's own kinematics, and the controller answered the same at the first and the last (2 round trip(s))
+2026-10-12 09:01:51,511 - MotionController - INFO - Moving to 'approach_03' [-178.9, -803.1, 76.6 mm] (linear) ...
+2026-10-12 09:01:52,611 - URRobotArm - INFO - the world is held (the way back up from the part, judged against the world the line down was judged in): judged against the 129 box(es) the last refresh registered
+2026-10-12 09:01:52,700 - URRobotArm - INFO - a lift to retreat judged as if the jaws held a part 42.2 mm across: it would run
+2026-10-12 09:01:52,711 - JawIOGripper - INFO - actuating jaws CLOSED via single_toggle
+2026-10-12 09:01:54,750 - URRobotArm - INFO - the line up to retreat runs on the lift judged at the part as if the jaws held the part, in the world held (the way back up from the part); it is not judged a second time
+2026-10-12 09:01:54,800 - MotionController - INFO - Moving to 'retreat' [-178.9, -803.1, 176.6 mm] (linear) ...
+2026-10-12 09:01:56,400 - GraspRecordLogging - INFO - attempt pick-0123456789ab (succeeded) appended to D:\cell\logs: 4271387 bytes written, file now 44566544 bytes
+2026-10-12 09:01:56,900 - CuroboUrPlanner - INFO - planner world refreshed: 129 box(es), frame 50 ms old, 400.0 ms to build (250.0 ms of it reading the camera), 10.0 ms to register; 12 box(es) merged into the boxes holding them to fit the slots; kept out: goal region left out 0 point(s); not seen, planned as free: no depth on 18% of EIH_Cam
+2026-10-12 09:01:57,600 - URRobotArm - INFO - mesh first: the exact guard alone judged 902 sample(s) of this straight joint line clear; cuRobo was not asked
+2026-10-12 09:01:57,610 - URRobotArm - INFO - move_to_joints: direct line; 2 waypoint(s) dense, 2 executed (1 leg(s)); joint travel in deg, total/largest leg: shoulder_pan_joint 16.0/16.0, shoulder_lift_joint 26.3/26.3, elbow_joint 29.8/29.8, wrist_1_joint 78.8/78.8, wrist_2_joint 6.0/6.0, wrist_3_joint 8.8/8.8
+2026-10-12 09:02:04,700 - src.robot.execution.place_target - INFO - recheck: the yellow bin's rim band, 1520 point(s) read by camera 'EIH_Cam': 99.0 % seen, 98.1 % within 10 mm, 0.5 % farther, colour dE 2.1: it stands where it stood
+2026-10-12 09:02:05,300 - CuroboUrPlanner - INFO - planner world refreshed: 129 box(es), frame 50 ms old, 300.0 ms to build (200.0 ms of it reading the camera), 10.0 ms to register; 12 box(es) merged into the boxes holding them to fit the slots; kept out: goal region left out 0 point(s); not seen, planned as free: no depth on 18% of EIH_Cam
+2026-10-12 09:02:06,000 - URRobotArm - INFO - mesh first: the exact guard alone judged 820 sample(s) of this straight joint line clear; cuRobo was not asked
+2026-10-12 09:02:06,010 - URRobotArm - INFO - move to standoff: direct line to goal 1 of 4 (branch shoulder -, wrist 2 +, elbow -, 116.5 deg at most); 2 waypoint(s) dense, 2 executed (1 leg(s)); joint travel in deg, total/largest leg: shoulder_pan_joint 16.0/16.0, shoulder_lift_joint 26.3/26.3, elbow_joint 29.8/29.8, wrist_1_joint 78.8/78.8, wrist_2_joint 6.0/6.0, wrist_3_joint 8.8/8.8
+2026-10-12 09:02:12,100 - CuroboUrPlanner - INFO - judged path executed on UR: 2 moveJ
+2026-10-12 09:02:12,700 - URRobotArm - INFO - the world is held (the line in to the drop, in the world of the bin's look): judged against the 129 box(es) the last refresh registered
+2026-10-12 09:02:13,500 - MotionController - INFO - Moving to 'drop over yellow bin' [285.3, -590.5, 205.5 mm] (linear) ...
+2026-10-12 09:02:14,550 - JawIOGripper - INFO - actuating jaws OPEN via single_toggle
+2026-10-12 09:02:16,700 - MotionController - INFO - Moving to 'standoff' [285.3, -590.5, 305.5 mm] (linear) ...
+2026-10-12 09:02:18,200 - CuroboUrPlanner - INFO - planner world refreshed: 129 box(es), frame 50 ms old, 400.0 ms to build (260.0 ms of it reading the camera), 10.0 ms to register; 12 box(es) merged into the boxes holding them to fit the slots; kept out: goal region left out 0 point(s); not seen, planned as free: no depth on 18% of EIH_Cam
+2026-10-12 09:02:19,000 - URRobotArm - INFO - mesh first: the exact guard alone judged 888 sample(s) of this straight joint line clear; cuRobo was not asked
+2026-10-12 09:02:19,010 - URRobotArm - INFO - move_home: direct line; 2 waypoint(s) dense, 2 executed (1 leg(s)); joint travel in deg, total/largest leg: shoulder_pan_joint 16.0/16.0, shoulder_lift_joint 26.3/26.3, elbow_joint 29.8/29.8, wrist_1_joint 78.8/78.8, wrist_2_joint 6.0/6.0, wrist_3_joint 8.8/8.8
+2026-10-12 09:02:25,100 - src.robot.execution.autonomous_grasp.service - INFO - recovery rescans nothing for a wrist pick handed looks: its looks, and the one view they may generate, were its rescans, and driving them again is not a recovery
+2026-10-12 09:02:31,800 - src.robot.grasping.loop.pick_loop - INFO - no look saw anything to pick (looked from home)
+2026-10-12 09:08:00,000 - CuroboPlanClient - INFO - cuRobo sidecar shut down cleanly
+2026-10-12 09:10:00,100 - URConnection - INFO - Disconnected.

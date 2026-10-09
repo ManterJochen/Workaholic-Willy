@@ -2,8 +2,11 @@
 
 A 6-DoF grasp generator you train on your own parts, and the seam a cell loads its weights through.
 One config key selects it in place of the analytic generator. No trained weights ship in this
-repository, and this page carries no result numbers: a number measured on another corpus says nothing
-about yours.
+repository, and a number measured on another corpus says nothing about yours, so your own run gets its
+own proof before a cell uses it: a cell grasps with trained weights only once the promotion record
+beside them says their proof passed ([promotion.py](promotion.py), the owner's decision of
+2026-10-09). The pipeline is not yet proven to generalise, and [Status](#status) says what was
+measured.
 
 ```python
 from willy import GeneratorTraining, PlanOverrides
@@ -21,7 +24,9 @@ if report.succeeded:
     run.write_report(report)                 # report.json, which `deep report` reads
 ```
 
-A cell then selects the weights in its profile:
+A cell then selects the weights in its profile, and builds from them only once their proof has passed.
+Nothing can pass one yet (`deep judge`, coming), so today this profile refuses, in one sentence that
+names the way on: `calculator: geometric`, or evaluate the artifact with the ladder.
 
 ```yaml
 robot:
@@ -52,8 +57,10 @@ python -m src.robot.grasping.deep report --run logs/dl/models/my_arm
 python -m src.robot.grasping.deep inspect --artifact logs/dl/models/my_arm/set_grasp_generator_v1.pt
 ```
 
-The command formats the same API and validates nothing the API does not. `train-set --help` lists
-every knob; `SetTrainingPlan` reaches more than the flags do, and building one by hand and passing it
+`inspect` prints first whether a cell may grasp with the file, `NOT DEPLOYABLE` and why or `deployable`
+with its phase, which is the answer `build_calculator` gives a cell; `train-set` ends on the same line
+for the weights it wrote. The command formats the same API and validates nothing the API does not.
+`train-set --help` lists every knob; `SetTrainingPlan` reaches more than the flags do, and building one by hand and passing it
 to `GeneratorTraining.from_plan` is as supported as a recipe.
 
 ## The nouns
@@ -62,7 +69,8 @@ to `GeneratorTraining.from_plan` is as supported as a recipe.
 | --- | --- | --- | --- |
 | `GeneratorTraining` | `from_recipe(corpus=..., recipe=..., tier=...)`, `from_plan(corpus=..., plan=...)` | `probe()`, `train()` | `CorpusProbe`, `TrainingRunReport` |
 | `PublicCorpus` | `from_source(out_dir=...)`, in [`foreign/service.py`](foreign/service.py) | `describe()`, `fetch()` | `ImportReport`, and scene files to train on |
-| the runtime generator | `build_calculator(tree.robot, data_dir=tree.root, ...)` with `calculator: deep` | `compute(...)` | ranked `GraspPoint`s, as the analytic one |
+| the runtime generator | `build_calculator(tree.robot, data_dir=tree.root, ...)` with `calculator: deep`, for a cell from a promoted artifact only; `purpose="evaluate"` builds one to measure it | `compute(...)` | ranked `GraspPoint`s, as the analytic one |
+| the promotion record | `<stem>.promotion.json` beside the weights, which nothing writes yet; [`promotion.py`](promotion.py) reads it | `why_not_deployable(artifact)` | why a cell may not grasp with it, or `""` |
 
 `describe()` says what a run will do, `probe()` measures the floor and the ceiling of the corpus with
 no weights at all (see [What to measure](#what-to-measure)), `attach_progress_listener(fn)` calls `fn`
@@ -136,6 +144,7 @@ The run around that step, and how the weights reach a cell:
           |
           v
     calculator_factory.build_calculator(tree.robot)  under `calculator: deep`
+          --> promotion.py: a cell only from weights whose proof passed; the ladder evaluates any
           --> calculator.py, the runtime generator
           --> compute(cloud) --> ranked GraspPoints, the seam the analytic generator also fills
 ```
@@ -168,9 +177,11 @@ A **recipe** is a named, frozen bundle of settings, stamped into the artifact so
 recipe produced it. `v1` always means what it means today; a better bundle becomes `v2` beside it. A
 **tier** narrows a recipe to a compute budget. `smoke` is 2 epochs on 400 training units with the refit
 off: it proves the chain closes on your corpus and your machine, and says nothing about grasp quality.
-`full` is 36 epochs and is the model you deploy. Thirty-six is a floor: if your curve still climbs
-there, raise `epochs` (`--epochs`) and read `deep report` for the verdict. The tier is recorded in the
-plan, the run report and the model card, and `inspect` prints a loud line for a smoke artifact.
+`full` is 36 epochs and is the model you judge: a cell grasps with it only once its proof has passed,
+and the proof (`deep judge`) is coming. Thirty-six is a floor: if your curve still climbs there, raise
+`epochs` (`--epochs`) and read `deep report` for the verdict. The tier is recorded in the plan, the run
+report and the model card, `inspect` prints a loud line for a smoke artifact, and no promotion makes a
+smoke or a control artifact one a cell may use.
 
 ## What it refuses
 
@@ -182,27 +193,35 @@ plan, the run report and the model card, and `inspect` prints a loud line for a 
 | `ValueError` from `train()` | folds cannot be cut asset-disjoint, a `resume` whose plan differs, several hands and no `artifact_gripper` | fix the corpus, or name the hand |
 | `FileNotFoundError` from `build_calculator` | `calculator: deep` and no file at `artifact_path` | train one, or set `calculator: geometric` |
 | `ValueError` from `build_calculator` | not a generator artifact of this version (a fold checkpoint, a retired model) | name the artifact a finished run wrote |
+| `ValueError` from `build_calculator` for a cell | the artifact's proof has not passed: no promotion beside it, one that cannot be read or vouches for other bytes, a failed verdict, a phase below `active`, or a card that says smoke tier or control run. Today that is every artifact | set `calculator: geometric`, or evaluate it (`deep propose`, the ladder's `deep` rung); `deep judge` is coming |
 | `ValueError` from `build_calculator` | `robot.gripper.model` unset, not in the registry, or a hand the artifact never saw | name the cell's hand, or train across it |
 | `ValueError` from `build_calculator` | a construction argument it cannot honour is active, such as `ik_service` | switch it off, or use `geometric` there |
 
 Every refusal fails closed. The factory never falls back to the analytic generator, because a cell that
-silently ran it would report every KPI under the learned generator's name.
+silently ran it would report every KPI under the learned generator's name. `purpose="evaluate"`, which
+the ladder, the simulation runners and the offline sweeps pass, skips the proof check and keeps every
+other refusal: those runs measure an artifact, which is how its proof is made.
 
 ## What to measure
 
 Read the instruments, not a headline number. [eval/probes.py](eval/probes.py) ships three:
 
-- `oracle_ceiling` scores a perfect model on your corpus. It is below 100 percent, because a seed that
-  admits several grasps caps what any single answer scores.
-- `baseline_floor` scores an untrained copy of the same architecture: what learning nothing looks like
-  on your data, with your metric and your unit count.
+- `oracle_ceiling` scores a perfect head on your corpus, one handed the labels' own grasps. Its top-1
+  is 1.0 by construction, which is more than the shipped head can reach: that head ties the offset to
+  half the width, and as it can express them the same grasps scored 0.894 on 129 corpus units (the
+  2026-10-09 review). Coverage is the column that K caps.
+- `baseline_floor` scores four heads that learned nothing: `random`, `top_down` (every slot straight
+  down at the seed), `normal` and `normal_inset` (along the point's inward surface normal). That is
+  what learning nothing looks like on your data, with your metric and your unit count.
 - `memorisation_probe` compares the trained model on matched seen and unseen samples against the same
   gap on an untrained net. The fold key is `asset_group`, so the variants of one object stay in one
-  fold. No pass threshold is built in.
+  fold. No pass threshold is built in, and its result reaches neither the card nor any refusal.
 
-`GeneratorTraining.probe()` runs all three before a run costs anything and prints them as one table;
+`GeneratorTraining.probe()` runs the ceiling and the floor, with the approach headroom beside them,
+before a run costs anything, and prints them as one table;
 [05_floor_and_ceiling_before_you_train.py](../../../../examples/offline/training/05_floor_and_ceiling_before_you_train.py)
-is that call. `top_down` is the arm to beat, not `random`: every slot straight down at the seed is the
+is that call. The memorisation probe needs trained weights, so it runs at the end of each fold
+instead. `top_down` is the arm to beat, not `random`: every slot straight down at the seed is the
 grasp a cell with no model at all would try.
 
 A hit is a top-1 slot within 15 degrees (`hit_angle_deg`) and 20 mm (`hit_offset_mm`) of a real label,
@@ -243,9 +262,11 @@ the hand. That a net's grasps are good for each hand is a separate question it d
 
 | Capability | Evidence |
 | --- | --- |
-| From a simulated corpus to trained weights a cell loads through `build_calculator` | measured in simulation |
+| From a simulated corpus to trained weights `build_calculator` loads for evaluation | measured in simulation |
 | From a published corpus to the same weights, through `PublicCorpus` | measured: the import writes the format the loop reads, and a smoke run closes on it. Its folds are scene-disjoint, not asset-disjoint, because the source publishes no asset identity |
-| Grasp quality of a trained generator | measured in simulation, on your corpus, with the probes above |
+| Grasp quality of a trained generator | not shown. The best full run so far did not beat "straight down" on objects it never saw: a lift of +0.017 top-1 over `top_down`, 95 % interval [-0.0004, +0.039], over 54 held-out objects (the 2026-10-09 review). The pipeline is not yet proven to generalise, and a run of yours gets its own proof before a cell uses it |
+| The corpora it was measured on | a known data defect, being fixed: in every MuJoCo-rendered corpus the jaw labels of scanned meshes sit about 45 mm (median) off the geometry the camera rendered. Every held-out object of the run above is such a mesh, so its number cannot tell a working model from a broken one until the labels are fixed |
+| A cell grasping with trained weights | refused until a promotion beside them says their proof passed at `active` (2026-10-09); nothing writes one yet (`deep judge`, `deep promote`, coming) |
 | The learned generator on a physical cell | never touched hardware |
 
 The score a slot carries is not a calibrated probability of a hold. The generator proposes; the
@@ -257,6 +278,7 @@ The score a slot carries is not a calibrated probability of a hold. The generato
 | --- | --- |
 | `protocol.py`, `calculator.py` | the seam a cell sees; the runtime generator, which never raises from `compute`. `camera_matrix`, `redraw_debug_image` and `max_candidates` are optional members the pick loop reads duck-typed, outside the protocol: the last two let it redraw the overlay over the grasps a closing axis kept and ask for 36 candidates while one is named |
 | `set_artifact.py`, `set_decode.py`, `hands.py` | weights plus a model card; one slot to a pose; a hand's name to its vector |
+| `promotion.py` | the promotion record beside the weights, and why an artifact may not drive a cell (`why_not_deployable`) |
 | `__main__.py` | the command line |
 | `net/` | backbone, slot head, losses, targets, assignment, rotation, gripper vector, local crop, generative head |
 | `corpus/` | one scene to one training sample; units, folds and asset groups; finding and sampling scenes |

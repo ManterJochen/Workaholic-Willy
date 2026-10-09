@@ -252,6 +252,10 @@ def _make_deep(**kwargs: Any) -> Any:
     run, including the fail-closed refusal, the jaw limits and the `deep_generator` block's device
     and score threshold.
 
+    With one difference, said rather than hidden: `purpose="evaluate"`. A cell refuses an artifact
+    whose proof has not passed (2026-10-09, `deep/promotion.py`), and this rung is part of how that
+    proof is made, so it grades an artifact no cell would take yet. Every other refusal holds here.
+
     A missing artifact refuses loudly rather than skipping the rung: a ladder with no deep row reads
     exactly like a ladder that ran.
     """
@@ -283,7 +287,7 @@ def _make_deep(**kwargs: Any) -> Any:
     robot_cfg = RobotConfig.model_validate({
         "gripper": {"model": "robotiq_2f85"},
         "grasping": {"calculator": "deep", "deep_generator": {"artifact_path": artifact}}})
-    built = build_calculator(robot_cfg, **kwargs)
+    built = build_calculator(robot_cfg, purpose="evaluate", **kwargs)
     # Load it now, so a bad artifact refuses the run instead of every object. The runtime catches
     # everything inside `compute()`, correctly, because a cell must not go down over one frame: a
     # checkpoint handed to the `deep` rung would raise, be caught, and become "no candidates" for

@@ -62,6 +62,18 @@ reads wider than the grasp said, or a retreat in steps can still refuse it,
 and the arm then holds the part where it stands until a person opens the jaws
 (``Robot.release``).
 
+Judged while the arm waits
+--------------------------
+Three switches move a judgement to where the arm waits anyway, and change nothing of what is judged (the owner,
+2026-10-09, "solange wir keine Qualität verlieren"); each is off as shipped. On an arm that gates its own sends
+(``safety.dwell.gate_at`` ``send``) a move is asked with no steady gate here: the arm judges it first, while it
+settles, and waits for steady right before it sends. On an arm that holds the world a grasp was judged in ahead
+(``safety.planning_world.hold.standoff``) the move to the standoff and the line down are judged in that world, with no
+frame at the standoff. On an arm that judges the next leg (``robot.motion.judge_next_leg``) the close leaves the jaws'
+stroke to the policy where the hand can (``wait_settled``): the one change goes out, the part is attached, the joint
+move a task declared after the pick is judged meanwhile in the world held at the part, and the stroke is waited out
+before the lift is sent; where no stroke was left, the lift's send judges it while the lift runs.
+
 Numerics
 --------
 * TCP positions are :class:`Pose`: millimetres, an XYZW quaternion and a :class:`Frame`.
@@ -79,7 +91,7 @@ from collections.abc import Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from enum import Enum
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 
@@ -414,17 +426,34 @@ class GraspExecutionPolicy:
             except Exception as exc:  # noqa: BLE001 (a gripper fault is the report, never an escaping raise)
                 return _gripper_fault(exc, line_motion=line_motion)
 
+        approach = waypoints[:-self.retreat_steps]  # all but the retreat lift(s)
+        legs: list[tuple[Pose, bool]] = [(pose, False) for pose in approach]
+        if reading is not None:
+            # The standoff, planned, then one line to the grasp.
+            legs = [(approach[0], False), (approach[-1], True)]
+        # The owner's O2 (safety.planning_world.hold.standoff, 2026-10-09): where the arm holds it, the move to the
+        # standoff and the line down from it are judged in the world the grasp was judged in ahead, at the look, and no
+        # frame is taken at the standoff; elsewhere the block changes nothing.
+        with _the_approach_held(self.arm, reading, approach[0]):
+            return self._approach_and_the_part(grasp, waypoints, approach, legs, reading, line_motion)
+
+    def _approach_and_the_part(
+        self,
+        grasp: GraspPoint,
+        waypoints: Sequence[Pose],
+        approach: Sequence[Pose],
+        legs: Sequence[tuple[Pose, bool]],
+        reading: LineReading | None,
+        line_motion: LineMotion | None,
+    ) -> PolicyReport:
+        """The motions of :meth:`execute`: ``legs`` to the part, then the jaws at it and the way back up
+        (:meth:`_at_the_part`)."""
         commanded: list[Pose] = []
         last_status: MotionStatus | None = None
         last_message: str = ""
         # One camera-world stamp per typed motion, collected wherever a status is, so a report of
         # a failed pick still says what stood behind the motion that failed.
         stamps: list[CameraWorldStamp] = []
-        approach = waypoints[:-self.retreat_steps]  # all but the retreat lift(s)
-        legs: list[tuple[Pose, bool]] = [(pose, False) for pose in approach]
-        if reading is not None:
-            # The standoff, planned, then one line to the grasp.
-            legs = [(approach[0], False), (approach[-1], True)]
         for pose, linear in legs:
             try:
                 result = self._drive_to(pose, linear=linear)
@@ -482,6 +511,8 @@ class GraspExecutionPolicy:
         open), the close, the attach and the lift. :meth:`execute` holds the arm's world around it."""
         # Close the gripper at the grasp point.
         object_detected: bool | None = None
+        # When the jaws' stroke is over where the hand left it to this policy (``wait_settled``), else None.
+        settles_at: float | None = None
         if self.gripper is not None:
             # The halt latch, read at the part before anything is judged: a halt that fell during the line in ends the
             # pick where the arm stands, with no judgement and no way back up the line (2026-10-02). Only the latch,
@@ -504,8 +535,10 @@ class GraspExecutionPolicy:
                 if isinstance(self.gripper, OpensAndCloses):
                     # The grasp width read against closed_below_mm opens a two-state gripper when the part is wider
                     # than the threshold, and the loop then reported object_not_detected on jaws it never closed
-                    # (URSim, the owner's toggle cell, 2026-09-23). A grasp is a close.
-                    self.gripper.set_closed(True)
+                    # (URSim, the owner's toggle cell, 2026-09-23). A grasp is a close. Its stroke is left to this
+                    # policy where the arm judges the next leg meanwhile (robot.motion.judge_next_leg): one change goes
+                    # out, as ever, and nothing is sent before the stroke is waited out below.
+                    settles_at = _close_leaving_the_stroke(self.gripper, self.arm)
                 else:
                     self.gripper.set_width_mm(
                         target_width,
@@ -521,6 +554,7 @@ class GraspExecutionPolicy:
                 return _gripper_fault(exc, line_motion=line_motion, waypoints=tuple(commanded),
                                       motion_status=last_status, camera_worlds=tuple(stamps))
             if object_detected is False:
+                _stroke_waited_out(self.gripper, settles_at)
                 return PolicyReport(
                     outcome=PolicyOutcome.OBJECT_NOT_DETECTED,
                     waypoints=tuple(commanded),
@@ -539,8 +573,20 @@ class GraspExecutionPolicy:
             # The commanded width is not the width of the part. On the adaptive branch the command
             # is `grip_width` less `close_squeeze_mm`, a number the jaws never reach by design, so it
             # is the size of something nobody measured. Reading the jaws is a measurement and, since
-            # a close waits for the fingers, a settled one.
+            # a close waits for the fingers, a settled one. A stroke left to this policy is one only a hand that
+            # measures nothing leaves (``wait_settled``), whose width is the one it was told.
             attach(self._measured_or_commanded_width(grasp))
+
+        # While the jaws close, the joint move a task declared after the pick (the carry) is judged ahead from where the
+        # lift will end, in the world held at the part, the part attached (robot.motion.judge_next_leg,
+        # safety.planning_world.hold.carry); where no stroke was left, the lift's send judges it on a second thread while
+        # it runs (in_settles_and_motion). It sends nothing, and the stroke is waited out before the lift, whatever it
+        # found. On an arm that judges no next leg nothing of this runs.
+        try:
+            if self.gripper is not None:
+                _the_next_leg_judged(self.arm, waypoints[-1], junction="carry", now=settles_at is not None)
+        finally:
+            _stroke_waited_out(self.gripper, settles_at)
 
         # Retreat: command each interpolated lift waypoint, one per retreat_step; the default of 1 is
         # the single full lift.
@@ -608,8 +654,10 @@ class GraspExecutionPolicy:
         # Pre-move steady gate, a fail-closed temporal check outside the per-target SafetyPreflight
         # pipeline. It is skipped when the gate is off or the driver has no steady signal, in which
         # case the getattr yields None and the move passes through. A timeout returns a typed timeout
-        # result before any motion, which the execute() loop maps to PolicyOutcome.MOTION_FAILED.
-        if self.require_steady_before_motion:
+        # result before any motion, which the execute() loop maps to PolicyOutcome.MOTION_FAILED. An arm
+        # that gates its own sends (safety.dwell.gate_at "send") judges the move first, while it settles,
+        # and waits for steady right before it sends, refusing as this does: it is asked with no gate here.
+        if self.require_steady_before_motion and getattr(self.arm, "gates_its_own_sends", False) is not True:
             wait_fn = getattr(self.arm, "wait_until_steady", None)
             if callable(wait_fn) and not wait_fn(float(self.steady_timeout_s)):
                 return MotionResult.failed(
@@ -656,6 +704,12 @@ class GraspExecutionPolicy:
         except Exception as exc:  # noqa: BLE001 (a grasp nobody could judge ahead is not driven to)
             return f"the grasp could not be judged ahead ({type(exc).__name__}: {exc})"
         return str(said or "")
+
+    def standoff_of(self, grasp: GraspPoint) -> Pose:
+        """The standoff over ``grasp``, in the grasp's frame: the first pose :meth:`execute` commands, ``standoff_mm``
+        back along the approach, turned as the grasp closes (the twist of ``align_closing_to_base_x`` included). Nothing
+        moves. The pick loop asks where it stands before it chooses a grasp's wrist turn (the owner, 2026-10-08)."""
+        return self._build_waypoints(grasp)[0]
 
     def _carried_retreat_refusal(
         self, grasp: GraspPoint, top: Pose, reading: object
@@ -880,6 +934,51 @@ def _the_world_held_at_the_part(arm: object, reading: LineReading | None) -> Abs
     if reading is None or not isinstance(arm, HoldsItsWorld):
         return nullcontext()
     return arm.held_world("the way back up from the part, judged against the world the line down was judged in")
+
+
+def _the_approach_held(arm: object, reading: LineReading | None, standoff: Pose) -> AbstractContextManager[object]:
+    """The block in which ``arm`` holds the world a grasp was judged in ahead, for the move to ``standoff`` and the line
+    down from it (``holding_the_approach``, ``safety.planning_world.hold.standoff``), on an arm that keeps its lines and
+    holds its world; elsewhere a block that changes nothing. The arm holds it only where its switch is on and the route
+    judged ahead to ``standoff`` stands ready to run as judged."""
+    hold = getattr(arm, "holding_the_approach", None)
+    if reading is None or not isinstance(arm, HoldsItsWorld) or not callable(hold):
+        return nullcontext()
+    return cast("AbstractContextManager[object]", hold(
+        standoff, "the move to the standoff and the line down from it, judged in the world the grasp was judged in "
+                  "ahead"))
+
+
+def _judges_next_legs(arm: object) -> bool:
+    """Whether ``arm`` judges the next leg while the jaws' stroke is waited out (``robot.motion.judge_next_leg``), read
+    as ``is True``, so a double that answers every attribute does not."""
+    return getattr(arm, "judges_next_legs", False) is True
+
+
+def _close_leaving_the_stroke(gripper: OpensAndCloses, arm: object) -> float | None:
+    """Close ``gripper``. Where ``arm`` judges the next leg meanwhile and the hand leaves its stroke to its caller
+    (``wait_settled``), its one change goes out and the moment the stroke is over comes back, ``time.monotonic()``
+    seconds, or ``None`` where nothing moved; anywhere else the close waits out its stroke as ever, ``None``."""
+    if _judges_next_legs(arm) and callable(getattr(gripper, "wait_settled", None)):
+        settles_at = cast("Any", gripper).set_closed(True, wait=False)  # the hand's own keyword (``jaw_io``)
+        return float(settles_at) if isinstance(settles_at, (int, float)) and not isinstance(settles_at, bool) else None
+    gripper.set_closed(True)
+    return None
+
+
+def _stroke_waited_out(gripper: object, settles_at: float | None) -> None:
+    """Wait out the stroke ``gripper`` left to this policy, until ``settles_at``; nothing where it left none."""
+    if settles_at is not None:
+        cast("Any", gripper).wait_settled(settles_at)
+
+
+def _the_next_leg_judged(arm: object, after: Pose, *, junction: str, now: bool) -> None:
+    """Have ``arm`` judge the joint move declared after this verb from where the line to ``after`` ends
+    (``judge_the_next_leg``): ``now``, while the jaws' stroke is waited out, else during that line where the arm judges
+    legs in motion. On an arm that judges no next leg, nothing; it sends nothing either way."""
+    judge = getattr(arm, "judge_the_next_leg", None)
+    if _judges_next_legs(arm) and callable(judge):
+        judge(after, junction=junction, now=now)
 
 
 def _halt_refusal(arm: object) -> str:

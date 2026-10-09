@@ -47,7 +47,7 @@ desk on a dummy arm.
 | `Cell` | `from_tree`, `from_robot_config`, `rehearsal` | `preflight()`, `start_planner()`, `build()`, `safety()`, `connected()` | `PreflightReport`, `PlannerStartReport`, `SafetyAttestation` |
 | `PickRun` | `from_cell` (it owns the connect), `from_service` (you do); `look=` where each pick looks from, `put_back=True` to put each lifted part back, `both_faces=True` to grip only on both jaw contact faces seen, `record_views=True` to keep each pick's looks, `push_mm=` how far a push moves a part | `execute()` | `PickRunReport`, with one `PickAttempt` per pick: its looks and the ones fused, the jaw faces seen, the generated view, the hand-eye check, `object_mm`, `grasp_pose`, put back and where its views were kept |
 | `PassRule` | `PassRule(fraction=1.0, confirm=None)` | `accepts(attempts)` | the verdict rule; the default is every pick |
-| `TaskPlan` | `TaskPlan(object, place=PlaceAt(pose=...) or PlaceAt(camera=...), return_to="home", scope="once" or "until_empty", options=TaskOptions(...))` | `run_task(service, plan, hooks=, poses=)` | `TaskReport`: why it ended (`TaskStop`), the parts placed, the picks, whether the arm is back; `TaskRefused` before anything moved |
+| `TaskPlan` | `TaskPlan(object, place=PlaceAt(pose=...) or PlaceAt(camera=...), return_to="home", scope="once" or "until_empty", options=TaskOptions(...), which="", source="", more_rules=())`; `which` the one part singled out, grounded alone, `source` where the parts lie (`pick_phrase`: "the gray cube on top of the other one", "each separate gray cube on the black mat"); `more_rules` up to `MAX_FURTHER_RULES` (3) `SortRule(object, place, which="", source="")` make it a sort, each kind to its rule's place (`plan.rules`, its own first) | `run_task(service, plan, hooks=, poses=, known_target=, known_targets=)` | `TaskReport`: why it ended (`TaskStop`), the parts placed, the picks, whether the arm is back, the bin each camera place followed last (`kept_targets`, by phrase), the parts a sort left unsorted; `TaskRefused` before anything moved |
 | `Recording` | `Recording.off()`, `Recording.to_file(path)` | | where a campaign appends one record per attempt |
 | `HandEyeCalibration` | `from_tree(tree, rig_id=, mode=)`, `from_config`, `from_parts` | `check()`, `run(dry_run=False)` | `CalibrationCheck`, `CalibrationRunReport` |
 | `PlannerStart` | `from_robot_config` | `run()` | `PlannerStartReport` |
@@ -81,6 +81,10 @@ rescan reason; once every look is used up it may generate one more view, on the 
 profile names, and stops at the first look that finds something. Nothing is said to the hand before a
 look. With `put_back=True` a campaign places each lifted part back at the pose the tool closed at, so one
 part serves every pick, and a part that does not go back stops the campaign ([looks.py](looks.py)).
+A look the arm already stands at is not driven to: on a controller's arm at rest and not halted, every joint
+within 0.05 degrees of the look and its tool where the look puts it, nothing is sent and the report says
+`already there; nothing sent` (the owner's cell paid 1.0 to 1.4 s for that move at every part, its first look
+being its home).
 
 `both_faces=True` asks every pick to see both jaw contact faces of its chosen grasp before it grips, for
 safety-critical parts: a pick no view showed both of ends `no_valid_grasp` with nothing gripped.
@@ -88,7 +92,12 @@ safety-critical parts: a pick no view showed both of ends `no_valid_grasp` with 
 stamped at each, the intrinsics and the fused target cloud, one `.npz` per wrist pick under
 `logs/robot/views`, named after the pick's record (`attempt_id`) and the time; a fixed camera has no
 looks to keep, and a file that cannot be written is said while the campaign goes on. Both are off by
-default.
+default. Where the camera's rig records for research (`realsense.record_for_research`, the owner, 2026-10-09), the
+file is format 2: per look also both infrared images, the depth as the sensor sent it, the colour frame's exposure
+metadata and every segmentation's packed mask, box, label, score, SAM2's predicted IoUs and which one the pick went
+for, and once the camera's facts; a file without them is format 1, byte for byte as before. A task on a real cell
+takes its picks' looks when each pick ends and has the process's background writer keep them while it goes on
+(`keep_pick_views(..., writer=)`): the file it reports is where they are, once the writer reaches them.
 
 Each `PickRun` is **one campaign** of the service (`start_campaign`): fresh push budgets, no part skipped,
 and a person's go-ahead after a push that stopped. `push_mm=` is how far a `dense_clutter` push moves a part
@@ -98,6 +107,17 @@ refused as the run is built, and above the cell's `max_nudge_mm` (50 mm without 
 starts, before any pick (`PickRunReport.error`). A campaign stops on a fault of the cell, a controller that
 cannot move, a hand that needs a person (`gripper_fault`) and a recovery that stopped where the arm stands
 (`needs_person`).
+
+**Judged while the arm waits** (the owner, 2026-10-09, each switch off as shipped). On an arm that gates its own
+sends (`safety.dwell.gate_at: send`) the verbs ask with no steady gate of their own: the arm judges first, while it
+settles, and waits right before it sends (`motion.gates_its_own_sends`). `pick` and `place` judge their line down
+or in in the world their route to the standoff was judged in (`safety.planning_world.hold.standoff`), and `place`
+holds the world its line in was judged in through the release and the line out (`hold.drop`). Where the arm judges
+the next leg (`robot.motion.judge_next_leg`), a place's release leaves the jaws' stroke to the verb: the one change
+goes out, and while the jaws open the line out is judged where the arm stands and the joint move a task declared
+after the place (`arm.expecting_next(joints)`, the return) from where the line out ends; nothing is sent before the
+stroke is over, and each runs as judged only where nothing it was judged on changed
+([drivers/ur](../drivers/ur/README.md#judged-while-the-arm-waits)).
 
 `Robot.pick` lets go of the frames a wrist camera's `Locator.look_around` held in the planner world when
 it ends, however it ends, a pick refused before any command included; so does the exit of
@@ -174,14 +194,73 @@ way, with hooks of its own.
   20 unset); a grasp within 5 degrees of vertical is turned about the vertical along
   `robot.natural_closing_axis`. It checks the
   bin again before every drop (`recheck`): moved more than min(100 mm, half its diagonal), another footprint
-  (20 %) or another rim (20 mm), and it is lost, the part goes back where it was gripped, the arm returns, and
-  the task asks. A wrist drop holds every frame of the bin's look across the drop and the return.
+  (20 %) or another rim (20 mm), and it is lost. A lost bin is looked for again (`robot.place.relocate`, on; the
+  owner, 2026-10-09: "wenn sie dies nicht mehr tut, dann kann er seine Ablage nochmal neu errechnen"): the hold of
+  the look ends, the task drives its looks once more with the part in the jaws (`place_target.relocate`), and a bin
+  of the size the survey found and the colour it followed, standing in no other place, is kept in the old one's
+  stead (`task.target_relocated`); the part is carried to the look it was found from, the bin checked there, the
+  drop planned anew over it. Once per part: lost again, found nowhere, or with the switch off, the part goes back
+  where it was gripped, the arm returns, and the task asks. A fixed camera's bin is looked for where the camera
+  stands, before the pick, and nothing moves. A wrist drop holds every frame of the bin's look across the drop and
+  the return.
+- **A sort** (the owner, 2026-10-09: "Gruene Teile in die gelbe Kiste, rote in die blaue"). `TaskPlan(...,
+  more_rules=(SortRule("red part", PlaceAt(camera="blue bin")),))` puts each kind of part where its rule says, up
+  to four rules, two of which may share a place. Every place a camera finds is found before the first pick, one
+  locate of a class list per look (`place_target.survey_places`), or the task stops `target_not_found` before its
+  first pick, a `task.target_missing` for each place it is missing; each bin is kept out of the picks, and a check of
+  one replaces its own region alone. Where the detector looks at one bin of several, at a check or a search, it
+  grounds them all (`together`), so a second bin in view is never taken for it. Each pick grounds every rule's kind
+  in one call ("each separate green part | each separate red part", `PickPrompt.target_labels`), and the part it
+  gripped goes by the rule of the kind it went for (`PickReport.target_label`, said as `task.rule`); a gripped part
+  no rule names goes back, and the task asks (`target_not_found`). A part no rule clearly claims stays where it lies:
+  a sort that ends `nothing_left` names what its last look saw of them (`task.unsorted`, `TaskReport.unsorted`). A
+  sort sets every blocker aside, follows no parts from pick to pick, judges no carry ahead of its pick, and runs only
+  on a cell whose perception grounds a phrase (else `bad_request`). `TaskReport.kept_targets` keeps the bin of every
+  camera place by its phrase, which the next task's `known_targets` looks at first.
+- **Set down, not dropped, never piled** (`robot.place`, each switch off as shipped; the owner, 2026-10-08 night).
+  `release_in_a_box: below_the_rim` sets a part into a box `below_the_rim_mm` (30, the owner's 10 to 50) under
+  its rim, never lower than 10 mm over what the check before the drop reads inside it (its floor, or the parts
+  already there, read on the same frame as its rim: `recheck(..., inside=True)`); a box that reads full to within
+  10 mm of its rim, a part or an open hand that would not stand `opening_margin_mm` inside its opening, a grasp off
+  vertical, or a line in the guard refuses before anything is sent let the part go over the rim, as before
+  (`handling.place(..., instead=)`). `part_bottom: measured` hangs the part from what the pick's looks read under
+  it, not the declared support (`place_target.part_bottom`: on the cell the drop stood 85 to 92 mm over the rim, a
+  55 mm mat under the part), and keeps 5 mm of air over a taught pose. `side_by_side` lays the parts of a flat
+  place (a taught pose, a target with no inside) at spots of their own, their reach and `spacing_margin_mm` apart:
+  a spot the camera reads free first, else the next of `grid` (rows x columns about the taught pose) this task
+  has not filled; no spot left puts the part back and asks (`part_does_not_fit`). `carry: over_the_rim` (or
+  `TaskOptions.carry`) carries the part straight over to the bin where one of the pick's looks was the bin's: it is
+  checked on that look's frame, the arm's world holds the pick's frames again (`hold_pick_views_again`), and the
+  part goes up and over on judged lines, its bottom the rim air and `rim_floor_margin_mm` over the rim and over
+  what the looks saw on the way; anything else carries it via the look.
 - **The scope.** `once` ends when the part is placed and the arm is back; `until_empty` after
   `empty_looks_to_end` (2) empty looks in a row; `max_failed_in_a_row` (3) failed picks end it where the arm
   stands, and `max_parts` (100) end it `part_limit`. The two rows count apart, and only a placed part starts
-  both again. Its own drop area stays out of its picks (`ExclusionRegion`, [recovery](../grasping/recovery/README.md)):
+  both again. A failed pick whose move back to its look did not run (its report's `stands_at`, `"standoff of
+  grasp 3"`, 2026-10-08) ends it `recovery_needs_person` there, naming it, instead of picking again from where
+  the arm was left. Its own drop area stays out of its picks (`ExclusionRegion`, [recovery](../grasping/recovery/README.md)):
   the bin's footprint for both scopes, and `pose_keep_out_mm` (150 mm) about a pose drop for "until empty",
   where the arm's own kinematics say where the pose puts the tool. A look that sees only those parts is empty.
+- **The end of the search** (the owner, 2026-10-08). An empty pick counts every look it perceived from (its report's
+  `looks`): one empty pass over a wrist camera's four looks ends the task, where it took two passes, eight look
+  moves and 90 to 115 s on the cell; a pick of one look or none still counts one. And where the part placed was
+  the only target its pick's first look counted (`telemetry['targets_by_look']`), the next pick is the check look
+  (`TaskOptions.check_look`, on): its first look alone, home, where the return left the arm, with no generated view.
+  Nothing there ends the task `nothing_left` at once; a part there is picked; a part there it fails on counts no
+  failure, and the pick after it looks from every look. A part only the other looks could see stays behind then:
+  the cell's home view shows the whole mat. `task.nothing_found` carries `looks` and `check_look`.
+- **Following its parts** (`robot.grasping.follow_parts`, off unless the cell turns it on; the owner, 2026-10-09:
+  "Qwen on the first pick and on every trigger, SAM2 on the known parts between"). After each pick the task keeps
+  what that pick's first look grounded or followed, less the part it gripped (`KeptScene.of_look`, `without`,
+  [perception](../perception/README.md)), and hands it to the next pick (`pick(follow=..., follow_looks=True)`):
+  its first look finds the parts again with SAM2 on their boxes and no detector, where nothing changed in depth and
+  every part passes every check, and is grounded as before where anything does not. It grounds again after a push,
+  a blocker cleared, a recovery, a try that sent motion and failed (a grip that closed on nothing among them), the
+  arm left where a try left it, or a gripped part that was not kept, and `refresh_every_picks` after the last
+  grounding (0, the default: only on a trigger). A pick that failed with nothing sent keeps what its first look
+  saw. The check look is always grounded, and so is the pick after the last part kept: the end of a task is always
+  asked of the detector. The memory is the run's alone: a Restart starts with nothing kept, and a halt, a stop or a
+  disconnect ends it with the task. Each pick's report says whether it followed (`telemetry['followed']`).
 - **The order.** The service's needs-a-person latch first: a task that meets it ends `recovery_needs_person` with
   nothing commanded and the latch kept, since it never starts the campaign that would clear it. Then every taught
   pose it will use is screened before any motion (`pose_refused`), then the setup (push distance, prompt, closing
@@ -207,7 +286,10 @@ way, with hooks of its own.
 
 `AutonomousGraspService.pick(multi_view=False)` looks from the first look only, with no generated view, and
 `service.set_closing_axis(axis)` sets a task's axis (`closing_axis_refusal(axis)` says why one would be
-refused, with nothing changed).
+refused, with nothing changed). `TaskOptions(every_look=True)` is the console's "Alle Posen" (the owner, 2026-10-08
+night): each pick but the check look is handed `pick(every_look=True)` and visits every look, the early stop off;
+with `multi_view` it is the console's one choice of looks (first look only, when needed, every look), and every look
+with multi-view off is refused (`ValueError`).
 
 ## Teaching one pose
 
@@ -286,9 +368,9 @@ a pick.
 | `motion.py`, `handling.py` | the motion verbs and the hand verbs `Robot` delegates to, and their reports; `move_joints_on_the_line`, the straight joint line and nothing else, refused under a `without_camera_world` decline |
 | `cell.py` | `Cell`, `CellNotBuilt` |
 | `pick_run.py` | `PickRun`, `PickRunReport`, `PassRule`, `Recording`, `PickAttempt`, `PickOutcome`, `configured_looks_of` |
-| `looks.py` | where a camera looks from before a pick: the joints a program declares, the cell profile's, or home, and the move there |
+| `looks.py` | where a camera looks from before a pick: the joints a program declares, the cell profile's, or home, and the move there, none where the arm already stands there |
 | `generated_view.py` | the one view a wrist pick generates and its move back (`go_to_generated_view`, `move_back_to_look`): straight joint lines only, run only against the planner world that holds every frame of the pick; with no live world, no wrist camera in it, a `without_camera_world` decline, or a camera world that reads `DECLINED`, `MISSING` or `UNPLANNED`, no view is generated and the move back is refused |
-| `record_views.py` | the `.npz` layout `PickRun(record_views=True)` and `Locator.look_around(record_views=True)` write under `logs/robot/views` |
+| `record_views.py` | the `.npz` layout `PickRun(record_views=True)` and `Locator.look_around(record_views=True)` write under `logs/robot/views`: format 1, and format 2 where the camera records for research (`realsense.record_for_research`: infrared images, raw depth, every mask, box, label, score, SAM2's IoUs and target per look) |
 | `lifecycle.py` | connecting and taking down a cell as one transaction, `NoRealGripper`, `TeardownReport` |
 | `cell_lock.py` | `CellLock`, `CellBusy`: one owner per controller, shared with the operator console |
 | `robot_parts.py` | the arm and the hand a robot section describes, with the readiness gate and every substitution |
@@ -299,8 +381,8 @@ a pick.
 | `hand_eye.py`, `calibration.py` | `HandEyeCalibration`, and the `CalibrationRoutine` that sweeps and solves `AX=XB` |
 | `hand_guiding.py` | the console, the stillness gate, the payload question and the red boundaries of a hand-guided arm, `HandGuidingRefused` |
 | `teach.py` | `teach_poses`: joint poses taught by guiding the arm by hand, each screened once held, printed to paste and kept in `logs/taught_poses.json`; `teach_one`, `ProfilePoseStore`, `StillnessGate`, `teach_refusal`: the console's one pose, written into the cell's own layer |
-| `task.py` | `run_task`, `TaskPlan`, `PlaceAt`, `TaskOptions`, `TaskHooks`, `TaskReport`, `TaskStop`, `TaskRefused`: pick, place, return, once or until empty |
-| `place_target.py` | the bin a camera finds (`survey`, `recheck`, `KeptTarget`), the drop over its rim (`drop_plan`) and over a taught pose (`pose_drop`), and the screen of each |
+| `task.py` | `run_task`, `TaskPlan`, `SortRule`, `PlaceAt`, `TaskOptions`, `TaskHooks`, `TaskReport`, `TaskStop`, `TaskRefused`: pick, place, return, once or until empty; a sort of up to four rules |
+| `place_target.py` | the bin a camera finds (`survey`, `recheck`, `KeptTarget`), every bin of a sort in one locate per look (`survey_places`, `PlacesSurvey`), a bin the check lost found again (`relocate`, `Relocated`), each locate of one bin of several grounding them all (`together`), the drop over its rim or below it (`drop_plan`, `InsideRead`) and over a taught pose (`pose_drop`), the screen of each, the hang from what the part stood on (`part_bottom`), the spots of a flat place (`grid_spots`, `top_spots`, `choose_spot`), and what the pick's own looks saw (`recheck_on_look`, `highest_on_the_way`) |
 | `pose_provider.py` | workspace-checked and diversity-checked TCP poses for a sweep |
 | `ik_service.py` | reachability through the live controller; `URAnalyticIKService` needs `ur_ikfast`, which is not on PyPI |
 | `runtime_pick.py` | `RuntimePickService`, one open-loop attempt and its `PickSessionReport` |
@@ -317,4 +399,4 @@ vendor SDK on import.
 - Runbooks: [bringing up a cell](../../../docs/runbooks/cell_bringup.md), [the first pick on a physical arm](../../../docs/runbooks/real_cell_first_pick.md)
 - The guards every motion passes: [robot/safety](../safety/README.md); the contract the drivers keep: [robot/core](../core/README.md)
 - The operator console drives this layer over HTTP ([api/](../../../api/README.md)); nothing under `src/` imports it
-- Tests: `tests/test_robot.py`, `tests/test_robot_moves.py`, `tests/test_robot_pick_and_place.py`, `tests/test_cell.py`, `tests/test_pick_run.py`, `tests/test_cell_lifecycle.py`, `tests/test_hand_eye_calibration.py`; the task in `tests/test_a_task_*.py`, `tests/test_a_bin_is_dropped_into_just_above_its_rim.py` and `tests/test_a_moved_bin_is_followed_only_close_by.py`; teaching one pose in `tests/test_one_pose_is_taught_screened_and_held.py`
+- Tests: `tests/test_robot.py`, `tests/test_robot_moves.py`, `tests/test_robot_pick_and_place.py`, `tests/test_cell.py`, `tests/test_pick_run.py`, `tests/test_cell_lifecycle.py`, `tests/test_hand_eye_calibration.py`; the task in `tests/test_a_task_*.py`, `tests/test_a_bin_is_dropped_into_just_above_its_rim.py`, `tests/test_a_moved_bin_is_followed_only_close_by.py` and `tests/test_a_bin_that_moved_is_found_again_before_the_drop.py`; a sort in `tests/test_a_sort_*.py` and `tests/test_a_moved_place_is_found_again.py`; teaching one pose in `tests/test_one_pose_is_taught_screened_and_held.py`

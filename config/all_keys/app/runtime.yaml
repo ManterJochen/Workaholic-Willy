@@ -21,3 +21,13 @@ runtime:
     # (which YAML reads as false and true) mean off and direct.
     # [default: direct]
     wave: direct
+
+  # How the console reads an operator's sentence (POST /v1/commands/parse).
+  commands:
+
+    # true: a known sentence ("Alle grauen Würfel in die Gelbe Kiste.", "Hallo Willy") is read without the language
+    # model, as the model was measured to read it (src/models/vlm/known.py): well under a millisecond instead of
+    # about ten seconds on the cell. Every other sentence goes to the model. false: every sentence goes to the model.
+    # A reading moves nothing either way; a task starts only at POST /v1/task, behind every gate of that route.
+    # [default: true]
+    known_sentences: true

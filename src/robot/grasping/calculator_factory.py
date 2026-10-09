@@ -12,6 +12,14 @@ The same holds for the cell's hand. `deep` on a cell whose `robot.gripper.model`
 the cell's gripper registry, or is not among the hands the artifact was trained across refuses at
 build, as a `ValueError`, after the artifact checks.
 
+And for the artifact's proof (the owner's decision of 2026-10-09): no finished models ship, every
+customer trains their own, so a cell never grasps with a trained generator whose proof has not
+passed. `deep` for a cell refuses an artifact without a passed promotion at phase `active` beside it
+(`deep/promotion.py`), as a `ValueError` with one sentence that says why and what to do. Nothing
+writes a promotion yet (`deep judge` and `deep promote` come next), so today that is every artifact.
+`purpose="evaluate"` skips this check and no other: the ladder, the simulation runners and the offline
+sweeps build a deep calculator to measure an artifact, which is how its proof is made.
+
 Importing this costs no torch. `deep.calculator` keeps torch inside `_ensure_model`, so the factory
 can name both implementations without putting a 2 GB import on the path of a cell that runs neither.
 """
@@ -19,7 +27,7 @@ can name both implementations without putting a 2 GB import on the path of a cel
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from src.utility.log_cfg import create_logger
 
@@ -36,6 +44,57 @@ __all__ = ["build_calculator", "preflight_calculator"]
 from src.robot.grasping.constants import DEEP_GENERATOR_LOG_FILE
 
 logger = create_logger("CalculatorFactory", DEEP_GENERATOR_LOG_FILE)
+
+#: Who a calculator is built for (2026-10-09). `cell` is a cell that will grasp with it, and the default,
+#: so a construction site that says nothing gets the gate. `evaluate` is a run that measures it: the
+#: ladder, the simulation runners and the offline sweeps.
+Purpose = Literal["cell", "evaluate"]
+_PURPOSES: Final[tuple[str, ...]] = ("cell", "evaluate")
+
+#: How every promotion refusal ends: what the gate is for and the two ways on.
+_UNTIL_ITS_PROOF_PASSED: Final[str] = (
+    "so this cell will not grasp with it: a trained generator drives a cell only once its proof has passed "
+    "(deep judge, coming); until then set robot.grasping.calculator: geometric, or evaluate the artifact with "
+    "the ladder.")
+
+
+def _checked_purpose(purpose: str) -> str:
+    """The purpose, or a refusal. An unknown one reads as neither, so the gate cannot be skipped by a typo."""
+    if purpose not in _PURPOSES:
+        raise ValueError(
+            f"unknown calculator purpose {purpose!r}: expected 'cell', for a cell that will grasp with it, or "
+            f"'evaluate', for a run that measures it (the ladder, the simulation runners).")
+    return purpose
+
+
+def _refuse_unless_promoted(artifact: str, purpose: str) -> None:
+    """Raise unless ``artifact`` may drive a cell, where a cell is what it is built for.
+
+    The owner's decision of 2026-10-09: no finished models ship and every customer trains their own, so a
+    cell never grasps with a trained generator that has not passed its proof. The proof leaves a promotion
+    record beside the artifact (`deep/promotion.py`), and nothing writes one yet, so today every artifact
+    refuses a cell, in one sentence that says why and what to do.
+
+    ``purpose="evaluate"`` skips this check and nothing else. The ladder, the simulation runners and the
+    offline sweeps build a deep calculator to measure an artifact, which is how its proof will be made, so
+    a gate on them would make the proof impossible. The kind, version and hand refusals hold for both.
+
+    Fails closed. A record that cannot be read refuses as no record does, and a check that cannot run
+    refuses too: it never waves an artifact through.
+    """
+    name = Path(artifact).name
+    if purpose == "evaluate":
+        logger.info("%s is taken for evaluation, so whether it may drive a cell is not asked", name)
+        return
+    from src.robot.grasping.deep.promotion import why_not_deployable  # noqa: PLC0415
+
+    try:
+        why = why_not_deployable(artifact)
+    except Exception as exc:  # noqa: BLE001 (a check that cannot run refuses; it never waves through)
+        why = f"{name}'s promotion could not be checked ({type(exc).__name__}: {exc})"
+    if why:
+        logger.warning("refused the DEEP grasp generator for a cell: %s", why)
+        raise ValueError(f"{why}, {_UNTIL_ITS_PROOF_PASSED}")
 
 
 def _refuse_unless_artifact(path: str) -> "tuple[str, tuple[str, ...]]":
@@ -114,10 +173,13 @@ _CARRIED: Final[frozenset[str]] = frozenset({
 #: `scene_obstacles` and `side_approaches` (the cell fixes, 2026-10-01) are the analytic stage's view of the parts beside
 #: the one it grasps and its tilted approaches. Every cell passes both from its tree, so without them here every deep
 #: cell would refuse to build; the deep decoder plans its own approach, and the guard judges its grasps either way.
+#:
+#: `support_footprint_rim_mm` (2026-10-09) is the rim the support-footprint stage's input loses: a deep cell runs no
+#: such stage, so the rim has nothing to cut there, and says so.
 _IGNORED_BY_DEEP: Final[frozenset[str]] = frozenset({
     "isotropic_radial_closing",
     "oblique_approach", "oblique_tilt_deg", "oblique_azimuths",
-    "support_footprint_geometry", "support_footprint_inflate_mm",
+    "support_footprint_geometry", "support_footprint_inflate_mm", "support_footprint_rim_mm",
     "scene_obstacles", "side_approaches",
 })
 
@@ -180,7 +242,8 @@ def _the_cells_hand(robot_cfg: "RobotConfig", artifact: str, trained: "tuple[str
     return spec.model
 
 
-def preflight_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" = None) -> str:
+def preflight_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" = None,
+                         purpose: Purpose = "cell") -> str:
     """Check the selector without building anything, and return what it chose.
 
     For callers that build inside a loop and a `try`. `build_calculator` fails closed, so a sweep
@@ -192,7 +255,11 @@ def preflight_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | No
 
     ``data_dir`` is the config tree the cell came from, whose gripper registry answers for a deep
     cell's hand; ``None`` is the repository's.
+
+    ``purpose`` is the one `build_calculator` will be given (2026-10-09): ``"cell"`` refuses a deep
+    artifact whose proof has not passed, ``"evaluate"`` does not ask (:func:`_refuse_unless_promoted`).
     """
+    _checked_purpose(purpose)
     choice = str(getattr(robot_cfg.grasping, "calculator", "geometric"))
     if choice == "geometric":
         return choice
@@ -207,6 +274,7 @@ def preflight_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | No
         raise FileNotFoundError(
             f"grasping.calculator is 'deep' but no generator artifact is readable at {artifact!r}.")
     _stamp, trained = _refuse_unless_artifact(artifact)
+    _refuse_unless_promoted(artifact, purpose)
     _the_cells_hand(robot_cfg, artifact, trained, data_dir)
     return choice
 
@@ -230,6 +298,11 @@ def _depth_kwargs(robot_cfg: "RobotConfig", supplied: "dict[str, Any]") -> "dict
 
     An argument the construction site passed already wins: an explicit value at the call site is a
     deliberate choice by a runner, and config is the default for cells that do not make one.
+
+    `footprint_rim_mm` (2026-10-09), the rim a mask loses for the support-footprint stage's input,
+    reaches the calculator here as `support_footprint_rim_mm`, by the same rule: only where it is not
+    0.0, so every construction site that goes through this factory, the rehearsal, the real cell and
+    each camera's calculator, gets it from the tree, and one that sets none builds as before.
     """
     geometry = getattr(getattr(robot_cfg, "grasping", None), "geometry", None)
     if geometry is None:
@@ -241,10 +314,41 @@ def _depth_kwargs(robot_cfg: "RobotConfig", supplied: "dict[str, Any]") -> "dict
         value = getattr(geometry, name, inert)
         if value != inert:
             out[name] = value
+    rim = float(getattr(geometry, "footprint_rim_mm", 0.0) or 0.0)
+    if rim != 0.0 and "support_footprint_rim_mm" not in supplied:
+        out["support_footprint_rim_mm"] = rim
     return out
 
 
-def build_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" = None, **kwargs: Any) -> Any:
+def _batched_builds_here(robot_cfg: "RobotConfig", calculator: Any) -> bool:
+    """Whether SFE builds each closing line's grasps at once on this machine, where the cell asks for it
+    (``robot.grasping.batched_builds``): numpy's stacked products are asked once, on the shapes the cell's
+    hand stacks (``support_footprint.batched_builds_hold``), and the answer is said in the calculator's log.
+    Where they would round otherwise every build is made one at a time, as with the key off: the same grasps,
+    only slower. A hand SFE does not plan for is asked with the library's jaw; it builds no SFE grasp at all.
+    """
+    from src.robot.grasping.generation.support_footprint import (  # noqa: PLC0415
+        SupportFootprintJaw,
+        batched_builds_hold,
+    )
+
+    try:
+        jaw: "SupportFootprintJaw | None" = SupportFootprintJaw.from_robot_config(robot_cfg)
+    except Exception:  # noqa: BLE001 (a suction hand, or a tree without the jaw's numbers)
+        jaw = None
+    why = batched_builds_hold(jaw)
+    log = getattr(calculator, "logger", None) or logger
+    if why:
+        log.warning("robot.grasping.batched_builds is on, but %s: SFE builds its grasps one at a time, "
+                    "the same grasps, only slower", why)
+        return False
+    log.info("SFE builds each closing line's grasps at once (robot.grasping.batched_builds): numpy's "
+             "stacked products answer to the bit on this machine")
+    return True
+
+
+def build_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" = None,
+                     purpose: Purpose = "cell", **kwargs: Any) -> Any:
     """The generator this cell's config asks for, built from ``kwargs`` common to both.
 
     ``kwargs`` are whatever the construction site already passes to `GraspCalculator`: camera
@@ -255,13 +359,25 @@ def build_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" 
     ``data_dir`` is the config tree the cell came from: a deep cell's hand is checked against that
     tree's gripper registry at build, and the calculator resolves its conditioning vector from it.
     ``None`` is the repository's.
+
+    ``purpose`` is who the calculator is for (2026-10-09). ``"cell"``, the default and what every
+    cell builder passes by passing nothing, refuses a deep artifact whose proof has not passed.
+    ``"evaluate"`` is for a run that measures one, the ladder and the simulation runners, and skips
+    that check alone (:func:`_refuse_unless_promoted`). The analytic generator needs no proof.
+
+    ``robot.grasping.batched_builds`` reaches the analytic calculator here (``sfe_batched``), where
+    this machine's numpy answers to the bit (:func:`_batched_builds_here`).
     """
+    _checked_purpose(purpose)
     kwargs.update(_depth_kwargs(robot_cfg, kwargs))
     choice = str(getattr(robot_cfg.grasping, "calculator", "geometric"))
     if choice == "geometric":
         from src.robot.grasping.generation.calculator import GraspCalculator  # noqa: PLC0415
 
-        return GraspCalculator(**kwargs)
+        calculator = GraspCalculator(**kwargs)
+        if bool(getattr(robot_cfg.grasping, "batched_builds", False)):
+            calculator.sfe_batched = _batched_builds_here(robot_cfg, calculator)
+        return calculator
     if choice != "deep":
         raise ValueError(f"unknown grasping.calculator {choice!r}: expected 'geometric' or 'deep'")
 
@@ -288,6 +404,9 @@ def build_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" 
     # graded that way reads as a bad generator rather than as a wrong path. A training checkpoint is
     # the wrong file that is easiest to reach for.
     _stamp, trained = _refuse_unless_artifact(artifact)
+    # And for a cell, its proof: the promotion beside it, read before the hand because it is a fact about
+    # the file, and a file no proof has passed is no cell's whatever hand it was trained for.
+    _refuse_unless_promoted(artifact, purpose)
     # The cell's hand, checked here and after the artifact checks, so a tree with no weights still
     # refuses as a missing file. The calculator's loader checks it again; this is the check that
     # fires while a caller can refuse.
@@ -321,7 +440,8 @@ def build_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" 
             "the deep generator ignores %s: it decodes its own approach, closing axis and seeds, so "
             "these analytic knobs have nothing to act on. Any banner printing them is describing the "
             "geometric path.", ", ".join(ignored))
-    logger.info("cell runs the DEEP grasp generator from %s for the hand %s", artifact, hand)
+    logger.info("built the DEEP grasp generator from %s for the hand %s, for %s", artifact, hand,
+                "a cell" if purpose == "cell" else "evaluation")
     return DeepGraspCalculator(DeepCalculatorConfig(
         artifact_path=artifact,
         camera_matrix=kwargs.get("camera_matrix"),

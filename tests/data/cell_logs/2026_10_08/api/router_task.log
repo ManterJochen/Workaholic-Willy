@@ -1,0 +1,2 @@
+2026-10-08 07:37:10,100 - TaskRouter - INFO - Task run run-1f9a82860d started: 'grauer Würfel auf der schwarzen Matte.' into yellow bin, until_empty.
+2026-10-08 07:39:24,185 - TaskRouter - WARNING - Run run-ca72c832aa restarts run run-1f9a82860d (task): its first motion is the planned move to the return pose.

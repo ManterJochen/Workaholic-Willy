@@ -1,12 +1,18 @@
 /**
  * The one prompt box: type it, or say it.
  *
- * ⛔ SPEECH DOES NOT START ANYTHING. The transcription lands in the text field and the operator
- * reads it, corrects it if needed, and sends it to be read; nothing moves until Start on the card
- * that shows what was understood. This mirrors the backend's own rule -- `POST /v1/voice/transcribe`
- * returns TEXT and starts nothing -- and it is there because a spoken command that went straight to
- * motion would mean a misheard word moves an arm. "Pick up the red cube" and "pick up the red cup"
- * differ by one phoneme and by a whole grasp.
+ * ⛔ SPEECH DOES NOT START ANYTHING BY ITSELF. The transcription lands in the text field and the
+ * operator reads it, corrects it if needed, and presses Enter (or Send), the same key as for typed
+ * text; this box never submits on its own. What Enter then does is the screen's: it reads the
+ * sentence, and where the settings say so it starts a clean reading at once (the owner, 2026-10-08:
+ * Enter is the person's click), else the card that shows what was understood waits for Start. The
+ * line under the box (`note`) says which. This mirrors the backend's own rule --
+ * `POST /v1/voice/transcribe` returns TEXT and starts nothing -- and it is there because a spoken
+ * command that went straight to motion would mean a misheard word moves an arm. "Pick up the red
+ * cube" and "pick up the red cup" differ by one phoneme and by a whole grasp.
+ *
+ * A sentence is at most the reader's 1000 characters (`api/limits.ts`): the box stops typing there,
+ * and from 80 % of it on a counter says how much is used.
  *
  * ⚠ WHAT THIS COMPONENT REFUSES TO HIDE. When the text came from speech it SAYS so, and it keeps
  * saying so until the operator edits it. A console that presents a transcription identically to
@@ -25,9 +31,10 @@
  * nobody is reading what it would propose.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type Ref } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type Ref } from 'react'
 
 import { ApiError, api } from '../api/client'
+import { MAX_SENTENCE_CHARS, showsCount } from '../api/limits'
 import { useT } from '../i18n'
 import { refusalMsg } from '../i18n/codes'
 import { Icon } from '../icons'
@@ -91,6 +98,8 @@ export interface PromptInputProps {
   showSend?: boolean
   /** A request for this text is out: Send and Enter wait for it. */
   busy?: boolean
+  /** One dim line under the box: what Enter does on this screen ("Enter startet sofort · Bis leer · …"). */
+  note?: ReactNode
 }
 
 export function PromptInput({
@@ -106,6 +115,7 @@ export function PromptInput({
   inputRef,
   showSend = false,
   busy = false,
+  note,
 }: PromptInputProps) {
   const t = useT(PROMPT)
   const { view } = usePrefs()
@@ -168,7 +178,7 @@ export function PromptInput({
       // ⚠ 501 IS NOT A FAILURE THE OPERATOR CAUSED: speech-to-text not installed, or a container this host cannot
       // decode. The code is said in the reader's language; the backend's own sentence (it names the install line) is
       // the detail of the tech view.
-      if (err instanceof ApiError) setMicError({ text: t.msg(refusalMsg(err.code)), detail: err.message })
+      if (err instanceof ApiError) setMicError({ text: t.msg(refusalMsg(err.code, err.detail)), detail: err.message })
       else setMicError({ text: String(err), detail: '' })
     } finally {
       enter('idle')
@@ -275,6 +285,7 @@ export function PromptInput({
     mic === 'transcribing' ? t('prompt.mic.transcribing') : listening ? t('prompt.mic.stop') : t('prompt.mic.speak')
   const why = unavailable !== null ? t(`prompt.noMic.${unavailable}`) : null
   const shown = disabled && disabledReason ? disabledReason : (placeholder ?? t('prompt.placeholder'))
+  const counted = showsCount(value.length, MAX_SENTENCE_CHARS)
 
   return (
     <div className={`prompt${listening ? ' is-listening' : ''}`}>
@@ -286,6 +297,7 @@ export function PromptInput({
           placeholder={shown}
           aria-label={t('prompt.field')}
           className="prompt-field"
+          maxLength={MAX_SENTENCE_CHARS}
           disabled={disabled}
           onChange={(e) => onChange(e.target.value, 'typed')}
           onKeyDown={(e) => {
@@ -334,6 +346,16 @@ export function PromptInput({
           </button>
         )}
       </div>
+      {(note || counted) && (
+        <div className="prompt-foot">
+          {note && <span className="prompt-note dim prompt-mode">{note}</span>}
+          {counted && (
+            <span className={`prompt-note prompt-count${value.length > MAX_SENTENCE_CHARS ? ' caution' : ' dim'}`} aria-live="polite">
+              {t('prompt.count', { n: value.length, max: MAX_SENTENCE_CHARS })}
+            </span>
+          )}
+        </div>
+      )}
       {why && <div className="prompt-note dim">{t('prompt.noMic', { why })}</div>}
       {micError && (
         <div className="prompt-note caution" role="status">

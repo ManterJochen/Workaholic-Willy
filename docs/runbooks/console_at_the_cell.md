@@ -198,12 +198,31 @@ The owner stands at the emergency stop, the pendant's speed slider turned well d
    little between parts (it is followed) and then far, or take it away (lost: the part goes back where it was
    gripped, the arm returns, the chat asks). Check the rim and the opening against a ruler, and that no phantom
    obstacle appears at the jaws during the carry.
-8. **Commands.** Ten of the owner's own sentences, German and English. Time "Laden", read each answer's latency and
-   attempts (`model.latency_ms`, `model.attempts` of `POST /v1/commands/parse`, shown in the tech view), watch the
-   VRAM with `nvidia-smi` while everything is loaded, and check each card before Start.
-9. **The room.** The audience window on the projector (drag it there, F11). Voice output on, "Stimme testen" in
-   Settings: note which German voice the cell PC has.
-10. **Write the numbers down** (Verify), the date and the commit beside them.
+8. **Commands.** First set Settings → Auftrag → Start to **"Erst die Karte"**: as shipped, Enter starts a task at
+   once where the sentence reads clean and the cell is ready (the owner, 2026-10-08), and this step reads
+   sentences, it starts nothing. Ten of the owner's own sentences, German and English. Time "Laden", read each
+   answer's latency and attempts (`model.latency_ms`, `model.attempts` of `POST /v1/commands/parse`, shown in the
+   tech view, where a known sentence reads "bekannter Satz" and a sentence typed again "aus dem Gedächtnis"), watch
+   the VRAM with `nvidia-smi` while everything is loaded, and check each card before Start. Set Start back
+   afterwards.
+9. **Sortieren.** Two bins on the table, two kinds of parts on the mat. Say or type the owner's sentence, "Grüne
+   Teile in die gelbe Kiste, rote in die blaue": up to four kinds, each to its own bin or taught pose (two rules may
+   share one). The card lists every rule, each kind and its place; Enter starts the whole sort only where every rule
+   reads clean, and a rule that needs a look opens the card with its number ("Regel 2: ..."). Before the first pick
+   the camera must find every bin, one locate of both per look: a bin it does not find stops the task before anything
+   is picked, naming that bin (`target_not_found`). Each part then goes by the rule of the kind its pick went for
+   (`task.rule`). Move one bin about 15 cm between two parts: the check before the drop loses it, the task looks for
+   it again with the part in the jaws and drops into it where it stands now (`task.target_relocated`); take a bin
+   away, and the part goes back where it was gripped and the chat asks. A part no rule claims (another colour, or one
+   the detector could not tell apart) stays where it lies and is named at the end (`task.unsorted`). What stops a
+   sort before anything moves: a rule that names no kind, one kind in two rules, a cell whose detector grounds no
+   phrase (the rehearsal scene), and every refusal of a task of one kind, rule by rule. Not measured yet, so watch for
+   it: how well the cell's 8B tells the two colours apart in one call, a bin found again while the part hangs in the
+   camera's view, and whether the two bins' labels come back swapped (nothing catches that yet: the yellow bin would
+   take the red parts).
+10. **The room.** The audience window on the projector (drag it there, F11). Voice output on, "Stimme testen" in
+    Settings: note which German voice the cell PC has.
+11. **Write the numbers down** (Verify), the date and the commit beside them.
 
 ---
 
@@ -220,6 +239,7 @@ The owner stands at the emergency stop, the pendant's speed slider turned well d
 | A protective stop | "the cell is clear" refused until the pendant released it; the console never clears one |
 | Teaching | a refused or unscreened pose not written; the arm held only once still; a Disconnect holds it first |
 | The camera place | followed close by, lost far off, a lost bin's part put back |
+| Sortieren | every bin found before the first pick, each part in its rule's place, a moved bin found again, a part no rule claims left where it lies |
 
 The measurements to keep: the planner start on the cell PC, the live image's rate and age during a pick, the jaws
 question's timing, the release height against the taught one over the first parts, the halt's stop distance at the

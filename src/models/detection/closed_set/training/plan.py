@@ -99,7 +99,41 @@ class DetectorPlan:
 
 @dataclass(frozen=True, slots=True)
 class DetectorPlanOverrides:
-    """What the caller chose explicitly. Every field defaults to ``UNSET``, which a recipe or tier may fill."""
+    """The detector training settings you choose explicitly; they outrank the recipe and the tier. Every field you leave
+    out stays ``UNSET``, which the recipe or the tier fills.
+
+        overrides = DetectorPlanOverrides(epochs=80, batch=4, image_size=800)
+
+    Attributes:
+        base_model (str): The checkpoint fine-tuned from, a Hugging Face id or a folder; the plan's default is
+            ``"PekingU/rtdetr_r50vd"`` (default: UNSET).
+        image_size (int): The training image size in pixels, a multiple of 32 and at least 64; default 640 (default:
+            UNSET).
+        epochs (int): The most epochs, at least 1; default 50 (default: UNSET).
+        batch (int): Images per batch; default 8 (default: UNSET).
+        accumulate (int): Optimiser steps every this many batches, an effective batch of ``batch * accumulate``; default
+            1 (default: UNSET).
+        learning_rate (float): The learning rate; default 1e-4 (default: UNSET).
+        backbone_lr_scale (float): The backbone's share of it; default 0.1 (default: UNSET).
+        weight_decay (float): The weight decay; default 1e-4 (default: UNSET).
+        clip_grad_norm (float): The gradient clip; 0 turns it off; default 0.1 (default: UNSET).
+        amp (str): Mixed precision: ``"auto"`` (bf16 where the GPU has it, else fp16), ``"bf16"``, ``"fp16"`` or
+            ``"off"``; a CPU runs fp32; default ``"auto"`` (default: UNSET).
+        ema (bool): Keep an average of the weights and evaluate it; default True (default: UNSET).
+        ema_decay (float): The average's decay, between 0 and 1; default 0.9999 (default: UNSET).
+        ema_warmup (int): Steps the average warms up over; default 2000 (default: UNSET).
+        augment (bool): The strong augmentations; default True (default: UNSET).
+        multiscale (bool): Multi-scale batches; default True (default: UNSET).
+        no_aug_epochs (int | None): The last epochs without the strong augmentations and multi-scale; ``None`` is a
+            tenth of the epochs, at least 1 (default: UNSET).
+        patience (int): Stop after this many epochs without a better validation mAP; 0 never stops early; default 15
+            (default: UNSET).
+        val_fraction (float): The validation share cut from a dataset that brings none, at least 0 and below 1; default
+            0.15 (default: UNSET).
+        seed (int): The run's seed (default: UNSET).
+        workers (int | None): Data-loader processes; ``None`` chooses from the dataset and the machine (default: UNSET).
+        max_train_images (int | None): Train on at most this many images; ``None`` is every one (default: UNSET).
+    """
 
     base_model: str | _Unset = UNSET
     image_size: int | _Unset = UNSET
@@ -124,7 +158,11 @@ class DetectorPlanOverrides:
     max_train_images: int | None | _Unset = UNSET
 
     def forwarded(self) -> dict[str, Any]:
-        """Only the fields the caller actually set."""
+        """Only the settings you set.
+
+        Returns:
+            dict[str, Any]: Each set field by name; the ``UNSET`` ones are left out.
+        """
         return {field.name: value for field in dataclasses.fields(self)
                 if chosen(value := getattr(self, field.name))}
 

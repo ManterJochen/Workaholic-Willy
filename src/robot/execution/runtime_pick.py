@@ -174,6 +174,20 @@ class PickSessionReport:
         the grasp waypoint the execution policy judged and drove, read
         off its commanded waypoints rather than rebuilt. ``None`` on
         every other outcome.
+    target_label
+        The label of the segmentation the pick went for
+        (:attr:`PickReport.target_label`): a sort reads it to tell which
+        rule's place the part goes to. ``""`` where no grasp was chosen.
+    unclaimed_labels
+        On a sort, the labels the label gate turned away at the pick's
+        first look, the parts no rule claims
+        (:attr:`PickReport.unclaimed_labels`); ``()`` otherwise.
+    stands_at
+        Where a try left the arm that was due back at its look and was not
+        driven back there (:attr:`PickReport.stands_at`, "standoff of grasp
+        N", S2, 2026-10-08); ``""`` where the arm stands where the pick's
+        tries started. The service's report says a person is needed on it,
+        and a task stops rather than pick again from there.
     """
 
     outcome: PickOutcome
@@ -215,6 +229,9 @@ class PickSessionReport:
     uncertainty_rerank_telemetry: "UncertaintyRerankTelemetry | None" = None
     object_centre_mm: Optional[tuple[float, float, float]] = None
     grasp_pose: "Pose | None" = None
+    target_label: str = ""
+    unclaimed_labels: tuple[str, ...] = ()
+    stands_at: str = ""
 
     @property
     def succeeded(self) -> bool:
@@ -394,6 +411,13 @@ class RuntimePickService:
         # How the hand and camera naturally stand (robot.natural_closing_axis): every grasp the pick loop ranks is turned
         # the way round nearer it. Unset turns none.
         runtime.orchestrator.natural_closing_axis = natural_closing_axis_of(robot_cfg)
+        # How a ranking spends its time (the owner's "speed first", 2026-10-08): the first good part taken without
+        # computing the rest (robot.grasping.first_good_part, good_part_score), and SFE's fine search waiting while
+        # another part may have a full result (fine_pass_waits). A config that carries no such keys ranks as before.
+        grasping = getattr(robot_cfg, "grasping", None)
+        runtime.orchestrator.lazy_objects = bool(getattr(grasping, "first_good_part", False))
+        runtime.orchestrator.accept_score = float(getattr(grasping, "good_part_score", 0.75))
+        runtime.orchestrator.fine_search_waits = bool(getattr(grasping, "fine_pass_waits", False))
         return runtime
 
     # ------------------------------------------------------------------
@@ -463,6 +487,12 @@ class RuntimePickService:
             uncertainty_rerank_telemetry=pick_report.uncertainty_rerank_telemetry,
             object_centre_mm=getattr(pick_report, "target_centre_mm", None),
             grasp_pose=_closed_at(policy_report) if pick_report.outcome is PickOutcome.EXECUTED else None,
+            # Which kind of part the pick went for, and what no rule claimed: a sort's (the owner, 2026-10-09).
+            target_label=str(getattr(pick_report, "target_label", "") or ""),
+            unclaimed_labels=tuple(getattr(pick_report, "unclaimed_labels", ()) or ()),
+            # Where a try left the arm when its move back to the look did not run: the service's report and the task
+            # read it here, the one report they are handed (S2, 2026-10-08).
+            stands_at=str(getattr(pick_report, "stands_at", "") or ""),
         )
 
     def _capabilities(self) -> RobotCapabilities | None:

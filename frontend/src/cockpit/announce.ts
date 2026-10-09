@@ -33,6 +33,8 @@ export function voiceFor(line: ChatLine): Msg<string> | null {
   switch (line.msg.key) {
     case 'event.run_started.task':
       return { key: 'ck.voice.start', params: { what: params.what } }
+    case 'event.run_started.sort':
+      return { key: 'ck.voice.sort' }
     case 'event.run_finished.problem':
       return { key: 'ck.voice.problem', params: { title: params.title } }
     case 'event.run_finished.ask':

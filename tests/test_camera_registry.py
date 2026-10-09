@@ -84,8 +84,9 @@ class TheShippedCamerasTests(unittest.TestCase):
                 high = enclosure.housing.centre_mm[axis] + enclosure.housing.size_mm[axis] / 2.0
                 self.assertLessEqual(low, bare.housing.centre_mm[axis] - bare.housing.size_mm[axis] / 2.0)
                 self.assertGreaterEqual(high, bare.housing.centre_mm[axis] + bare.housing.size_mm[axis] / 2.0)
-                # Not extremely generous (the owner, 2026-10-07): at most 15 mm more than the bare camera a side.
-                self.assertLessEqual(enclosure.housing.size_mm[axis] - bare.housing.size_mm[axis], 30.0)
+                # Not extremely generous (the owner, 2026-10-07), and about 1 cm wider left and right than first
+                # estimated (the owner on the cell, 2026-10-08): at most 20 mm more than the bare camera a side.
+                self.assertLessEqual(enclosure.housing.size_mm[axis] - bare.housing.size_mm[axis], 40.0)
 
 
 class TheSchemaTests(unittest.TestCase):

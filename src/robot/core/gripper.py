@@ -198,7 +198,13 @@ class OpensAndCloses(Protocol):
 
 
 class HoldEvidence(StrEnum):
-    """What a gripper measured about a hold after its last command."""
+    """What a hand measured about a hold after its last command.
+
+    Attributes:
+        HELD: The hand measured a part between its jaws.
+        EMPTY: The hand measured nothing between them.
+        UNMEASURED: Nothing could say: a hand with no feedback (a toggle on digital I/O) reports this after every close.
+    """
 
     #: The gripper measured a part held: a stall on something, a vacuum switch, a part sensor.
     HELD = "held"

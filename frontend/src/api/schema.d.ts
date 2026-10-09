@@ -856,6 +856,10 @@ export interface paths {
          * @description 202: the task is accepted and runs on its own thread. Its first motion is its first look, after a 3 s
          *     countdown where a person's hands were last at the arm. Refused before anything moves (409, 422) where the cell or
          *     the request is not fit for it.
+         *
+         *     A sort (``more_rules``, the owner, 2026-10-09) is refused as a task of one kind is, every rule in turn: its own
+         *     first, each further one named (``rule`` in an ``object_required``'s detail, ``place of rule 2`` in an
+         *     ``unknown_pose``'s ``which``).
          */
         post: operations["post_task_v1_task_post"];
         delete?: never;
@@ -947,6 +951,28 @@ export interface paths {
          * @description The target the camera found (a bin), drawn over the frame it was seen in.
          */
         get: operations["get_target_overlay_v1_runs__run_id__target_overlay_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/runs/{run_id}/targets/{n}/overlay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The target of the n-th place a camera finds, as a task found it
+         * @description The bin of the ``n``-th place of a sort a camera finds (0 the first, in the order the plan's rules first name
+         *     them), drawn over the frame it was seen in, as last kept: found, followed by a check, or found again after it moved.
+         *     ``0`` is the target of ``GET /v1/runs/{run_id}/target/overlay``, which a task of one kind keeps alone.
+         */
+        get: operations["get_place_target_overlay_v1_runs__run_id__targets__n__overlay_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1244,12 +1270,20 @@ export interface paths {
         /**
          * Read a sentence into a task card (moves nothing)
          * @description The whole sentence goes to the VLM, which answers the object and the place as English phrases with the
-         *     operator's own words, a taught pose by its NAME (a spoken label comes back as the name), the scope and where to go
-         *     after. Each phrase carries the route the detector would take.
+         *     operator's own words, the one part the sentence singles out (``which``) and where the parts lie (``source``), a
+         *     taught pose by its NAME (a spoken label comes back as the name), the scope and where to go after. Each phrase
+         *     carries the route the detector would take, the object's that of the phrase its picks would ground as the task's
+         *     route guard judges it (the which, or the object where the parts lie); ``startable`` says whether the console may
+         *     start the task on the person's Enter without the card.
          *
-         *     A ``def`` route: a VLM cell's first command loads the model, several seconds, on the thread pool. Refused:
-         *     ``run_active`` (409) before anything is asked, ``vlm_not_loaded`` (409), ``vlm_unavailable`` (501),
-         *     ``vlm_model_missing`` (501), and a sentence that is no sentence (422 ``bad_request``).
+         *     A sorting sentence answers every rule (``rules``, the first the fields above), each phrase of each with its route as
+         *     the task route judges it; ``startable`` holds for a sort only where every rule is clean, and Enter then starts the
+         *     whole sort (``TaskIn.more_rules``), never its first rule alone.
+         *
+         *     A known sentence is read by the table first, where the app config says so, and asks no model. A ``def`` route: a
+         *     VLM cell's first command loads the model, several seconds, on the thread pool. Refused: ``run_active`` (409)
+         *     before anything is read, ``vlm_not_loaded`` (409), ``vlm_unavailable`` (501), ``vlm_model_missing`` (501), a
+         *     sentence of blanks (422 ``bad_request``), and a sentence over its length (422 ``text_too_long``).
          */
         post: operations["post_parse_v1_commands_parse_post"];
         delete?: never;
@@ -1416,6 +1450,8 @@ export interface components {
             looks?: string[];
             /** Natural Closing Axis */
             natural_closing_axis?: string | null;
+            /** Carry */
+            carry?: ("via_the_look" | "over_the_rim") | null;
             push?: components["schemas"]["PushFactsOut"];
             detector?: components["schemas"]["DetectorFactsOut"];
             /**
@@ -1507,9 +1543,9 @@ export interface components {
                 [key: string]: "done" | "operator" | "ask" | "teach" | "planner" | "problem";
             };
             /** Event Types */
-            event_types: ("run_started" | "run_countdown" | "run_stop_requested" | "run_halt_requested" | "run_error" | "run_finished" | "pick.pick_started" | "pick.attempt_started" | "pick.perceived" | "pick.ranked" | "pick.no_candidate" | "pick.executing" | "pick.attempt_finished" | "pick.pick_finished" | "pick.cancelled" | "pick_result" | "task.pose_screened" | "task.survey_started" | "task.target_found" | "task.target_missing" | "task.part_started" | "task.nothing_found" | "task.carry_started" | "task.target_checked" | "task.target_lost" | "task.drop_planned" | "task.place_started" | "task.placed" | "task.place_failed" | "task.put_back" | "task.return_started" | "task.returned" | "task.return_failed" | "task.part_finished" | "home.started" | "home.arrived" | "home.refused" | "teach.free" | "teach.say" | "teach.outside" | "teach.inside" | "teach.time_warning" | "teach.holding_when_still" | "teach.holding" | "teach.screening" | "teach.saved" | "teach.refused" | "teach.not_saved" | "planner.starting" | "planner.ready" | "planner.failed" | "wave.started" | "wave.done" | "wave.refused" | "cell.jaws_question" | "cell.jaws_answered" | "cell.jaws_ended" | "cell.halted" | "cell.recovery" | "cell.recovery_ended" | "cell.acknowledged" | "cell.planner")[];
+            event_types: ("run_started" | "run_countdown" | "run_stop_requested" | "run_halt_requested" | "run_error" | "run_finished" | "pick.pick_started" | "pick.attempt_started" | "pick.perceived" | "pick.ranked" | "pick.no_candidate" | "pick.executing" | "pick.attempt_finished" | "pick.pick_finished" | "pick.cancelled" | "pick_result" | "task.pose_screened" | "task.survey_started" | "task.target_found" | "task.target_missing" | "task.part_started" | "task.nothing_found" | "task.carry_started" | "task.target_checked" | "task.target_lost" | "task.drop_planned" | "task.place_started" | "task.placed" | "task.place_failed" | "task.put_back" | "task.return_started" | "task.returned" | "task.return_failed" | "task.part_finished" | "task.rule" | "task.target_relocated" | "task.unsorted" | "home.started" | "home.arrived" | "home.refused" | "teach.free" | "teach.say" | "teach.outside" | "teach.inside" | "teach.time_warning" | "teach.holding_when_still" | "teach.holding" | "teach.screening" | "teach.saved" | "teach.refused" | "teach.not_saved" | "planner.starting" | "planner.ready" | "planner.failed" | "wave.started" | "wave.done" | "wave.refused" | "cell.jaws_question" | "cell.jaws_answered" | "cell.jaws_ended" | "cell.halted" | "cell.recovery" | "cell.recovery_ended" | "cell.acknowledged" | "cell.planner")[];
             /** Refusal Codes */
-            refusal_codes: ("bad_request" | "no_robot_configured" | "no_such_run" | "not_built_yet" | "not_built" | "not_acknowledged" | "stale_token" | "cell_busy" | "no_real_gripper" | "driver_refused" | "wrong_state" | "build_refused" | "jaws_seam_missing" | "not_connected" | "run_active" | "halted" | "controller_stopped" | "cell_not_cleared" | "restart_required" | "needs_person" | "jaws_question_pending" | "part_still_held" | "jaws_not_confirmed" | "route_refused" | "carried_part_not_modelled" | "camera_target_unavailable" | "object_required" | "prompt_not_routable" | "target_not_routable" | "push_distance_refused" | "unknown_pose" | "no_place_declared" | "closing_axis_refused" | "not_a_task" | "not_a_pick" | "not_restartable" | "jaws_not_open" | "no_question" | "question_changed" | "choice_not_offered" | "planner_not_used" | "no_overlay" | "no_layer" | "no_hand_guiding" | "part_in_hand" | "planner_not_ready" | "screen_unavailable" | "payload_changed" | "name_taken" | "invalid_name" | "invalid_label" | "wrong_token" | "not_free" | "vlm_not_loaded" | "vlm_unavailable" | "vlm_model_missing" | "unknown_key" | "not_writable" | "invalid_value" | "no_target" | "cell_connected" | "empty_patch" | "empty_audio" | "audio_format_unsupported" | "audio_undecodable" | "audio_too_long" | "speech_model_missing" | "speech_unavailable" | "transcription_failed" | "listen_busy" | "talk_not_pressed" | "microphone_ended" | "nothing_recorded" | "microphone_unavailable" | "listen_failed")[];
+            refusal_codes: ("bad_request" | "text_too_long" | "no_robot_configured" | "no_such_run" | "not_built_yet" | "not_built" | "not_acknowledged" | "stale_token" | "cell_busy" | "no_real_gripper" | "driver_refused" | "wrong_state" | "build_refused" | "jaws_seam_missing" | "not_connected" | "run_active" | "halted" | "controller_stopped" | "cell_not_cleared" | "restart_required" | "needs_person" | "jaws_question_pending" | "part_still_held" | "jaws_not_confirmed" | "route_refused" | "carried_part_not_modelled" | "camera_target_unavailable" | "object_required" | "prompt_not_routable" | "target_not_routable" | "push_distance_refused" | "unknown_pose" | "no_place_declared" | "closing_axis_refused" | "not_a_task" | "not_a_pick" | "not_restartable" | "jaws_not_open" | "no_question" | "question_changed" | "choice_not_offered" | "planner_not_used" | "no_overlay" | "no_layer" | "no_hand_guiding" | "part_in_hand" | "planner_not_ready" | "screen_unavailable" | "payload_changed" | "name_taken" | "invalid_name" | "invalid_label" | "wrong_token" | "not_free" | "vlm_not_loaded" | "vlm_unavailable" | "vlm_model_missing" | "unknown_key" | "not_writable" | "invalid_value" | "no_target" | "cell_connected" | "empty_patch" | "empty_audio" | "audio_format_unsupported" | "audio_undecodable" | "audio_too_long" | "speech_model_missing" | "speech_unavailable" | "transcription_failed" | "listen_busy" | "talk_not_pressed" | "microphone_ended" | "nothing_recorded" | "microphone_unavailable" | "listen_failed")[];
             /** Light Ids */
             light_ids: ("robot" | "cameras" | "planner" | "gripper" | "carried_part" | "commands")[];
             /** Light States */
@@ -1558,10 +1594,16 @@ export interface components {
              * @default false
              */
             loaded_now: boolean;
+            /**
+             * Remembered
+             * @default false
+             */
+            remembered: boolean;
         };
         /**
          * CommandOut
-         * @description What the reader understood. It creates no run and touches no cell; Start does, after a person looked.
+         * @description What the reader understood. It creates no run and touches no cell; ``POST /v1/task`` does, on a person's Start,
+         *     or on the person's Enter where ``startable``.
          */
         CommandOut: {
             /** Understood */
@@ -1572,9 +1614,15 @@ export interface components {
              */
             intent: "task" | "stop" | "none";
             object?: components["schemas"]["CommandPhraseOut"] | null;
+            /** Which */
+            which?: string | null;
+            /** Source */
+            source?: string | null;
             place?: components["schemas"]["CommandPhraseOut"] | null;
             /** Place Pose */
             place_pose?: string | null;
+            /** Rules */
+            rules?: components["schemas"]["CommandRuleOut"][];
             /** Scope */
             scope?: ("once" | "until_empty") | null;
             /** Count */
@@ -1596,6 +1644,11 @@ export interface components {
             raw: string;
             /** Greeting */
             greeting?: ("direct" | "confirm" | "off") | null;
+            /**
+             * Startable
+             * @default false
+             */
+            startable: boolean;
         };
         /**
          * CommandPhraseOut
@@ -1664,6 +1717,24 @@ export interface components {
             parsed: boolean;
             /** Edited */
             edited?: string[];
+        };
+        /**
+         * CommandRuleOut
+         * @description One rule the reader understood (``src.models.vlm.command.RuleReading``): a kind of part and where it goes.
+         *     ``CommandOut.rules[0]`` is the reading's own object, which, source, place and pose; each further one is a
+         *     ``TaskIn.more_rules`` entry.
+         */
+        CommandRuleOut: {
+            object?: components["schemas"]["CommandPhraseOut"] | null;
+            /** Which */
+            which?: string | null;
+            /** Source */
+            source?: string | null;
+            place?: components["schemas"]["CommandPhraseOut"] | null;
+            /** Place Pose */
+            place_pose?: string | null;
+            /** Notes */
+            notes?: ("object_not_in_sentence" | "place_not_in_sentence" | "pose_unknown" | "count_not_supported" | "retried")[];
         };
         /** CommandStatusOut */
         CommandStatusOut: {
@@ -2243,6 +2314,27 @@ export interface components {
             said?: string | null;
         };
         /**
+         * PlanRuleOut
+         * @description One further rule of a sort as the plan resolved it (``TaskRuleIn``), its place's pose and joints included.
+         */
+        PlanRuleOut: {
+            /** Object */
+            object: string;
+            /** Object Said */
+            object_said?: string | null;
+            /**
+             * Which
+             * @default
+             */
+            which: string;
+            /**
+             * Source
+             * @default
+             */
+            source: string;
+            place: components["schemas"]["PlanPlaceOut"];
+        };
+        /**
          * PlannerOut
          * @description cuRobo's state on this arm. Starting it moves nothing and takes about a minute.
          */
@@ -2319,7 +2411,7 @@ export interface components {
              * Why Not Code
              * @default
              */
-            why_not_code: ("bad_request" | "no_robot_configured" | "no_such_run" | "not_built_yet" | "not_built" | "not_acknowledged" | "stale_token" | "cell_busy" | "no_real_gripper" | "driver_refused" | "wrong_state" | "build_refused" | "jaws_seam_missing" | "not_connected" | "run_active" | "halted" | "controller_stopped" | "cell_not_cleared" | "restart_required" | "needs_person" | "jaws_question_pending" | "part_still_held" | "jaws_not_confirmed" | "route_refused" | "carried_part_not_modelled" | "camera_target_unavailable" | "object_required" | "prompt_not_routable" | "target_not_routable" | "push_distance_refused" | "unknown_pose" | "no_place_declared" | "closing_axis_refused" | "not_a_task" | "not_a_pick" | "not_restartable" | "jaws_not_open" | "no_question" | "question_changed" | "choice_not_offered" | "planner_not_used" | "no_overlay" | "no_layer" | "no_hand_guiding" | "part_in_hand" | "planner_not_ready" | "screen_unavailable" | "payload_changed" | "name_taken" | "invalid_name" | "invalid_label" | "wrong_token" | "not_free" | "vlm_not_loaded" | "vlm_unavailable" | "vlm_model_missing" | "unknown_key" | "not_writable" | "invalid_value" | "no_target" | "cell_connected" | "empty_patch" | "empty_audio" | "audio_format_unsupported" | "audio_undecodable" | "audio_too_long" | "speech_model_missing" | "speech_unavailable" | "transcription_failed" | "listen_busy" | "talk_not_pressed" | "microphone_ended" | "nothing_recorded" | "microphone_unavailable" | "listen_failed") | "";
+            why_not_code: ("bad_request" | "text_too_long" | "no_robot_configured" | "no_such_run" | "not_built_yet" | "not_built" | "not_acknowledged" | "stale_token" | "cell_busy" | "no_real_gripper" | "driver_refused" | "wrong_state" | "build_refused" | "jaws_seam_missing" | "not_connected" | "run_active" | "halted" | "controller_stopped" | "cell_not_cleared" | "restart_required" | "needs_person" | "jaws_question_pending" | "part_still_held" | "jaws_not_confirmed" | "route_refused" | "carried_part_not_modelled" | "camera_target_unavailable" | "object_required" | "prompt_not_routable" | "target_not_routable" | "push_distance_refused" | "unknown_pose" | "no_place_declared" | "closing_axis_refused" | "not_a_task" | "not_a_pick" | "not_restartable" | "jaws_not_open" | "no_question" | "question_changed" | "choice_not_offered" | "planner_not_used" | "no_overlay" | "no_layer" | "no_hand_guiding" | "part_in_hand" | "planner_not_ready" | "screen_unavailable" | "payload_changed" | "name_taken" | "invalid_name" | "invalid_label" | "wrong_token" | "not_free" | "vlm_not_loaded" | "vlm_unavailable" | "vlm_model_missing" | "unknown_key" | "not_writable" | "invalid_value" | "no_target" | "cell_connected" | "empty_patch" | "empty_audio" | "audio_format_unsupported" | "audio_undecodable" | "audio_too_long" | "speech_model_missing" | "speech_unavailable" | "transcription_failed" | "listen_busy" | "talk_not_pressed" | "microphone_ended" | "nothing_recorded" | "microphone_unavailable" | "listen_failed") | "";
             /** Target File */
             target_file?: string | null;
         };
@@ -2716,7 +2808,7 @@ export interface components {
              * Code
              * @enum {string}
              */
-            code: "bad_request" | "no_robot_configured" | "no_such_run" | "not_built_yet" | "not_built" | "not_acknowledged" | "stale_token" | "cell_busy" | "no_real_gripper" | "driver_refused" | "wrong_state" | "build_refused" | "jaws_seam_missing" | "not_connected" | "run_active" | "halted" | "controller_stopped" | "cell_not_cleared" | "restart_required" | "needs_person" | "jaws_question_pending" | "part_still_held" | "jaws_not_confirmed" | "route_refused" | "carried_part_not_modelled" | "camera_target_unavailable" | "object_required" | "prompt_not_routable" | "target_not_routable" | "push_distance_refused" | "unknown_pose" | "no_place_declared" | "closing_axis_refused" | "not_a_task" | "not_a_pick" | "not_restartable" | "jaws_not_open" | "no_question" | "question_changed" | "choice_not_offered" | "planner_not_used" | "no_overlay" | "no_layer" | "no_hand_guiding" | "part_in_hand" | "planner_not_ready" | "screen_unavailable" | "payload_changed" | "name_taken" | "invalid_name" | "invalid_label" | "wrong_token" | "not_free" | "vlm_not_loaded" | "vlm_unavailable" | "vlm_model_missing" | "unknown_key" | "not_writable" | "invalid_value" | "no_target" | "cell_connected" | "empty_patch" | "empty_audio" | "audio_format_unsupported" | "audio_undecodable" | "audio_too_long" | "speech_model_missing" | "speech_unavailable" | "transcription_failed" | "listen_busy" | "talk_not_pressed" | "microphone_ended" | "nothing_recorded" | "microphone_unavailable" | "listen_failed";
+            code: "bad_request" | "text_too_long" | "no_robot_configured" | "no_such_run" | "not_built_yet" | "not_built" | "not_acknowledged" | "stale_token" | "cell_busy" | "no_real_gripper" | "driver_refused" | "wrong_state" | "build_refused" | "jaws_seam_missing" | "not_connected" | "run_active" | "halted" | "controller_stopped" | "cell_not_cleared" | "restart_required" | "needs_person" | "jaws_question_pending" | "part_still_held" | "jaws_not_confirmed" | "route_refused" | "carried_part_not_modelled" | "camera_target_unavailable" | "object_required" | "prompt_not_routable" | "target_not_routable" | "push_distance_refused" | "unknown_pose" | "no_place_declared" | "closing_axis_refused" | "not_a_task" | "not_a_pick" | "not_restartable" | "jaws_not_open" | "no_question" | "question_changed" | "choice_not_offered" | "planner_not_used" | "no_overlay" | "no_layer" | "no_hand_guiding" | "part_in_hand" | "planner_not_ready" | "screen_unavailable" | "payload_changed" | "name_taken" | "invalid_name" | "invalid_label" | "wrong_token" | "not_free" | "vlm_not_loaded" | "vlm_unavailable" | "vlm_model_missing" | "unknown_key" | "not_writable" | "invalid_value" | "no_target" | "cell_connected" | "empty_patch" | "empty_audio" | "audio_format_unsupported" | "audio_undecodable" | "audio_too_long" | "speech_model_missing" | "speech_unavailable" | "transcription_failed" | "listen_busy" | "talk_not_pressed" | "microphone_ended" | "nothing_recorded" | "microphone_unavailable" | "listen_failed";
             /** Status */
             status: number;
         };
@@ -2784,8 +2876,14 @@ export interface components {
             object: string;
             /** Object Said */
             object_said?: string | null;
+            /** Which */
+            which?: string;
+            /** Source */
+            source?: string;
             /** Place */
             place: components["schemas"]["PosePlaceIn"] | components["schemas"]["CameraPlaceIn"];
+            /** More Rules */
+            more_rules?: components["schemas"]["TaskRuleIn"][];
             /**
              * Return To
              * @default home
@@ -2810,6 +2908,11 @@ export interface components {
              * @default true
              */
             multi_view: boolean;
+            /**
+             * Every Look
+             * @default false
+             */
+            every_look: boolean;
             /**
              * Both Faces
              * @default false
@@ -2836,6 +2939,8 @@ export interface components {
             record_views: boolean;
             /** Rim Air Mm */
             rim_air_mm?: number | null;
+            /** Carry */
+            carry?: ("via_the_look" | "over_the_rim") | null;
             /**
              * Pick Anything
              * @default false
@@ -2857,6 +2962,11 @@ export interface components {
              * @default true
              */
             multi_view: boolean;
+            /**
+             * Every Look
+             * @default false
+             */
+            every_look: boolean;
             /**
              * Both Faces
              * @default false
@@ -2888,6 +2998,8 @@ export interface components {
             record_views: boolean;
             /** Rim Air Mm */
             rim_air_mm?: number | null;
+            /** Carry */
+            carry?: ("via_the_look" | "over_the_rim") | null;
             /**
              * Pick Anything
              * @default false
@@ -2908,7 +3020,19 @@ export interface components {
             object: string;
             /** Object Said */
             object_said?: string | null;
+            /**
+             * Which
+             * @default
+             */
+            which: string;
+            /**
+             * Source
+             * @default
+             */
+            source: string;
             place: components["schemas"]["PlanPlaceOut"];
+            /** More Rules */
+            more_rules?: components["schemas"]["PlanRuleOut"][];
             /**
              * Return To
              * @default home
@@ -2937,6 +3061,23 @@ export interface components {
              * @default false
              */
             countdown: boolean;
+        };
+        /**
+         * TaskRuleIn
+         * @description One further rule of a sort: the kind of part it takes and where each such part goes. The task's own ``object``,
+         *     ``which``, ``source`` and ``place`` are its first rule.
+         */
+        TaskRuleIn: {
+            /** Object */
+            object: string;
+            /** Object Said */
+            object_said?: string | null;
+            /** Which */
+            which?: string;
+            /** Source */
+            source?: string;
+            /** Place */
+            place: components["schemas"]["PosePlaceIn"] | components["schemas"]["CameraPlaceIn"];
         };
         /**
          * TeachIn
@@ -4399,6 +4540,38 @@ export interface operations {
             header?: never;
             path: {
                 run_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The overlay, as a PNG. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/png": unknown;
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_place_target_overlay_v1_runs__run_id__targets__n__overlay_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                run_id: string;
+                n: number;
             };
             cookie?: never;
         };

@@ -91,11 +91,13 @@ class SceneEngine(Protocol):
 
 
 def engine_is_available(name: str) -> tuple[bool, str]:
-    """``(importable, why not)`` for one engine, without importing anything heavy on failure.
+    """Whether an engine can run in this interpreter, and why not, without importing anything heavy on failure.
 
-    Used by the refusal in `build_engine`, so an operator learns which engines this machine can run
-    before spending an hour finding out. Returns the reason as prose, because "ModuleNotFoundError:
-    isaacsim" is not an instruction.
+    Args:
+        name (str): ``"isaac"``, ``"mujoco"`` or ``"none"``.
+
+    Returns:
+        tuple[bool, str]: ``(available, why not)``; the reason is empty when available.
     """
     import importlib.util  # noqa: PLC0415
 

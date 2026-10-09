@@ -660,12 +660,17 @@ class JudgesGraspsAhead(Protocol):
     """Capability extension: the arm judges a whole grasp from where it stands, before it leaves for it.
 
     A grasp is a planned move to its standoff, a line down to the part and a lift, and each is judged as it runs: a
-    grasp the guard or the planner refuses at the part has taken the arm there first. Asked ahead, the three are judged
-    in the order the pick runs them, each from where the one before ends: the move to the standoff from where the arm
-    stands, the line down from the configuration that move ends on, and the lift from the grasp as if the jaws held the
-    part (:class:`JudgesCarriedLines`). A pick asks it of each grasp it may take, a blocker's (the owner, 2026-10-03)
-    and the part's (URSim, 2026-10-03: a lift the cable window refused once the hand stood at the part), and drives to
-    the first every judgement admits. Asking moves nothing and commands nothing.
+    grasp the guard or the planner refuses at the part has taken the arm there first. Asked ahead, each of the three is
+    judged once, in the order that judges each once (the judge chain, 2026-10-08): the line down first, from the
+    configuration the move to the standoff would end on (:class:`ChoosesConfigurations`), before any route is planned;
+    then the lift from the grasp as if the jaws held the part (:class:`JudgesCarriedLines`), in the world the line down
+    was judged in; the move to the standoff from where the arm stands last, because a route costs seconds and a line
+    refused at a part on the flange is every configuration's refusal. Where the route ends on the configuration the line
+    was judged from, each was judged once, and an arm may run that route as it was judged where nothing it was judged on
+    changed since (the UR driver does); where it ends anywhere else, the line and the lift are judged again from where it
+    ends, each from where the one before ends. A pick asks it of each grasp it may take, a blocker's (the owner,
+    2026-10-03) and the part's (URSim, 2026-10-03: a lift the cable window refused once the hand stood at the part), and
+    drives to the first every judgement admits. Asking moves nothing and commands nothing.
 
     It is not a member of :class:`~src.robot.core.RobotArm`, for the reason :class:`HomesTyped` gives. An arm that
     does not implement it has its grasps judged as they run, as before.

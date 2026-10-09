@@ -1,0 +1,11 @@
+2026-10-08 07:30:52,828 - SAM2 - INFO - Initializing Sam2Segmenter on device: cuda
+2026-10-08 07:37:22,760 - SAM2 - INFO - SAM2 segmentation completed in 0.485s | label=yellow bin | area=63796 px
+2026-10-08 07:37:29,194 - SAM2 - INFO - SAM2 segmentation completed in 0.154s | label=grauer Würfel auf der schwarzen Matte. | area=4096 px
+2026-10-08 07:37:43,656 - SAM2 - INFO - SAM2 segmentation completed in 0.103s | label=each separate grauer Würfel auf der schwarzen Matte. | area=4077 px
+2026-10-08 07:37:43,755 - SAM2 - INFO - SAM2 segmentation completed in 0.098s | label=each separate grauer Würfel auf der schwarzen Matte. | area=3313 px
+2026-10-08 07:37:43,853 - SAM2 - INFO - SAM2 segmentation completed in 0.096s | label=each separate grauer Würfel auf der schwarzen Matte. | area=2938 px
+2026-10-08 07:39:44,388 - SAM2 - INFO - SAM2 segmentation completed in 0.159s | label=yellow bin | area=64015 px
+2026-10-08 07:39:49,563 - SAM2 - INFO - SAM2 segmentation completed in 0.161s | label=grauer Würfel auf der schwarzen Matte. | area=4086 px
+2026-10-08 07:40:05,336 - SAM2 - INFO - SAM2 segmentation completed in 0.139s | label=each separate grauer Würfel auf der schwarzen Matte. | area=4089 px
+2026-10-08 07:40:05,427 - SAM2 - INFO - SAM2 segmentation completed in 0.088s | label=each separate grauer Würfel auf der schwarzen Matte. | area=3434 px
+2026-10-08 07:40:05,533 - SAM2 - INFO - SAM2 segmentation completed in 0.103s | label=each separate grauer Würfel auf der schwarzen Matte. | area=2939 px

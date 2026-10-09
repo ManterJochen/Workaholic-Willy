@@ -23,7 +23,8 @@ put in it, or a part it set down. That is an :class:`ExclusionRegion`, laid with
 
 * is a turned rectangle or a circle about BASE Z, a column over the table;
 * applies to every label where it names none, the empty label of an unlabelled detector included;
-* lasts every pick until :meth:`ExclusionZones.forget_regions`, which the task calls as it ends.
+* lasts every pick until :meth:`ExclusionZones.forget_regions`, which the task calls as it ends, or until
+  :meth:`ExclusionZones.forget_region` forgets it alone (one place of a sort checked again replaces only its own).
 
 The pick loop asks :meth:`ExclusionZones.applies` whether anything keeps a segmentation's label out before it reads
 where that segmentation stands, so a region keeps out an unlabelled part as a zone keeps out its own label's. It also
@@ -281,7 +282,8 @@ class ExclusionZones:
         return tuple(z for z in self._zones if z.label == wanted)
 
     def keep_out_region(self, region: ExclusionRegion) -> ExclusionRegion:
-        """Keep ``region`` out of every pick from the next one on, until :meth:`forget_regions`."""
+        """Keep ``region`` out of every pick from the next one on, until :meth:`forget_regions` (or until
+        :meth:`forget_region` forgets it alone). Returns ``region``, the object to hand :meth:`forget_region`."""
 
         if not isinstance(region, ExclusionRegion):
             raise TypeError(f"keep_out_region takes an ExclusionRegion, not {type(region).__name__}")
@@ -294,6 +296,27 @@ class ExclusionZones:
         forgotten = len(self._regions)
         self._regions = []
         return forgotten
+
+    def forget_region(self, region: ExclusionRegion) -> bool:
+        """Forget ``region`` alone: the one kept out (the very object :meth:`keep_out_region` returned), else the first
+        one equal to it; every other region and every zone stays. Returns whether one was forgotten.
+
+        What a check of one place of a sort calls (the sorting map's F4, 2026-10-09): its bin, followed or found again,
+        replaces its own region, and every other place's bin and every circle about a taught drop stays kept out, so no
+        pick takes a sorted part back out of another rule's bin. :meth:`forget_regions` forgets them all, as a task ends.
+        """
+
+        if not isinstance(region, ExclusionRegion):
+            raise TypeError(f"forget_region takes an ExclusionRegion, not {type(region).__name__}")
+        for index, kept in enumerate(self._regions):
+            if kept is region:
+                del self._regions[index]
+                return True
+        for index, kept in enumerate(self._regions):
+            if kept == region:
+                del self._regions[index]
+                return True
+        return False
 
     def regions(self, label: Optional[str] = None) -> tuple[ExclusionRegion, ...]:
         """The regions kept out: every one, or those that apply to a part called ``label`` (``""`` included)."""

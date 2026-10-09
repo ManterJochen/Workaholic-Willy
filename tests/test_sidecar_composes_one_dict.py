@@ -152,7 +152,10 @@ class TheSidecarSourceLoadsTheDictTests(unittest.TestCase):
                 self.assertNotIn(name, self.source)
 
     def test_every_consumer_is_built_from_its_own_copy(self) -> None:
-        self.assertTrue(_within(self.source, "MotionPlannerCfg.create(", "robot=copy.deepcopy(_COMPOSED)", 80))
+        # The planner is built from the robot it plans with, which is the composed config itself unless a planning
+        # model was asked for and built (``_curobo_planning``); every judgement stays on the composed config.
+        self.assertTrue(_within(self.source, "MotionPlannerCfg.create(", "robot=copy.deepcopy(_PLANNING)", 80))
+        self.assertIn("_PLANNING = _COMPOSED\n", self.source)
         self.assertIn("KinematicsCfg.from_data_dict(copy.deepcopy(_COMPOSED))", self.source)
         # The checker moved out of the check_js branch in S16, because the ready gate needs it before any
         # request arrives. Its own copy is the claim, not the place: LinkParams.create rewrites what it is

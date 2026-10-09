@@ -171,16 +171,14 @@ class KpiRollup:
 
 @dataclass(frozen=True, slots=True)
 class RecordLog:
-    """A `GraspAttemptRecord` log, from a cell, a sim runner or a replay pack.
+    """A log of attempt records, from a cell, a simulation run or a replay pack, rolled up into KPIs.
 
-        from src.robot.grasping.replay.runs import RecordLog
+        print(RecordLog.from_jsonl("picks.jsonl").kpis())
 
-        rollup = RecordLog.from_jsonl("logs/run.jsonl").kpis()
-        print(rollup.render())
-        if not rollup.sound:
-            ...   # the numbers are unfounded, not wrong
-
-    Reads a log and computes. It opens no cell, loads no policy and never writes.
+    Attributes:
+        path (Path | None): The JSONL file; ``None`` for records in memory.
+        records (tuple[GraspAttemptRecord, ...] | None): The records in memory; ``None`` for a file, read at
+            :meth:`kpis`.
     """
 
     path: Path | None = None
@@ -188,24 +186,36 @@ class RecordLog:
 
     @classmethod
     def from_jsonl(cls, path: str | Path) -> "RecordLog":
-        """A JSONL log on disk. Nothing is read until :meth:`kpis`.
+        """A JSONL log on disk. Nothing is read until :meth:`kpis`, so an unreadable log arrives as an UNREADABLE
+        verdict rather than an exception.
 
-        The factory does not open the file, so an unreadable log arrives as an UNREADABLE verdict
-        from `kpis()` rather than as an exception raised during construction.
+        Args:
+            path (str | Path): The log, one record per line.
+
+        Returns:
+            RecordLog: The log.
         """
         return cls(path=Path(path))
 
     @classmethod
     def from_records(cls, records: "Sequence[GraspAttemptRecord]") -> "RecordLog":
-        """Records already in memory, from a run that has just finished."""
+        """Records already in memory, from a run that has just finished.
+
+        Args:
+            records (Sequence[GraspAttemptRecord]): The records.
+
+        Returns:
+            RecordLog: The log.
+        """
         return cls(records=tuple(records))
 
     def kpis(self) -> KpiRollup:
-        """The KPIs over this log, with the telemetry audits that say whether they rest on anything.
+        """The KPIs over this log, with the audits that say whether they rest on anything: a rate whose records lack the
+        fields behind it is unfounded, not just wrong.
 
-        Three questions, not one. `compute_kpis` alone returns numbers with no indication that the
-        records behind them are missing fields, which is the difference between a rate that is
-        wrong and one that is unfounded.
+        Returns:
+            KpiRollup: The audit's ``verdict``, how many ``records``, the KPIs by name (``kpi``), what could not be
+                measured and why (``unmeasurable``), and the records missing telemetry; prints as itself.
         """
         from src.robot.grasping.replay.kpi import (  # noqa: PLC0415
             compute_kpis,

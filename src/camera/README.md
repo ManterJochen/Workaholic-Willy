@@ -114,7 +114,42 @@ The depth mode sets how near a RealSense measures. Intel gives a D415 a minimum 
 figures, not measured here); anything nearer reads as a hole. A D415 on the wrist sets
 `depth_resolution: [848, 480]` and keeps `color_resolution: [1280, 720]`: depth aligned to colour comes
 back on the 1280 x 720 grid. When it opens, the driver logs the camera's name, serial, firmware and USB
-link, the depth mode and its Min-Z, and warns for a D415 at 1280 x 720 and for a camera on a USB 2 link.
+link, the depth mode and its Min-Z, and warns for a D415 at 1280 x 720 and for a camera on a USB 2 link. Its lines go
+to `logs/camera/rgbd.log` and the console.
+
+### The colour sensor, and recording for research
+
+A RealSense rig's `realsense.color` block sets the colour sensor's exposure, gain and white balance (the owner,
+2026-10-09). Every key null, as shipped, is full auto and writes nothing. On full auto the same part comes out 1 to
+1.8 stops brighter or darker with what else is in view at each look (measured on the owner's views), so a cell fixes
+the values auto settles on at look 0 with the work lamp on:
+
+```yaml
+realsense:
+  color:
+    auto_exposure: false      # written first: librealsense writes its default exposure as auto exposure goes off
+    exposure: 156             # in 100 microseconds, so 15.6 ms; Windows holds the nearest power of two of a second
+    gain: 64
+    auto_white_balance: false
+    white_balance: 4600       # Kelvin
+```
+
+The driver writes the keys in that order to the sensor that streams colour, never to the depth sensor, once every
+value has been checked against the range the sensor offers, and logs what the sensor holds when the warm-up frames
+have run, also with every key null. A value the sensor holds otherwise is warned about, with the value it holds. The
+camera keeps what is written until it is unplugged or power-cycled: a block put back to null leaves those values in
+place, and `auto_exposure: true` and `auto_white_balance: true` put the camera back on auto.
+
+`realsense.record_for_research: true` records for research, one switch, off by default. The camera then streams both
+infrared images as well (infrared 1 and 2, Y8, at the depth mode), and every frame carries them, the depth as the
+sensor sent it, before the filters and the alignment, and the camera's facts (`RGBDFrame.research`, a
+`ResearchCapture`). The views file of every pick a program keeps holds them per look, with their lenses and
+extrinsics, every segmentation's mask, box, label, score, SAM2's predicted IoUs and which one was the target, and once
+the camera's name, serial, firmware, depth units, filters, preset, colour settings, the colour and depth lenses and the
+depth to colour extrinsics (format 2, [`record_views.py`](../robot/execution/record_views.py)). Both infrared streams
+add 442 Mbit/s to the 885 Mbit/s colour and depth take at 1280 x 720 and 30 fps, which a USB 3 link carries, and a
+views file grows from about 2.1 MB to about 4.4 MB per look. Off, the streams, the frames and the views files are what
+they were.
 
 ## What it refuses
 
@@ -130,6 +165,9 @@ link, the depth mode and its Min-Z, and warns for a D415 at 1280 x 720 and for a
 | `ConfigError` when the tree loads | two enabled RGB-D rigs where one has no `serial_number`, or two share one | set one serial per rig; `rs-enumerate-devices` prints them |
 | `RuntimeError` from `open()`, naming the cameras the SDK sees | a RealSense request that does not start: no camera, another serial, or a mode the camera does not offer on its USB link | the message names each camera's USB link; connect it over USB 3, or ask for a mode it lists |
 | `RuntimeError` from `open()`, naming `depth_units_m` | the device reads back other depth units than the rig configures | remove `depth_units_m`, or write a value the device takes |
+| `RuntimeError` from `open()`, naming `realsense.color.<key>` | the colour sensor does not offer the option, the value lies outside its range, or the camera's colour comes off its depth imagers; nothing was written to it | remove the key, or write a value in the range the message names |
+| `RuntimeError` from `open()`, naming `record_for_research` | the camera cannot stream both infrared images at this mode, or its link cannot carry them | switch `record_for_research` off, or connect the camera over USB 3 |
+| `ConfigError` when the tree loads, naming `realsense.color` | a fixed exposure, gain or white balance without its auto mode written `false` beside it | write `auto_exposure: false` (or `auto_white_balance: false`) beside the value |
 
 A device is known by what identifies it, never by the rig name: a RealSense by its serial, an OpenCV
 RGB-D rig or a single-device stereo rig by its `device_index`, a webcam pair by both ids. A RealSense
@@ -150,6 +188,7 @@ The legend is the guide's [evidence levels](../../docs/guide/README.md#what-veri
 | One owner per device, serialised grabs, stamped frames | run on a physical cell: a wrist D415 on a UR10 (CB3); pinned against device doubles in [`test_camera_noun.py`](../../tests/test_camera_noun.py) |
 | The RealSense driver | run on a physical cell: the same D415; in the suite the real librealsense processes its frames, no camera attached ([test](../../tests/test_realsense_sdk_contract.py)), including its filter order and the dropped temporal history after a move ([test](../../tests/test_a_moved_wrist_camera_forgets_the_last_pose.py)) |
 | Min-Z, USB link and depth units at open | never touched hardware; the Min-Z figures are Intel's, and the USB and depth-unit messages are pinned against an SDK double ([test](../../tests/test_a_realsense_says_what_it_opened.py)) |
+| The colour block and the research recording | never touched hardware; the write order, the read-back, the refusals, the frames and the views file are pinned against an SDK double, the names and the extrinsics against the real librealsense ([colour](../../tests/test_the_colour_sensor_holds_what_its_rig_asks.py), [research](../../tests/test_a_rig_recording_for_research_keeps_its_infrared_images.py)) |
 | Device identity by serial and by index | never touched hardware; how a D435 enumerates beside an OpenCV video device is not observed |
 
 ## Files

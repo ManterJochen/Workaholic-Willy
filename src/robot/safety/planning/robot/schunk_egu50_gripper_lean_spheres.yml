@@ -1,0 +1,208 @@
+_provenance:
+  what: schunk_egu50 hand bodies, planning only
+  model: lean
+  source: schunk_egu50_hand_meshes.npz
+  generated_by: scripts/curobo/fit_planning_spheres.py
+  recipe: 'NVIDIA''s UR pattern, fitted: a few spheres along each body''s axis, each
+    the body''s thickness there plus the reach asked, held to a hole allowance instead
+    of a complete cover; a planning model only, every check, the evidence and the
+    exact guard stay on the cover fit'
+  asked_for: scripts/curobo/fit_planning_spheres.py ARM_PLAN / HAND_PLAN, per body
+  seed: 0
+  bodies:
+  - body: gripper
+    frame: 6
+    why: 'the housing: a row along the approach, as franka''s palm'
+    spheres: 14
+    reach_mm: 15.0
+    hole_mm: 8.0
+    radii_mm:
+    - 21.4
+    - 32.1
+    - 21.5
+    - 33.8
+    - 43.2
+    - 48.6
+    - 47.0
+    - 24.4
+    - 48.6
+    - 22.3
+    - 43.1
+    - 37.8
+    - 23.0
+    - 17.2
+    fresh_uncovered_max_mm: 8.249
+    fresh_reach_max_mm: 14.928
+    fresh_samples: 20000
+    sample_spacing_mm: 3.77
+    seconds: 42.1
+  - body: lfinger
+    frame: 6
+    why: one jaw, at the evidence model's reach
+    spheres: 6
+    reach_mm: 12.0
+    hole_mm: 8.0
+    radii_mm:
+    - 13.7
+    - 12.4
+    - 15.5
+    - 16.1
+    - 16.7
+    - 14.6
+    fresh_uncovered_max_mm: 8.055
+    fresh_reach_max_mm: 11.951
+    fresh_samples: 20000
+    sample_spacing_mm: 1.748
+    seconds: 27.6
+  - body: rfinger
+    frame: 6
+    why: the other jaw
+    spheres: 6
+    reach_mm: 12.0
+    hole_mm: 8.0
+    radii_mm:
+    - 13.7
+    - 12.4
+    - 15.5
+    - 16.1
+    - 16.7
+    - 14.6
+    fresh_uncovered_max_mm: 8.055
+    fresh_reach_max_mm: 11.955
+    fresh_samples: 20000
+    sample_spacing_mm: 1.748
+    seconds: 27.5
+  origin: flange
+  frame: tool0 (Y=approach, X=closing, Z=depth), metres
+collision_spheres:
+  tool0:
+  - center:
+    - -0.046545
+    - 0.041027
+    - 0.029305
+    radius: 0.021393
+  - center:
+    - -0.041951
+    - 0.082069
+    - 0.011387
+    radius: 0.032131
+  - center:
+    - -0.033526
+    - 0.103426
+    - -0.026576
+    radius: 0.021495
+  - center:
+    - -0.035327
+    - 0.057326
+    - -0.017166
+    radius: 0.033835
+  - center:
+    - -0.031205
+    - 0.070972
+    - 0.007726
+    radius: 0.043228
+  - center:
+    - -0.026793
+    - 0.063529
+    - -0.000194
+    radius: 0.048572
+  - center:
+    - -0.0042
+    - 0.062656
+    - 0.0035
+    radius: 0.047044
+  - center:
+    - 0.018983
+    - 0.090173
+    - -0.022806
+    radius: 0.02443
+  - center:
+    - 0.026508
+    - 0.063529
+    - -0.002335
+    radius: 0.048596
+  - center:
+    - 0.033902
+    - 0.101699
+    - -0.028461
+    radius: 0.022345
+  - center:
+    - 0.032529
+    - 0.070926
+    - 0.006781
+    radius: 0.043071
+  - center:
+    - 0.036096
+    - 0.076287
+    - 0.013213
+    radius: 0.037787
+  - center:
+    - 0.044035
+    - 0.037112
+    - -0.01101
+    radius: 0.023012
+  - center:
+    - 0.049638
+    - 0.042295
+    - 0.033391
+    radius: 0.017165
+  - center:
+    - -0.058313
+    - 0.157714
+    - 0.005672
+    radius: 0.013748
+  - center:
+    - -0.051512
+    - 0.163105
+    - -0.007134
+    radius: 0.012447
+  - center:
+    - -0.063924
+    - 0.131408
+    - -0.004085
+    radius: 0.015495
+  - center:
+    - -0.065206
+    - 0.116843
+    - -0.010029
+    radius: 0.016122
+  - center:
+    - -0.026502
+    - 0.104443
+    - -0.011909
+    radius: 0.016671
+  - center:
+    - 0.003042
+    - 0.103691
+    - -0.016392
+    radius: 0.014622
+  - center:
+    - 0.058361
+    - 0.157714
+    - -0.005673
+    radius: 0.013748
+  - center:
+    - 0.05156
+    - 0.163105
+    - 0.007133
+    radius: 0.012447
+  - center:
+    - 0.063972
+    - 0.131408
+    - 0.004084
+    radius: 0.015495
+  - center:
+    - 0.065254
+    - 0.116843
+    - 0.010028
+    radius: 0.016122
+  - center:
+    - 0.02655
+    - 0.104443
+    - 0.011908
+    radius: 0.016671
+  - center:
+    - -0.002994
+    - 0.103691
+    - 0.016391
+    radius: 0.014622

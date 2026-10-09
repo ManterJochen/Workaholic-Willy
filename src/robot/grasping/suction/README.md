@@ -5,8 +5,7 @@ approached along the local surface normal. It answers where a cup can seal and h
 the lift belong to the gripper driver and the pick service.
 
 ```python
-from willy import synthesize_suction_grasps
-from src.robot.grasping.suction import SuctionConfig
+from src.robot.grasping.suction import SuctionConfig, synthesize_suction_grasps
 
 grasps = synthesize_suction_grasps(
     mask, depth_mm, K,                   # a boolean mask, depth in millimetres, the 3x3 camera matrix
@@ -18,8 +17,7 @@ best = grasps[0] if grasps else None     # ranked by quality, ties toward the ce
 ```
 
 A `SuctionGrasp` carries `position_mm`, a unit `approach`, `seal_score`, `quality` in `[0, 1]`, its
-`frame` and metadata. [jaw_or_suction.py](../../../../examples/offline/grasping/jaw_or_suction.py)
-compares it with the jaw on three boxes at a desk.
+`frame` and metadata.
 
 A suction grasp is a second end-effector modality, not a flag on the jaw path: one sealable contact and
 a press direction, with no aperture, no antipodal pair and no closing direction. It covers what a

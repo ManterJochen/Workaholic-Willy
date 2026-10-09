@@ -141,7 +141,8 @@ class TheServerHashesTheEvidenceConfigTests(unittest.TestCase):
     def test_a_camera_free_ready_line_carries_no_wrist_key(self) -> None:
         self.assertIn('_WRIST: dict = ({"wrist_bodies": _wrist_rows, "wrist_bodies_sha256": canonical_sha256(_wrist_rows)}\n'
                       "                    if _wrist_rows else {})", self.source)
-        self.assertIn('"composed_sha256": _composed_sha256, "bodies": _body_rows, **_WRIST, **_MEASURING}', self.source)
+        self.assertIn('"composed_sha256": _composed_sha256, "bodies": _body_rows, **_WRIST, **_PLANNING_READY, '
+                      '**_MEASURING}', self.source)
 
 
 class TheClientSendsAndReadsTheCameraTests(unittest.TestCase):

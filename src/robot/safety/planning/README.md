@@ -4,7 +4,8 @@ This package holds the two external engines the motion stack builds on, cuRobo f
 trajectories and Coal (or python-fcl) for exact mesh distance calculations.
 
 ```python
-from willy import MotionStack, load_tree
+from willy import load_tree
+from src.robot.safety.planning.stack import MotionStack
 
 report = MotionStack.from_robot_config(load_tree().robot).probe()   # the cell WILLY_PROFILE names
 print(report)                       # both engines, the arm, and the config key that named it
@@ -22,8 +23,7 @@ arm's mesh bundle import. Exit `1` means a degraded fallback would run (blind IK
 the capsule proxy instead of meshes), or no hand is named, or the config did not load. Exit `2` comes
 only from `--doctor`: an operating-system policy blocked a binary that is present, which needs the
 opposite fix to a missing one ([code-integrity.md](../../../../docs/code-integrity.md)). A development
-machine without the GPU environment answers `1` by design. The same reading runs in
-[planner_or_ik.py](../../../../examples/offline/config/planner_or_ik.py).
+machine without the GPU environment answers `1` by design.
 
 ## Install
 
@@ -39,7 +39,7 @@ standard machine sets no environment variable ([ext_deps/README.md](../../../../
 | `CuroboPlanClient` | the driver, sized by the cell's reservation | `plan(goal)`, `check_joints(configs)` | joint waypoints; a verdict per sample |
 | `LivePlannerWorld` | the driver, from the cell's cameras and declared world | `world_for(...)` | a `PlannerWorldSnapshot` with its verdict |
 | `PlannerHand` | `planner_hand(robot, data_dir=...)` | read | the hand the planner and the guard model |
-| `ExactPairs` | the exact guard, `SelfCollisionGuard.exact_pairs(arm)` | `decides(link_a, link_b)`, `distance_mm(joints, link_a, link_b)` | the guard's pair rule and distances in the planner's link names |
+| `ExactPairs` | the exact guard, `SelfCollisionGuard.exact_pairs(arm)` | `decides(link_a, link_b)`, `distance_mm(joints, link_a, link_b)`; `first_low(configs, below_mm)`, `first_near_base(configs, within_mm)` | the guard's pair rule and distances in the planner's link names; the first configuration of a path that may come under a plane or near the robot's base, asked of the whole path at once where `self_collision.whole_path_judge` is on, else every one in turn |
 | `PathJudgement` | `CuroboPlanClient.judge_joints(configs, clearance_mm=, name_pairs=)` | read `refused` | one `RefusedSample` per refused configuration: its three terms apart and every pair of links it found |
 | `PoseScreen` | `URRobotArm.screen_configuration(joints)` | `line(label)` | `clear`, `band`, `seen_boxes`, `guard_refused`, `planner_refused` or `unscreened`, with a pose nearby both clear where one exists |
 
@@ -276,6 +276,50 @@ further, so a tilted look can be a pose the padded spheres refuse while the mesh
 
 The composed robot, its `composed_sha256` and every evidence file are unchanged.
 
+### The robot cuRobo plans with, and how fast it takes a world
+
+The owner, 2026-10-08: "wir müssen CuRobo richtig verwenden". The sidecar planned on the robot it judges with, the
+cover fits: 845 spheres and 172,414 sphere pairs on the owner's cell, where NVIDIA's own UR10e has 20 and 83. Three
+switches, each off by default, which is today's behaviour; the owner's cell turns each on after its desk check.
+
+| Key | Off (default) | On | Checked by |
+| --- | --- | --- | --- |
+| `safety.planned_motion.planning_spheres` | `""`: the planner, its IK and its graph planner on the evidence model | `lean`: on a planning model made the way NVIDIA's UR configs are, 26 arm spheres on a UR10, 41 with the Hand-E and the D415, 112 sphere pairs | `scripts/curobo/ab_planning_spheres.py` (GPU) |
+| `safety.planned_motion.finetune_passes` | `3`: cuRobo's own `plan_cspace` | `0`: the first optimiser pass's plan; the arm runs positions, never cuRobo's timing | the same script, `--finetune 3,0` |
+| `safety.planning_world.register_in_place` | `update_world`, box by box | cuRobo's `load_batch`, one call | `scripts/curobo/probe_world_in_place.py` |
+
+- **The planning model** ([`planning_model.py`](planning_model.py), [`_curobo_planning.py`](_curobo_planning.py)).
+  The arm's lean map (`robot/{arm}_arm_lean_spheres.yml`) and the hand's (`robot/{hand}_gripper_lean_spheres.yml`)
+  are fitted by `scripts/curobo/fit_planning_spheres.py`: spheres along each link's axis, NVIDIA's pattern, each the
+  link's thickness plus a reach (25 to 30 mm on the arm, 12 to 15 on the hand), holes of 7 to 20 mm accepted where
+  NVIDIA's own leave up to 71. A
+  wrist camera's boxes are filled at 20 mm reach (three spheres for the D415). The client sends it
+  (`WILLY_CUROBO_PLANNING_MODEL`), and the sidecar places the arm in the URDF its kinematics resolved, exactly as the
+  descriptor builder placed the evidence model, and composes the hand and the camera with the same transforms, the
+  margin and the retract. Its ignore list adds every pair of links that both stand for parts the exact guard holds
+  (`band.guard_parts`): those the guard judges at every sample, or neighbours. The shoulder link, the planner's only
+  model of the robot's base, stays checked against all of them.
+- **What stays.** `check_js`, `explain_js`, the start and goal checks in front of a plan and the ready gate judge on the
+  evidence model (`_terms` reads its spheres from the evidence model's own kinematics), so `composed_sha256`, the
+  evidence files, the band admission and the exact guard are what they were, and every sample of a plan is judged as
+  before. The ready line adds `planning` (the model's spheres and pairs beside the evidence model's) and
+  `planning_sha256`; `SidecarIdentity.plans_on` names it. A modelled carried part, an arm or a hand with no lean map,
+  or a model the sidecar cannot compose plans on the evidence model, and the log says why.
+- **One pass** ([`_curobo_cspace.py`](_curobo_cspace.py)). cuRobo's joint plan runs, per attempt, a pass that finds the
+  trajectory and three that only shrink its time step. At `finetune_passes: 3` the sidecar calls cuRobo's own
+  `plan_cspace`; otherwise its loop with the passes asked (`WILLY_CUROBO_JOINT_FINETUNE`). The CPU suite runs cuRobo's
+  own source and the copy against one planner and holds the calls the same. One pass finds a plan exactly where four
+  do: an attempt stops after a first pass that finds none, and a later pass only swaps a plan for a faster one
+  (`TrajOptSolver._solve_impl`, held by a test on cuRobo's source). The positions may differ, and they are judged
+  sample by sample like every plan's.
+- **In place** ([`_curobo_world.py`](_curobo_world.py)). A world of boxes alone, on a planner that reserved no mesh
+  slots and no grid, goes into the box storage in one call (`WILLY_CUROBO_WORLD_IN_PLACE`): the same slots bit for
+  bit (cuRobo's own storage on the CPU, six worlds of 0 to 193 boxes), 0.55 ms against 15.1 ms at 129 boxes on the
+  CPU, about 217 ms a refresh on the cell today. Too many boxes are refused before any slot is written.
+- **Timing.** `WILLY_CUROBO_TIMING=1` in the shell the sidecar starts from prints a `[timing]` line per `plan_js`,
+  `check_js` and `set_world` on its stderr (`WILLY_CUROBO_STDERR`): the start and goal checks, the plan on the wall
+  clock and on cuRobo's own optimiser timer, the attempts, and the reply. Nothing else changes.
+
 ### The probes on a GPU
 
 ```bash
@@ -315,6 +359,19 @@ That probe runs the real sidecar with a wall no config file declares: the empty 
 stops the plan, removing it plans again. The middle result alone would prove nothing, because a planner
 that refuses everything looks the same.
 
+```bash
+python scripts/curobo/ab_planning_spheres.py --dry-run           # CPU: the problems, both robots' spheres and pairs
+python scripts/curobo/ab_planning_spheres.py --models ,lean --finetune 3,0
+python scripts/curobo/probe_world_in_place.py --sidecars          # two sidecars, 1,000 configurations judged alike
+```
+
+`ab_planning_spheres.py` starts the cell's own planner per variant, as `real_cell --start-planner` does, and plans
+every move between home and the looks and in the bench's hard scenes (`scripts/bench/scenes.py`), the scene's parts
+as the camera's boxes, whatever the straight line would do; each plan is judged as the arm judges one. It writes the
+plans found, the plans the judgement refused and the plan time p50 and p90 per variant, against the first.
+`probe_world_in_place.py` without `--sidecars` runs cuRobo's own storage in the cuRobo interpreter, both ways, bit
+for bit (`--device cpu` needs no GPU).
+
 ## Environment variables
 
 | Variable | Default | Read by | Meaning |
@@ -330,11 +387,17 @@ that refuses everything looks the same.
 | `WILLY_CUROBO_GRAPH_FROM_ATTEMPT` | `1` | sidecar | the first graph-seeded attempt |
 | `WILLY_CUROBO_ATTACH_SPHERES` | unset, as `0` | sidecar | spheres for a carried payload; the client sets it from the cell's reservation |
 | `WILLY_CUROBO_SELF_COLLISION_MARGIN_MM` | unset, as `0` | sidecar | the guard's clearance, raised into the descriptor's link buffers |
+| `WILLY_CUROBO_PLANNING_MODEL` | unset, the evidence model | sidecar | the planning model, JSON; the client sets it from `planned_motion.planning_spheres` |
+| `WILLY_CUROBO_JOINT_FINETUNE` | unset, as `3` | sidecar | time-optimal passes of a joint plan; the client sets it from `planned_motion.finetune_passes` |
+| `WILLY_CUROBO_WORLD_IN_PLACE` | unset, `update_world` | sidecar | `1` registers a world of boxes in one call; the client sets it from `planning_world.register_in_place` |
+| `WILLY_CUROBO_TIMING` | unset, silent | sidecar | `1` prints a `[timing]` line per request on the sidecar's stderr |
 | `WILLY_COAL_PREFIX` | `ext_deps/coal_env` | collision engine | the environment that provides Coal |
 
 The names live in `environment.py`, except the attach and margin variables, which `_curobo_attach.py`
-and `_curobo_margin.py` name. A cell's reservation (`reservation.py`) wins over the three slot
-variables, and the client warns when one disagrees with it.
+and `_curobo_margin.py` name, and the last four, which `_curobo_planning.py`, `_curobo_cspace.py` and
+`_curobo_world.py` name. A cell's reservation (`reservation.py`) wins over the three slot variables, and
+the client warns when one disagrees with it; it carries the three switches too, and the client writes
+their variables whatever the shell holds, removing a leftover where the cell asks for today's way.
 
 ## Status
 
@@ -346,6 +409,8 @@ variables, and the client warns when one disagrees with it.
 | A planned move on a physical arm | measured against a UR10 |
 | The band admission, the escape legs, 65 slots of turned camera boxes and a plan in them | measured on a GPU with the two probes (2026-09-30, the development box), not yet on the cell PC |
 | The camera's boxes set aside and every one put back, a bin 30, 40 and 47.7 mm beside the housing admitted in the band and out of it, the line out held while the hand's count says closed, a grasp's lift judged carrying, with the part in the sidecar on a cell that models it, a declared bin's room | measured on a GPU with `probe_turned_boxes.py` (2026-10-01, the development box), not yet on the cell PC |
+| Boxes registered in place, the same slots bit for bit | measured with cuRobo's own storage on the CPU (`probe_world_in_place.py --device cpu`, 2026-10-09); two sidecars on a GPU not yet run |
+| The lean planning model and one optimiser pass | composed and counted on the CPU (845 spheres and 172,414 pairs today, the lean model 41 and 112); plan success, refused plans and plan time on a GPU not yet measured (`ab_planning_spheres.py`) |
 
 `--check` reports that the sidecar's interpreter exists; it does not report that the descriptor beside
 it was built, because that lives in an environment this process does not spawn. `--doctor` closes that
@@ -370,7 +435,8 @@ gap. Planner collision awareness is not a certified functional-safety stop.
 | [`self_envelope.py`](self_envelope.py) | the robot's own body, filtered out of the camera view |
 | [`evidence.py`](evidence.py), [`bundle_index.py`](bundle_index.py) | the measured combination files, and the index of committed bundles |
 | `_declared_body.py` | a declared box as bundle arrays, and the proof that a sphere fill covers it |
-| `_curobo_*.py` | the sidecar's descriptor, attachment, margin, pair and protocol helpers; `_curobo_pairs.py` names the overlapping pairs and builds the refused rows; `_curobo_perceived.py` sets the camera's boxes aside for one judgement and puts them back |
+| `_curobo_*.py` | the sidecar's descriptor, attachment, margin, pair and protocol helpers; `_curobo_pairs.py` names the overlapping pairs and builds the refused rows; `_curobo_perceived.py` sets the camera's boxes aside for one judgement and puts them back; `_curobo_planning.py` places and composes a planning model; `_curobo_cspace.py` is cuRobo's joint plan loop with its passes a parameter; `_curobo_world.py` registers a world of boxes in one call |
+| [`planning_model.py`](planning_model.py) | the planning model a cell asks for, composed from the committed lean maps and the cell's own bodies |
 | [`robot/`](robot/PROVENANCE.md) | sphere maps per arm and hand, the retract table, the hand writers, the evidence |
 
 ## Details

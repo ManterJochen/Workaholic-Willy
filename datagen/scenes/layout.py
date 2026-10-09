@@ -727,7 +727,17 @@ def _randomization(config: DatagenConfig, rng: np.random.Generator) -> DomainRan
 
 
 def layout_scene(config: DatagenConfig, index: int, family: SceneFamily | None = None) -> SceneSpec:
-    """The whole scene for ``index``, from the seed alone. Same inputs, byte-identical output."""
+    """One scene of a dataset, decided from the seed alone before anything renders: the same inputs give a
+    byte-identical scene.
+
+    Args:
+        config (DatagenConfig): The dataset's settings.
+        index (int): The scene's number in the dataset.
+        family (SceneFamily | None): The scene family to draw; ``None`` lets the seed choose (default: None).
+
+    Returns:
+        SceneSpec: The objects, their poses, the support and the cameras.
+    """
     return layout_scene_with_assets(config, index, family)[0]
 
 

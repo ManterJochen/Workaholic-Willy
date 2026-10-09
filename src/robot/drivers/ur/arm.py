@@ -6,17 +6,19 @@ import asyncio
 import dataclasses
 import math
 import re
+import sys
 import threading
+import time
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from typing import TYPE_CHECKING, Sequence
 
 import numpy as np
 
 from src.config.schema.robot import RobotConfig
 from src.contracts import UNSET, Maybe, chosen
-from src.geometry import Frame, FrameMismatchError, Pose
-from src.geometry.quaternion import angle_between
+from src.geometry import Frame, FrameMismatchError, GeometryError, Pose
+from src.geometry.quaternion import angle_between, from_rotation_matrix, slerp
 from src.robot.constants import HOME_JOINTS_DEFAULT, UR_ARM_LOG_FILE, create_robot_logger
 from src.robot.core import (
     NO_PLAN_FAIL_SAFE_MESSAGE,
@@ -154,6 +156,36 @@ _ON_THE_FLANGE = frozenset({"gripper", "lfinger", "rfinger", "wrist_3"})
 _WRIST_CAMERA_PART = "wrist_camera_"
 #: The pair the exact guard names in a refusal against a fixture: ``<part>|fixture:<name>``.
 _FIXTURE_PAIR = re.compile(r"(?P<part>[A-Za-z0-9_\-]+)\|fixture:")
+#: What a move says that was refused only because it keeps the branch the arm holds (:meth:`URRobotArm.
+#: keeping_its_branch`, the owner's R2 of 2026-10-08): a change of branch is the last resort.
+_KEEPS_ITS_BRANCH = "kept to the branch the arm holds"
+
+#: The interpreter's switch interval while a second thread judges the next leg during a watched line
+#: (:meth:`URRobotArm._judging_during`). The judgement gives up and takes the GIL around its exact-guard queries, and at
+#: Python's 5 ms the thread that watches the line, waking every 8 ms to read the halt, waited for it up to 451 ms on
+#: Windows and 521 ms in WSL; at 0.5 ms, 1.0 and 1.6 ms, the judgement no slower (2026-10-09, a UR10 joint move of
+#: 1.2 s). The interval before is put back once the last such judgement ended.
+_WATCHED_SWITCH_S = 0.0005
+_SWITCH_LOCK = threading.Lock()
+#: How many judgements during motion run now, and the interval before the first of them shortened it.
+_SWITCH_STATE: "dict[str, float]" = {"judging": 0, "before": 0.0}
+
+
+def _switching_often() -> None:
+    """Shorten the switch interval for a judgement that starts during a watched line (:data:`_WATCHED_SWITCH_S`)."""
+    with _SWITCH_LOCK:
+        if _SWITCH_STATE["judging"] == 0:
+            _SWITCH_STATE["before"] = sys.getswitchinterval()
+            sys.setswitchinterval(min(_SWITCH_STATE["before"], _WATCHED_SWITCH_S))
+        _SWITCH_STATE["judging"] += 1
+
+
+def _switching_as_before() -> None:
+    """Put the switch interval back once the last judgement during a watched line ended."""
+    with _SWITCH_LOCK:
+        _SWITCH_STATE["judging"] = max(0, int(_SWITCH_STATE["judging"]) - 1)
+        if _SWITCH_STATE["judging"] == 0 and _SWITCH_STATE["before"] > 0.0:
+            sys.setswitchinterval(_SWITCH_STATE["before"])
 
 
 def _planner_refusal_status(refusal: object | None) -> MotionStatus:
@@ -186,6 +218,67 @@ def _same_branch(held: "URBranch | None", other: "URBranch | None") -> bool:
     return held is None or other is None or held.agrees_with(other)
 
 
+def _on_the_flange(refused: MotionResult) -> bool:
+    """Whether the exact guard refused a line at a part on the flange against a fixture (:data:`_ON_THE_FLANGE`, a wrist
+    camera): on a straight line of the TCP such a part stands where the TCP puts it, whichever configuration the line
+    starts from, so the refusal is every configuration's."""
+    found = _FIXTURE_PAIR.search(str(refused.message or ""))
+    part = found.group("part") if found is not None else ""
+    return part in _ON_THE_FLANGE or part.startswith(_WRIST_CAMERA_PART)
+
+
+def _pose_key(pose: Pose) -> "tuple[object, ...]":
+    """A pose as the bytes of its position and its orientation, and its frame: two poses with the same key are the same
+    goal to the last bit, whatever they are labelled."""
+    return (pose.frame, np.asarray(pose.position_mm, dtype=np.float64).tobytes(),
+            np.asarray(pose.quaternion_xyzw, dtype=np.float64).tobytes())
+
+
+def _holds_its_world_at(arm: object, junction: str) -> bool:
+    """``safety.planning_world.hold.<junction>`` (``standoff``, ``carry``, ``drop``) as ``arm`` was built with it, read as
+    ``is True``; ``False`` for any other junction and for an arm that carries no such switch."""
+    return junction in ("standoff", "carry", "drop") and getattr(getattr(arm, "_holds", None), junction, False) is True
+
+
+def _joints_key(joints: "JointPositions | Sequence[float]") -> "tuple[object, ...]":
+    """Joints as the bytes of their values: two joint targets with the same key are the same target to the last bit."""
+    values = joints.tolist() if isinstance(joints, JointPositions) else joints
+    return (np.asarray([float(v) for v in values], dtype=np.float64).tobytes(),)
+
+
+def _off_the_line_mm(model: str, start: "Sequence[float]", end: "Sequence[float]", fractions: "Sequence[float]", *,
+                     reach_mm: float) -> float:
+    """How far the joint line from ``start`` to ``end`` puts the flange and what it carries off the straight line between
+    where the two put the flange, at the worst of ``fractions`` of the way along it, millimetres.
+
+    At each fraction: the flange's distance from the point that fraction of the way along the chord between the two
+    flanges, plus how far it turned from the orientation that fraction of the way between theirs times ``reach_mm``, the
+    furthest anything on the flange may stand from it. Read on the DH chain, as :meth:`URRobotArm._line_step_refusal`
+    reads a step; ``inf`` for a model with no chain or an orientation that cannot be read, which no bound admits.
+    """
+    a = np.asarray([float(v) for v in start], dtype=np.float64)
+    b = np.asarray([float(v) for v in end], dtype=np.float64)
+    start_chain, end_chain = ur_link_transforms_mm(model, a), ur_link_transforms_mm(model, b)
+    if start_chain is None or end_chain is None:
+        return math.inf
+    first, last = (np.asarray(chain[-1], dtype=np.float64) for chain in (start_chain, end_chain))
+    worst = 0.0
+    try:
+        turn_a, turn_b = from_rotation_matrix(first[:3, :3]), from_rotation_matrix(last[:3, :3])
+        for fraction in fractions:
+            t = float(fraction)
+            chain = ur_link_transforms_mm(model, a + (b - a) * t)
+            if chain is None:
+                return math.inf
+            flange = np.asarray(chain[-1], dtype=np.float64)
+            off_mm = float(np.linalg.norm(flange[:3, 3] - (first[:3, 3] + (last[:3, 3] - first[:3, 3]) * t)))
+            turned = angle_between(slerp(turn_a, turn_b, t), from_rotation_matrix(flange[:3, :3]))
+            worst = max(worst, off_mm + turned * float(reach_mm))
+    except (GeometryError, ValueError):
+        return math.inf
+    return worst
+
+
 @dataclasses.dataclass(frozen=True, slots=True)
 class _Route:
     """The judged joint waypoints one move runs, and how they were chosen.
@@ -194,13 +287,104 @@ class _Route:
     on the goal; every leg between two neighbours was judged by both authorities. It is the very object they judged,
     never a copy, and it is run as it is. ``dense`` is how many waypoints cuRobo returned, two for a straight line.
     ``how`` is the route in words for the log, ``planned`` whether cuRobo planned it, which decides how a joint move
-    runs it: a straight line is one ``moveJ`` to the goal, a plan one ``moveJ`` per waypoint.
+    runs it: a straight line is one ``moveJ`` to the goal, a plan one ``moveJ`` per waypoint. ``branch_change`` is
+    whether it ends on another branch than the arm holds, ``overshoot_deg`` how far its worst joint swings past the span
+    between its ends on the waypoints that run, nothing for a straight line (the owner's R2, 2026-10-08).
     """
 
     waypoints: "Sequence[Sequence[float]]"
     dense: int
     how: str
     planned: bool
+    branch_change: bool = False
+    overshoot_deg: float = 0.0
+
+
+@dataclasses.dataclass(slots=True)
+class _KeptBranch:
+    """What a :meth:`URRobotArm.keeping_its_branch` block narrows, and what it refused for it.
+
+    ``overshoot_deg`` is how far a cuRobo plan may swing a joint past its span inside the block, where that is tighter
+    than ``safety.planned_motion.max_detour_deg``. ``refused`` counts the moves the block refused although the rules
+    outside it would have gone on: a configuration on another branch was left untried, or a plan within the configured
+    bound swung past this one. A pick reads it after each grasp it tried inside the block.
+    """
+
+    overshoot_deg: float
+    refused: int = 0
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _JudgedAhead:
+    """The route to a standoff a grasp judged ahead ended on (:meth:`URRobotArm.grasp_refusal_ahead`), kept for the one
+    move to that standoff, which runs it as it was judged where nothing it was judged on changed since
+    (:meth:`URRobotArm._drive_curobo`).
+
+    ``route`` is the very object the exact guard judged sample by sample. ``refresh`` built the world it was judged in and
+    ``planner`` holds that world. ``goal`` is the TCP pose it was judged to (:func:`_pose_key`), ``velocity`` the speed its
+    goals were ranked at, ``at`` when the judgement ended (``time.monotonic``). ``state`` is what else a judgement reads
+    (:meth:`URRobotArm._judgement_state`), and ``boxes`` the boxes the camera saw that the exact guard held, compared by
+    identity: every refresh hands the guard a tuple of its own.
+    """
+
+    route: _Route
+    refresh: "WorldRefresh"
+    planner: object
+    goal: "tuple[object, ...]"
+    velocity: float
+    at: float
+    state: "tuple[object, ...]"
+    boxes: "tuple[object, ...]"
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _LiftJudged:
+    """A lift judged at the part from where the arm stands, as if the jaws held the part, inside a held world, on a cell
+    that models no carried part (:meth:`URRobotArm.carried_line_refusal`), kept for the line up that runs it
+    (:meth:`URRobotArm._drive_checked_line`).
+
+    ``pose`` is the lift's top (:func:`_pose_key`), ``reason`` the held world's reason, ``refresh`` the refresh that built
+    the held world and ``planner`` the glue holding it; ``joints`` where the arm stood, ``state`` and ``boxes`` as
+    :class:`_JudgedAhead` keeps them, read while the judgement ran, the hand left unread.
+
+    ``stands_in`` is whether the judgement's part stood in for the one the close will carry, as a lift's does; a line
+    judged as it will run, the line out of a place judged while the jaws open (:meth:`URRobotArm.judge_line_ahead`), is
+    not, and runs on a cell that models a carried part too.
+    """
+
+    pose: "tuple[object, ...]"
+    reason: str
+    refresh: "WorldRefresh"
+    planner: object
+    joints: "tuple[float, ...]"
+    state: "tuple[object, ...]"
+    boxes: "tuple[object, ...]"
+    stands_in: bool = True
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class _NextLegJudged:
+    """The joint move a task declared after the verb running (:meth:`URRobotArm.expecting_next`), judged ahead from where
+    the line before it will leave the arm, in the world a junction holds (``safety.planning_world.hold``), kept for the
+    one joint move to it (:meth:`URRobotArm.move_to_joints`, :meth:`URRobotArm.move_to_home`).
+
+    ``target`` is the declared joints as bytes (:func:`_joints_key`), ``joints`` the configuration judged (its twin inside
+    the goal window), ``route`` the straight joint line judged, from ``start``, the joints the line before it was predicted
+    to end at, to ``joints``. ``reason`` is the held world it was judged in, ``refresh`` the refresh that built it and
+    ``planner`` the glue holding it; ``state`` and ``boxes`` as :class:`_JudgedAhead` keeps them, read where the arm stood
+    still, and ``at`` when the judgement ended (``time.monotonic``).
+    """
+
+    target: "tuple[object, ...]"
+    joints: JointPositions
+    route: _Route
+    start: "tuple[float, ...]"
+    reason: str
+    refresh: "WorldRefresh"
+    planner: object
+    state: "tuple[object, ...]"
+    boxes: "tuple[object, ...]"
+    at: float
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -303,6 +487,8 @@ class URRobotArm(RobotArm):
             acc=config.motion_limits.max_acceleration,
             frequency=config.ur.rtde_frequency,
             brake_on_halt=config.ur.brake_on_halt,
+            # How "the arm stands still" is read: the controller's is_steady() or the joint speeds (2026-10-09).
+            steady_signal=config.safety.dwell.steady_signal,
         )
         self._guard = WorkspaceGuard(config.workspace_limits)
         self._motion = MotionController(
@@ -310,6 +496,9 @@ class URRobotArm(RobotArm):
             self._guard,
             max_velocity=config.motion_limits.max_velocity,
             max_acceleration=config.motion_limits.max_acceleration,
+            # The line's singularity check on the controller's FK or on the arm's own chain (2026-10-09).
+            singularity_fk=config.safety.ik_quality.singularity_fk,
+            arm_model=config.ur.model,
         )
         # The vendor-neutral safety preflight pipeline. It owns its own WorkspaceGuard,
         # shrunk by the configured ``limits.workspace_margin_mm``, so the typed
@@ -345,6 +534,54 @@ class URRobotArm(RobotArm):
         #: Why every line is judged against the world the last refresh built, with no new frame (:meth:`held_world`);
         #: ``None`` outside such a block.
         self._held_world_reason: str | None = None
+        #: The route a grasp judged ahead ended on, for the one move to its standoff (:meth:`grasp_refusal_ahead`,
+        #: :meth:`_drive_curobo`); ``None`` once any motion verb, refresh or held world came after it.
+        self._judged_ahead: _JudgedAhead | None = None
+        #: The lift judged at the part as if the jaws held the part, for the one line up that runs it
+        #: (:meth:`carried_line_refusal`, :meth:`_drive_checked_line`); ``None`` once any other motion came after it.
+        self._lift_judged: _LiftJudged | None = None
+        #: The standoff whose route a grasp judged ahead kept the arm's branch (:func:`_pose_key`), for the move to it,
+        #: which judged again keeps it too (:meth:`_drive_curobo`); ``None`` once any motion verb, refresh or held world
+        #: came after it.
+        self._ahead_kept_its_branch: "tuple[object, ...] | None" = None
+        #: What the :meth:`keeping_its_branch` block running now narrows and counts; ``None`` outside one.
+        self._keeping: _KeptBranch | None = None
+        #: The refresh that vouches for the move running now where it made none itself: the one a route judged ahead was
+        #: judged in (:meth:`_drive_curobo`); :meth:`move` stamps from it and forgets it.
+        self._vouched_by: "WorldRefresh | None" = None
+        dwell = getattr(config.safety, "dwell", None)
+        #: Where the steady gate waits (``safety.dwell.gate_at``): true where this arm judges a motion first and waits for
+        #: steady right before it sends it (:meth:`_send_gate`), and the verbs leave the gate to it
+        #: (:attr:`gates_its_own_sends`). Only a cuRobo arm: every motion of it goes through the sends that gate.
+        self._gates_sends = (self._motion_planner == "curobo" and dwell is not None
+                             and bool(getattr(dwell, "require_steady_before_motion", False))
+                             and str(getattr(dwell, "gate_at", "verb")) == "send")
+        #: When the next leg of a pick or a place is judged (``robot.motion.judge_next_leg``), and where a world is held
+        #: across a junction (``safety.planning_world.hold``).
+        self._next_leg_mode = str(getattr(getattr(config, "motion", None), "judge_next_leg", "off"))
+        self._holds = getattr(getattr(config.safety, "planning_world", None), "hold", None)
+        #: The joint move a task declared after the verb running (:meth:`expecting_next`): its key and its joints.
+        self._expected_next: "tuple[tuple[object, ...], JointPositions] | None" = None
+        #: That move judged ahead (:meth:`judge_the_next_leg`), for the one joint move to it (:meth:`move_to_joints`,
+        #: :meth:`move_to_home`); it outlives the lines before that move, which the start it was judged from names.
+        self._next_leg_ahead: _NextLegJudged | None = None
+        #: The line during whose send that move is judged on a second thread: the line's pose (:func:`_pose_key`) and the
+        #: junction whose hold it is judged in (:meth:`judge_the_next_leg` with ``now`` false).
+        self._next_leg_during: "tuple[tuple[object, ...], str] | None" = None
+        #: Guards :attr:`_next_leg_ahead` between the thread that judges during a line and the one that sends it, and the
+        #: count a judgement still running when its line ended voids itself by.
+        self._next_leg_lock = threading.Lock()
+        self._next_leg_epoch = 0
+        #: The route judged ahead whose world :meth:`holding_the_approach` holds for the move to its standoff; ``None``
+        #: outside that block.
+        self._approach_held_for: _JudgedAhead | None = None
+        if self._gates_sends:
+            self.logger.info("safety.dwell.gate_at is 'send': a motion is judged first, while the arm settles, and the "
+                             "steady gate waits right before it is sent")
+        if self._next_leg_mode == "in_settles_and_motion" and not bool(config.ur.brake_on_halt):
+            self.logger.warning("robot.motion.judge_next_leg is 'in_settles_and_motion' and robot.ur.brake_on_halt is "
+                                "false: a leg is judged during the line before it only where a halt brakes that line, "
+                                "so this arm judges ahead in the jaws' strokes alone ('in_settles')")
         #: The hand this arm carries, as the cell that brought both up handed it over (:meth:`set_hand`); ``None`` for
         #: none. The camera's boxes are set aside only while it reads empty and open (the owner, 2026-10-01).
         self._hand: object | None = None
@@ -878,6 +1115,7 @@ class URRobotArm(RobotArm):
 
     def _retire_planner(self) -> None:
         """Shut the planner down for good and drop it, under the planner lock; a double with only ``close`` is closed."""
+        self._forget_what_was_judged_ahead()
         planner = self._curobo_ur
         if planner is None:
             return
@@ -1125,26 +1363,36 @@ class URRobotArm(RobotArm):
         stamped as :meth:`move_to_joints` stamps its result. With neither a camera world nor a
         decline in scope on a cuRobo cell it is refused first. Every refusal is logged.
         """
+        self._forget_what_was_judged_ahead()
         stamp = self._move_camera_world(UNSET)
         refused = self._refused_for_camera_world(stamp, MotionCommand.MOVE_HOME)
         if refused is not None:
             self.logger.error("move_home REFUSED by %s: %s", refused.status, refused.message)
             return refused
         joints = JointPositions(np.asarray(self._home_joints, dtype=np.float64))
+        ahead = self._take_the_next_leg(joints)
         before = self._planner_refresh()
-        unstamped = self._move_to_home_unstamped(joints)
+        self._vouched_by = None
+        unstamped = self._move_to_home_unstamped(joints, ahead=ahead)
         after = self._planner_refresh()
-        vouched = after.camera_world() if after is not None and after is not before else None
+        ran, self._vouched_by = self._vouched_by, None
+        vouched = (after.camera_world() if after is not None and (after is not before or (ran is not None and ran is after))
+                   else None)
         result = stamp_result(unstamped, self._move_camera_world(UNSET, planned=vouched))
         if not result.ok:
             self.logger.error("move_home REFUSED by %s: %s", result.status, result.message)
         return result
 
-    def _move_to_home_unstamped(self, joints: JointPositions) -> MotionResult:
-        """The body of :meth:`move_to_home`. ``joints`` is the one home every step below reads."""
+    def _move_to_home_unstamped(self, joints: JointPositions, *, ahead: "_NextLegJudged | None" = None) -> MotionResult:
+        """The body of :meth:`move_to_home`. ``joints`` is the one home every step below reads; ``ahead`` the move home
+        judged ahead (:meth:`judge_the_next_leg`), which runs as judged, after the home's own gate, where nothing it was
+        judged on changed."""
         refused = self._home_refusal(joints)
         if refused is not None:
             return refused
+        ran = self._run_the_next_leg(ahead, command=MotionCommand.MOVE_HOME, done="move_home")
+        if ran is not None:
+            return ran
         target, route, refused = self._judge_joint_move(joints, command=MotionCommand.MOVE_HOME)
         if refused is not None:
             return refused
@@ -1300,6 +1548,67 @@ class URRobotArm(RobotArm):
             raise RobotConnectionError("wait_until_steady() requires an open connection.")
         return bool(self._conn.wait_until_steady(timeout_s, poll_interval_s))
 
+    @property
+    def gates_its_own_sends(self) -> bool:
+        """Whether this arm judges a motion first and waits for steady right before it sends it (``safety.dwell.gate_at``
+        ``send``, a cuRobo arm), so a verb asks it to move with no gate of its own (``execution.motion.steady_timeout_of``,
+        ``GraspExecutionPolicy._drive_to``). ``False`` as shipped: every verb waits before it asks, as ever."""
+        return self._gates_sends
+
+    #: How often one motion is judged before it is refused where the arm stands elsewhere than it was judged from each time
+    #: the steady gate lets it go (:meth:`_send_gate`): as it was asked, and again from where the gate found it at rest.
+    _SEND_JUDGEMENTS = 3
+
+    def _send_gate(
+        self, judged_from: "Sequence[float] | None", command: MotionCommand, *,
+        target_pose: Pose | None = None, target_joints: JointPositions | None = None,
+    ) -> "MotionResult | bool | None":
+        """The steady gate right before a send, where this arm gates its own sends (:attr:`gates_its_own_sends`).
+
+        ``None`` where the motion may be sent now, and always on an arm that does not gate its sends. A TIMEOUT result
+        where the arm did not come to rest within ``safety.dwell.steady_timeout_s``, and a CONNECTION_ERROR where the
+        controller could not be asked: nothing is sent. ``True`` where it came to rest more than :data:`_AHEAD_MOVED_MM`
+        from ``judged_from``, the joints the motion was judged from (the map's C4): the caller judges it again from
+        where it stands. A halt that lands meanwhile is refused by the send itself, which reads the latch first.
+        """
+        if not self._gates_sends:
+            return None
+        timeout = float(self.config.safety.dwell.steady_timeout_s)
+        try:
+            steady = self.wait_until_steady(timeout)
+        except (RobotConnectionError, RuntimeError, OSError) as exc:
+            return MotionResult.failed(
+                MotionStatus.CONNECTION_ERROR, command, target_pose=target_pose, target_joints=target_joints,
+                message=(f"the steady gate before the send could not ask the controller ({type(exc).__name__}: {exc}); "
+                         "nothing was sent"), exception=exc,
+            )
+        if not steady:
+            return MotionResult.failed(
+                MotionStatus.TIMEOUT, command, target_pose=target_pose, target_joints=target_joints,
+                message=(f"the arm did not come to rest within {timeout:.2f} s before the motion was sent (safety.dwell, "
+                         "gate_at 'send'); nothing was sent"),
+            )
+        if judged_from is None:
+            return None
+        moved = self._moved_since_mm(judged_from)
+        if moved <= self._AHEAD_MOVED_MM:
+            return None
+        self.logger.info("the arm came to rest %s from where its motion was judged from, more than %g mm: it is judged "
+                         "again from where it stands", f"{moved:.2f} mm" if math.isfinite(moved) else "somewhere that "
+                         "cannot be compared", self._AHEAD_MOVED_MM)
+        return True
+
+    def _kept_moving(
+        self, command: MotionCommand, *, target_pose: Pose | None = None, target_joints: JointPositions | None = None,
+    ) -> MotionResult:
+        """The refusal of a motion whose arm came to rest elsewhere than it was judged from at every steady gate."""
+        return MotionResult.failed(
+            MotionStatus.TIMEOUT, command, target_pose=target_pose, target_joints=target_joints,
+            message=(f"the arm came to rest more than {self._AHEAD_MOVED_MM:g} mm from where the motion was judged from "
+                     f"at each of {self._SEND_JUDGEMENTS} steady gates, so no judgement of it began where it stands; "
+                     "nothing was sent"),
+        )
+
     def move(
         self,
         pose: Pose,
@@ -1329,16 +1638,24 @@ class URRobotArm(RobotArm):
         cannot set it aside for one motion. A MISSING motion, with neither a world nor a decline, is
         refused the same way (``NO_CAMERA_WORLD_MESSAGE``), before it reads a connection or starts a
         planner.
+
+        A route judged ahead to this very pose runs as it was judged where nothing it was judged on changed since
+        (:meth:`_drive_curobo`), and the refresh it was judged in vouches for it, as the one that built a held world
+        vouches for a line judged in it. Whatever this move does, nothing judged ahead outlives it.
         """
         stamp = self._move_camera_world(camera_world)
         refused = self._refused_for_camera_world(stamp, MotionCommand.MOVE_TO, target_pose=pose)
         if refused is not None:
+            self._forget_what_was_judged_ahead()
             return refused
         before = self._planner_refresh()
+        self._vouched_by = None
         unstamped = self._move_unstamped(pose, linear=linear, vel=vel, acc=acc, register=register)
         after = self._planner_refresh()
+        ahead, self._vouched_by = self._vouched_by, None
         # Inside a held world no refresh is made for the motion: the one that built the world it was judged in vouches.
-        held = self._held_world_reason is not None
+        # So does the one a route judged ahead was judged in, where that route ran (:meth:`_drive_curobo`).
+        held = self._held_world_reason is not None or (ahead is not None and ahead is after)
         vouched = after.camera_world() if after is not None and (after is not before or held) else None
         return stamp_result(unstamped, self._move_camera_world(camera_world, planned=vouched))
 
@@ -1353,15 +1670,439 @@ class URRobotArm(RobotArm):
         boxes that one did not, and refused every way back up (the grasp bench, 2026-10-06). Every check the arm makes
         still runs: the exact guard on every sample, the planner against that world, the controller, the halt. Where no
         refresh built a world yet, a line refreshes as ever. ``reason`` is said in the log of every line judged so.
+
+        Nothing judged ahead before the block outlives its start (:meth:`grasp_refusal_ahead`), and no lift judged inside
+        it outlives its end (:meth:`carried_line_refusal`).
         """
         if not str(reason).strip():
             raise ValueError("a held world says why it is held")
+        self._forget_what_was_judged_ahead()
         previous = self._held_world_reason
         self._held_world_reason = str(reason)
         try:
             yield
         finally:
             self._held_world_reason = previous
+            self._lift_judged = None
+
+    def holds_world_at(self, junction: str) -> bool:
+        """Whether this arm holds its world across ``junction`` rather than taking a new frame there
+        (``safety.planning_world.hold``: ``standoff``, ``carry``, ``drop``), where a live camera world is wired. A verb
+        reads it before it holds one (``handling``). ``False`` as shipped."""
+        return self._live_world is not None and self._holds_at(junction)
+
+    def _holds_at(self, junction: str) -> bool:
+        """The switch ``safety.planning_world.hold.<junction>``, read as ``is True`` (:func:`_holds_its_world_at`)."""
+        return _holds_its_world_at(self, junction)
+
+    @property
+    def judges_next_legs(self) -> bool:
+        """Whether a verb judges the next leg while the jaws' stroke is waited out (``robot.motion.judge_next_leg`` not
+        ``off``, on a cuRobo arm): it then has the hand leave the stroke to it (``set_closed(wait=False)``) and asks this
+        arm meanwhile (:meth:`judge_line_ahead`, :meth:`judge_the_next_leg`). ``False`` as shipped."""
+        return self._motion_planner == "curobo" and self._next_leg_mode in ("in_settles", "in_settles_and_motion")
+
+    def _judges_in_motion(self) -> bool:
+        """Whether a declared joint move is judged on a second thread while the line before it runs: ``in_settles_and_
+        motion``, on a send a halt brakes (``robot.ur.brake_on_halt``), whose thread watches the line and brakes it."""
+        return self.judges_next_legs and self._next_leg_mode == "in_settles_and_motion" and self.brakes_in_motion()
+
+    @contextmanager
+    def holding_the_approach(self, standoff: Pose, reason: str) -> Iterator[bool]:
+        """Hold the world a grasp judged ahead to ``standoff`` was judged in, for the move to the standoff and the line
+        down from it (``safety.planning_world.hold.standoff``, the owner's O2 of 2026-10-09): yields ``True`` while it
+        holds it, ``False`` where it holds nothing and every motion refreshes as ever.
+
+        It holds where the switch is on and the route judged ahead to this very standoff stands ready to run as it was
+        judged (:meth:`_why_judged_again`): the line down was judged ahead in that world, and the route in it too
+        (:meth:`grasp_refusal_ahead`), so the line down at the standoff is judged in the world it was judged in at the
+        look rather than in a new frame. The route judged ahead outlives the start of the block, for the one move it
+        serves; otherwise the block is :meth:`held_world`.
+        """
+        if not str(reason).strip():
+            raise ValueError("a held world says why it is held")
+        ahead = self._judged_ahead
+        planner = self._curobo_ur
+        why = ("safety.planning_world.hold.standoff is false" if not self._holds_at("standoff")
+               else "no route to this standoff was judged ahead" if ahead is None or ahead.goal != _pose_key(standoff)
+               or planner is None else self._why_judged_again(ahead, planner, standoff, velocity=ahead.velocity))
+        if why:
+            if self._holds_at("standoff"):
+                self.logger.info("the world is not held for the approach to %s (%s): it is refreshed as ever",
+                                 standoff.label or "<unlabeled>", why)
+            yield False
+            return
+        previous, held_for = self._held_world_reason, self._approach_held_for
+        self._held_world_reason = str(reason)
+        self._approach_held_for = ahead
+        try:
+            yield True
+        finally:
+            self._held_world_reason = previous
+            self._approach_held_for = held_for
+            self._lift_judged = None
+
+    @contextmanager
+    def expecting_next(self, joints: JointPositions) -> Iterator[None]:
+        """Within the block, the joint move to ``joints`` is the leg after the verbs running in it: the carry to the bin's
+        look a task makes after its pick, the return after its place.
+
+        Where ``robot.motion.judge_next_leg`` says so and a junction holds its world (``safety.planning_world.hold``),
+        a verb judges that move ahead from where its line will leave the arm (:meth:`judge_the_next_leg`), and the move
+        runs as it was judged where nothing it was judged on changed. Declaring it moves nothing and judges nothing: a
+        move nobody judged ahead is judged as it runs.
+        """
+        previous = self._expected_next
+        values = JointPositions(tuple(float(v) for v in joints.tolist()))
+        self._expected_next = (_joints_key(values), values)
+        try:
+            yield
+        finally:
+            self._expected_next = previous
+
+    #: How long a joint move judged ahead in a held world stays ready (:meth:`_why_the_next_leg_is_judged_again`): the
+    #: jaws' stroke, the line after it and what a pick and a task do before the move, with room, not a person's answer.
+    _HELD_AHEAD_HOLDS_S = 10.0
+    #: How long the line's send waits, once it ended, for the joint move judged on a second thread during it.
+    _NEXT_LEG_JOIN_S = 30.0
+
+    def judge_the_next_leg(self, after: Pose, *, junction: str, now: bool = True) -> str:
+        """Judge the joint move declared next (:meth:`expecting_next`) from where the line to ``after`` will leave the
+        arm, in the world held now, and keep it for that move; ``""`` where it was kept or left to the line, else why
+        not, said in the log. Nothing moves and nothing is commanded.
+
+        ``junction`` names the hold the world is held under (``carry`` at a part, ``drop`` at a place,
+        ``safety.planning_world.hold``). ``now`` judges it here, where the arm stands still while a verb waits out the
+        jaws' stroke (``robot.motion.judge_next_leg``): from the controller's solution of ``after`` seeded on the joints
+        the arm stands at. ``now`` false leaves it to the line to ``after`` where this arm judges legs during motion
+        (``in_settles_and_motion``, on a send a halt brakes): the line's send solves its end before it is sent and
+        judges the move on a second thread while the line runs (:meth:`_drive_checked_line`).
+
+        The move judged is the straight joint line from that start to the declared joints, turned onto their twin near
+        it, through the destination guards and both authorities at ``safety.planned_motion.line_clearance_mm``, as the
+        move would judge it as it runs. A line that is refused keeps nothing, and the move is judged as it runs. What was
+        judged ahead before is another verb's, and is forgotten here.
+        """
+        self._next_leg_during = None
+        self._drop_the_next_leg()
+        why = self._why_no_next_leg(junction)
+        if why:
+            self.logger.info("the joint move declared next is not judged ahead at %s: %s", junction, why)
+            return why
+        if not now:
+            if not self._judges_in_motion():
+                return "this arm judges no leg during motion"
+            self._next_leg_during = (_pose_key(after), junction)
+            return ""
+        start = self._predicted_end(after)
+        if isinstance(start, str):
+            self.logger.info("the joint move declared next is not judged ahead at %s: %s", junction, start)
+            return start
+        planner = self._curobo_ur
+        return self._judge_the_next_leg_from(start, self._next_leg_ask(), state=self._judgement_state(planner),
+                                             boxes=self._seen_boxes(), epoch=None)
+
+    def _why_no_next_leg(self, junction: str) -> str:
+        """Why no joint move is judged ahead at ``junction`` now, or ``""``."""
+        if not self.judges_next_legs:
+            return "robot.motion.judge_next_leg is off"
+        if not self._holds_at(junction):
+            return f"safety.planning_world.hold.{junction} is false"
+        if self._expected_next is None:
+            return "no joint move was declared next"
+        if self._held_world_reason is None:
+            return "no world is held"
+        refresh = self._planner_refresh()
+        if refresh is None or not refresh.ok or self._curobo_ur is None or self._preflight is None:
+            return "no refresh that vouched for the cell built the world held"
+        if not self._conn.is_connected:
+            return "the arm is not connected"
+        return ""
+
+    def _next_leg_ask(self) -> "tuple[tuple[tuple[object, ...], JointPositions], str, WorldRefresh, object]":
+        """What a judgement of the joint move declared next reads of this arm, read on the thread that sends: the move
+        declared, the held world's reason, the refresh that built it and the planner holding it."""
+        declared, reason, refresh = self._expected_next, self._held_world_reason, self._planner_refresh()
+        assert declared is not None and reason is not None and refresh is not None  # noqa: S101 (_why_no_next_leg)
+        return declared, reason, refresh, self._curobo_ur
+
+    def _predicted_end(self, after: Pose) -> "list[float] | str":
+        """The joints the line to ``after`` ends at, as the controller solves ``after`` seeded on the joints the arm
+        stands at; or why it cannot say."""
+        try:
+            here = JointPositions([float(v) for v in self._conn.get_joint_positions()])
+            return [float(v) for v in self.ik(after, seed=here).tolist()]
+        except (RobotKinematicsError, RobotConnectionError, RuntimeError, OSError) as exc:
+            return f"where the line to {after.label or 'its end'} ends could not be solved ({type(exc).__name__}: {exc})"
+
+    def _judge_the_next_leg_from(
+        self, start: "Sequence[float]",
+        ask: "tuple[tuple[tuple[object, ...], JointPositions], str, WorldRefresh, object]", *,
+        state: "tuple[object, ...]", boxes: "tuple[object, ...]", epoch: "int | None",
+    ) -> str:
+        """Judge the straight joint line from ``start`` to the move ``ask`` declared, in its held world, and keep it; ``""``
+        where it was kept. ``state`` and ``boxes`` were read on the sending thread where the arm stood still; ``epoch``
+        is the count a judgement on a second thread keeps its result under, ``None`` on the sending thread. It sends
+        nothing and asks the controller nothing: a second thread runs it while the line before it is sent."""
+        (key, declared), reason, refresh, planner = ask
+        try:
+            target, _turned = self._twin_near_the_arm(declared, start)
+            assert self._preflight is not None  # noqa: S101 (_why_no_next_leg)
+            refused = self._preflight.gate_joint_target(target, arm=self)
+            line = [[float(v) for v in start], [float(v) for v in target.tolist()]]
+            if refused is None:
+                refused = self._judge_legs(planner, line, command=MotionCommand.MOVE_JOINTS,  # type: ignore[arg-type]
+                                           target_joints=target, clearance_mm=self._line_clearance_mm())
+        except Exception as exc:  # noqa: BLE001 (a judgement ahead that raised keeps nothing; the move is judged as it runs)
+            self.logger.warning("the joint move declared next could not be judged ahead (%s: %s): it is judged as it runs",
+                                type(exc).__name__, exc)
+            return f"it could not be judged ahead ({type(exc).__name__}: {exc})"
+        if refused is not None:
+            self.logger.info("the joint move declared next, judged ahead in the world held (%s), would be refused "
+                             "(%s: %s): it is judged as it runs", reason, refused.status.value, refused.message)
+            return f"it would be refused ({refused.status.value}: {refused.message})"
+        judged = _NextLegJudged(
+            target=key, joints=target, route=self._route(line, planned=False, how="direct line judged ahead"),
+            start=tuple(float(v) for v in start), reason=reason, refresh=refresh, planner=planner, state=state,
+            boxes=boxes, at=time.monotonic(),
+        )
+        with self._next_leg_lock:
+            if epoch is not None and epoch != self._next_leg_epoch:
+                return "its line ended without it"
+            self._next_leg_ahead = judged
+        self.logger.info("the joint move declared next is judged ahead in the world held (%s), from where the line before "
+                         "it ends: it runs as judged where the arm stands within %g mm of there", reason,
+                         self._AHEAD_MOVED_MM)
+        return ""
+
+    def _take_the_next_leg(self, joints: JointPositions) -> "_NextLegJudged | None":
+        """The joint move judged ahead, taken by the joint move to ``joints`` where it is the one declared; it serves one
+        move, so it is gone either way, and a judgement still running for it is void."""
+        with self._next_leg_lock:
+            judged, self._next_leg_ahead = self._next_leg_ahead, None
+            self._next_leg_epoch += 1
+        if judged is None:
+            return None
+        if judged.target != _joints_key(joints):
+            self.logger.info("this joint move goes elsewhere than the one judged ahead: it is judged as it runs")
+            return None
+        return judged
+
+    def _drop_the_next_leg(self) -> None:
+        """Forget the joint move judged ahead, and void a judgement of it still running: a motion that is not it came."""
+        with self._next_leg_lock:
+            self._next_leg_ahead = None
+            self._next_leg_epoch += 1
+
+    def _run_the_next_leg(
+        self, ahead: "_NextLegJudged | None", *, command: MotionCommand, done: str,
+        velocity: float | None = None, acceleration: float | None = None,
+    ) -> MotionResult | None:
+        """Run the joint move judged ahead as it was judged, where nothing it was judged on changed since
+        (:meth:`_why_the_next_leg_is_judged_again`), its refresh vouching for it; ``None`` where there is none, or it is
+        judged again as it runs. It goes out through :meth:`_drive_judged_joints`, the steady gate and the halt latch
+        before every ``moveJ`` as on any judged move."""
+        if ahead is None:
+            return None
+        why = self._why_the_next_leg_is_judged_again(ahead)
+        if why:
+            self.logger.info("%s: the joint move judged ahead is judged again: %s", done, why)
+            return None
+        self.logger.info("%s: the joint move judged ahead runs as it was judged, %.0f ms ago, in the world held (%s); it "
+                         "is not judged a second time", done, 1000.0 * (time.monotonic() - ahead.at), ahead.reason)
+        self._vouched_by = ahead.refresh
+        return self._drive_judged_joints(ahead.joints, ahead.route, command=command, done=done, velocity=velocity,
+                                         acceleration=acceleration)
+
+    def _why_the_next_leg_is_judged_again(self, judged: _NextLegJudged) -> str:
+        """Why the joint move judged ahead is judged again rather than run as it was judged; ``""`` where it runs.
+
+        It runs only where all of this holds, read now: the same planner holds the world of the refresh it was judged
+        in, which no refresh replaced and which vouched for the cell; at most :data:`_HELD_AHEAD_HOLDS_S` passed since;
+        the arm is not halted; it stands within :data:`_AHEAD_MOVED_MM` of where the move was judged from; and what else
+        the judgement read is as it was (:meth:`_judgement_state`, the halts it counted among it, and the camera's boxes
+        the exact guard holds). The world held is the owner's switch (``safety.planning_world.hold``); none needs to be
+        held still, since none was refreshed.
+        """
+        planner = self._curobo_ur
+        if planner is not judged.planner:
+            return "the planner is another than the one that judged it"
+        refresh = getattr(planner, "last_world_refresh", None)
+        if refresh is not judged.refresh or not judged.refresh.ok:
+            return "the planner's world was refreshed since it was judged"
+        took_s = time.monotonic() - judged.at
+        if not took_s <= self._HELD_AHEAD_HOLDS_S:
+            return f"{took_s:.2f} s passed since it was judged, more than {self._HELD_AHEAD_HOLDS_S:g} s"
+        if self._halt_record() is not None:
+            return "the arm is halted"
+        moved = self._moved_since_mm(judged.start)
+        if not moved <= self._AHEAD_MOVED_MM:
+            return (f"the arm stands {moved:.2f} mm from where it was judged from, more than {self._AHEAD_MOVED_MM:g} mm"
+                    if math.isfinite(moved) else "where the arm stands cannot be compared with where it was judged from")
+        if self._judgement_state(planner) != judged.state:
+            return "the carried part, the hand, the camera's boxes the planner holds or the halts changed since"
+        if self._seen_boxes() is not judged.boxes:
+            return "the exact guard holds other boxes the camera saw than the ones it was judged against"
+        return ""
+
+    def _judging_during(self, pose: Pose, during: "tuple[tuple[object, ...], str] | None") -> "threading.Thread | None":
+        """The second thread that judges the joint move declared next while the line to ``pose`` runs, started, where that
+        line is the one :meth:`judge_the_next_leg` left it to; ``None`` where none is to run. Its start is solved, and
+        what it reads of the arm is read, here, before the line is sent: the thread asks the controller nothing.
+
+        Not on a cell that models a carried part while none is carried: there the judgement reads the hand
+        (``why_not_known_open``, a toggle's output read off the controller) where the camera's boxes meet the move, so
+        that move is judged as it runs."""
+        if during is None or during[0] != _pose_key(pose) or not self._judges_in_motion():
+            return None
+        why = self._why_no_next_leg(during[1])
+        if not why and self._payload_config_declined() is None and self._attached_payload is None:
+            why = ("this cell models a carried part and none is carried, so the judgement reads the hand off the "
+                   "controller, which the second thread never asks")
+        start = self._predicted_end(pose) if not why else why
+        if isinstance(start, str):
+            self.logger.info("the joint move declared next is not judged during the line to %s: %s",
+                             pose.label or "<unlabeled>", start)
+            return None
+        ask = self._next_leg_ask()
+        state, boxes = self._judgement_state(ask[3]), self._seen_boxes()
+        with self._next_leg_lock:
+            self._next_leg_epoch += 1
+            epoch = self._next_leg_epoch
+            self._next_leg_ahead = None
+        worker = threading.Thread(target=self._judge_the_next_leg_from, args=(start, ask),
+                                  kwargs={"state": state, "boxes": boxes, "epoch": epoch}, name="judge-the-next-leg",
+                                  daemon=True)
+        # The thread that watches the line reads the halt every 8 ms, and the judgement must not keep it waiting for
+        # the GIL (:data:`_WATCHED_SWITCH_S`).
+        _switching_often()
+        try:
+            worker.start()
+        except BaseException:
+            _switching_as_before()
+            raise
+        self.logger.info("the joint move declared next is judged on a second thread while the line to %s runs",
+                         pose.label or "<unlabeled>")
+        return worker
+
+    def _joined(self, worker: "threading.Thread | None") -> None:
+        """Wait for the judgement :meth:`_judging_during` started, once its line ended; a judgement still running after
+        :data:`_NEXT_LEG_JOIN_S` keeps nothing, and the move is judged as it runs. The switch interval is put back
+        either way."""
+        if worker is None:
+            return
+        try:
+            worker.join(self._NEXT_LEG_JOIN_S)
+        finally:
+            _switching_as_before()
+        if worker.is_alive():
+            with self._next_leg_lock:
+                self._next_leg_epoch += 1
+                self._next_leg_ahead = None
+            self.logger.warning("the joint move declared next was still being judged %g s after its line ended: it is "
+                                "judged as it runs", self._NEXT_LEG_JOIN_S)
+
+    def judge_line_ahead(self, pose: Pose) -> MotionResult | None:
+        """Judge the line to ``pose`` from where the arm stands, now, in the world held now, as the line will run, and keep
+        it for that one line (:meth:`_drive_checked_line`): the line out of a place, judged while the jaws open
+        (``robot.motion.judge_next_leg``, ``safety.planning_world.hold.drop``). ``None`` where the line would run, else
+        the refusal it would meet, which the line meets again as it runs. Nothing moves and nothing is commanded.
+
+        It is the line's own judgement (:meth:`_judge_linear_move`, every sample solved by the controller seeded where
+        the arm stands), made early. It is kept only inside a held world, built by a refresh that vouched for the cell,
+        and it runs only where nothing it read changed (:meth:`_why_the_lift_is_judged_again`): the arm within
+        :data:`_AHEAD_MOVED_MM` of where it stood, the same held world, the carried part, the camera's boxes, the halts.
+        """
+        self._lift_judged = None
+        if pose.frame is not Frame.BASE:
+            return MotionResult.failed(
+                MotionStatus.INVALID_TARGET, MotionCommand.MOVE_TO, target_pose=pose,
+                message=f"URRobotArm.judge_line_ahead requires Frame.BASE; got {pose.frame!r}",
+            )
+        refused = self._refused_for_camera_world(self._move_camera_world(UNSET), MotionCommand.MOVE_TO,
+                                                 target_pose=pose)
+        if refused is not None:
+            return refused
+        joints = self._joints_now()
+        judged = self._judge_linear_move(pose, command=MotionCommand.MOVE_TO, commanded=False)
+        refresh = self._planner_refresh()
+        if judged is None and joints is not None and self._held_world_reason is not None and refresh is not None \
+                and refresh.ok:
+            planner = self._curobo_ur
+            self._lift_judged = _LiftJudged(
+                pose=_pose_key(pose), reason=self._held_world_reason, refresh=refresh, planner=planner, joints=joints,
+                state=self._judgement_state(planner, hand=False), boxes=self._seen_boxes(), stands_in=False,
+            )
+        self.logger.info("the line to %s judged ahead where the arm stands: %s", pose.label or "<unlabeled>",
+                         ("it would run" + ("" if self._lift_judged is not None else ", and nothing is kept outside a held "
+                                            "world")) if judged is None else f"it would be refused: {judged.message}")
+        return judged
+
+    def _joints_now(self) -> "tuple[float, ...] | None":
+        """The joints the arm stands at, or ``None`` where they cannot be read."""
+        try:
+            return tuple(float(v) for v in self._conn.get_joint_positions())
+        except (RobotConnectionError, RuntimeError, OSError):
+            return None
+
+    @contextmanager
+    def keeping_its_branch(self, overshoot_deg: float = 15.0) -> Iterator[_KeptBranch]:
+        """Route every Cartesian move inside the block on the branch the arm holds alone, every cuRobo plan swinging no
+        joint more than ``overshoot_deg`` past its span; yields what the block refused for it.
+
+        The owner's R2 (2026-10-08): a change of branch is the last resort. A pick tries every grasp of a look inside
+        such a block first and leaves the grasps it refuses for their branch until after them
+        (``pick_loop._try_the_grasps``). Inside it, :meth:`_route_to_the_nearest_goal` screens, lines and plans the goals
+        on the arm's branch alone, a plan past ``overshoot_deg`` counts as a detour as one past
+        ``safety.planned_motion.max_detour_deg`` always does, and :meth:`nearest_configuration` answers among the same
+        goals. Where nothing on the branch runs while a goal on another branch, or a plan within the configured bound,
+        was left untried, the move is refused before anything is sent, ``JOINT_LIMIT_REJECTED``, saying it is
+        :data:`_KEEPS_ITS_BRANCH`, and counted on the yielded record (``refused``). Every judgement still runs: the block
+        only narrows what may run. Nothing judged ahead before it outlives its start.
+        """
+        bound = float(overshoot_deg)
+        if not math.isfinite(bound) or bound < 0.0:
+            raise ValueError(f"a kept branch bounds a plan's overshoot by a number of degrees, got {overshoot_deg!r}")
+        self._forget_what_was_judged_ahead()
+        previous = self._keeping
+        kept = _KeptBranch(overshoot_deg=bound)
+        self._keeping = kept
+        try:
+            yield kept
+        finally:
+            self._keeping = previous
+
+    def has_a_goal_on_its_branch(self, pose: Pose, here: "Sequence[float]") -> "bool | None":
+        """Whether ``pose`` has a configuration on the branch the arm holds at ``here``, inside the goal window, read on
+        the closed form alone: no screen, no planner, no controller, about a millisecond and a half. ``None`` where it
+        cannot tell: a pose outside BASE, joints that are no configuration of this arm, a model with no DH chain.
+
+        The window gap (the owner, 2026-10-08): inside the half-turn cable window, a grasp turned the cell's natural way
+        round (``robot.natural_closing_axis``) can have no configuration on the arm's branch where its twin, half a turn
+        about its approach, has one, wrist 3 half a turn on and the branch the same; the pick takes the twin before it
+        leaves the grasp for later or changes branch (``pick_loop._closing_along``). On 2026-10-07 the natural turn
+        needed wrist 3 at +90 degrees, the window about that day's home ended at +86.4, and the cell judged a shoulder and
+        elbow flip. The goals are the ones a move ranks (:meth:`_goals_in_window`, :meth:`_ranked_goals`): true is a
+        first group a move to ``pose`` screens before any other branch.
+        """
+        if pose.frame is not Frame.BASE:
+            return None
+        joints = [float(v) for v in here]
+        if len(joints) != self.capabilities.dof or not all(math.isfinite(v) for v in joints):
+            return None
+        goals = self._goals_in_window(self._pose_to_flange(pose), pose, joints,
+                                      velocity=float(self.config.motion_limits.max_velocity))
+        if isinstance(goals, MotionResult):
+            # A model with no chain says nothing; a pose out of reach, or none of whose turns lies in the window, has none.
+            return None if goals.status is MotionStatus.CONTROLLER_REJECTED else False
+        return bool(self._ranked_goals(joints, goals).groups[0])
+
+    def _forget_what_was_judged_ahead(self) -> None:
+        """Forget the route a grasp judged ahead, that it kept the arm's branch, and the lift judged at the part: the next
+        motion is judged as it runs."""
+        self._judged_ahead = None
+        self._lift_judged = None
+        self._ahead_kept_its_branch = None
 
     def _refused_for_camera_world(
         self, stamp: CameraWorldStamp, command: MotionCommand, *,
@@ -1422,6 +2163,7 @@ class URRobotArm(RobotArm):
     ) -> MotionResult:
         """The body of :meth:`move`. It stamps nothing; the public verb does."""
         if pose.frame is not Frame.BASE:
+            self._forget_what_was_judged_ahead()
             return MotionResult.failed(
                 MotionStatus.INVALID_TARGET,
                 MotionCommand.MOVE_TO,
@@ -1436,6 +2178,7 @@ class URRobotArm(RobotArm):
             if linear:
                 return self._drive_checked_line(pose, vel=vel, acc=acc)
             return self._drive_curobo(pose, vel=vel, acc=acc)
+        self._forget_what_was_judged_ahead()
         # Pre-resolve IK on the driver side, so the preflight pipeline sees
         # ``target_joints`` for every Cartesian command. Joint-limit, IK-quality and the
         # arm-against-arm part of the self-collision guard would otherwise fail closed as
@@ -1547,6 +2290,16 @@ class URRobotArm(RobotArm):
         Exactly the list that passed runs, one ``moveJ`` per waypoint, at the speed clamped to ``motion_limits``, and
         one log line says how it was chosen and how far each joint turns on it.
 
+        A route a grasp judged ahead to this pose (:meth:`grasp_refusal_ahead`) runs instead of a second judgement of the
+        same route, where nothing it was judged on changed since (:meth:`_why_judged_again`): the very route the exact
+        guard judged sample by sample, in the world the guard and the planner still hold, from where the arm still
+        stands. It serves one move, and the refresh it was judged in vouches for it (:meth:`move`). The halt is read
+        before every waypoint as on any route (``CuroboUrPlanner.execute``). Anything else, and the route is judged again.
+        Where the route judged ahead kept the arm's branch, the route judged again keeps it too: the other branches are
+        not tried, and a move that would change branch where the judgement ahead did not is refused before anything is
+        sent, ``JOINT_LIMIT_REJECTED`` (the owner's R2, 2026-10-08). Inside :meth:`keeping_its_branch` every route keeps
+        it.
+
         It is fail-closed. An unavailable cuRobo gives ``CONTROLLER_REJECTED``; a goal out of reach ``IK_FAILED``; a
         goal with no configuration inside the window ``JOINT_LIMIT_REJECTED``; a planner that will not start from
         where the arm stands the status of what it found there; a goal every configuration of which the endpoint gate
@@ -1555,6 +2308,8 @@ class URRobotArm(RobotArm):
         at, and the log line naming every goal and why it failed; a guard or the planner refusing a plan's end or legs
         the matching status. There is no blind motion.
         """
+        ahead, kept_ahead = self._judged_ahead, self._ahead_kept_its_branch
+        self._forget_what_was_judged_ahead()
         if not self._conn.is_connected:
             return MotionResult.failed(
                 MotionStatus.CONNECTION_ERROR, MotionCommand.MOVE_TO, target_pose=pose,
@@ -1574,17 +2329,134 @@ class URRobotArm(RobotArm):
         # plan differently: one speed for every joint orders the goals the same whatever it is.
         ranked_at = (float(vel) if vel is not None and math.isfinite(float(vel)) and float(vel) > 0.0
                      else float(self.config.motion_limits.max_velocity))
-        try:
-            route = self._route_to_the_nearest_goal(planner, goal, pose, velocity=ranked_at)
-        except CuroboUnavailableError as exc:
-            return MotionResult.failed(
-                MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
-                message=f"cuRobo planner unavailable: {exc}", exception=exc,
-            )
-        if isinstance(route, MotionResult):
-            return route
+        # A move to a pose is no joint move declared next: whatever was judged ahead for one is not this move's.
+        self._drop_the_next_leg()
+        route: "_Route | MotionResult | None" = None
+        if ahead is not None:
+            why = self._why_judged_again(ahead, planner, pose, velocity=ranked_at)
+            if not why:
+                self.logger.info(
+                    "move to %s: the route judged ahead runs as it was judged, %.0f ms ago, in the world of the refresh "
+                    "it was judged in (%d box(es)); it is not judged a second time",
+                    pose.label or "<unlabeled>", 1000.0 * (time.monotonic() - ahead.at),
+                    int(getattr(ahead.refresh, "registered", 0) or 0),
+                )
+                self._vouched_by = ahead.refresh
+                route = ahead.route
+            else:
+                self.logger.info("move to %s: the route judged ahead is judged again: %s", pose.label or "<unlabeled>",
+                                 why)
+        for _ in range(self._SEND_JUDGEMENTS):
+            if route is None:
+                try:
+                    route = self._route_to_the_nearest_goal(
+                        planner, goal, pose, velocity=ranked_at,
+                        held_only=kept_ahead is not None and kept_ahead == _pose_key(pose))
+                except CuroboUnavailableError as exc:
+                    return MotionResult.failed(
+                        MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
+                        message=f"cuRobo planner unavailable: {exc}", exception=exc,
+                    )
+            if isinstance(route, MotionResult):
+                return route
+            gate = self._send_gate(route.waypoints[0], MotionCommand.MOVE_TO, target_pose=pose)
+            if isinstance(gate, MotionResult):
+                return gate
+            if gate is None:
+                break
+            route, self._vouched_by = None, None
+        else:
+            return self._kept_moving(MotionCommand.MOVE_TO, target_pose=pose)
         self._log_the_route(f"move to {pose.label or '<unlabeled>'}", route)
-        return planner.execute(route.waypoints, pose, vel=vel, acc=acc)
+        return planner.execute(self._sent_waypoints(route), pose, vel=vel, acc=acc)
+
+    def _sent_waypoints(self, route: _Route) -> "Sequence[Sequence[float]]":
+        """The waypoints of ``route`` sent, one ``moveJ`` each: all of them, and where this arm gates its own sends, whose
+        gate found the arm at rest within :data:`_AHEAD_MOVED_MM` of the first, the ones after it (the map's C4): a
+        ``moveJ`` to the first would go to where the arm stands, and the first leg then runs from there, within the bound
+        a route judged ahead runs from."""
+        if self._gates_sends and len(route.waypoints) > 1:
+            return route.waypoints[1:]
+        return route.waypoints
+
+    #: How long a route judged ahead stays ready for the move to its standoff: the grasp's preamble between the two took
+    #: 10 ms on the cell (2026-10-08). A person asked anything in between takes longer, and the route is judged again.
+    _AHEAD_HOLDS_S = 0.5
+    #: How far the arm may stand from where a route or a lift judged ahead starts for it to run as judged, in the path
+    #: gate's own metric (the sum of |dq| * r over the joints): ten times the encoder noise of an arm at rest, about
+    #: 0.05 mm.
+    _AHEAD_MOVED_MM = 0.5
+
+    def _why_judged_again(self, ahead: _JudgedAhead, planner: object, pose: Pose, *, velocity: float) -> str:
+        """Why the route judged ahead to ``pose`` is judged again rather than run as it was judged; ``""`` where it runs.
+
+        It runs only where all of this holds, read now: the same planner holds the world of the refresh it was judged
+        in, which no refresh replaced and which vouched for the cell; at most :data:`_AHEAD_HOLDS_S` passed since; no
+        world is held but the one held for this very route (:meth:`holding_the_approach`, the world it was judged in);
+        this move goes to the same pose, to the last bit, at the speed its goals were ranked at; the arm
+        is not halted and no halt came since; it stands within :data:`_AHEAD_MOVED_MM` of where the route starts; and
+        what else the judgement read is as it was: the part carried, modelled or not, by the arm and by the planner, the
+        camera's boxes the planner and the exact guard hold, the hand (:meth:`_judgement_state`).
+        """
+        if planner is not ahead.planner:
+            return "the planner is another than the one that judged it"
+        refresh = getattr(planner, "last_world_refresh", None)
+        if refresh is not ahead.refresh or not ahead.refresh.ok:
+            return "the planner's world was refreshed since it was judged"
+        took_s = time.monotonic() - ahead.at
+        if not took_s <= self._AHEAD_HOLDS_S:
+            return f"{took_s:.2f} s passed since it was judged, more than {self._AHEAD_HOLDS_S:g} s"
+        if self._held_world_reason is not None and self._approach_held_for is not ahead:
+            # The world held for this very route (:meth:`holding_the_approach`) is the one it was judged in: no other.
+            return f"a world is held ({self._held_world_reason})"
+        if _pose_key(pose) != ahead.goal:
+            return "this move goes to another pose than the one it was judged to"
+        if velocity != ahead.velocity:
+            return "this move ranks its goals at another speed than the judgement did"
+        if self._halt_record() is not None:
+            return "the arm is halted"
+        moved = self._moved_since_mm(ahead.route.waypoints[0])
+        if not moved <= self._AHEAD_MOVED_MM:
+            return (f"the arm stands {moved:.2f} mm from where the route starts, more than {self._AHEAD_MOVED_MM:g} mm"
+                    if math.isfinite(moved) else "where the arm stands cannot be compared with where the route starts")
+        if self._judgement_state(planner) != ahead.state:
+            return "the carried part, the hand, the camera's boxes the planner holds or the halts changed since"
+        if self._seen_boxes() is not ahead.boxes:
+            return "the exact guard holds other boxes the camera saw than the ones it was judged against"
+        return ""
+
+    def _moved_since_mm(self, joints: "Sequence[float]") -> float:
+        """How far the arm stands now from ``joints``, the sum of |dq| * r over the joints of the path gate; ``inf`` where
+        it cannot be read."""
+        radii = self._preflight.joint_radii_mm(self) if self._preflight is not None else None
+        try:
+            here = [float(v) for v in self._conn.get_joint_positions()]
+        except (RobotConnectionError, RuntimeError, OSError):
+            return math.inf
+        then = [float(v) for v in joints]
+        if radii is None or not len(here) == len(then) == len(radii):
+            return math.inf
+        moved = sum(abs(a - b) * float(r) for a, b, r in zip(here, then, radii))
+        return moved if math.isfinite(moved) else math.inf
+
+    def _judgement_state(self, planner: object, *, hand: bool = True) -> "tuple[object, ...]":
+        """What a judgement of this arm reads besides its world, its joints and the exact guard's boxes, compared whole:
+        the part the arm models and the planner took, whether the jaws closed on one, whether the planner may carry one
+        and which camera boxes it holds, the hand where ``hand`` (``core.gripper.why_not_known_open``), and how many halts
+        the connection counted."""
+        seen = getattr(planner, "perceived_in_world", None)
+        return (self._attached_payload, self._payload_in_planner, self._closed_on_part,
+                getattr(planner, "carries_part", None), seen() if callable(seen) else None,
+                why_not_known_open(self._hand) if hand else None, self._halt_count())
+
+    def _seen_boxes(self) -> "tuple[object, ...]":
+        """The boxes the camera saw that the exact guard holds now, the very tuple the last refresh handed it."""
+        return tuple(self._preflight.perceived_obstacles(self)) if self._preflight is not None else ()
+
+    def _halt_count(self) -> "int | None":
+        """How many times the connection's latch was set, or ``None`` for a connection double that does not count them."""
+        count = getattr(self._conn, "halt_requests", None)
+        return count if isinstance(count, int) and not isinstance(count, bool) else None
 
     #: How many configurations of one goal cuRobo is asked to plan to, once no straight line to any of them is clear. A
     #: joint plan that fails costs cuRobo all its attempts, about 7 to 9 s a goal measured on the UR10 descriptor on this
@@ -1596,12 +2468,15 @@ class URRobotArm(RobotArm):
     _NEAREST_GOAL_END_TOL_RAD = 1e-4
 
     def _route_to_the_nearest_goal(
-        self, planner: CuroboUrPlanner, goal: Pose, pose: Pose, *, velocity: float,
+        self, planner: CuroboUrPlanner, goal: Pose, pose: Pose, *, velocity: float, held_only: bool = False,
     ) -> "_Route | MotionResult":
         """The judged route to the configuration of ``goal`` nearest the arm, or the typed refusal of the move.
 
         ``goal`` is the flange goal and ``pose`` the TCP pose the caller asked for, which every refusal names. Raises
-        ``CuroboUnavailableError`` where the planner cannot be reached.
+        ``CuroboUnavailableError`` where the planner cannot be reached. ``held_only``, and every route inside
+        :meth:`keeping_its_branch`, keeps the arm's branch: the other branches are not tried, and a move nothing on the
+        branch runs while one of them was left untried is refused before anything is sent, ``JOINT_LIMIT_REJECTED``
+        (:meth:`_refused_for_its_branch`); inside the block a plan also keeps to its tighter overshoot bound.
 
         cuRobo, handed a pose, picks a configuration for it from random seeds over the whole joint range and does not
         prefer the one nearest the arm: measured on a UR10, a wrist sweep took 8 of 22 legs the long way, and the same
@@ -1627,19 +2502,28 @@ class URRobotArm(RobotArm):
         goals = self._goals_in_window(goal, pose, here, velocity=velocity)
         if isinstance(goals, MotionResult):
             return goals
+        ranked = self._ranked_goals(here, goals)
+        held, branches, groups, names = ranked.held, ranked.branches, ranked.groups, ranked.names
+        kept = held_only or self._keeping is not None
+        configured_deg = float(self.config.safety.planned_motion.max_detour_deg)
+        bound_deg = configured_deg if self._keeping is None else min(configured_deg, self._keeping.overshoot_deg)
+        if kept and not groups[0]:
+            # Nothing on the arm's branch lies in the window: no world is refreshed for a move that keeps it.
+            refused_for_it = self._refused_for_its_branch(pose, ranked, [], narrowed=0, held_only=held_only)
+            if refused_for_it is not None:
+                return refused_for_it
         refused = self._refresh_before_the_path_gate(
             near_point_mm=[float(v) for v in goal.position_mm], command=MotionCommand.MOVE_TO,
             target_pose=pose, goal_tcp_mm=self._tcp_of_pose(pose),
         )
         if refused is not None:
             return refused
-        ranked = self._ranked_goals(here, goals)
-        held, branches, groups, names = ranked.held, ranked.branches, ranked.groups, ranked.names
         tried: list[str] = []
         end_refusals: list[MotionResult] = []
         detours: list[tuple[float, str]] = []
+        narrowed = 0
         planned = 0
-        for group in groups:
+        for group in (groups[:1] if kept else groups):
             admissible: list[NearestGoal] = []
             for candidate in group:
                 if self._mesh_first_refusal(planner, [list(candidate.joints)]) is None:
@@ -1705,11 +2589,13 @@ class URRobotArm(RobotArm):
                 if trajectory is None:
                     tried.append(why)
                     continue
-                over_deg, detour = self._detour(trajectory)
+                over_deg, detour = self._detour(trajectory, cap_deg=bound_deg)
                 if detour:
                     said = f"cuRobo's plan to {names[candidate]} {detour}"
                     tried.append(f"{said}, so it is not taken")
                     detours.append((over_deg, said))
+                    # Past the kept branch's bound alone: outside the block the plan would have been taken.
+                    narrowed += int(over_deg <= configured_deg)
                     continue
                 # The plan ends on its goal, or nothing moves. The end check reads where cuRobo's own last
                 # configuration puts the flange on the controller's kinematics, which a planner answering in another
@@ -1734,6 +2620,10 @@ class URRobotArm(RobotArm):
                                    tried=tried, held=held, reached=branches[candidate])
         self.logger.error("move to %s refused, nothing was sent: %s", pose.label or "<unlabeled>",
                           "; ".join(tried) or "no goal was admissible")
+        if kept:
+            refused_for_it = self._refused_for_its_branch(pose, ranked, tried, narrowed=narrowed, held_only=held_only)
+            if refused_for_it is not None:
+                return refused_for_it
         if len(end_refusals) == len(goals):
             # Every configuration met the endpoint gate and none passed it: the end is the gate's to name, as a plan's
             # end always was, and there was nothing a planner could have been asked.
@@ -1751,6 +2641,41 @@ class URRobotArm(RobotArm):
         return MotionResult.failed(
             MotionStatus.TIMEOUT, MotionCommand.MOVE_TO, target_pose=pose, message=NO_PLAN_FAIL_SAFE_MESSAGE,
         )
+
+    def _refused_for_its_branch(
+        self, pose: Pose, ranked: _RankedGoals, tried: "Sequence[str]", *, narrowed: int, held_only: bool,
+    ) -> "MotionResult | None":
+        """The refusal of a move that keeps the arm's branch and that nothing on that branch runs, where the rules outside
+        would have gone on: a configuration on another branch was left untried, or ``narrowed`` plans were refused past
+        the bound of :meth:`keeping_its_branch` alone. ``None`` where neither, and the move's own refusal stands.
+
+        ``JOINT_LIMIT_REJECTED``, nothing sent, counted on the block running (``refused``), which a pick reads to try the
+        grasp again once every grasp that keeps the branch failed. ``held_only`` outside a block is the route a grasp
+        judged ahead on the arm's branch, judged again by the move to its standoff (:meth:`_drive_curobo`).
+        """
+        others = len(ranked.groups[1])
+        if not others and not narrowed:
+            return None
+        keeping = self._keeping
+        if keeping is not None:
+            keeping.refused += 1
+        held = ranked.held.render() if ranked.held is not None else "unknown"
+        why = "; ".join(tried) or "no configuration of this goal on it lies inside the joint window"
+        left = [f"{others} configuration(s) on another branch"] if others else []
+        if narrowed and keeping is not None:
+            left.append(f"{narrowed} plan(s) swinging a joint more than the {keeping.overshoot_deg:g} deg a kept "
+                        "branch allows")
+        if keeping is not None or not held_only:  # a block keeps it; outside one only a route judged ahead does
+            message = (f"this move is {_KEEPS_ITS_BRANCH} ({held}), and nothing on it runs ({why}): "
+                       f"{' and '.join(left)} were left untried, a change of branch being the last resort; nothing "
+                       "was sent")
+        else:
+            message = (f"the route judged ahead to this pose was {_KEEPS_ITS_BRANCH} ({held}), and judged again here "
+                       f"nothing on that branch runs ({why}): a change of branch nobody judged ahead is not taken, "
+                       f"{' and '.join(left)} were left untried, and nothing was sent")
+        self.logger.warning("move to %s refused: %s", pose.label or "<unlabeled>", message)
+        return MotionResult.failed(MotionStatus.JOINT_LIMIT_REJECTED, MotionCommand.MOVE_TO, target_pose=pose,
+                                   message=message)
 
     def _goals_in_window(
         self, goal: Pose, pose: Pose, here: "Sequence[float]", *, velocity: float,
@@ -2050,26 +2975,33 @@ class URRobotArm(RobotArm):
                 return ("the exact guard cannot say how low the arm and the hand reach, and only the planner holds the "
                         "declared support plane")
             top = float(getattr(plane, "height_mm", 0.0) or 0.0)
-            for q in configs:
-                low = pairs.lowest(q)
+            below = top + float(pairs.min_distance_mm)
+            # Each configuration in turn; where the guard judges paths whole (whole_path_judge), only those it may
+            # refuse, the first of them found over all of them at once (ExactPairs.first_low), and the same sentence.
+            index = pairs.first_low(configs, below)
+            while index < len(configs):
+                low = pairs.lowest(configs[index])
                 if low is None:
                     return "the exact guard cannot place the arm over the declared support plane, which only the planner holds"
-                if low < top + float(pairs.min_distance_mm):
+                if low < below:
                     return (f"a part of the arm or the hand comes {low - top:.1f} mm over the declared support plane, "
                             f"within the guard's {float(pairs.min_distance_mm):g} mm, and only the planner holds that "
                             "plane")
+                index = pairs.first_low(configs, below, start=index + 1)
         # The robot's own base: no guard part holds it, the planner's shoulder_link stands for it (review of F1,
         # 2026-09-30, the Hand-E admitted touching it), so a line that brings a part near it stays the planner's too.
         if pairs.base is None:
             return "the exact guard knows no base for this arm, and only the planner's shoulder_link stands for it"
-        for q in configs:
-            near = pairs.base(q)
+        index = pairs.first_near_base(configs, float(pairs.min_distance_mm))
+        while index < len(configs):
+            near = pairs.base(configs[index])
             if near is None:
                 return "the exact guard cannot place the arm beside its base, which only the planner holds"
             part, gap = near
             if gap < float(pairs.min_distance_mm):
                 return (f"{part} comes {gap:.1f} mm from the robot's base, within the guard's "
                         f"{float(pairs.min_distance_mm):g} mm, and only the planner holds the base")
+            index = pairs.first_near_base(configs, float(pairs.min_distance_mm), start=index + 1)
         return None
 
     def _world_set_aside(
@@ -2285,13 +3217,21 @@ class URRobotArm(RobotArm):
         """
         if tried:
             how += f", after {'; '.join(tried)}"
-        if not _same_branch(held, reached):
+        changes = not _same_branch(held, reached)
+        if changes:
             self.logger.warning(
                 "this move changes the arm's branch from %s to %s: no configuration on the branch it holds could be "
                 "reached (%s)", _branch_text(held), _branch_text(reached), "; ".join(tried) or "none was admissible",
             )
             how += f"; branch change from {_branch_text(held)} to {_branch_text(reached)}"
-        return _Route(waypoints=waypoints, dense=dense, how=how, planned=planned)
+        overshoot_deg = 0.0
+        if planned:
+            try:
+                overshoot_deg = max((math.degrees(v) for v in span_overshoot_rad(waypoints)), default=0.0)
+            except ValueError:  # a waypoint that cannot be read: the path gate refused it before a route was made
+                overshoot_deg = 0.0
+        return _Route(waypoints=waypoints, dense=dense, how=how, planned=planned, branch_change=changes,
+                      overshoot_deg=overshoot_deg)
 
     def _line_clearance_mm(self) -> float:
         """How far a straight joint line has to stay from the planner's world: ``safety.planned_motion``."""
@@ -2302,17 +3242,19 @@ class URRobotArm(RobotArm):
         the exact guard may decide past (``band.admission_refusal``). Undeclared reads 0, and no planner starts then."""
         return float(getattr(self.config.safety.self_collision, "planner_margin_mm", 0.0) or 0.0)
 
-    def _detour(self, waypoints: "Sequence[Sequence[float]]") -> "tuple[float, str]":
+    def _detour(self, waypoints: "Sequence[Sequence[float]]", *, cap_deg: "float | None" = None) -> "tuple[float, str]":
         """How far a path swings its worst joint beyond the span between its start and its goal, where that is too far.
 
         ``(degrees, sentence)`` where some joint swings more than ``safety.planned_motion.max_detour_deg`` past the
         span, the sentence naming the joint; ``(0.0, "")`` where every joint stays within it. The bound is read on the
         waypoints: the legs between them are straight joint lines and add nothing to it
-        (:func:`~src.robot.safety.path_samples.span_overshoot_rad`).
+        (:func:`~src.robot.safety.path_samples.span_overshoot_rad`). ``cap_deg`` is a tighter bound where one holds, the
+        one of :meth:`keeping_its_branch`, and the sentence then names it.
         """
         from .curobo_motion import UR_ARM_JOINT_NAMES
 
-        cap_deg = float(self.config.safety.planned_motion.max_detour_deg)
+        configured_deg = float(self.config.safety.planned_motion.max_detour_deg)
+        cap_deg = configured_deg if cap_deg is None else float(cap_deg)
         try:
             overshoot = [math.degrees(v) for v in span_overshoot_rad(waypoints)]
         except ValueError:  # a waypoint that cannot be read: the path gate refuses it and says why
@@ -2321,8 +3263,12 @@ class URRobotArm(RobotArm):
             return 0.0, ""
         worst = max(range(len(overshoot)), key=overshoot.__getitem__)
         joint = UR_ARM_JOINT_NAMES[worst] if len(overshoot) == len(UR_ARM_JOINT_NAMES) else f"joint {worst + 1}"
+        # The configured bound wherever it refuses the plan too: the tighter one is the reason only where it alone does.
+        bound = (f"safety.planned_motion.max_detour_deg of {configured_deg:g}"
+                 if cap_deg >= configured_deg or overshoot[worst] > configured_deg
+                 else f"the {cap_deg:g} deg a move {_KEEPS_ITS_BRANCH} allows")
         return overshoot[worst], (f"swings {joint} {overshoot[worst]:.1f} deg beyond the span between its start and "
-                                  f"its goal, more than safety.planned_motion.max_detour_deg of {cap_deg:g}")
+                                  f"its goal, more than {bound}")
 
     def _goal_joint_window(self) -> tuple[list[float], list[float]]:
         """Where a chosen goal's joints may lie, in radians: the planner's window, narrowed to what the guard admits.
@@ -2679,7 +3625,13 @@ class URRobotArm(RobotArm):
 
         ``start`` judges the line as if the arm stood elsewhere, the TCP pose and the joints it would stand at there
         (:meth:`grasp_refusal_ahead`): the line from that pose, its first sample solved seeded on those joints.
+
+        A lift judged from where the arm stands that would run, inside a held world, on a cell that models no carried
+        part, is kept for the line up that runs it (:meth:`_drive_checked_line`): there a part nobody models is judged as
+        an empty hand is (the owner, 2026-10-05, "mehr Griffe"), so the judgement after the close reads exactly what this
+        one read, in the same world, and every sample of that line was judged here.
         """
+        self._lift_judged = None
         if pose.frame is not Frame.BASE:
             return MotionResult.failed(
                 MotionStatus.INVALID_TARGET, MotionCommand.MOVE_TO, target_pose=pose,
@@ -2693,87 +3645,187 @@ class URRobotArm(RobotArm):
         holds = (self._attached_payload is not None or self._closed_on_part
                  or (planner is not None and getattr(planner, "carries_part", False) is True))
         judged: MotionResult | None = None
+        kept: _LiftJudged | None = None
         try:
             if not holds:
                 self.attach_payload(float(grip_width_mm))
             judged = self._judge_linear_move(pose, command=MotionCommand.MOVE_TO, commanded=False, start=start)
+            if judged is None and start is None:
+                kept = self._lift_to_keep(pose)
         finally:
             if not holds and not self.detach_payload():
                 self.logger.warning(
                     "the part handed to the planner for a lift judged as if the jaws held it is not confirmed forgotten: "
                     "until a detach confirms it, the planner judges every motion as if a part were carried, and nothing "
                     "of the camera's world is set aside")
+        self._lift_judged = kept
         self.logger.info("a lift to %s judged as if the jaws held a part %.1f mm across: %s",
                          pose.label or "<unlabeled>", float(grip_width_mm),
                          "it would run" if judged is None else f"it would be refused: {judged.message}")
         return judged
 
+    def _lift_to_keep(self, pose: Pose) -> "_LiftJudged | None":
+        """The lift to ``pose`` just judged from where the arm stands, as :meth:`_drive_checked_line` may run it; ``None``
+        where the line up would not judge exactly what was judged: outside a held world or before a refresh that vouched
+        built it, and on a cell that models a carried part, whose judgement after the close holds a part this one only
+        stood in for. Read while the judgement's own part is still in place, the hand left unread: a cell that models no
+        part reads no hand (:meth:`_world_aside_refusal`), and the jaws are open now and closed then."""
+        refresh = self._planner_refresh()
+        if (self._held_world_reason is None or refresh is None or not refresh.ok
+                or self._payload_config_declined() is None or self._attached_payload is not None):
+            return None
+        try:
+            joints = tuple(float(v) for v in self._conn.get_joint_positions())
+        except (RobotConnectionError, RuntimeError, OSError):
+            return None
+        planner = self._curobo_ur
+        return _LiftJudged(pose=_pose_key(pose), reason=self._held_world_reason, refresh=refresh, planner=planner,
+                           joints=joints, state=self._judgement_state(planner, hand=False), boxes=self._seen_boxes())
+
+    def _why_the_lift_is_judged_again(self, lift: _LiftJudged, pose: Pose) -> str:
+        """Why the line up to ``pose`` is judged again rather than run on the lift judged at the part; ``""`` where it
+        runs: in the same held world, on the refresh that built it, by the same planner, to the same pose to the last bit,
+        on a cell that models no carried part where the judgement's part stood in for the one carried
+        (:attr:`_LiftJudged.stands_in`), unhalted, the arm within :data:`_AHEAD_MOVED_MM` of where it stood, and what else
+        the judgement read as it was (:meth:`_judgement_state`, the hand unread)."""
+        if self._held_world_reason is None or self._held_world_reason != lift.reason:
+            return "it is not inside the held world the lift was judged in"
+        if self._planner_refresh() is not lift.refresh or self._curobo_ur is not lift.planner:
+            return "the planner or its world is another than the lift was judged in"
+        if _pose_key(pose) != lift.pose:
+            return "this line goes to another pose than the lift judged"
+        if lift.stands_in and (self._payload_config_declined() is None or self._attached_payload is not None):
+            return "this cell models the carried part, which the lift judged at the part only stood in for"
+        if self._halt_record() is not None:
+            return "the arm is halted"
+        moved = self._moved_since_mm(lift.joints)
+        if not moved <= self._AHEAD_MOVED_MM:
+            return (f"the arm stands {moved:.2f} mm from where the lift was judged, more than {self._AHEAD_MOVED_MM:g} mm"
+                    if math.isfinite(moved) else "where the arm stands cannot be compared with where the lift was judged")
+        if self._judgement_state(self._curobo_ur, hand=False) != lift.state:
+            return "the carried part, the camera's boxes the planner holds or the halts changed since"
+        if self._seen_boxes() is not lift.boxes:
+            return "the exact guard holds other boxes the camera saw than the ones the lift was judged against"
+        return ""
+
     def grasp_refusal_ahead(self, *, standoff: Pose, grasp: Pose, lift: Pose, grip_width_mm: float) -> str:
         """Why a grasp would be refused before its jaws close, judged now from where the arm stands; ``""`` where every
         judgement passes, and on a cell that judges nothing ahead (no cuRobo, no guard, no connection). Nothing moves.
 
-        :class:`~src.robot.core.arm_capabilities.JudgesGraspsAhead`. In the order the pick runs them, each from where the
-        one before ends, each in the world the motion itself would refresh: the planned move to ``standoff``, the very
-        route :meth:`move` would run (:meth:`_route_to_the_nearest_goal`); the line down to ``grasp`` from the
+        :class:`~src.robot.core.arm_capabilities.JudgesGraspsAhead`. The pick runs the planned move to ``standoff``, the
+        very route :meth:`move` would run (:meth:`_route_to_the_nearest_goal`); the line down to ``grasp`` from the
         configuration that route ends on; and the lift to ``lift`` from the grasp's configuration, solved by the
         controller seeded on that end, as if the jaws held a part ``grip_width_mm`` across, the camera's boxes not set
         aside (:meth:`carried_line_refusal`). A blocker's pick asks it of each grasp it may take (the owner, 2026-10-03).
+
+        They are judged in the order that judges each once (the judge chain, 2026-10-08). The line down first, from the
+        configuration the route ends on as the closed form names it before any route is planned
+        (:meth:`nearest_configuration`: the same goals in the same order the route takes them). Then the lift from the
+        grasp's configuration, in the world the line down was judged in: both are built about the grasp, the region
+        between the jaws left out there (:meth:`_judge_linear_move`), and the pick judges the lift in that world at the
+        part too (:meth:`held_world`). The route last. Where it ends on that very configuration, to the last bit, each
+        was judged once, with two refreshes, and the route stays ready for the move to the standoff, which runs it as it
+        was judged where nothing changed since (:meth:`_drive_curobo`). Where it ends anywhere else (a cuRobo plan, another
+        goal, a turn flip), where an arm link refused the line down, whose place the configuration decides, and where the
+        standoff has no configuration, the line and the lift are judged again from the route's end, each in the world it
+        refreshes, as before.
+
+        A line down the exact guard refuses at a part on the flange against a fixture is every configuration's refusal
+        (:func:`_on_the_flange`) and ends the judgement before the route, which plans and judges thousands of samples:
+        17 s a grasp in a bin's corner, for a line then refused 0.07 mm short at wrist 3 (the grasp bench, 2026-10-06).
+        The first refusal ends the judgement and is said.
+
+        A grasp all of whose judgements pass on a route that keeps the arm's branch has the move to its standoff keep it
+        too, judged again or not (:meth:`_drive_curobo`, the owner's R2 of 2026-10-08).
+
+        With ``safety.planning_world.hold.standoff`` (the owner's O2 of 2026-10-09) the route is judged in the world the
+        line down from ``near`` was judged in, where that line passed: the three are judged in one world, about the grasp
+        with the region between its jaws left out, and the move to the standoff and the line down from it then hold that
+        world (:meth:`holding_the_approach`) instead of taking a frame at the standoff.
         """
         if self._motion_planner != "curobo" or self._preflight is None or not self._conn.is_connected:
             return ""
         for name, asked in (("standoff", standoff), ("grasp", grasp), ("lift", lift)):
             if asked.frame is not Frame.BASE:
                 return f"the {name} is not in Frame.BASE ({asked.frame!r}), so the grasp is not judged ahead"
+        # Whatever was judged ahead before is another grasp's.
+        self._judged_ahead = self._lift_judged = self._ahead_kept_its_branch = None
         planner = self._curobo_ur_planner()
-        early = self._flange_line_refusal(standoff, grasp)
-        if early is not None:
-            return f"the line down to the grasp would be refused ({early.status.value}: {early.message})"
+        width = float(grip_width_mm)
+
+        def line_from(joints: "list[float]") -> "MotionResult | None":
+            return self._judge_linear_move(grasp, command=MotionCommand.MOVE_TO, commanded=False,
+                                           start=(standoff, joints))
+
+        def lift_from(joints: "list[float]", world: "WorldRefresh | None") -> str:
+            """The lift from the grasp's configuration solved seeded on ``joints``, in ``world`` while it stands."""
+            try:
+                at_grasp = [float(v) for v in self.ik(grasp, seed=JointPositions(joints)).tolist()]
+            except (RobotKinematicsError, RobotConnectionError) as exc:
+                return f"the grasp has no inverse kinematics solution from the standoff: {exc}"
+            held = (self.held_world("the lift judged ahead, in the world the line down to its grasp was judged in")
+                    if world is not None and self._planner_refresh() is world else nullcontext())
+            with held:
+                carried = self.carried_line_refusal(lift, grip_width_mm=width, start=(grasp, at_grasp))
+            if carried is None:
+                return ""
+            return (f"the lift, as if the jaws held a part {width:g} mm across, would be refused "
+                    f"({carried.status.value}: {carried.message})")
+
         try:
-            route = self._route_to_the_nearest_goal(planner, self._pose_to_flange(standoff), standoff,
-                                                    velocity=float(self.config.motion_limits.max_velocity))
+            near: "list[float] | None" = [float(v) for v in self.nearest_configuration(standoff).values]
+        except Exception:  # noqa: BLE001 (no early answer: the route judges the standoff and says why)
+            near = None
+        line = None if near is None else line_from(near)
+        if line is not None and _on_the_flange(line):
+            return f"the line down to the grasp would be refused ({line.status.value}: {line.message})"
+        if near is not None and line is None:
+            said = lift_from(near, self._planner_refresh())
+            if said:
+                return said
+        velocity = float(self.config.motion_limits.max_velocity)
+        # The owner's O2 (safety.planning_world.hold.standoff, 2026-10-09): the route is judged in the world the line down
+        # was judged in, which the move to the standoff and the line down from it then hold (holding_the_approach).
+        world = self._planner_refresh() if near is not None and line is None else None
+        route_held: "AbstractContextManager[None]" = (
+            self.held_world("the route to the standoff, judged in the world its line down was judged in")
+            if _holds_its_world_at(self, "standoff") and world is not None and world.ok else nullcontext())
+        try:
+            with route_held:
+                route = self._route_to_the_nearest_goal(planner, self._pose_to_flange(standoff), standoff,
+                                                        velocity=velocity)
         except CuroboUnavailableError as exc:
             return f"the move to the standoff could not be judged: cuRobo planner unavailable: {exc}"
         if isinstance(route, MotionResult):
             return f"the move to the standoff would be refused ({route.status.value}: {route.message})"
         at_standoff = [float(v) for v in route.waypoints[-1]]
-        refused = self._judge_linear_move(grasp, command=MotionCommand.MOVE_TO, commanded=False,
-                                          start=(standoff, at_standoff))
+        if near is not None and line is None and at_standoff == near:
+            self._keep_the_route_ahead(planner, route, standoff, velocity=velocity)
+            self._ahead_kept_its_branch = None if route.branch_change else _pose_key(standoff)
+            return ""
+        refused = line_from(at_standoff)
         if refused is not None:
             return f"the line down to the grasp would be refused ({refused.status.value}: {refused.message})"
-        try:
-            at_grasp = [float(v) for v in self.ik(grasp, seed=JointPositions(at_standoff)).tolist()]
-        except (RobotKinematicsError, RobotConnectionError) as exc:
-            return f"the grasp has no inverse kinematics solution from the standoff: {exc}"
-        carried = self.carried_line_refusal(lift, grip_width_mm=float(grip_width_mm), start=(grasp, at_grasp))
-        if carried is not None:
-            return (f"the lift, as if the jaws held a part {float(grip_width_mm):g} mm across, would be refused "
-                    f"({carried.status.value}: {carried.message})")
-        return ""
+        said = lift_from(at_standoff, None)
+        # Set last: the line and the lift judged again refresh the world, and a refresh forgets what was judged ahead.
+        self._ahead_kept_its_branch = None if said or route.branch_change else _pose_key(standoff)
+        return said
 
-    def _flange_line_refusal(self, standoff: Pose, grasp: Pose) -> "MotionResult | None":
-        """The refusal of the line from ``standoff`` down to ``grasp`` where the exact guard refuses it at a part on the
-        flange against a fixture, judged from the standoff's nearest configuration; ``None`` otherwise.
-
-        The hand, its camera and wrist 3 hang on the flange: on a straight line of the TCP they stand where the TCP puts
-        them, whichever configuration the line starts from, so such a refusal is every configuration's and the route to
-        the standoff need not be planned to find it. It is judged before the route, which plans and judges thousands of
-        samples: 17 s a grasp in a bin's corner, for a line then refused 0.07 mm short at wrist 3 (the grasp bench,
-        2026-10-06). Any other refusal, of an arm link whose place the configuration decides, and any line the guard
-        lets run, is left to the judgement after the route, as before; so is a standoff with no configuration.
-        """
-        try:
-            at_standoff = [float(v) for v in self.nearest_configuration(standoff).values]
-        except Exception:  # noqa: BLE001 (no early answer: the route judges the standoff and says why)
-            return None
-        refused = self._judge_linear_move(grasp, command=MotionCommand.MOVE_TO, commanded=False,
-                                          start=(standoff, at_standoff))
-        if refused is None:
-            return None
-        found = _FIXTURE_PAIR.search(str(refused.message or ""))
-        part = found.group("part") if found is not None else ""
-        if part in _ON_THE_FLANGE or part.startswith(_WRIST_CAMERA_PART):
-            return refused
-        return None
+    def _keep_the_route_ahead(self, planner: object, route: _Route, standoff: Pose, *, velocity: float) -> None:
+        """Keep ``route``, judged last of a grasp judged ahead, for the move to ``standoff`` (:meth:`_drive_curobo`):
+        where no world is held and the planner's last refresh, which vouched for the cell, built the world it was judged
+        in. Nothing is kept otherwise, and the move judges its route as it runs."""
+        refresh = self._planner_refresh()
+        # The planner's own refresh first: an identity test narrows ``refresh`` to the attribute's type for mypy, and
+        # the None test after it narrows that again.
+        if getattr(planner, "last_world_refresh", None) is not refresh:
+            return
+        if refresh is None or not refresh.ok or self._held_world_reason is not None:
+            return
+        self._judged_ahead = _JudgedAhead(
+            route=route, refresh=refresh, planner=planner, goal=_pose_key(standoff), velocity=float(velocity),
+            at=time.monotonic(), state=self._judgement_state(planner), boxes=self._seen_boxes(),
+        )
 
     def lines_refusal_ahead(self, *, approach: Pose, lines: Sequence[Pose]) -> str:
         """Why the planned move to ``approach``, or one of the straight ``lines`` after it, would be refused, judged now
@@ -2957,6 +4009,7 @@ class URRobotArm(RobotArm):
         Set before the first planned move. An arm that already built its planner passes it
         on, so a cell that wires this after connecting still gets it.
         """
+        self._forget_what_was_judged_ahead()
         self._live_world = world
         if self._curobo_ur is not None:
             self._curobo_ur.set_live_world(world)
@@ -3247,10 +4300,12 @@ class URRobotArm(RobotArm):
         logged at DEBUG, not as a refused motion. It answers on an ik cell too, because the closed form needs no
         planner. One speed for every joint orders the goals the same whatever it is, so the configured maximum
         stands in for a move's; only two configurations equally near to the last bit, which serve alike, can be
-        taken in the other order.
+        taken in the other order. Inside :meth:`keeping_its_branch` only the configurations on the branch the arm holds
+        are asked, as a move there routes to no other.
 
         Raises ``RobotKinematicsError`` whose message says ``refused by`` what refused ``pose``: the inverse
-        kinematics (out of reach, or a model with no DH chain), the joint window (no configuration inside it), or the
+        kinematics (out of reach, or a model with no DH chain), the joint window (no configuration inside it), the
+        branch a :meth:`keeping_its_branch` block keeps (none on it inside the window), or the
         endpoint gate (the box, or every configuration refused, the first one's refusal quoted). Raises
         ``RobotConnectionError`` where the controller cannot say where the arm stands, a reading that failed or one
         that is no configuration of this arm (a joint that is not finite, another number of joints), which is no
@@ -3283,8 +4338,13 @@ class URRobotArm(RobotArm):
             by = "the joint window" if goals.status is MotionStatus.JOINT_LIMIT_REJECTED else "the inverse kinematics"
             raise RobotKinematicsError(f"{label}: refused by {by}: {goals.message}")
         ranked = self._ranked_goals(here, goals)
+        asked = ranked.groups[0] if self._keeping is not None else ranked.in_order
+        if not asked:
+            raise RobotKinematicsError(
+                f"{label}: refused by the branch the arm keeps: none of the {len(ranked.in_order)} configuration(s) "
+                f"inside the joint window is on {_branch_text(ranked.held)}, and this move is {_KEEPS_ITS_BRANCH}")
         refusals: list[MotionResult] = []
-        for candidate in ranked.in_order:
+        for candidate in asked:
             refused = self._screen_planned_config(pose, JointPositions(candidate.joints))
             if refused is None:
                 self.logger.debug("nearest configuration of %s: %s, after %d refused by the endpoint gate",
@@ -3292,7 +4352,7 @@ class URRobotArm(RobotArm):
                 return JointPositions(candidate.joints)
             refusals.append(refused)
             if refused.status is MotionStatus.WORKSPACE_REJECTED:
-                why = (f"the workspace box refuses the TCP, which each of its {len(ranked.in_order)} configuration(s) "
+                why = (f"the workspace box refuses the TCP, which each of its {len(asked)} configuration(s) "
                        f"inside the joint window puts in the same place, {refused.status.value}: {refused.message}")
                 break
         else:
@@ -3465,16 +4525,23 @@ class URRobotArm(RobotArm):
         declined joint move on an arm whose live camera world is wired is refused with ``UNSUPPORTED``
         before its path is judged, and so is a MISSING joint move, with neither a world nor a decline.
         """
+        self._forget_what_was_judged_ahead()
+        ahead = self._take_the_next_leg(joints)
         stamp = self._move_camera_world(camera_world)
         refused = self._refused_for_camera_world(stamp, MotionCommand.MOVE_JOINTS, target_joints=joints)
         if refused is not None:
             return refused
         before = self._planner_refresh()
+        self._vouched_by = None
         unstamped = self._move_to_joints_unstamped(
-            joints, velocity=velocity, acceleration=acceleration,
+            joints, velocity=velocity, acceleration=acceleration, ahead=ahead,
         )
         after = self._planner_refresh()
-        vouched = after.camera_world() if after is not None and after is not before else None
+        ran, self._vouched_by = self._vouched_by, None
+        # A move judged ahead in a held world (judge_the_next_leg) is vouched for by the refresh it was judged in, as a
+        # route judged ahead is (move).
+        vouched = (after.camera_world() if after is not None and (after is not before or (ran is not None and ran is after))
+                   else None)
         return stamp_result(unstamped, self._move_camera_world(camera_world, planned=vouched))
 
     def _move_to_joints_unstamped(
@@ -3483,8 +4550,14 @@ class URRobotArm(RobotArm):
         *,
         velocity: float | None = None,
         acceleration: float | None = None,
+        ahead: "_NextLegJudged | None" = None,
     ) -> MotionResult:
-        """The body of :meth:`move_to_joints`. It stamps nothing; the public verb does."""
+        """The body of :meth:`move_to_joints`. It stamps nothing; the public verb does. ``ahead`` is the move judged ahead
+        to these joints (:meth:`judge_the_next_leg`), which runs as judged where nothing it was judged on changed."""
+        ran = self._run_the_next_leg(ahead, command=MotionCommand.MOVE_JOINTS, done="move_to_joints",
+                                     velocity=velocity, acceleration=acceleration)
+        if ran is not None:
+            return ran
         target, route, refused = self._judge_joint_move(joints, command=MotionCommand.MOVE_JOINTS)
         if refused is not None:
             return refused
@@ -3512,6 +4585,7 @@ class URRobotArm(RobotArm):
         them, so the arm turns at each and runs on; a halt ends it where it is. No blend: a blended corner leaves the
         legs the guard judged.
         """
+        self._forget_what_was_judged_ahead()
         last = waypoints[-1] if waypoints else None
         stamp = self._move_camera_world(camera_world)
         refused = self._refused_for_camera_world(stamp, MotionCommand.MOVE_JOINTS, target_joints=last)
@@ -3526,8 +4600,11 @@ class URRobotArm(RobotArm):
 
     def _drive_joint_path(
         self, waypoints: "list[JointPositions]", *, velocity: float | None, acceleration: float | None,
+        judgements: int = 1,
     ) -> MotionResult:
-        """The body of :meth:`move_through_joints_on_the_line`: judge the whole path, then send it."""
+        """The body of :meth:`move_through_joints_on_the_line`: judge the whole path, then send it. Where this arm gates
+        its own sends, the steady gate waits right before the send, and a path whose arm came to rest more than
+        :data:`_AHEAD_MOVED_MM` from where it was judged from is judged again from there (``judgements`` counts them)."""
         command = MotionCommand.MOVE_JOINTS
         if not waypoints:
             return MotionResult.failed(MotionStatus.INVALID_TARGET, command,
@@ -3585,6 +4662,14 @@ class URRobotArm(RobotArm):
         if refused is not None:
             return dataclasses.replace(
                 refused, message=f"{refused.message}; a joint path only: nothing is planned around it, nothing was sent")
+        gate = self._send_gate(here, command, target_joints=targets[-1])
+        if isinstance(gate, MotionResult):
+            return gate
+        if gate is not None:
+            if judgements >= self._SEND_JUDGEMENTS:
+                return self._kept_moving(command, target_joints=targets[-1])
+            return self._drive_joint_path(waypoints, velocity=velocity, acceleration=acceleration,
+                                          judgements=judgements + 1)
         self._log_the_route("move_through_joints_on_the_line",
                             self._route(path, planned=False, how=f"one joint path through {len(targets)} waypoint(s)"))
         vel, acc = self._motion._clamp(velocity, acceleration)
@@ -3616,6 +4701,7 @@ class URRobotArm(RobotArm):
         :meth:`move_to_joints`. An arm whose paths nobody judges, the ik planner or no preflight, refuses it
         ``UNSUPPORTED`` before anything is sent: a line nobody judged is not the line the owner allows.
         """
+        self._forget_what_was_judged_ahead()
         stamp = self._move_camera_world(camera_world)
         refused = self._refused_for_camera_world(stamp, MotionCommand.MOVE_JOINTS, target_joints=joints)
         if refused is not None:
@@ -3625,7 +4711,7 @@ class URRobotArm(RobotArm):
         if unstamped is None:
             unstamped = self._drive_judged_joints(
                 target, route, command=MotionCommand.MOVE_JOINTS, done="move_to_joints_on_the_line",
-                velocity=velocity, acceleration=acceleration,
+                velocity=velocity, acceleration=acceleration, plan_around=False,
             )
         after = self._planner_refresh()
         vouched = after.camera_world() if after is not None and after is not before else None
@@ -3640,6 +4726,7 @@ class URRobotArm(RobotArm):
         done: str,
         velocity: float | None = None,
         acceleration: float | None = None,
+        plan_around: bool = True,
     ) -> MotionResult:
         """Run the joint move that was just judged, and type what the controller answered.
 
@@ -3650,13 +4737,29 @@ class URRobotArm(RobotArm):
         :meth:`_drive_joints` carries the typed refusal on its raise, whose message says whether ``moveJ`` had been
         sent, and a raise that carries none still reads CONTROLLER_REJECTED rather than a status nobody could
         classify. ``done`` is the message of a move that ran.
+
+        Where this arm gates its own sends (``safety.dwell.gate_at`` ``send``), the steady gate waits here, right
+        before the send (:meth:`_send_gate`), and a move whose arm came to rest more than :data:`_AHEAD_MOVED_MM` from
+        where it was judged from is judged again from where it stands, as it was asked (``plan_around``), before
+        anything is sent.
         """
+        for _ in range(self._SEND_JUDGEMENTS):
+            gate = self._send_gate(None if route is None else route.waypoints[0], command, target_joints=joints)
+            if isinstance(gate, MotionResult):
+                return gate
+            if gate is None:
+                break
+            joints, route, refused = self._judge_joint_move(joints, command=command, plan_around=plan_around)
+            if refused is not None:
+                return refused
+        else:
+            return self._kept_moving(command, target_joints=joints)
         if route is not None:
             self._log_the_route(done, route)
         if route is not None and route.planned:
             vel, acc = self._motion._clamp(velocity, acceleration)
             result = self._curobo_ur_planner().execute(
-                route.waypoints, command=command, target_joints=joints, vel=vel, acc=acc,
+                self._sent_waypoints(route), command=command, target_joints=joints, vel=vel, acc=acc,
             )
             return dataclasses.replace(result, message=done) if result.ok else result
         try:
@@ -3885,6 +4988,8 @@ class URRobotArm(RobotArm):
             self.logger.info("the world is held (%s): judged against the %d box(es) the last refresh registered",
                              self._held_world_reason, int(getattr(held, "registered", 0) or 0))
             return None
+        # A new world: nothing judged ahead in the one it replaces runs as judged.
+        self._forget_what_was_judged_ahead()
         try:
             self._curobo_ur_planner().refresh_world(near_point_mm=near_point_mm, **self._goal_keep_out(goal_tcp_mm))
         except CuroboUnavailableError as exc:
@@ -4014,6 +5119,9 @@ class URRobotArm(RobotArm):
 
         ``start`` is a TCP pose and the joints the arm would stand at there: the line is judged from that pose, its
         first sample seeded on those joints, as if the arm stood there (a grasp judged ahead). Never with ``commanded``.
+        Such a line is solved by the controller at knots :data:`_AHEAD_KNOT_MM` apart at most rather than at every sample
+        (:meth:`_judge_line_samples`): it is a prediction, and the line that runs is judged again where the arm stands,
+        every sample solved.
         """
         if self._preflight is None:
             return None
@@ -4078,7 +5186,19 @@ class URRobotArm(RobotArm):
             samples, pose=pose, owns_tool=owns_tool, radii=radii, command=command,
             seed_joints=None if start is None else start[1],
             near_point_mm=[float(v) for v in low.position_mm], keep_out_pose=low,
+            knot_mm=None if start is None else self._AHEAD_KNOT_MM,
         )
+
+    #: How far apart, at most, the controller solves a line judged ahead (``start``, never commanded), the joint line
+    #: between two solutions filled at the line's own step as every step is. On nominal UR10 DH the cell's two grasp lines
+    #: of 2026-10-08 (80 mm down, 100 mm up), filled between knots 12 mm apart, put the flange 26 to 33 um off the line
+    #: moveL runs, against 1.7 to 2.2 um at the 3 mm a commanded line is solved at, for a quarter of the controller's round
+    #: trips at 32.5 ms each (the judge chain, 2026-10-08).
+    _AHEAD_KNOT_MM = 12.0
+    #: How far off the line the controller runs a step between two knots may put the flange and what it carries
+    #: (:func:`_off_the_line_mm`) before that step is solved at every sample, as a commanded line is: three times what the
+    #: cell's lines measured, and far inside the step the path gate judges at.
+    _AHEAD_KNOT_OFF_MM = 0.1
 
     def _line_step_refusal(
         self,
@@ -4149,11 +5269,30 @@ class URRobotArm(RobotArm):
         seed_joints: "Sequence[float] | None" = None,
         near_point_mm: "Sequence[float] | None" = None,
         keep_out_pose: Pose | None = None,
+        knot_mm: "float | None" = None,
     ) -> "MotionResult | None":
         """Solve every sample of a line and hand the configurations to both authorities; ``seed_joints`` stands for the
         joints the arm stands at where the line is judged from elsewhere (:meth:`_judge_linear_move`'s ``start``).
         ``near_point_mm`` is where the world is built about, the flange of ``pose`` where it is not given, and
-        ``keep_out_pose`` the TCP whose region between the jaws is left out of it, ``pose`` where it is not given."""
+        ``keep_out_pose`` the TCP whose region between the jaws is left out of it, ``pose`` where it is not given.
+
+        ``knot_mm`` has the controller solve the line at knots that far apart at most, every few samples, rather than
+        at every sample: the line judged ahead. The step from one knot to the next is kept as a step between two
+        samples is, the joint line between their solutions filled at the line's step, so the path gate judges
+        configurations no further apart than its bound. Where every sample it covers is inside the workspace box, its
+        knot has a solution, it is no branch change (:meth:`_line_step_refusal`), and it puts the flange and what it
+        carries no more than :data:`_AHEAD_KNOT_OFF_MM` off the line (:func:`_off_the_line_mm`). Any other step is
+        solved at every sample, seeded on its start, and judged as every step of a line is, which gives its verdict as
+        before.
+
+        With ``robot.safety.ik_quality.line_ik: local`` (the owner, 2026-10-09) every sample and knot is solved here, on
+        the controller's own kinematics (:meth:`_controller_chain`, :func:`~src.robot.safety._ur_ik.ur_chain_ik_nearest`),
+        rather than by a round trip each, and the controller is asked at two of them, the first solved and the last,
+        whether its ``getInverseKinematics`` with the same seed answers the same configuration within
+        :data:`~src.robot.safety._ur_ik.CONTROLLER_AGREEMENT_RAD`. Where it does, the configurations judged are the
+        controller's to that; where it does not, where a sample cannot be vouched for here (no solution, another as near
+        the seed, a singularity) or where the controller's rows or its TCP cannot be read, the line is walked again from
+        its start with the controller solving it, as before."""
         assert self._preflight is not None  # noqa: S101 (the caller checked)
         configs: list[tuple[float, ...]] = []
         # The line starts at the joints the arm stands at. moveL starts there whatever an
@@ -4163,48 +5302,81 @@ class URRobotArm(RobotArm):
         seed: JointPositions = JointPositions([float(v) for v in (
             self._conn.get_joint_positions() if seed_joints is None else seed_joints)])
         bound = samples.step_bound_mm if samples.step_bound_mm > 0.0 else float(self._preflight.path_step_mm or 0.0)
-        for index, sample in enumerate(samples.poses):
-            tcp = self._pose_from_flange(sample) if owns_tool else sample
-            if not self._guard.is_inside_workspace(self._coerce_urpose(tcp)):
-                x, y, z = (float(v) for v in tcp.position_mm)
-                return MotionResult.failed(
-                    MotionStatus.WORKSPACE_REJECTED, command, target_pose=pose,
-                    message=(
-                        f"sample {index + 1} of {len(samples.poses)} of this line puts the grasp "
-                        f"centre at ({x:.1f}, {y:.1f}, {z:.1f}), outside workspace_limits"
-                    ),
-                )
+        count = len(samples.poses)
+
+        def tcp_at(index: int) -> Pose:
+            sample = samples.poses[index]
+            return self._pose_from_flange(sample) if owns_tool else sample
+
+        def outside(index: int) -> "MotionResult | None":
+            tcp = tcp_at(index)
+            if self._guard.is_inside_workspace(self._coerce_urpose(tcp)):
+                return None
+            x, y, z = (float(v) for v in tcp.position_mm)
+            return MotionResult.failed(
+                MotionStatus.WORKSPACE_REJECTED, command, target_pose=pose,
+                message=(
+                    f"sample {index + 1} of {count} of this line puts the grasp "
+                    f"centre at ({x:.1f}, {y:.1f}, {z:.1f}), outside workspace_limits"
+                ),
+            )
+
+        class NotSolvedHere(Exception):
+            """A sample the controller's chain solved here cannot vouch for: the line is walked again by the controller."""
+
+        # line_ik: local. Each sample solved here, as (its TCP, its seed, its solution) for the two the controller is
+        # asked about; ``chain`` is None where the controller solves every sample, as it always did.
+        chain = self._controller_chain() if self.config.safety.ik_quality.line_ik == "local" else None
+        solved_here: "list[tuple[Pose, JointPositions, JointPositions]]" = []
+
+        def by_the_controller(tcp: Pose, start: JointPositions) -> JointPositions:
+            return self.ik(tcp, seed=start)
+
+        def here(tcp: Pose, start: JointPositions) -> JointPositions:
+            from src.robot.safety._ur_ik import ur_chain_ik_nearest, ur_pose_matrix_m
+
+            assert chain is not None  # noqa: S101 (only ever the solver where there is one)
+            rows, flange_from_tcp, model = chain
+            goal = ur_pose_matrix_m(self._pose_to_controller(tcp).to_ur_list()) @ flange_from_tcp
+            answer = ur_chain_ik_nearest(model, rows, goal, start.tolist())
+            if answer.joints is None:
+                raise NotSolvedHere(answer.why_not)
+            solved = JointPositions(answer.joints)
+            solved_here.append((tcp, start, solved))
+            return solved
+
+        solve = by_the_controller if chain is None else here
+
+        def solved_at(index: int, start: JointPositions) -> "JointPositions | MotionResult":
             try:
-                solved = self.ik(tcp, seed=seed)
+                return solve(tcp_at(index), start)
             except (RobotKinematicsError, RobotConnectionError) as exc:
                 return MotionResult.failed(
                     MotionStatus.IK_FAILED, command, target_pose=pose,
                     message=(
-                        f"sample {index + 1} of {len(samples.poses)} of this line has no inverse "
+                        f"sample {index + 1} of {count} of this line has no inverse "
                         f"kinematics solution: {exc}"
                     ),
                     exception=exc,
                 )
-            previous = seed.tolist()
-            refused = self._line_step_refusal(
-                previous, solved.tolist(), index=index, count=len(samples.poses), bound_mm=bound, pose=pose,
-                command=command,
-            )
-            if refused is not None:
-                return refused
+
+        def kept(index: int, previous: "list[float]", solved: JointPositions,
+                 filled: "PathSamples | None" = None) -> "MotionResult | None":
             # The path gate is told a bound on how far any point moves between two configurations
             # it judges, and the sum |dq_j| * r_j is the one bound that holds without the geometry.
             # Where a continuous step is more than the sum can vouch for, the joint line between
-            # its two solutions is judged too, at the line's own step; the chord check above is
-            # what says that joint line is the motion moveL runs.
+            # its two solutions is judged too, at the line's own step; the chord check before it
+            # (_line_step_refusal, and _off_the_line_mm between knots) is what says that joint line
+            # is the motion moveL runs.
             if bound > 0.0:
-                try:
-                    filled = joint_path_samples(previous, solved.tolist(), reach_mm=radii, max_step_mm=bound)
-                except ValueError as exc:
-                    return MotionResult.failed(
-                        MotionStatus.UNSUPPORTED, command, target_pose=pose,
-                        message=f"sample {index + 1} of {len(samples.poses)} of this line cannot be judged: {exc}",
-                    )
+                if filled is None:
+                    try:
+                        filled = joint_path_samples(previous, solved.tolist(), reach_mm=radii, max_step_mm=bound)
+                    except ValueError as exc:
+                        return MotionResult.failed(
+                            MotionStatus.UNSUPPORTED, command, target_pose=pose,
+                            message=f"sample {index + 1} of {count} of this line cannot be judged: {exc}",
+                        )
                 configs.extend(filled.configs[1:-1])
             configs.append(tuple(solved.tolist()))
             if len(configs) > MAX_PATH_SAMPLES:
@@ -4215,7 +5387,106 @@ class URRobotArm(RobotArm):
                         f"{bound:.2f} mm a step; move it in shorter lines"
                     ),
                 )
-            seed = solved
+            return None
+
+        def walk(first: int, last: int, start: JointPositions) -> "JointPositions | MotionResult":
+            """Samples ``first`` to ``last``, each solved seeded on the one before, ``start`` before the first."""
+            for index in range(first, last + 1):
+                refused = outside(index)
+                if refused is not None:
+                    return refused
+                solved = solved_at(index, start)
+                if isinstance(solved, MotionResult):
+                    return solved
+                previous = start.tolist()
+                refused = self._line_step_refusal(
+                    previous, solved.tolist(), index=index, count=count, bound_mm=bound, pose=pose, command=command,
+                )
+                if refused is None:
+                    refused = kept(index, previous, solved)
+                if refused is not None:
+                    return refused
+                start = solved
+            return start
+
+        def knot_to(first: int, knot: int, start: JointPositions) -> "JointPositions | MotionResult | None":
+            """The step from sample ``first`` to sample ``knot``, solved at the knot alone; ``None`` where it is to be
+            solved at every sample, and nothing of it was kept."""
+            if knot <= first + 1 or any(outside(index) is not None for index in range(first + 1, knot + 1)):
+                return None
+            solved = solved_at(knot, start)
+            if isinstance(solved, MotionResult):
+                return None
+            previous = start.tolist()
+            if self._line_step_refusal(previous, solved.tolist(), index=knot, count=count, bound_mm=bound, pose=pose,
+                                       command=command) is not None:
+                return None
+            try:
+                filled = joint_path_samples(previous, solved.tolist(), reach_mm=radii, max_step_mm=bound)
+            except ValueError:
+                return None
+            steps = len(filled.configs) - 1
+            fractions = [0.5, *(k / steps for k in range(1, steps))]
+            if not _off_the_line_mm(str(self.config.ur.model), previous, solved.tolist(), fractions,
+                                    reach_mm=max(radii)) <= self._AHEAD_KNOT_OFF_MM:
+                return None
+            refused = kept(knot, previous, solved, filled)
+            return solved if refused is None else refused
+
+        every = (max(1, int(math.floor(float(knot_mm) / bound + 1e-9)))
+                 if knot_mm is not None and bound > 0.0 else 1)
+
+        def walked_line() -> "JointPositions | MotionResult":
+            """The line walked from its start, at knots ``every`` samples apart where they hold, at every sample
+            elsewhere; what it keeps for the gate starts empty."""
+            configs.clear()
+            walked: "JointPositions | MotionResult" = walk(0, 0 if every > 1 else count - 1, seed)
+            last = 0 if every > 1 else count - 1
+            while not isinstance(walked, MotionResult) and last < count - 1:
+                knot = min(last + every, count - 1)
+                stepped = knot_to(last, knot, walked)
+                walked = walk(last + 1, knot, walked) if stepped is None else stepped
+                last = knot
+            return walked
+
+        def disagreement() -> str:
+            """Why the controller's own answer at the first or the last sample solved here is not the one solved here,
+            ``""`` where both agree: its ``getInverseKinematics``, seeded as that sample was."""
+            from src.robot.safety._ur_ik import CONTROLLER_AGREEMENT_RAD
+
+            asked = (solved_here[:1] + solved_here[-1:])[:len(solved_here)]
+            for which, (tcp, start, solved) in zip(("first", "last"), asked):
+                try:
+                    answer = self.ik(tcp, seed=start)
+                except (RobotKinematicsError, RobotConnectionError) as exc:
+                    return f"the controller found no solution for the {which} sample solved here ({exc})"
+                apart = max(abs(a - b) for a, b in zip(answer.tolist(), solved.tolist()))
+                if not apart <= CONTROLLER_AGREEMENT_RAD:
+                    return (f"the controller's own solution of the {which} sample solved here stands {apart:.2e} rad "
+                            f"from it, more than {CONTROLLER_AGREEMENT_RAD:g} rad")
+            return ""
+
+        if chain is None:
+            walked = walked_line()
+        else:
+            try:
+                walked = walked_line()
+                why = disagreement()
+            except NotSolvedHere as exc:
+                why = f"a sample cannot be vouched for here: {exc}"
+            if why:
+                self.logger.warning("the line to %s is solved by the controller as before: %s", pose.label or "the goal",
+                                    why)
+                solve = by_the_controller
+                walked = walked_line()
+            else:
+                self.logger.info("the line to %s: %d configuration(s) solved here on the controller's own kinematics, "
+                                 "and the controller answered the same at %s (%d round trip(s))",
+                                 pose.label or "the goal", len(solved_here),
+                                 "the first and the last" if len(solved_here) > 1 else "the one" if solved_here
+                                 else "none, as none was solved", min(2, len(solved_here)))
+        if isinstance(walked, MotionResult):
+            return walked
 
         judged = PathSamples(configs=tuple(configs), step_bound_mm=bound)
         refused = self._refresh_before_the_path_gate(
@@ -4261,6 +5532,64 @@ class URRobotArm(RobotArm):
         status, message = standing.said("the planner refused this line", verdict, len(judged.configs))
         return MotionResult.failed(status, command, target_pose=pose, message=message)
 
+    def _controller_chain(self) -> "tuple[Any, np.ndarray, str] | None":
+        """The controller's own kinematics, for a line solved here (``robot.safety.ik_quality.line_ik: local``): its DH
+        rows (a :class:`~src.robot.safety._ur_kinematics.URDhChain`), the inverse of its active TCP, and the model
+        whose nominal table the closed form starts from; ``None`` where the rows or the TCP cannot be read, and the
+        controller solves the line as before.
+
+        Both are the connection's reads, once per connection (:meth:`URConnection.controller_kinematics`,
+        :meth:`URConnection.active_tcp_offset`), which log what they read or why they could not. Once per connection
+        this logs how far the controller's rows put the flange from the nominal table at the joints the arm stands at:
+        on a calibrated arm, the part of the gap between the nominal chain and the controller's TCP that its
+        calibration explains.
+        """
+        from src.robot.safety._ur_ik import ur_pose_matrix_m
+        from src.robot.safety._ur_kinematics import URDhChain
+
+        from .connection import ControllerKinematics
+
+        if not self._conn.is_connected:
+            return None
+        read_rows = getattr(self._conn, "controller_kinematics", None)
+        read_tcp = getattr(self._conn, "active_tcp_offset", None)
+        try:
+            kinematics = read_rows() if callable(read_rows) else None
+            tcp = read_tcp() if callable(read_tcp) else None
+        except (RobotConnectionError, RuntimeError, OSError) as exc:
+            self.logger.warning("the controller's kinematics could not be read (%s): lines are solved by the controller",
+                                exc)
+            return None
+        if not isinstance(kinematics, ControllerKinematics) or not isinstance(tcp, list) or len(tcp) != 6:
+            return None
+        model = str(self.config.ur.model)
+        try:
+            rows = URDhChain(theta_rad=kinematics.theta_rad, a_m=kinematics.a_m, d_m=kinematics.d_m,
+                             alpha_rad=kinematics.alpha_rad)
+            flange_from_tcp = np.linalg.inv(ur_pose_matrix_m(tcp))
+        except (ValueError, np.linalg.LinAlgError) as exc:
+            self.logger.warning("the controller's kinematics read as no chain to solve on (%s): lines are solved by the "
+                                "controller", exc)
+            return None
+        if getattr(self, "_chain_described", None) is not kinematics:
+            self._chain_described = kinematics
+            nominal = URDhChain.nominal(model)
+            try:
+                here = [float(v) for v in self._conn.get_joint_positions()]
+                ours, table = rows.flange_m(here), nominal.flange_m(here) if nominal is not None else None
+            except (RobotConnectionError, RuntimeError, OSError, ValueError):
+                table = None
+            if table is not None:
+                cosine = (float(np.trace(ours[:3, :3].T @ table[:3, :3])) - 1.0) / 2.0
+                self.logger.info(
+                    "lines are solved here on the controller's own kinematics (robot.safety.ik_quality.line_ik: local) "
+                    "and checked against the controller at two samples each; at the joints the arm stands at, its rows "
+                    "put the flange %.2f mm and %.3f deg from the nominal %s table",
+                    1000.0 * float(np.linalg.norm(ours[:3, 3] - table[:3, 3])),
+                    math.degrees(math.acos(max(-1.0, min(1.0, cosine)))), model,
+                )
+        return rows, flange_from_tcp, model
+
     def _drive_checked_line(
         self, pose: Pose, *, vel: float | None = None, acc: float | None = None
     ) -> MotionResult:
@@ -4273,15 +5602,60 @@ class URRobotArm(RobotArm):
 
         A refusal below the judge carries the cause ``MotionController`` classified, as
         :meth:`move` does, and a sentence that says whether ``moveL`` had been sent.
+
+        The lift judged at the part as if the jaws held the part (:meth:`carried_line_refusal`) is this line's judgement
+        where nothing it read changed since (:meth:`_why_the_lift_is_judged_again`): every sample of it was judged there,
+        in this held world, on a cell where the part in the jaws is judged as the empty hand was. It serves one line. So
+        is a line judged ahead where the arm stands, as it will run, while the jaws opened (:meth:`judge_line_ahead`).
+
+        Where this arm gates its own sends (``safety.dwell.gate_at`` ``send``), the steady gate waits after the
+        judgement, right before ``MotionController.move_to`` (:meth:`_send_gate`), and a line whose arm came to rest more
+        than :data:`_AHEAD_MOVED_MM` from where it was judged from is judged again from where it stands. Where the line is
+        the one a verb left the joint move declared next to (:meth:`judge_the_next_leg`), that move is judged on a second
+        thread while the line runs, and the line's send waits for it once it ended (:meth:`_judging_during`).
         """
-        refused = self._judge_linear_move(pose, command=MotionCommand.MOVE_TO)
-        if refused is not None:
-            return refused
+        lift = self._lift_judged
+        during, self._next_leg_during = self._next_leg_during, None
+        self._forget_what_was_judged_ahead()
+        why = "" if lift is None else self._why_the_lift_is_judged_again(lift, pose)
+        judged = lift is not None and not why
+        judged_from: "Sequence[float] | None" = lift.joints if lift is not None and judged else None
+        if lift is not None and judged:
+            if lift.stands_in:
+                self.logger.info("the line up to %s runs on the lift judged at the part as if the jaws held the part, in "
+                                 "the world held (%s); it is not judged a second time", pose.label or "<unlabeled>",
+                                 lift.reason)
+            else:
+                self.logger.info("the line to %s runs as it was judged ahead where the arm stands, in the world held "
+                                 "(%s); it is not judged a second time", pose.label or "<unlabeled>", lift.reason)
+        elif lift is not None:
+            self.logger.info("the line up to %s is judged again: %s", pose.label or "<unlabeled>", why)
+        for _ in range(self._SEND_JUDGEMENTS):
+            if not judged:
+                # Where the line was judged from, read for the gate at the send alone: an arm that does not gate its
+                # sends reads nothing more of the controller than it always did.
+                judged_from = (self._joints_now() or ()) if self._gates_sends else None
+                refused = self._judge_linear_move(pose, command=MotionCommand.MOVE_TO)
+                if refused is not None:
+                    return refused
+                judged = True
+            gate = self._send_gate(judged_from, MotionCommand.MOVE_TO, target_pose=pose)
+            if isinstance(gate, MotionResult):
+                return gate
+            if gate is None:
+                break
+            judged = False
+        else:
+            return self._kept_moving(MotionCommand.MOVE_TO, target_pose=pose)
         urpose = self._pose_to_controller(pose)
-        ok = self._motion.move_to(
-            urpose, linear=True, vel=vel, acc=acc, register=False,
-            workspace_pose=self._coerce_urpose(pose),
-        )
+        worker = self._judging_during(pose, during)
+        try:
+            ok = self._motion.move_to(
+                urpose, linear=True, vel=vel, acc=acc, register=False,
+                workspace_pose=self._coerce_urpose(pose),
+            )
+        finally:
+            self._joined(worker)
         if ok:
             return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
         status = self._motion.last_reject_status
@@ -4334,6 +5708,7 @@ class URRobotArm(RobotArm):
         drives what was judged. On cuRobo, a move with neither a camera world nor a decline in
         scope is refused before the judge.
         """
+        self._forget_what_was_judged_ahead()
         refused = self._refused_for_camera_world(
             self._move_camera_world(UNSET), MotionCommand.MOVE_JOINTS, target_joints=joints,
         )
@@ -4433,6 +5808,7 @@ class URRobotArm(RobotArm):
         On cuRobo, a move with neither a camera world nor a decline in scope is refused before the
         connection is read.
         """
+        self._forget_what_was_judged_ahead()
         refused = self._refused_for_camera_world(
             self._move_camera_world(UNSET), MotionCommand.MOVE_TO, target_pose=pose,
         )
@@ -4590,6 +5966,7 @@ class URRobotArm(RobotArm):
         the arm on ``free()`` inside its with-block, and from the with-block's start to its end every
         motion verb of this arm refuses; :mod:`.freedrive` has the order of the controller calls.
         """
+        self._forget_what_was_judged_ahead()
         if not self._conn.is_connected:
             raise RobotConnectionError("freedrive() requires an open connection.")
         if self._freedrive is not None:

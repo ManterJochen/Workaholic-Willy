@@ -295,6 +295,9 @@ class Scene:
     #: How many obstacle points of its own frame the scene read beside the part, and in how many clusters.
     _seen_points: int = field(default=0, repr=False)
     _seen_clusters: int = field(default=0, repr=False)
+    #: Whether SFE builds each closing line's grasps at once (``robot.grasping.batched_builds``), set by
+    #: :meth:`from_robot_config`: the same grasps, to the bit (``generate_support_footprint_grasps``).
+    _batched: bool = field(default=False, repr=False)
 
     @property
     def declared_support_height_mm(self) -> float:
@@ -450,7 +453,8 @@ class Scene:
         return replace(scene, _declared_support_mm=float(resolution.declared_mm),
                        _natural=natural_closing_axis_of(robot_config),
                        _side_approaches=bool(getattr(robot_config.grasping, "side_approaches", False)),
-                       _hand=_hand_of(robot_config))
+                       _hand=_hand_of(robot_config),
+                       _batched=bool(getattr(robot_config.grasping, "batched_builds", False)))
 
     def grasps(
         self,
@@ -504,6 +508,8 @@ class Scene:
         if self._side_approaches:
             chosen_options["side_approaches"] = True
             chosen_options["corridor_seen"] = self._corridor_seen
+        if self._batched:
+            chosen_options["batched"] = True
         refused: dict[str, int] = {}
         candidates = generate_support_footprint_grasps(
             self.target_points_base_mm,

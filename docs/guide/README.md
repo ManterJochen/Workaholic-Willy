@@ -64,6 +64,8 @@ passed after the subcommand.
 | grip only once both jaw contact faces were seen | [05](05-pick-loop.md), `both_faces` |
 | let a dense pick skip a failed part, or push a boxed-in one | [05](05-pick-loop.md), recovery, and [grasping-config-reference.md](../grasping-config-reference.md) |
 | pick, place and return in one call, once or until empty | [05](05-pick-loop.md), the console's task |
+| make a pick faster without losing what it picks, and see which switch the owner's cell runs | [05](05-pick-loop.md), where a pick's seconds go |
+| find out where a cell's seconds went, stage by stage | [scripts/cell/](../../scripts/cell/README.md) |
 | give the cell a task from a browser, by text or by voice | [api/README.md](../../api/README.md) and [frontend/README.md](../../frontend/README.md) |
 | halt the arm from the console, and know what that is not | [04](04-robot-and-safety.md), halt now, the emergency stop, and the way back |
 | teach a place pose by hand and let a task use it | [01](01-configuration.md), `robot.named_poses` and `robot.default_place_pose` |

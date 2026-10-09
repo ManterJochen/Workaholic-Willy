@@ -98,14 +98,24 @@ def closing_axis_heading_deg(closing_axis: str, x_mm: float, y_mm: float) -> flo
 
 @dataclass(frozen=True, slots=True)
 class Pose:
-    """A rigid 6-DoF pose tagged with its coordinate frame.
+    """A rigid 6-DoF pose tagged with its coordinate frame, in millimetres with an XYZW quaternion.
 
-    Construction coerces the position to ``float64`` and checks it for shape
-    (3,) and finiteness, normalises the quaternion into canonical sign form
-    (``w >= 0``), and makes both ndarrays read-only.
+        above = Pose.tool_down(450.0, 100.0, 300.0)                 # BASE, tool +Z straight down
+        look = Pose.aimed_at(400.0, 0.0, 500.0, target_mm=(450.0, 100.0, 0.0))
 
-    Equality and hashing compare the arrays byte-wise, which is well defined
-    only because of that sign convention.
+    Construction coerces the position to ``float64``, checks it for shape (3,) and finiteness, normalises the quaternion
+    into canonical sign form (``w >= 0``), and makes both arrays read-only; equality and hashing compare the arrays
+    byte-wise, which is well defined only because of that sign convention.
+
+    Attributes:
+        position_mm (np.ndarray): The position, shape (3,), millimetres, read-only.
+        quaternion_xyzw (np.ndarray): The orientation as a unit quaternion ``(x, y, z, w)``, ``w >= 0``, read-only.
+        frame (Frame): The frame the numbers are in: ``Frame.BASE``, ``Frame.CAMERA``, ``Frame.TCP``, ...
+        label (str | None): A name for logs and reports (default: None).
+
+    Raises:
+        ValueError: A position that is not three finite numbers, or a quaternion that is not four finite numbers of
+            non-zero length.
     """
 
     position_mm: np.ndarray
@@ -139,20 +149,27 @@ class Pose:
         frame: Frame = Frame.BASE,
         label: str | None = None,
     ) -> Pose:
-        """The tool at (``x_mm``, ``y_mm``, ``z_mm``) with its +Z pointing straight down
-        and its +X along ``closing_axis``, turned a further ``yaw_deg`` about the frame's +Z.
+        """The tool at a point with its +Z pointing straight down and its +X along a closing axis, turned a further yaw
+        about the vertical: the pose a bench move, a known part and a place most often need.
 
-        Half a turn about X puts the tool's +Z down and its +X along the frame's +X; the
-        yaw then turns the closing axis about the vertical. This is the pose a bench
-        move, a known part and a place most often need.
+        Args:
+            x_mm (float): x in ``frame``, millimetres.
+            y_mm (float): y in ``frame``, millimetres.
+            z_mm (float): z in ``frame``, millimetres.
+            yaw_deg (float): A further turn of the closing axis about the frame's +Z, degrees (default: 0.0).
+            closing_axis (str): Which axis the tool's +X lines up with before the yaw, one of :data:`CLOSING_AXES`:
+                ``"x"``, ``"-x"``, ``"y"``, ``"-y"``, ``"radial"``, ``"-radial"``, ``"tangential"``, ``"-tangential"``.
+                ``radial`` and ``tangential`` follow the base round, which keeps wrist 3 where it is on a cell that
+                moves round its base (default: "x").
+            frame (Frame): The frame the pose is in (default: Frame.BASE).
+            label (str | None): A name for logs and reports, such as ``"above the bin"`` (default: None).
 
-        ``closing_axis`` says which axis the closing axis lines up with before the yaw is
-        added (:data:`CLOSING_AXES`). The default ``x`` is the frame's +X, as always. On a
-        cell that moves round its base, ``radial`` or ``tangential`` keeps wrist 3 where it
-        is instead of turning it by as much as the base turns. On the UR3e and UR5e homes,
-        ``tangential`` keeps wrist 3 near its home angle, about 16 to 26 degrees off it,
-        and ``radial`` about a quarter turn further. A two-finger hand grips the same with the
-        opposite sign, ``-tangential`` or ``-y`` for instance, which puts wrist 3 half a turn round.
+        Returns:
+            Pose: The pose. ``Robot.tool_down`` is the same through the cell, its closing axis the cell's own.
+
+        Raises:
+            ValueError: ``closing_axis`` is none of :data:`CLOSING_AXES`, or a ``radial`` axis at the base's own axis,
+                where it names no direction.
         """
         if closing_axis == "x":
             heading = float(yaw_deg)
@@ -185,38 +202,33 @@ class Pose:
         frame: Frame = Frame.BASE,
         label: str | None = None,
     ) -> Pose:
-        """The tool at (``x_mm``, ``y_mm``, ``z_mm``) with its +Z pointing AT ``target_mm``.
+        """The tool at a point with its +Z pointing AT a target: a wrist camera looking at a board, or a board turned to
+        face a fixed camera.
 
-        :meth:`tool_down` answers one question: where is the tool, pointing straight down. A great
-        deal of a cell is that pose, and two things are not. A wrist camera looking at a board on
-        the table sees nothing of it from anywhere but overhead, and a marker board bolted to the
-        flange shows a fixed camera nothing but its edge once the arm is off to one side. Both need
-        the same thing: an orientation chosen so that one thing faces another, which no yaw about
-        the vertical can produce.
+        Aiming is all it does: it claims nothing about reach, the workspace or the view; the planner and the guards
+        decide those.
 
-        Aiming is all this does. It is not a claim that the target is reachable, in the workspace,
-        or even in view: the planner and the cell's guards decide the first two, and the marker
-        source reports the third. What it removes is the arithmetic a caller would otherwise write
-        with an axis convention of its own.
+        Args:
+            x_mm (float): The tool's x in ``frame``, millimetres.
+            y_mm (float): The tool's y in ``frame``, millimetres.
+            z_mm (float): The tool's z in ``frame``, millimetres.
+            target_mm (Sequence[float] | np.ndarray): The point the tool's +Z points at, three numbers in ``frame``,
+                millimetres.
+            roll_deg (float): A turn of the tool about its own +Z, the axis it points along, degrees (default: 0.0).
+            up_hint (Sequence[float]): Which way is up in the WORLD, which fixes the roll and never where the tool
+                points; aimed straight down the hint says nothing and the result is :meth:`tool_down` at the same
+                position (default: (0.0, 0.0, 1.0)).
+            closing_axis (str | None): Fixes the roll instead of ``up_hint``: the tool's +X as close as it can come to
+                this horizontal axis (:data:`CLOSING_AXES`), tilted only as far as the aim needs (default: None).
+            frame (Frame): The frame the pose is in (default: Frame.BASE).
+            label (str | None): A name for logs and reports, such as ``"above the bin"`` (default: None).
 
-        ``up_hint`` is which way is up in the WORLD, not in the image; it fixes the roll and does
-        not change where the tool points. Where the aim runs along it -- looking straight down with
-        the default ``+Z`` -- the hint says nothing, and a fallback settles the roll so that the
-        result is exactly ``tool_down`` at the same position. ``roll_deg`` turns the tool about its
-        own +Z, the axis it is pointing along. Aimed straight down that axis points at the floor,
-        so a positive roll turns the closing axis the opposite way round the vertical from
-        :meth:`tool_down`'s ``yaw_deg``; the two agree at zero.
+        Returns:
+            Pose: The aimed pose.
 
-        ``closing_axis`` fixes the roll a second way, instead of ``up_hint``: the tool's +X
-        goes as close as it can to that horizontal axis (:data:`CLOSING_AXES`) at the tool's
-        own position, tilted only as far as the aim needs. Aimed straight down it gives exactly
-        ``tool_down`` with the same ``closing_axis``. With ``up_hint``'s default, the roll
-        follows the eye's bearing round the target, which winds wrist 3 on a ring of views;
-        ``radial`` or ``tangential`` follows the base instead.
-
-        Raises ``ValueError`` when the tool would stand on its target, which names no
-        direction, and when the aim runs along the closing axis, where no roll can put +X
-        on it.
+        Raises:
+            ValueError: The tool would stand on its target (no direction), the aim runs along the closing axis (no roll
+                can put +X on it), or ``closing_axis`` is none of :data:`CLOSING_AXES`.
         """
         eye = np.array([float(x_mm), float(y_mm), float(z_mm)], dtype=np.float64)
         forward = np.asarray(target_mm, dtype=np.float64).reshape(3) - eye
@@ -264,7 +276,15 @@ class Pose:
 
     @classmethod
     def identity(cls, frame: Frame, *, label: str | None = None) -> Pose:
-        """Identity pose at the origin of ``frame``."""
+        """The identity pose at the origin of a frame.
+
+        Args:
+            frame (Frame): The frame.
+            label (str | None): A name for logs and reports (default: None).
+
+        Returns:
+            Pose: Position (0, 0, 0), no rotation.
+        """
         return cls(
             position_mm=np.zeros(3, dtype=np.float64),
             quaternion_xyzw=IDENTITY_QUAT_XYZW.copy(),
@@ -280,21 +300,42 @@ class Pose:
         frame: Frame,
         label: str | None = None,
     ) -> Pose:
-        """Build a pose from a validated 4x4 homogeneous matrix in millimetres."""
+        """A pose from a 4 x 4 homogeneous transform in millimetres.
+
+        Args:
+            T (np.ndarray): The 4 x 4 matrix: a rotation in its top-left 3 x 3 block, the translation in millimetres in
+                its last column, ``[0, 0, 0, 1]`` as its last row.
+            frame (Frame): The frame the pose is in.
+            label (str | None): A name for logs and reports (default: None).
+
+        Returns:
+            Pose: The pose.
+
+        Raises:
+            ValueError: ``T`` is not a valid 4 x 4 rigid transform.
+        """
         t, q = matrix_to_position_quaternion(T)
         return cls(position_mm=t, quaternion_xyzw=q, frame=frame, label=label)
 
     # Conversions and copies
 
     def to_matrix(self) -> np.ndarray:
-        """Return a fresh 4x4 homogeneous transform (mm) for this pose."""
+        """The pose as a 4 x 4 homogeneous transform in millimetres.
+
+        Returns:
+            np.ndarray: A fresh 4 x 4 ``float64`` array.
+        """
         return position_quaternion_to_matrix(self.position_mm, self.quaternion_xyzw)
 
     def with_frame(self, frame: Frame) -> Pose:
-        """Return a copy tagged with ``frame``.
+        """A copy tagged with another frame. The numbers are unchanged: this relabels the pose, it does not transform it
+        (:meth:`Transform.apply_pose` is the coordinate change).
 
-        The numbers are unchanged: this relabels the pose, it does not
-        transform it. :meth:`Transform.apply_pose` is the coordinate change.
+        Args:
+            frame (Frame): The new frame tag.
+
+        Returns:
+            Pose: The relabelled copy.
         """
         return Pose(
             position_mm=self.position_mm.copy(),
@@ -304,7 +345,14 @@ class Pose:
         )
 
     def with_label(self, label: str | None) -> Pose:
-        """Return a copy with a different ``label``."""
+        """A copy with another label.
+
+        Args:
+            label (str | None): The new label.
+
+        Returns:
+            Pose: The copy.
+        """
         return Pose(
             position_mm=self.position_mm.copy(),
             quaternion_xyzw=self.quaternion_xyzw.copy(),
@@ -315,7 +363,17 @@ class Pose:
     # Geometry helpers
 
     def distance_to(self, other: Pose) -> float:
-        """Euclidean distance in mm between two poses, which must share a frame."""
+        """The straight-line distance between two positions.
+
+        Args:
+            other (Pose): The other pose, in the same frame.
+
+        Returns:
+            float: The distance, millimetres.
+
+        Raises:
+            FrameMismatchError: The poses are in different frames.
+        """
         if self.frame != other.frame:
             raise FrameMismatchError(
                 f"distance_to: frame mismatch {self.frame!r} vs {other.frame!r}"
@@ -323,7 +381,17 @@ class Pose:
         return float(np.linalg.norm(self.position_mm - other.position_mm))
 
     def angle_to(self, other: Pose) -> float:
-        """Geodesic angle in radians, 0 to pi, between two orientations in one frame."""
+        """The geodesic angle between two orientations.
+
+        Args:
+            other (Pose): The other pose, in the same frame.
+
+        Returns:
+            float: The angle, radians, from 0 to pi.
+
+        Raises:
+            FrameMismatchError: The poses are in different frames.
+        """
         if self.frame != other.frame:
             raise FrameMismatchError(
                 f"angle_to: frame mismatch {self.frame!r} vs {other.frame!r}"
@@ -331,10 +399,10 @@ class Pose:
         return angle_between(self.quaternion_xyzw, other.quaternion_xyzw)
 
     def axis_angle_rad(self) -> np.ndarray:
-        """Return the axis-angle vector equivalent to the quaternion.
+        """The orientation as an axis-angle vector.
 
-        The direction is the rotation axis and the norm is the angle in
-        radians.
+        Returns:
+            np.ndarray: Shape (3,): the rotation axis, scaled to the angle in radians.
         """
         return to_axis_angle(self.quaternion_xyzw)
 

@@ -273,7 +273,10 @@ export interface PickStageData {
   reasons?: string[]
   action?: string
   outcome?: string
+  /** How the frame's parts were found: the detector's route (`vlm`, `simple`), or, where a task follows its parts
+   *  (`robot.grasping.follow_parts`), `followed` with no detector asked or `grounded`; `route_reason` says why. */
   route?: string
+  route_reason?: string
   motion_status?: string
   motion_message?: string
   look?: string
@@ -328,23 +331,58 @@ export interface EventDataMap {
   'pick.cancelled': PickStageData
   pick_result: PickResultData
   'task.pose_screened': { pose?: string; role?: 'place' | 'return'; verdict?: string; detail?: string; nearby_deg?: number[] | null }
-  'task.survey_started': { phrase?: string; looks?: string[] }
-  'task.target_found': { target?: TargetData; look?: string; parts_seen?: number }
+  /** `phrases`: a sort's every place the camera finds, surveyed together before the first pick (2026-10-09). */
+  'task.survey_started': { phrase?: string; phrases?: string[]; looks?: string[] }
+  /** `phrase`, in a sort: which of its places this is, where two bins must be told apart. */
+  'task.target_found': { target?: TargetData; look?: string; parts_seen?: number | null; known?: boolean; by?: string; phrase?: string }
   'task.target_missing': { phrase?: string; looks_tried?: string[] | number }
   'task.part_started': { part?: number; of?: number | null }
-  'task.nothing_found': { part?: number; empty_in_a_row?: number; only_excluded?: boolean }
-  'task.carry_started': { to_look?: string }
-  'task.target_checked': { moved_mm?: number; followed?: boolean; target?: TargetData }
-  'task.target_lost': { look?: string; why?: 'not_seen' | 'moved_too_far' | 'footprint_changed' }
-  'task.drop_planned': { kind?: 'pose' | 'camera'; pose_mm?: number[]; rim_mm?: number | null; hang_mm?: number; air_mm?: number | null; verdict?: string }
+  'task.nothing_found': { part?: number; empty_in_a_row?: number; only_excluded?: boolean; looks?: number; check_look?: boolean }
+  'task.carry_started': { to_look?: string | null; over_the_rim?: boolean }
+  'task.target_checked': { moved_mm?: number; followed?: boolean; target?: TargetData; by?: string; phrase?: string }
+  'task.target_lost': { look?: string; why?: 'not_seen' | 'moved_too_far' | 'footprint_changed'; phrase?: string }
+  'task.drop_planned': {
+    kind?: 'pose' | 'camera'
+    pose_mm?: number[]
+    rim_mm?: number | null
+    hang_mm?: number
+    air_mm?: number | null
+    verdict?: string
+    /** Only on a drop set down below a box's rim (`robot.place.release_in_a_box`): where, and how far under the rim. */
+    release?: string
+    below_rim_mm?: number
+    /** Only on a part laid side by side on a flat place (`robot.place.side_by_side`): its spot, and who chose it. */
+    spot_mm?: number[]
+    spot_by?: string
+  }
   'task.place_started': { place?: string }
-  'task.placed': { outcome?: string; no_sensor?: boolean; line_out_refused?: boolean }
+  /** `below_the_rim` only where the drop was planned below a box's rim: false where its line in was refused and the
+   *  part was let go over the rim instead. */
+  'task.placed': { outcome?: string; no_sensor?: boolean; line_out_refused?: boolean; below_the_rim?: boolean }
   'task.place_failed': { outcome?: string; message?: string }
   'task.put_back': { outcome?: string }
   'task.return_started': { to?: string; note?: string }
   'task.returned': { to?: string; note?: string }
   'task.return_failed': { status?: string; message?: string }
   'task.part_finished': { part?: number; placed?: boolean; duration_s?: number }
+  /** A sort (the owner, 2026-10-09): the rule the gripped part goes by, `rule` its index into the task's rules (0 the
+   *  task's own), `place` as `task.place_started` names it (`pose:<name>`, `target:<phrase>`). */
+  'task.rule': { part?: number; rule?: number; object?: string; place?: string; place_label?: string }
+  /** A place the check before a drop lost, looked for again (`Relocated.to_dict()`): found, the drop is planned anew;
+   *  found nowhere, the part is put back and a person asked. `refused` holds each look skipped with why. */
+  'task.target_relocated': {
+    phrase?: string
+    found?: boolean
+    moved_mm?: number | null
+    by?: 'check' | 'detector' | ''
+    look?: string | null
+    target?: TargetData | null
+    looks_tried?: string[]
+    refused?: [string, string][]
+    passed_over?: string[]
+  }
+  /** The parts no rule clearly claimed, left where they lie, named at the end: the detector's labels. */
+  'task.unsorted': { count?: number; labels?: string[] }
   'home.started': { to?: string; note?: string }
   'home.arrived': { to?: string; note?: string }
   'home.refused': { status?: string; message?: string }

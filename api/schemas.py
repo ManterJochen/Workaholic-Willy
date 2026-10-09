@@ -25,6 +25,7 @@ from api.codes import (
     StopClassName,
     StopCodeName,
 )
+from src.models.vlm.command import MAX_SENTENCE_CHARS
 
 #: The four verdicts a check can carry. Mirrors ``CheckStatus``; pinned as a literal so a new status in
 #: the library fails this contract loudly instead of arriving in the UI as an unstyled unknown string.
@@ -472,6 +473,18 @@ ClosingAxisName: TypeAlias = Literal["x", "-x", "y", "-y", "radial", "-radial", 
 FirstMotion: TypeAlias = Literal["look", "return"]
 #: Where a command came from.
 CommandSource: TypeAlias = Literal["typed", "spoken"]
+#: How a part is carried to a bin a wrist camera found (``robot.place.carry``): to the look the bin was found from, where
+#: it is checked again, or straight over its rim from where the part was gripped.
+CarryName: TypeAlias = Literal["via_the_look", "over_the_rim"]
+
+#: The longest phrase a card's field takes: what the detector is given (``TaskIn.object``) and what the camera looks for
+#: (``CameraPlaceIn.phrase``). A person types descriptions there ("der obere von den zwei grauen Würfeln, die
+#: aufeinander auf der schwarzen Matte liegen" is 85 characters), and the VLM reads them as input, which costs almost
+#: nothing per character (the owner, 2026-10-08). The reader's own phrase stays shorter (``MAX_PHRASE_CHARS``).
+MAX_FIELD_CHARS: Final[int] = 200
+#: The most rules a task takes beside its first (a sort, the owner, 2026-10-09: "grüne Teile in die gelbe Kiste, rote in
+#: die blaue"): the command reader's ``src.models.vlm.command.MAX_FURTHER_RULES``, which a test pins against this.
+MAX_FURTHER_RULES: Final[int] = 3
 
 
 class PosePlaceIn(BaseModel):
@@ -488,7 +501,7 @@ class CameraPlaceIn(BaseModel):
 
     kind: Literal["camera"]
     #: The English phrase the camera looks for, e.g. ``blue bin``.
-    phrase: str = Field(min_length=1, max_length=80)
+    phrase: str = Field(min_length=1, max_length=MAX_FIELD_CHARS)
     #: The operator's own words for it, for display.
     said: str | None = None
 
@@ -502,7 +515,12 @@ class TaskOptionsIn(BaseModel):
 
     #: Wrist looks as configured. False: the first configured look only, and no generated view.
     multi_view: bool = True
-    #: Both jaw faces must be seen before a grasp is taken.
+    #: The console's "alle Posen" (the owner, 2026-10-08 night): each pick of a wrist camera visits every configured look,
+    #: however safe an earlier look's grasp, and goes on with the last look's. With ``multi_view`` the console's one
+    #: choice of looks: false, the first look only; true, when needed (the early stop, and the cell's weak-look trigger);
+    #: true and this, every look. Asked with ``multi_view`` false, the task is refused ``422 bad_request``.
+    every_look: bool = False
+    #: Both jaw faces must be seen before a grasp is taken. A program's switch: the console no longer offers it.
     both_faces: bool = False
     #: Keep only grasps that close along this direction (one of :data:`ClosingAxisName`, a leading ``+`` allowed);
     #: one the library cannot read is refused ``422 closing_axis_refused``.
@@ -523,10 +541,13 @@ class TaskOptionsIn(BaseModel):
     #: pick takes and sets it down where the parts go, then picks the part it blocked; false, a blocker is set aside on
     #: the support. Null: the cell's ``robot.grasping.recovery.blocker_into_the_place``.
     blocker_into_the_place: bool | None = None
-    #: Keep each pick's looks on disk.
+    #: Keep each pick's looks on disk. The console asks for them on every task it starts (the owner, 2026-10-08 night).
     record_views: bool = False
     #: A camera place only: the air over the rim when the jaws open, 10-50 mm; null means 20.
     rim_air_mm: float | None = Field(default=None, ge=10.0, le=50.0)
+    #: A camera place found by a wrist camera only: how the part is carried to it (:data:`CarryName`), the owner's
+    #: switch of 2026-10-08 night ("direkt über die Kante tragen"). Null: the cell's ``robot.place.carry``.
+    carry: CarryName | None = None
     #: The operator confirmed that an empty ``object`` means anything the camera sees, bin walls included. A real cell
     #: refuses an empty object without it (``422 object_required``); the rehearsal cell does not.
     pick_anything: bool = False
@@ -537,7 +558,8 @@ class TaskOptionsIn(BaseModel):
 class CommandProvenanceIn(BaseModel):
     """What the operator said or typed, for the record only: nothing is read from it to decide what moves."""
 
-    text: str = Field(default="", max_length=500)
+    #: The sentence as the reader took it: as long as ``CommandIn.text`` may be, or every Start of a long one fails.
+    text: str = Field(default="", max_length=MAX_SENTENCE_CHARS)
     source: CommandSource = "typed"
     language: str | None = None
     #: The command reader produced the card's fields.
@@ -546,15 +568,44 @@ class CommandProvenanceIn(BaseModel):
     edited: list[str] = Field(default_factory=list)
 
 
+class TaskRuleIn(BaseModel):
+    """One further rule of a sort: the kind of part it takes and where each such part goes. The task's own ``object``,
+    ``which``, ``source`` and ``place`` are its first rule."""
+
+    #: The English phrase of the kind of part (``green part``): a sort names every kind it takes.
+    object: str = Field(min_length=1, max_length=MAX_FIELD_CHARS)
+    #: The operator's own words for it, for display.
+    object_said: str | None = None
+    #: As ``TaskIn.which``: the one part of this kind singled out; ``""`` every part of it.
+    which: str = Field(default_factory=str, max_length=MAX_FIELD_CHARS)
+    #: As ``TaskIn.source``: where the parts of this kind lie; ``""`` wherever the camera sees one.
+    source: str = Field(default_factory=str, max_length=MAX_FIELD_CHARS)
+    place: PlaceIn
+
+
 class TaskIn(BaseModel):
     """One task: what to pick, where to put it, where to go after, once or until empty. Start is the confirmation."""
 
     #: The English phrase the detector grounds. ``""`` means anything; a real cell takes it only with
     #: ``options.pick_anything``.
-    object: str = Field(default="", max_length=80)
+    object: str = Field(default="", max_length=MAX_FIELD_CHARS)
     #: The operator's own words for it, for display.
     object_said: str | None = None
+    #: The one part the operator singled out, in English ("the gray cube on top of the other one"): the detector is
+    #: asked this phrase alone, in place of every part of the object's kind. ``""``: every part of that kind. Its
+    #: default is a factory so the OpenAPI document names none and the console's generated types keep it optional:
+    #: a body from before 2026-10-08 stays a whole task.
+    which: str = Field(default_factory=str, max_length=MAX_FIELD_CHARS)
+    #: Where the parts lie, in English with its preposition ("on the black mat"): every part of the kind there is
+    #: grounded ("each separate gray cube on the black mat"). ``""``: wherever the camera sees one. Not
+    #: ``command.source``, which says whether the sentence was typed or spoken. Optional as ``which`` is.
+    source: str = Field(default_factory=str, max_length=MAX_FIELD_CHARS)
     place: PlaceIn
+    #: A sort's further rules (the owner, 2026-10-09): each part the picks grip goes by the rule of its kind, to that
+    #: rule's place; the task's own fields are the first rule. Empty, today's task of one kind. Every place a camera
+    #: finds is found before the first pick; a part no rule clearly claims stays where it lies and is named at the end.
+    #: A factory default, so the OpenAPI document names none and the console's generated types keep it optional.
+    more_rules: list[TaskRuleIn] = Field(default_factory=list, max_length=MAX_FURTHER_RULES)
     #: ``home`` or a name in ``robot.named_poses``.
     return_to: str = "home"
     scope: TaskScope = "once"
@@ -573,10 +624,23 @@ class PlanPlaceOut(BaseModel):
     said: str | None = None
 
 
+class PlanRuleOut(BaseModel):
+    """One further rule of a sort as the plan resolved it (``TaskRuleIn``), its place's pose and joints included."""
+
+    object: str
+    object_said: str | None = None
+    which: str = ""
+    source: str = ""
+    place: PlanPlaceOut
+
+
 class TaskOptionsOut(BaseModel):
     """The options the task runs with, ``push_mm`` and ``rim_air_mm`` resolved."""
 
     multi_view: bool = True
+    #: As asked (``TaskOptionsIn.every_look``): every look of each pick, the early stop off. A plan kept from before
+    #: 2026-10-09 has none.
+    every_look: bool = False
     both_faces: bool = False
     closing_axis: ClosingAxisName | None = None
     push_mm: float | None = None
@@ -592,6 +656,8 @@ class TaskOptionsOut(BaseModel):
     blocker_into_the_place: bool | None = None
     record_views: bool = False
     rim_air_mm: float | None = None
+    #: As asked (``TaskOptionsIn.carry``); null, the cell's ``robot.place.carry``.
+    carry: CarryName | None = None
     pick_anything: bool = False
     overlay: bool = True
 
@@ -611,7 +677,14 @@ class TaskPlanOut(BaseModel):
 
     object: str
     object_said: str | None = None
+    #: As asked (``TaskIn.which``); ``""`` every part of the object's kind. A plan kept from before 2026-10-08 has none.
+    which: str = ""
+    #: As asked (``TaskIn.source``); ``""`` wherever the camera sees one.
+    source: str = ""
     place: PlanPlaceOut
+    #: As asked (``TaskIn.more_rules``), each place resolved; empty for a task of one kind and a plan kept from before
+    #: 2026-10-09.
+    more_rules: list[PlanRuleOut] = Field(default_factory=list)
     return_to: str = "home"
     return_label: str | None = None
     #: The return pose's joints; null for home.
@@ -907,7 +980,8 @@ class TargetOut(BaseModel):
     #: The look it was seen from; null for a fixed camera.
     look: str | None = None
     seen_at: float
-    #: The URL of the target overlay, where one was rendered.
+    #: The URL of its place's overlay, where one was rendered: ``/v1/runs/{id}/target/overlay`` for the first place a
+    #: camera finds, ``/v1/runs/{id}/targets/{n}/overlay`` for a sort's n-th after it.
     overlay: str | None = None
 
 
@@ -981,6 +1055,10 @@ class CellFactsOut(BaseModel):
     #: The configured looks, by name.
     looks: list[str] = Field(default_factory=list)
     natural_closing_axis: str | None = None
+    #: The cell's ``robot.place.carry``: how a task carries a part to a bin a wrist camera found where it asks for
+    #: nothing else (``TaskOptionsIn.carry``), what the console's "Direkt über die Kante tragen" starts from; null where
+    #: the cell does not say.
+    carry: CarryName | None = None
     push: PushFactsOut = Field(default_factory=PushFactsOut)
     detector: DetectorFactsOut = Field(default_factory=DetectorFactsOut)
     #: Above this gap the hand-eye check says the calibration may have drifted. Nothing recalibrates.
@@ -1186,7 +1264,9 @@ class TeachStateOut(BaseModel):
 
 
 class CommandIn(BaseModel):
-    text: str = Field(min_length=1, max_length=500)
+    #: The sentence, typed or spoken: at most the reader's ``MAX_SENTENCE_CHARS`` (a longer one is 422
+    #: ``text_too_long``, saying the limit).
+    text: str = Field(min_length=1, max_length=MAX_SENTENCE_CHARS)
     source: CommandSource = "typed"
     language: str | None = None
 
@@ -1201,13 +1281,32 @@ class CommandPhraseOut(BaseModel):
     route: RoutePreviewOut | None = None
 
 
+class CommandRuleOut(BaseModel):
+    """One rule the reader understood (``src.models.vlm.command.RuleReading``): a kind of part and where it goes.
+    ``CommandOut.rules[0]`` is the reading's own object, which, source, place and pose; each further one is a
+    ``TaskIn.more_rules`` entry."""
+
+    object: CommandPhraseOut | None = None
+    which: str | None = None
+    source: str | None = None
+    place: CommandPhraseOut | None = None
+    #: A pose NAME, as ``CommandOut.place_pose``.
+    place_pose: str | None = None
+    #: What the reader wants a person to check in this rule; the reading's ``notes`` hold them too.
+    notes: list[CommandNoteName] = Field(default_factory=list)
+
+
 class CommandModelOut(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
+    #: ``known-sentence`` where the known sentences' table answered and no model was asked (``attempts`` 0).
     model_id: str
     latency_ms: float
     attempts: int = 1
     loaded_now: bool = False
+    #: Every answer came from memory: the loaded copy answered the same question before, and the answer was checked
+    #: again as if it were new.
+    remembered: bool = False
 
 
 #: How the console answers a greeting, ``runtime.greeting.wave`` of the app config
@@ -1216,14 +1315,27 @@ GreetingAnswer: TypeAlias = Literal["direct", "confirm", "off"]
 
 
 class CommandOut(BaseModel):
-    """What the reader understood. It creates no run and touches no cell; Start does, after a person looked."""
+    """What the reader understood. It creates no run and touches no cell; ``POST /v1/task`` does, on a person's Start,
+    or on the person's Enter where ``startable``."""
 
     understood: bool
     intent: Literal["task", "stop", "none"]
     object: CommandPhraseOut | None = None
+    #: The one part the sentence singles out, in English ("the gray cube on top of the other one"): ``TaskIn.which``,
+    #: the task's detector is asked this phrase alone. Found in the sentence through the object's words, which hold it
+    #: (a note where they do not). Null where the sentence singles out none.
+    which: str | None = None
+    #: Where the parts lie that the sentence takes them from, in English with its preposition ("on the black mat"):
+    #: ``TaskIn.source``. The model's key is ``from``. Null where the sentence says none.
+    source: str | None = None
     place: CommandPhraseOut | None = None
     #: A pose NAME: the reader is handed label -> name pairs of the taught poses.
     place_pose: str | None = None
+    #: Every rule of the sentence, the first the fields above (a sort, 2026-10-09: "grüne Teile in die gelbe Kiste, rote
+    #: in die blaue"); one for a task of one kind, none for a stop, a greeting or a sentence not read. ``startable``
+    #: holds only where every rule is clean.
+    rules: list[CommandRuleOut] = Field(default_factory=list)
+    #: ``once`` where the sentence says none, a count, or one part singled out.
     scope: TaskScope | None = None
     count: int | None = None
     return_to: str | None = None
@@ -1236,6 +1348,12 @@ class CommandOut(BaseModel):
     #: says (``runtime.greeting.wave``): ``direct`` waves at once (``POST /v1/cell/wave``), ``confirm`` asks first in a
     #: dialog like Home's, ``off`` greets back only. ``None`` for any other sentence. The reading moves nothing.
     greeting: GreetingAnswer | None = None
+    #: The console may start this task on the person's Enter, with no card to look at first (the owner, 2026-10-08):
+    #: an understood task, no note, a part named and found in the sentence, and a place, where one is named, found there
+    #: too (``CommandReading.startable``); a sort only where every rule is so, each with its place or pose, and Enter
+    #: then starts the whole sort (``TaskIn.more_rules``). Any other reading opens the card; a task starts at
+    #: ``POST /v1/task`` either way, behind every gate of that route.
+    startable: bool = False
 
 
 #: The command reader's state (the commands light carries the same codes).

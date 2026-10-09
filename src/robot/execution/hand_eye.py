@@ -174,53 +174,42 @@ _SWEPT = frozenset({
 
 @dataclass(frozen=True, slots=True)
 class SweepOptions:
-    """What a caller may choose about one sweep. A field left ``UNSET`` takes the tree's value or the code default.
+    """What a caller may choose about one calibration sweep. A field left ``UNSET`` takes the tree's value or the code
+    default.
 
-    ``marker_length_mm``, ``marker_id`` and ``dict_name`` default to the mode's ``camera.hand_eye`` block (its
-    ``target`` when that names one marker). A wrong marker length scales every sample uniformly: the solve converges
-    and is uniformly wrong, so measure the printed board.
-    ``target`` names the whole target instead: a board spec as ``--board`` takes it (``"aruco:ID:SIZE_MM[:DICT]"``,
-    ``"charuco:XxY:SQUARE_MM:MARKER_MM[:DICT][:legacy]"``), a ``Path`` to a YAML or JSON file of one target mapping,
-    a mapping, or an ``ArucoTargetConfig`` / ``CharucoTargetConfig``. It is validated by the config schema at
-    ``check()``, and it cannot be combined with the three single-marker options. A dictionary it leaves out is the
-    block's.
-    ``unmodelled_wrist_body`` is the reason a sweep may run while a wrist camera's declared body cannot be placed yet
-    (no calibration, one that does not load, no record or a stale one): the camera an eye in hand sweep calibrates,
-    and any wrist camera the tree declares on the arm, for either mounting. It is printed and logged, and the sweep
-    then runs with no body for that camera in the planner and the guard. It is read only for such a body: a wrist
-    rig declared with no body at all, the one an eye in hand sweep calibrates included, needs none, and is named on
-    a warning line instead.
+        options = SweepOptions(freedrive=True, samples=15, preview="auto")       # guide the arm by hand
+        options = SweepOptions(fixed_poses="stations.json", adjust=True)          # your stations, fine-tuned
 
-    Where the stations come from, one of two ways; nothing is generated, and a sweep that names neither is refused at
-    ``check()``:
+    The stations come one of two ways, and a sweep that names neither is refused at ``check()``: ``fixed_poses``, your
+    own, run in the order given; or ``freedrive``, a person guiding the arm to each pose, with nothing moving by itself.
+    Both ways by hand need an arm that offers hand guiding, confirm the payload before the arm is first freed, and write
+    each pose counted to ``<mode>_<rig>_stations.json`` in ``out_dir``, which ``fixed_poses`` replays without hands; the
+    file ``fixed_poses`` names is never written over.
 
-    ``fixed_poses`` are the caller's own stations, run in the order given: a list of ``Pose`` (BASE) the caller
-    already planned and ``JointStation``, or a path to a JSON file of them (URPose-shaped or ``Pose``-shaped records,
-    and joint stations ``{"joints_deg": [...]}`` or ``{"joints_rad": [...]}``, six values from the base to the last
-    wrist joint; see ``pose_provider``). ``check()`` reads and checks the file and counts its stations and its joint
-    stations. A joint station runs as one judged joint move, and before it moves the grasp centre the arm's forward
-    kinematics puts at its joints must lie inside the workspace box and differ enough from the stations before it;
-    so must every pose of a file. A station that does not is reported with its reason and never moved to.
-    ``adjust`` frees the arm at each fixed station it reached so a person can fine-tune the view by hand, captures on
-    Enter, and asks for the hands off the arm and counts down before the next automatic move.
-
-    ``freedrive`` lets a person guide the arm to each pose instead: nothing moves by itself. The console and the
-    preview ask for a pose where the camera sees the board, Enter captures once the arm stands still, and the run ends
-    at ``samples`` counted (the tree's ``robot.calibration.freedrive_samples``, 15) or when the person finishes. With
-    ``fixed_poses`` beside it, those stations are targets the preview shows the way to and are never moved to.
-
-    Both ways by hand need an arm that offers hand guiding and are refused at the build on one that does not; both
-    show the controller payload and ask whether it is right before the arm is first freed; and both write each pose
-    counted by hand to ``<mode>_<rig>_stations.json`` in ``out_dir``, which ``fixed_poses`` replays without hands.
-    The file ``fixed_poses`` names is never written over: when it is that file, the stations go to
-    ``<mode>_<rig>_stations.adjusted.json`` beside it, and the console says so before anything moves.
-
-    ``preview`` opens a window beside the sweep: the camera's view while the arm moves, each judged frame with the
-    target drawn on it, and whether its pose counted and why not. ``True`` opens it wherever a window can show, and
-    the build says why when it cannot. ``"auto"`` opens it only where a window can show and stdout is a terminal, and
-    says nothing otherwise, so a piped or captured run prints what it printed before. ``False`` or unset opens none.
-    ``WILLY_NO_PREVIEW`` set keeps it off whatever this says. It draws only: closing it closes the window (and
-    finishes a run guided by hand, which holds the arm), and the pendant stops the robot.
+    Attributes:
+        marker_length_mm (Maybe[float]): The printed marker's side, millimetres; measure it: a wrong length scales every
+            sample, and the solve converges uniformly wrong (default: UNSET, the block's).
+        marker_id (Maybe[int]): The marker's id (default: UNSET, the block's).
+        dict_name (Maybe[str]): The ArUco dictionary, such as ``"DICT_4X4_50"`` (default: UNSET, the block's).
+        out_dir (Maybe[str | Path]): Where the calibration artifact and the stations file go (default: UNSET).
+        unmodelled_wrist_body (Maybe[str]): Why the sweep may run while a wrist camera's declared body cannot be placed
+            yet (no calibration, one that does not load); printed and logged (default: UNSET).
+        fixed_poses (Maybe[Sequence[Pose | JointStation] | str | Path]): Your own stations, in order: ``Pose`` (BASE)
+            and ``JointStation``, or a JSON file of them (``{"joints_deg": [...]}`` with six values base to wrist). Each
+            must lie inside the workspace box and differ enough from the ones before, or it is reported and never moved
+            to (default: UNSET).
+        target (Maybe[Any]): The whole target instead of one marker: ``"aruco:ID:SIZE_MM[:DICT]"``,
+            ``"charuco:XxY:SQUARE_MM:MARKER_MM[:DICT][:legacy]"``, a YAML or JSON file, a mapping, or a target config;
+            not with the three single-marker options (default: UNSET).
+        preview (Maybe[bool | Literal["auto"]]): A window beside the sweep with the camera's view and each judged frame:
+            ``True`` wherever a window can show, ``"auto"`` only at a terminal, ``False`` none; ``WILLY_NO_PREVIEW``
+            keeps it off (default: UNSET).
+        freedrive (Maybe[bool]): A person guides the arm to each pose; Enter captures once it stands still (default:
+            UNSET).
+        adjust (Maybe[bool]): With ``fixed_poses``: free the arm at each station for fine-tuning by hand, capture on
+            Enter, hands off and a countdown before the next move (default: UNSET).
+        samples (Maybe[int]): How many samples a run guided by hand collects; unset is
+            ``robot.calibration.freedrive_samples``, 15 (default: UNSET).
     """
 
     marker_length_mm: Maybe[float] = UNSET
@@ -636,11 +625,45 @@ class _Parts:
 
 @dataclass(frozen=True, slots=True)
 class HandEyeCalibration:
-    """One camera of a cell, calibrated against its robot: ``check()`` at a desk, ``run()`` at the cell.
+    """One camera of a cell, calibrated against its robot: :meth:`check` at a desk, :meth:`run` at the cell.
 
-    Built by ``from_tree`` (a loaded tree), ``from_config`` (a validated config and the directory it came from) or
-    ``from_parts`` (a built ``Robot`` and ``Camera``). Building touches nothing. Every setting is resolved at the
-    factory, so ``check().render()`` prints the values the sweep will use.
+        calibration = HandEyeCalibration.from_tree(load_tree(), rig_id="EIH_Cam", mode="eye_in_hand",
+                                                   options=SweepOptions(freedrive=True))
+        print(calibration.check())          # what the sweep will use; moves nothing
+        print(calibration.run())            # the sweep, then the artifact
+
+    Build it with :meth:`from_tree`, :meth:`from_config` or :meth:`from_parts`; building touches nothing, and every
+    setting is resolved there, so ``check()`` prints the values the sweep will use.
+
+    Attributes:
+        rig_id (str): The rig being calibrated.
+        mode (MountingMode): ``eye_to_hand`` or ``eye_in_hand``.
+        settings (Any): The mode's ``camera.hand_eye`` block: the thresholds the poses and samples are held to.
+        samples (int): How many samples a run guided by hand collects.
+        marker_length_mm (float): The marker's side, millimetres.
+        marker_id (int): The marker's id.
+        dict_name (str): The ArUco dictionary.
+        out_dir (str): Where the artifact and the stations file go.
+        sections (_Sections): The robot and camera sections the sweep reads.
+        target (Any): A target named in full (a board), validated at ``check()``; ``None`` for one marker (default:
+            None).
+        target_from (str): Where ``target`` came from, ``"options"`` or ``"tree"``; empty without one (default: "").
+        overrides (tuple[str, ...]): The single-marker options a caller set (default: ()).
+        unmodelled_wrist_body (str | None): Why the sweep may run without a wrist body it cannot place (default: None).
+        fixed_poses (Sequence[Pose | JointStation] | str | Path | None): The caller's stations, or a file of them
+            (default: None).
+        preview (bool | Literal["auto"]): The preview window (default: False).
+        freedrive (bool): A run guided throughout by hand (default: False).
+        adjust (bool): Fixed stations, each adjusted by hand (default: False).
+        console (OperatorConsole | None): Where a person guiding the arm reads and types; ``None`` the terminal
+            (default: None).
+        data_dir (str | Path | None): The config tree the sections came from; ``None`` the repository's (default: None).
+        robot (Maybe[Robot]): A robot the caller built; unset builds the arm alone at ``run()`` (default: UNSET).
+        camera (Maybe[Camera]): A camera owner the caller built; unset builds the rig's at ``run()`` (default: UNSET).
+        announce (Callable[[ConnectStage], None] | None): Narration of the connect (default: None).
+        on_event (RobotCalibrationEventListener | None): Progress of the sweep, one event per pose (default: None).
+        on_built (Callable[[CalibrationBuild], None] | None): Called with the build report before any motion (default:
+            None).
     """
 
     rig_id: str
@@ -701,9 +724,29 @@ class HandEyeCalibration:
         on_built: "Callable[[CalibrationBuild], None] | None" = None,
         console: "OperatorConsole | None" = None,
     ) -> "HandEyeCalibration":
-        """The sweep a loaded tree describes for ``rig_id``: both sections and the directory come from one tree.
+        """The sweep a loaded tree describes for one rig: both sections and the directory from one tree.
 
-        A tree that did not load is refused with its own refusal, the ``ConfigError`` ``load_config`` raises.
+        Args:
+            loaded (LoadedTree): A loaded tree, ``load_tree()``.
+            rig_id (str): The rig to calibrate, as ``camera.cameras.rigs`` names it.
+            mode (MountingMode | str): ``"eye_to_hand"`` (a fixed camera) or ``"eye_in_hand"`` (on the wrist). No
+                default: a wrist camera swept eye to hand would write a CAMERA to BASE file for a camera that moves.
+            options (Maybe[SweepOptions]): What you choose about the sweep; unset takes the tree's values (default:
+                UNSET).
+            announce (Callable[[ConnectStage], None] | None): Narration of the connect, forwarded to
+                ``Robot.connected()`` (default: None).
+            on_event (RobotCalibrationEventListener | None): Progress of the sweep, one event per pose;
+                :func:`print_sweep_progress` prints them (default: None).
+            on_built (Callable[[CalibrationBuild], None] | None): Called with the build report after the build and
+                before any motion, so an operator reads what the arm refuses before it moves (default: None).
+            console (OperatorConsole | None): Where a person guiding the arm reads and types; ``None`` is the terminal
+                (default: None).
+
+        Returns:
+            HandEyeCalibration: The sweep; nothing is built or moved.
+
+        Raises:
+            ConfigError: The tree did not load.
         """
         if not loaded.ok:
             from src.config.loader import ConfigError
@@ -723,12 +766,28 @@ class HandEyeCalibration:
         on_built: "Callable[[CalibrationBuild], None] | None" = None,
         console: "OperatorConsole | None" = None,
     ) -> "HandEyeCalibration":
-        """The sweep a validated config describes for ``rig_id``.
+        """The sweep a validated config describes for one rig.
 
-        ``app_config`` is what ``load_config`` returns (its ``robot`` and ``camera`` sections are read). ``data_dir`` is
-        the directory it was loaded from, ``None`` for the repository's tree; a wrist camera's body is looked up in
-        that tree's registry. ``mode`` has no default: a wrist camera swept eye to hand writes a CAMERA to BASE file for
-        a camera that moves.
+        Args:
+            app_config (Any): What ``load_config`` returns; its ``robot`` and ``camera`` sections are read.
+            rig_id (str): The rig to calibrate, as ``camera.cameras.rigs`` names it.
+            mode (MountingMode | str): ``"eye_to_hand"`` (a fixed camera) or ``"eye_in_hand"`` (on the wrist). No
+                default: a wrist camera swept eye to hand would write a CAMERA to BASE file for a camera that moves.
+            options (Maybe[SweepOptions]): What you choose about the sweep; unset takes the tree's values (default:
+                UNSET).
+            data_dir (str | Path | None): The directory it was loaded from, where a wrist camera's body is looked up;
+                ``None`` is the repository's tree (default: None).
+            announce (Callable[[ConnectStage], None] | None): Narration of the connect, forwarded to
+                ``Robot.connected()`` (default: None).
+            on_event (RobotCalibrationEventListener | None): Progress of the sweep, one event per pose;
+                :func:`print_sweep_progress` prints them (default: None).
+            on_built (Callable[[CalibrationBuild], None] | None): Called with the build report after the build and
+                before any motion, so an operator reads what the arm refuses before it moves (default: None).
+            console (OperatorConsole | None): Where a person guiding the arm reads and types; ``None`` is the terminal
+                (default: None).
+
+        Returns:
+            HandEyeCalibration: The sweep; nothing is built or moved.
         """
         return cls.from_parts(robot_config=app_config.robot, camera_config=app_config.camera, rig_id=rig_id,
                               mode=mode, options=options, data_dir=data_dir,
@@ -744,32 +803,43 @@ class HandEyeCalibration:
         on_built: "Callable[[CalibrationBuild], None] | None" = None,
         console: "OperatorConsole | None" = None,
     ) -> "HandEyeCalibration":
-        """A sweep over parts the caller built, or over the sections to build them from at ``run()``.
+        """A sweep over parts you built, or over the sections to build them from at ``run()``.
 
-        ``robot`` is a built ``Robot``; build it with ``gripper=None`` and no cameras, as the config door does, so no
-        activation stroke runs beside the board and no live world refuses the sweep's declines. ``robot_config`` is
-        the robot section the workspace box, the calibration block and the tool frame are read from; left unset it is
-        the tree the arm keeps (``arm.config``). ``camera`` is an owner of the rig to calibrate; ``run()`` opens it
-        when it is closed and gives back only what it opened. Without one, ``camera_config`` and ``rig_id`` name the
-        rig. ``settings`` left unset is the mode's ``camera.hand_eye`` block, or the schema's default block when the
-        camera section has none. ``console`` is where a person guiding the arm reads and types, the terminal when
-        unset.
+        Args:
+            mode (MountingMode | str): ``"eye_to_hand"`` or ``"eye_in_hand"``.
+            robot (Maybe[Robot]): A built ``Robot``: build it with ``gripper=None`` and no cameras, so no activation
+                stroke runs beside the board and no live world refuses the sweep's declines (default: UNSET).
+            camera (Maybe[Camera]): An owner of the rig to calibrate; ``run()`` opens it when closed and gives back only
+                what it opened (default: UNSET).
+            robot_config (Maybe[Any]): The robot section the workspace box, the calibration block and the tool frame are
+                read from; unset is the arm's ``arm.config`` (default: UNSET).
+            camera_config (Maybe[Any]): The camera section: names the rig without ``camera``, and carries every wrist
+                body the tree declares; without it only the calibrated camera's body is read (default: UNSET).
+            rig_id (Maybe[str]): The rig, without ``camera`` (default: UNSET).
+            settings (Maybe[Any]): The thresholds; unset is the mode's ``camera.hand_eye`` block, or the schema's
+                default (default: UNSET).
+            options (Maybe[SweepOptions]): What you choose about the sweep (default: UNSET).
+            data_dir (str | Path | None): The tree's directory; ``None`` the repository's (default: None).
+            announce (Callable[[ConnectStage], None] | None): Narration of the connect, forwarded to
+                ``Robot.connected()`` (default: None).
+            on_event (RobotCalibrationEventListener | None): Progress of the sweep, one event per pose;
+                :func:`print_sweep_progress` prints them (default: None).
+            on_built (Callable[[CalibrationBuild], None] | None): Called with the build report after the build and
+                before any motion, so an operator reads what the arm refuses before it moves (default: None).
+            console (OperatorConsole | None): Where a person guiding the arm reads and types; ``None`` is the terminal
+                (default: None).
 
-        The wrist bodies the arm carries are read from ``camera_config``, the tree's camera section. A ``camera``
-        handed in without it reads no other wrist camera: an owner holds its own rig and no section, and a robot
-        from ``Robot.from_config`` holds none either, so there is nothing to read them from, and guessing would read
-        another tree. Pass ``camera_config=`` beside ``camera`` to carry every wrist body the tree declares; without
-        it only the body of the camera an eye in hand sweep calibrates is read, from the owner's rig. A robot that
-        ``Robot.from_tree`` built carries every declared body already, but without ``camera_config`` a wrist rig
-        of its tree declared with no body gets no ``!!`` line here: pass the section to have it named.
+        Returns:
+            HandEyeCalibration: The sweep; nothing is built or moved.
 
-        A ``robot`` that already holds bodies (``Robot.wrist_bodies``, and what its arm's guard holds, so a second
-        sweep of the same robot counts the first one's) is handed only those it does not hold, equal field by field,
-        and nothing at all when it holds them all or there is nothing to carry: an exact mesh guard that is built
-        refuses any hand-over, an empty one included. A body it does not hold is handed beside the ones it does, and
-        an arm that can no longer take one refuses the build.
+        Raises:
+            ValueError: A missing part: a call that cannot describe a sweep (no robot and no robot section, no camera
+                and no rig, ...).
 
-        A missing part raises ``ValueError``: that is a call that cannot describe a sweep, not a refusal.
+        A ``camera`` handed in without ``camera_config`` reads no other wrist camera: an owner holds its own rig and no
+        section, and a robot from ``Robot.from_config`` holds none either. Pass ``camera_config=`` beside ``camera`` to
+        carry every wrist body the tree declares; without it only the body of the camera an eye-in-hand sweep calibrates
+        is read. A ``robot`` that already holds bodies is handed only those it does not hold.
         """
         from src.robot.execution.calibration import DEFAULT_FREEDRIVE_SAMPLES
 
@@ -840,15 +910,27 @@ class HandEyeCalibration:
     # --- the verbs ---------------------------------------------------------------------------
 
     def check(self) -> CalibrationCheck:
-        """What the config says about this sweep. Builds nothing, opens nothing, moves nothing."""
+        """What the config says about this sweep. Builds nothing, opens nothing, moves nothing.
+
+        Returns:
+            CalibrationCheck: The values the sweep will use, the stations it will run and every refusal; prints as
+                itself.
+        """
         return self._stage().check
 
     def run(self, *, dry_run: bool = False) -> CalibrationRunReport:
-        """Check, build, and unless ``dry_run``, sweep and write. The robot moves unless ``dry_run``.
+        """Check, build, and unless ``dry_run``, sweep and write the artifact. The robot moves unless ``dry_run``.
 
-        Never raises for a refusal: the config, the build, a held cell, a refused connect and a sweep that raised are
-        each an outcome on the report. A failing write of the artifact raises, with the arm down and the camera given
-        back.
+        Args:
+            dry_run (bool): Check and build only, moving nothing (default: False).
+
+        Returns:
+            CalibrationRunReport: Each step's outcome: the check, the build, the connect, the sweep (every pose and why
+                it counted or not), the solve and where the artifact went; prints as itself. A refusal is an outcome,
+                never an exception.
+
+        Raises:
+            OSError: Writing the artifact failed; the arm is down and the camera given back first.
         """
         staged = self._stage()
         check = staged.check
@@ -1387,9 +1469,13 @@ def render_sweep_event(event_type: str, data: Mapping[str, Any]) -> str:
 
 
 def print_sweep_progress(event_type: str, data: Mapping[str, Any]) -> None:
-    """A sweep's ``on_event``: prints each event as :func:`render_sweep_event` words it, indented, and flushes.
+    """A sweep's ``on_event``: one indented line per event, flushed at once.
 
         HandEyeCalibration.from_tree(tree, rig_id="overhead", mode="eye_to_hand", on_event=print_sweep_progress)
+
+    Args:
+        event_type (str): The event's type, such as a pose reached or counted.
+        data (Mapping[str, Any]): The event's data, as the sweep sends it.
     """
     print(f"  {render_sweep_event(event_type, data)}", flush=True)
 

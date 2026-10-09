@@ -6,15 +6,19 @@ vision half of the stack to load its weights and hand back a box and a mask for 
 to 7 need no GPU and no simulator; section 8 is the first simulator boot.
 
 ```python
-from willy import PerceptionSpec, load_tree
+from willy import ObjectDetector, load_tree
 
-spec = PerceptionSpec.from_config(load_tree().app_config.models)
-print(spec.resolve())   # what build() would construct, and which config half decided it; no weight loads
+detector = ObjectDetector.from_config(load_tree())   # what the cell's models.pipeline builds; loads the detector
+print(detector)                                      # which model answers, from which weights, and the masks
+found = detector.detect(image_bgr, prompt="a red cube", segment=True)   # every box for it, each with its SAM2 mask
+print(found)
 ```
 
-`spec.build()` then loads the weights and returns an object with `perceive(image_bgr, prompt)`.
-[`examples/offline/perception/resolve_perception_stack.py`](../../examples/offline/perception/resolve_perception_stack.py)
-runs both halves on a drawn frame.
+`ObjectDetector` is every model here behind one door: GroundingDINO as shipped, the VLM or the router where the tree
+names them (or `backend=` does), and the closed-set RT-DETR, which answers with every class it knows (section 8).
+`classes=["red cube", "blue bin"]` finds several kinds in one call.
+[`examples/offline/perception/detect_with_a_prompt.py`](../../examples/offline/perception/detect_with_a_prompt.py)
+runs it on any image you name. Section 7 proves the stack a cell builds, before a weight loads.
 
 ---
 
@@ -226,6 +230,16 @@ person loaded it. **Switching the checkpoint takes a rebuild**: a command or "La
 weights is refused. A load takes about 6.3 to 7.3 s and a command about 2.2 s on a free card, 5.5 to 19 s while
 another GPU job runs. The cell PC's card is unmeasured.
 
+**Not every sentence needs the model, and an answer is cheaper than it was** (2026-10-08 and 2026-10-09). The
+cell's everyday sentences ("Alle grauen Würfel in die Gelbe Kiste.", "Hallo Willy") are read by a closed grammar
+as the model was measured to read them, with nothing loaded (`runtime.commands.known_sentences` in
+`config/app/runtime.yaml`, on), and a question the loaded copy answered before is answered from memory. How fast
+the model writes is four keys of the `vlm` block: `stop_at_answer_end` (on) and `decode_graphs` (`auto`) leave
+every answer byte for byte as it was, while the answer lookups `prompt_lookup_tokens` and
+`text_prompt_lookup_tokens` (0, off; 10 on the owner's cell) save about half the passes and may move a
+coordinate's last digit or a word of a reading ([`vlm/`](../../src/models/vlm/README.md), What an answer costs;
+[05](05-pick-loop.md) 5.5).
+
 **`router.enabled`** routes each prompt from its text alone, before any weights load: plain English
 noun phrases go to the phrase grounder, everything else to the VLM. It is deterministic: the first
 matching rule wins, with no model and no image. The reason travels with the pick, so an operator seeing
@@ -360,7 +374,7 @@ in two steps.
 why, from the same refusals the builder uses:
 
 ```bash
-python -c "from willy import PerceptionSpec, load_tree; print(PerceptionSpec.from_config(load_tree().app_config.models).resolve())"
+python -c "from src.models.perception_spec import PerceptionSpec; from willy import load_tree; print(PerceptionSpec.from_config(load_tree().app_config.models).resolve())"
 ```
 
 On the shipped tree it prints the stack, which half of the config decided it, and whether the prompt
@@ -383,7 +397,8 @@ wherever you like:
 # smoke_models.py
 import numpy as np
 
-from willy import PerceptionSpec, load_tree
+from src.models.perception_spec import PerceptionSpec   # the cell's own builder, the path every pick takes
+from willy import load_tree
 
 spec = PerceptionSpec.from_config(load_tree().app_config.models)
 print(spec.resolve())
@@ -489,6 +504,29 @@ images per second** at 640 px. `tier="smoke"` proves the chain in a minute,
 [`examples/offline/training/06_train_a_detector_on_your_images.py`](../../examples/offline/training/06_train_a_detector_on_your_images.py)
 shows the whole run, and [`src/models/README.md`](../../src/models/README.md) has the command line.
 
+**Detecting with it, every class at once** (2026-10-09). A program of your own, such as a chess program that wants
+every piece on the board, uses the trained model through `ObjectDetector`. One call answers with every class the model
+knows, and `segment=True` gives each object its SAM2 mask from the same call, every box cut in one SAM2 pass:
+
+```python
+from willy import ObjectDetector
+
+detector = ObjectDetector.from_weights("assets/models/rtdetr/my_parts")   # an out_dir; .../last is the last epoch
+print(detector.classes)                          # its id2label, in id order
+found = detector.detect(image_bgr, segment=True) # Detections, the highest score first
+print(found)                                     # a line per object, and how many of each class
+```
+
+`classes=["cube"]` narrows a call to exact class names, case and blanks aside, and a name the model does not know is
+refused with every name it does know; `found.to_dict()` writes the masks as COCO run-length encoding.
+`ObjectDetector.from_config(tree, backend="closed_set")` builds the same from a cell's `models.rtdetr` and
+`models.segmenter`; without `backend=` it builds what the tree's `models.pipeline` names, the open-vocabulary detector
+as shipped (the top of this guide). The details, the refusals and the licences (Apache-2.0 for both model families) are
+in
+[`src/models/detection/`](../../src/models/detection/README.md), and
+[`examples/offline/perception/detect_every_class.py`](../../examples/offline/perception/detect_every_class.py) runs it
+on any image you name.
+
 ---
 
 ## 9. Troubleshooting
@@ -519,6 +557,7 @@ constructs, and the VLM response parser with its coordinate-space contract.
 |---|---|
 | GroundingDINO and SAM2 on rendered images | measured in simulation: the real-vision pick in section 8 |
 | RT-DETR, OneFormer, the MediaPipe detectors, the RT-DETR training script | never touched hardware: unit tests only; SAM2 against OneFormer is not compared |
+| `ObjectDetector`: every class in one call, SAM2's masks for every box in one pass | unit tests on a CPU, with the real RT-DETR and SAM2 classes at toy size; the real-weights file `tests/test_an_object_detector_on_real_weights_inference.py` is written and not run |
 | Whisper and the Silero voice detector | never touched hardware: fakes, a random Whisper, and the real weights for load time, latency and memory only |
 | GroundingDINO, SAM2 and the VLM route on a physical camera | run on a physical cell: a wrist D415 on a UR10 (CB3); no measurement is kept here |
 | The VLM reading commands: load time, VRAM, latency, German and English sentences | measured on the development box's RTX 5080 against the real 4B weights (`tests/test_vlm_command_inference.py`); not on the cell PC |

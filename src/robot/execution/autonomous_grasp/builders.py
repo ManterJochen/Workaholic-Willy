@@ -817,6 +817,10 @@ def apply_orchestrator_overlays(
         logger.info("the guard holds the jaw's grasp centre %.2f mm past the declared TCP: the calculator plans the hand "
                     "there too (the preflight's grasp centre row names the difference)", float(hand_past_the_tcp_mm))
     runtime.orchestrator.support_config = grasping_cfg.support
+    # A task follows its parts from pick to pick where the cell asks (``follow_parts``, the owner, 2026-10-09): the built
+    # cell carries the block and the task reads it there, so the switch reaches the run this cell runs.
+    follow = getattr(grasping_cfg, "follow_parts", None)
+    runtime.orchestrator.follow_parts = follow if getattr(follow, "enabled", False) is True else None
 
     # The learned grasp ranker, in shadow. Loaded eagerly and fail-safe, exactly as the
     # success-probability model below is: a missing artifact, a spec that disagrees with the model's

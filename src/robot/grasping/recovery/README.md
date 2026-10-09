@@ -91,8 +91,10 @@ No built-in profile lists `container_agitate`, so a config-built cell never agit
   The part's exclusion zone is a circle in BASE XY about its centre, radius max(30 mm, half its footprint
   diagonal), held for this pick and the next 2 (`ExclusionZones`). Beside the zones a task keeps whole
   **regions** out for its whole length (`ExclusionRegion`, a turned rectangle or a circle, for one label or every
-  label, kept until `forget_regions()`): the bin it places into, its footprint grown by 10 mm, and 150 mm about a
-  pose drop for "until empty", laid only where the arm's own kinematics say where the pose puts the tool.
+  label, kept until `forget_regions()`, or `forget_region(region)` forgets one alone): the bin it places into, its
+  footprint grown by 10 mm, and 150 mm about a pose drop for "until empty", laid only where the arm's own kinematics
+  say where the pose puts the tool. A check of one bin of a sort replaces that bin's region alone (`forget_region`,
+  the owner, 2026-10-09), so every other rule's bin and every taught drop stay kept out.
   `applies(label)` says whether a zone or a region applies, the empty label included, and the pick loop skips
   such parts. `kept_out_by_a_region` asks of every part it skips whether a region holds it, whatever zone holds
   it too; on an attempt that saw only skipped parts, `PickAttempt.excluded_by_regions` says a region held every

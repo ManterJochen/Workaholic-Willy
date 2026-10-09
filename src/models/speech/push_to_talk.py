@@ -94,7 +94,11 @@ class TalkButton:
 
     @classmethod
     def from_parts(cls) -> TalkButton:
-        """The Python door: a button that is up and has never been pressed."""
+        """A talk button that is up and has never been pressed.
+
+        Returns:
+            TalkButton: The button; ``press()`` and ``release()`` work it from any thread.
+        """
         return cls()
 
     @property
@@ -127,8 +131,15 @@ class TalkButton:
             self._changed.notify_all()
 
     def wait_for_press(self, *, after: int, timeout_s: float) -> int:
-        """Wait up to ``timeout_s`` until the button has gone down more than ``after`` times, and
-        return `presses` then."""
+        """Wait until the button has gone down more than a given number of times.
+
+        Args:
+            after (int): The press count to wait past: ``button.presses`` before the wait.
+            timeout_s (float): How long to wait, seconds.
+
+        Returns:
+            int: The press count then; equal to ``after`` when the wait timed out.
+        """
         with self._changed:
             self._changed.wait_for(lambda: self._presses > after, timeout=max(timeout_s, 0.0))
             return self._presses
@@ -258,10 +269,21 @@ class _Turn(StrEnum):
 
 
 class PushToTalkSource:
-    """An `AudioSource` that serves audio only while a talk switch is held.
+    """The microphone, serving audio only while a talk switch is held: what a push-to-talk turn is.
 
-    Build it with `from_config` or `from_parts`; `start()`/`stop()` (or `with`) open and close the
-    microphone, and the verb is `record()`. One thread reads it.
+        button = TalkButton.from_parts()
+        with PushToTalkSource.from_config(config=load_speech_section(), switch=button) as microphone:
+            button.press()               # a key, a foot switch, or the console's talk route
+            ...                          # the person speaks; button.release() ends the turn
+            turn = microphone.record(timeout_s=1.0)
+
+    Build it with :meth:`from_config` or :meth:`from_parts`; ``start()``/``stop()`` (or ``with``) open and close the
+    microphone, and the verb is :meth:`record`. One thread reads it.
+
+    Args:
+        source (AudioSource): The microphone behind the switch.
+        switch (TalkSwitch): The switch a turn waits for.
+        clock (Callable[[], float]): The clock the waits are measured on, seconds.
     """
 
     def __init__(
@@ -282,10 +304,18 @@ class PushToTalkSource:
         switch: Maybe[TalkSwitch] = UNSET,
         device: Maybe[int | str] = UNSET,
     ) -> PushToTalkSource:
-        """The YAML door: the cell PC's microphone from the keys of `models.stt`
-        (`MicrophoneSource.from_config`), behind ``switch``. Opens nothing.
+        """The cell PC's microphone from the keys of ``models.stt``, behind a talk switch. Opens nothing.
 
-        ``switch`` UNSET is `shared_talk_button()`, the one the console's talk route presses.
+        Args:
+            config (SpeechToTextConfig): The speech section, ``load_speech_section()``.
+            switch (Maybe[TalkSwitch]): The switch; unset is ``shared_talk_button()``, the one the console's talk route
+                presses (default: UNSET).
+            device (Maybe[int | str]): The input device, by index or name; unset is the host's default input (default:
+                UNSET).
+
+        Returns:
+            PushToTalkSource: The source; open it with ``with``, which raises ``MicrophoneUnavailable`` where the
+                machine has no input device that opens.
         """
         return cls.from_parts(
             source=MicrophoneSource.from_config(config=config, device=device), switch=switch
@@ -299,7 +329,16 @@ class PushToTalkSource:
         switch: Maybe[TalkSwitch] = UNSET,
         clock: Callable[[], float] = time.monotonic,
     ) -> PushToTalkSource:
-        """The Python door. Opens nothing. ``switch`` UNSET is `shared_talk_button()`."""
+        """A push-to-talk source over an audio source you built. Opens nothing.
+
+        Args:
+            source (AudioSource): The microphone, or a double.
+            switch (Maybe[TalkSwitch]): The switch; unset is ``shared_talk_button()`` (default: UNSET).
+            clock (Callable[[], float]): The clock, seconds (default: time.monotonic).
+
+        Returns:
+            PushToTalkSource: The source.
+        """
         if not chosen(switch):
             switch = shared_talk_button()
         return cls(source=source, switch=switch, clock=clock)
@@ -349,10 +388,11 @@ class PushToTalkSource:
         self.stop()
 
     def discard_buffered(self) -> int:
-        """Arm a new turn and drop the audio captured before now; while the switch is held, drop nothing.
+        """Arm a new turn and drop the audio captured before now; while the switch is held, drop nothing (what came
+        since the press is the command). A ``Listener`` calls it at the start of every ``listen()``.
 
-        A `Listener` calls this at the start of every `listen()`. During a held turn the press has already
-        dropped what came before it, and what came since is the command.
+        Returns:
+            int: How many audio frames were dropped; 0 while the switch is held.
         """
         if self._turn is _Turn.HELD:
             return 0
@@ -360,11 +400,17 @@ class PushToTalkSource:
         return self._source.discard_buffered()
 
     def read(self, *, timeout_s: float) -> AudioBlock | None:
-        """What the microphone caught while the switch is held; None before the press and after the turn.
+        """What the microphone caught while the switch is held.
 
-        Before the press it waits up to ``timeout_s`` for one, and at the press drops what was captured
-        before it. While the switch is held it waits up to 0.1 s for audio. At the release it serves what
-        the ring still holds, once, and from then on the source has ended.
+        Before the press it waits up to ``timeout_s`` for one and, at the press, drops what came before it; while the
+        switch is held it waits up to 0.1 s for audio; at the release it serves what is left once, and from then on the
+        source has ended.
+
+        Args:
+            timeout_s (float): How long to wait for the press, seconds.
+
+        Returns:
+            AudioBlock | None: The next block of audio; ``None`` before the press and after the turn.
         """
         if self._turn is _Turn.WAITING:
             presses = self._switch.wait_for_press(after=self._seen, timeout_s=timeout_s)
@@ -384,11 +430,20 @@ class PushToTalkSource:
         return None
 
     def record(self, *, timeout_s: float, longest_s: Maybe[float] = UNSET) -> TalkRecording:
-        """One turn: wait up to ``timeout_s`` for the switch, then everything caught until it comes up.
+        """One turn: wait for the switch, then everything caught until it comes up.
 
-        ``longest_s`` UNSET is Whisper's window, 30 s; a switch still held then ends the turn as
-        HELD_TOO_LONG. The microphone must be open (`with source:`). A turn armed before this call is
-        armed again, and a press still held when it starts counts.
+        Args:
+            timeout_s (float): How long to wait for the press, seconds.
+            longest_s (Maybe[float]): The longest turn, seconds; a switch still held then ends it as ``HELD_TOO_LONG``.
+                Unset is Whisper's window, 30 s (default: UNSET).
+
+        Returns:
+            TalkRecording: ``outcome``, ``samples`` (mono float32 in [-1, 1]), ``samplerate``, ``waited_s`` and
+                ``held_s``; ``ok`` is whether there is a turn to transcribe. Prints as itself.
+
+        Raises:
+            ValueError: A ``timeout_s`` or ``longest_s`` that is not positive.
+            RuntimeError: The microphone is not open (``with source:``).
         """
         import numpy as np
 

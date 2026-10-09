@@ -12,6 +12,8 @@ impossible for no reason.
     camera_matrix            read by the single-view support-plane refinement      optional, below
     redraw_debug_image(...)  called where a closing axis changed a result          optional, below
     max_candidates           raised for a ranking a closing axis chooses among     optional, below
+    sfe_fine_pass            turned off for a ranking whose fine search may wait   optional, below
+    support_footprint_rim_mm read for the rim the looks' footprints lose           optional, below
 
 The argument list is deliberately untyped. `compute()` takes thirty-odd keyword arguments and the
 orchestrator assembles them conditionally: `camera_to_base`, `scene_points_mm`,
@@ -46,6 +48,19 @@ returns. Where a program names the closing axis, the pick loop reads it duck-typ
 `pick_loop._asking_more_along_the_axis`, raises it to 36 for that one ranking, keeps the best of the
 cap along the axis and gives the cap back. A generator without an integer cap ranks as it always
 did, and the axis chooses among what it returned.
+
+`sfe_fine_pass` is optional the same way (2026-10-08): whether the support-footprint stage runs its fine
+search where its coarse grid finds few grasps. Where the cell lets that search wait
+(`robot.grasping.fine_pass_waits`), the pick loop reads it duck-typed, `pick_loop._fine_search_waiting`,
+turns it off for that one ranking and gives it back; the result then says
+`support_footprint_fine: "deferred"`, and the loop asks again in full before it takes that part. A
+generator without the switch computes every part in full, as it always did.
+
+`support_footprint_rim_mm` is optional the same way (2026-10-09): the rim the support-footprint stage's
+input loses (`robot.grasping.geometry.footprint_rim_mm`). The pick loop reads it duck-typed,
+`pick_loop._footprint_rim_mm`, cuts the same rim off the looks' surfaces it fuses, and hands the result
+beside the fused cloud as `footprint_points_base_mm`, a keyword a generator may ignore. A generator
+without it is handed no footprint, as before.
 """
 
 from __future__ import annotations

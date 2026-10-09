@@ -14,7 +14,7 @@ with robot.connected():                 # the arm first, then the hand
 ```
 
 The walk at a cell is [examples/real_robot/04_open_and_close_the_hand.py](../../../examples/real_robot/04_open_and_close_the_hand.py);
-which hand a tree really builds is [examples/offline/config/which_gripper_gets_built.py](../../../examples/offline/config/which_gripper_gets_built.py).
+`print(robot)` says which hand the tree really built, or what stands in for it and why, before anything connects.
 Before the first close of a digital-I/O hand, measure its pins with the UR bench, which moves no arm:
 
 ```bash
@@ -143,6 +143,15 @@ The hand verbs (`pick`, `place`, `grasp`, `release`) and the pick loop tell `jaw
 intent (`OpensAndCloses.set_closed`), so `closed_below_mm` cannot turn a verb round; on a solenoid it
 only reads the widths a caller sends through `set_width_mm` itself. Both touch the controller's I/O at connect, so the arm connects first; `Robot` does that for
 you.
+
+**The stroke, left to the verb.** `set_closed(closed, wait=False)` sends the same one change and comes back at once
+with the moment the jaws' stroke is over (`time.monotonic()` seconds, `close_settle_s` on); `wait_settled(deadline)`
+sleeps what is left of it. In between the verb judges its next leg and sends nothing (`robot.motion.judge_next_leg`,
+the owner, 2026-10-09): the grasp's carry while the jaws close, the line out of a place while they open. Only a wait
+that is the travel time alone is left so, a toggle's and a solenoid's with no switch to read; a close that reads its
+reeds waits here as ever and returns `None`, and so does a command that moved nothing. A command that comes while a
+stroke left so still runs waits it out first, as it waited inside `set_closed` before, so a change never turns the
+jaws round mid-stroke. `wait=True`, the default, is the command it always was.
 
 ## The jaws question, through a seam
 

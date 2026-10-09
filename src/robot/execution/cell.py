@@ -57,21 +57,28 @@ class CellNotBuilt(RuntimeError):
 
 @dataclass
 class Cell:
-    """The cell this configuration describes, and the four steps that act on it.
+    """The whole cell a configuration describes: cameras, perception, the grasp stack, the arm and the hand, and the
+    four steps that act on it.
 
-        from src.config import load_robot_config
-        from src.robot.execution.cell import Cell
+        cell = Cell.from_tree(load_tree(), prompt="a red cube")
+        print(cell.preflight())                  # 1. decidable at a desk, no hardware
+        cell.build()                             # 2. drivers, perception, grasp stack
+        print(cell.safety())                     # 3. what this arm will refuse, before it moves
+        with cell.connected():                   # 4. lock, arm, then hand
+            print(cell.service.pick())
 
-        cell = Cell.from_robot_config(load_robot_config(), prompt="a red cube")
-        print(cell.preflight().render())        # 1. decidable at a desk, no hardware
-        cell.build()                            # 2. drivers, perception, grasp stack
-        print(cell.safety().render())           # 3. what this arm will refuse, before it moves
-        with cell.connected() as live:          # 4. lock, arm, then gripper
-            report = live.service.pick()
-        print(report.render())
+    Each step is useful alone: :meth:`preflight` needs no hardware, :meth:`safety` a build but no motion, and
+    :meth:`connected` is the only one that touches a cell.
 
-    Each step is independent and useful alone: `preflight()` needs no hardware, `safety()` needs a
-    build but no motion, and `connected()` is the only one that touches a cell.
+    Attributes:
+        robot_config (RobotConfig): The robot section the cell is built from.
+        prompt (Maybe[str]): What the picks look for; unset lets the build supply its own (default: UNSET).
+        app_config (Maybe[AppConfig]): The whole tree the robot section came from, for the camera half (default: UNSET).
+        is_rehearsal (bool): A dummy arm and a synthetic scene (:meth:`rehearsal`) (default: False).
+        data_dir (str | Path | None): The config tree's root, which the hand registry and the paths are read from;
+            ``None`` is the repository's (default: None).
+        motion (Maybe[GraspMotion]): How the picks move (default: UNSET).
+        mode (Maybe[GraspMode | str]): The grasp mode (default: UNSET).
     """
 
     robot_config: "RobotConfig"
@@ -121,13 +128,24 @@ class Cell:
     ) -> "Cell":
         """The cell a loaded tree describes: both halves, and the directory, from one load.
 
-            cell = Cell.from_tree(ConfigTree.from_directory(profile="ur5e,hande").load())
-            cell = Cell.from_tree(ConfigTree.from_directory(root="D:/cells/line3", profile=None).load())
+            cell = Cell.from_tree(load_tree("ur5e,hande"), prompt="a red cube")
 
-        Calls :meth:`from_robot_config` with the tree's robot section, its camera half and its root, so
-        the preflight, the planner start and the build all read the tree that was loaded, values given in
-        memory included. A tree that did not load is refused with its own refusal (``ConfigError``);
-        anything but a ``LoadedTree`` is a ``TypeError``.
+        Args:
+            tree (LoadedTree): What ``load_tree()`` returned.
+            prompt (Maybe[str]): What the picks look for, such as ``"a red cube"``; unset lets the build supply its own
+                (default: UNSET).
+            motion (Maybe[GraspMotion]): How the picks move (:class:`GraspMotion`); unset is the cell's own (default:
+                UNSET).
+            mode (Maybe[GraspMode | str]): The grasp mode the service is built in: ``"easy"``, ``"auto"`` or
+                ``"dense_clutter"``; unset is ``grasping.default_mode`` (default: UNSET).
+
+        Returns:
+            Cell: The cell, not built; the preflight, the planner start and the build all read this tree, values given
+                in memory included.
+
+        Raises:
+            ConfigError: The tree did not load.
+            TypeError: ``tree`` is not a ``LoadedTree``.
         """
         from src.config.loader import ConfigError  # noqa: PLC0415
         from src.config.tree import LoadedTree  # noqa: PLC0415
@@ -147,13 +165,22 @@ class Cell:
         app_config: "Maybe[AppConfig]" = UNSET, data_dir: "str | Path | None" = None,
         motion: "Maybe[GraspMotion]" = UNSET, mode: "Maybe[GraspMode | str]" = UNSET,
     ) -> "Cell":
-        """The cell the configuration describes, as configured.
+        """The cell a robot section describes, as configured.
 
-        Omitting ``prompt`` lets `build_real_cell` supply its own, which is the only declaration
-        of it. The CLI passes its argparse default explicitly.
+        Args:
+            robot_config (RobotConfig): The robot section, ``tree.robot``.
+            prompt (Maybe[str]): What the picks look for, such as ``"a red cube"``; unset lets the build supply its own
+                (default: UNSET).
+            motion (Maybe[GraspMotion]): How the picks move (:class:`GraspMotion`); unset is the cell's own (default:
+                UNSET).
+            mode (Maybe[GraspMode | str]): The grasp mode the service is built in: ``"easy"``, ``"auto"`` or
+                ``"dense_clutter"``; unset is ``grasping.default_mode`` (default: UNSET).
+            app_config (Maybe[AppConfig]): The tree the section came from; pass it where you have it, so the camera half
+                is the same load's (default: UNSET).
+            data_dir (str | Path | None): The tree's root; ``None`` is the repository's (default: None).
 
-        ``app_config`` is the tree ``robot_config`` came from, and a caller who resolved one should
-        pass it: see the field for what happened while it could not be said.
+        Returns:
+            Cell: The cell, not built.
         """
         return cls(robot_config=robot_config, prompt=prompt, app_config=app_config, data_dir=data_dir,
                    motion=motion, mode=mode)
@@ -163,14 +190,20 @@ class Cell:
         cls, robot_config: "RobotConfig", *, data_dir: "str | Path | None" = None,
         motion: "Maybe[GraspMotion]" = UNSET, mode: "Maybe[GraspMode | str]" = UNSET,
     ) -> "Cell":
-        """The same path with a dummy arm and a synthetic scene.
+        """The same cell with a dummy arm and a synthetic scene: the operator's own config with the vendor changed, so
+        the profile chain, the hand branch and the grasping block are the ones they run.
 
-        The operator's own config with the vendor changed, not a separate tree, so the profile
-        chain, the gripper branch and the grasping block are the ones they run.
+        Not a safety demonstration: the dummy arm carries no preflight and says so, so a rehearsal proves the wiring and
+        nothing about what would refuse a bad command.
 
-        It is not a safety demonstration. The dummy arm carries no preflight and says so
-        (`SafetyAttestation.of` reports ungated), so a rehearsal proves the wiring and nothing
-        about what would refuse a bad command.
+        Args:
+            robot_config (RobotConfig): The robot section to rehearse.
+            data_dir (str | Path | None): The tree's root; ``None`` is the repository's (default: None).
+            motion (Maybe[GraspMotion]): How the picks move (default: UNSET).
+            mode (Maybe[GraspMode | str]): The grasp mode (default: UNSET).
+
+        Returns:
+            Cell: The rehearsal cell, not built.
         """
         return cls(
             robot_config=robot_config.model_copy(update={"vendor": _REHEARSAL_VENDOR}),
@@ -183,9 +216,10 @@ class Cell:
     # --- the four steps ----------------------------------------------------------------------
 
     def preflight(self) -> PreflightReport:
-        """Every stop-the-cell condition that is decidable at a desk, each with its fix.
+        """Every stop-the-cell condition decidable at a desk, each with its fix. Touches no hardware, needs no build.
 
-        Touches no hardware and needs no build, which is what makes it the first step.
+        Returns:
+            PreflightReport: One row per check, ``OK``, ``WARN`` or ``BLOCK``, and an ``exit_code``; prints as itself.
         """
         # The camera half of the same tree, because a cell's CAMERA to BASE is declared on its
         # primary rig. With no tree supplied it is the tree at `data_dir`, and the default tree, the
@@ -196,10 +230,11 @@ class Cell:
         return run_config_preflight(self.robot_config, camera=app_config.camera, data_dir=self.data_dir)
 
     def start_planner(self) -> "PlannerStartReport":
-        """Start this cell's planner through its driver, with every refusal its first planned move meets, and stop it.
+        """Start this cell's planner through its driver, with every refusal its first planned move meets, and stop it
+        again. Builds the arm alone, opens no camera and asks no controller: a combination is proven to start at a desk.
 
-        Builds the arm alone, opens no camera and asks no controller, so it belongs beside the
-        preflight rather than after the build: a customer's combination is proven to start at a desk.
+        Returns:
+            PlannerStartReport: Whether the planner started, how long it took, and what refused; prints as itself.
         """
         from src.config import load_config  # noqa: PLC0415
         from src.robot.execution.planner_start import PlannerStart  # noqa: PLC0415
@@ -211,10 +246,15 @@ class Cell:
                                               camera=app_config.camera).run()
 
     def build(self) -> Any:
-        """Construct the service: drivers, perception, the grasp stack. Idempotent.
+        """Construct the service: drivers, perception, the grasp stack. Idempotent: a repeat call returns the service
+        already built, since a second build would open a second camera on a device that has only one.
 
-        A second build would open a second camera on a device that has only one, so a repeat call
-        returns the service already built.
+        Returns:
+            AutonomousGraspService: The pick service, also :attr:`service`.
+
+        Raises:
+            CameraRefused: A camera the cell needs cannot be given.
+            RobotConnectionError: This machine is not ready for the arm's vendor.
         """
         if self._service is None:
             from src.robot.execution.autonomous_grasp import (  # noqa: PLC0415
@@ -243,10 +283,14 @@ class Cell:
         return self._service
 
     def safety(self) -> SafetyAttestation:
-        """What this cell's arm will actually refuse. Requires a build; commands nothing.
+        """What this cell's arm will actually refuse, asked of the built arm: a config can request a preflight the
+        driver does not carry. Commands nothing.
 
-        Asked of the built arm, not of the config that asked for it: a config can request a
-        preflight the driver does not carry.
+        Returns:
+            SafetyAttestation: The guards the arm runs before every motion; prints as itself.
+
+        Raises:
+            CellNotBuilt: :meth:`build` has not run.
         """
         return SafetyAttestation.of(self.arm)
 
@@ -255,10 +299,21 @@ class Cell:
     ) -> ConnectedCell:
         """The cell, connected, for the duration of a ``with`` block.
 
-        Takes the cross-process lock first when this cell owns a controller, then connects arm before
-        gripper, and on the way out takes the gripper down first, then the arm, then the cameras, and
-        gives the lock back. A simulated or dummy cell owns no controller and yields no lock key, so
-        two rehearsals can run at once.
+        The cross-process lock first when the cell owns a controller, then the arm, then the hand; on the way out the
+        hand, the arm, the cameras, and the lock. A simulated or dummy cell takes no lock, so two rehearsals can run at
+        once.
+
+        Args:
+            announce (Callable[[ConnectStage], None] | None): Called with each stage as the connect reaches it (default:
+                None).
+
+        Returns:
+            ConnectedCell: The context manager; inside it :attr:`service` picks and :attr:`robot` moves.
+
+        Raises:
+            CellNotBuilt: :meth:`build` has not run.
+            CellBusy: On entering the block: another process holds the controller's lock.
+            NoRealGripper: On entering the block: the tree names a hand this arm cannot drive.
         """
         service = self._require_built("connected()")
         key = cell_lock_key(self.robot_config)
@@ -269,14 +324,19 @@ class Cell:
 
     @property
     def service(self) -> Any:
+        """The pick service :meth:`build` built (an ``AutonomousGraspService``); raises ``CellNotBuilt`` before the
+        build.
+        """
         return self._require_built("service")
 
     @property
     def arm(self) -> Any:
+        """The arm driver the build built; raises ``CellNotBuilt`` before the build."""
         return getattr(self._orchestrator, "arm", None)
 
     @property
     def gripper(self) -> Any:
+        """The hand the build built, or ``None`` for an arm-only cell; raises ``CellNotBuilt`` before the build."""
         return getattr(self._orchestrator, "gripper", None)
 
     @property
@@ -318,6 +378,7 @@ class Cell:
 
     @property
     def vendor(self) -> str:
+        """The arm's vendor, ``robot.vendor``: ``"ur"``, ``"kuka"``, ``"sim"`` or ``"dummy"``."""
         raw = getattr(self.robot_config, "vendor", "")
         return str(getattr(raw, "value", raw))
 

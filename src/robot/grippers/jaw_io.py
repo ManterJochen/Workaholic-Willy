@@ -437,6 +437,9 @@ class JawIOGripper:
         # Every command sent to the jaws since this driver was built, connects included; read
         # through `commands_sent`.
         self._commands_sent = 0
+        # When a stroke `set_closed(wait=False)` left to its caller is over, `time.monotonic()` seconds, or None: the
+        # next change waits it out first (`_stroke_left_out`).
+        self._settles_at: float | None = None
         self.logger = create_robot_logger("JawIOGripper", JAW_IO_GRIPPER_LOG_FILE)
 
     # --- state ------------------------------------------------------------
@@ -631,6 +634,7 @@ class JawIOGripper:
         with self._lock:
             if self._connected:
                 return
+            self._stroke_left_out()
             self._generation = generation = next(self._generations)
             # A connect that raises sets nothing: it never marked the hand connected, so the next one starts again,
             # question included.
@@ -735,7 +739,7 @@ class JawIOGripper:
             )
         self.set_closed(float(width_mm) <= self._closed_below_mm)
 
-    def set_closed(self, closed: bool) -> None:
+    def set_closed(self, closed: bool, *, wait: bool = True) -> float | None:
         """Close or open the jaws by intent, whatever ``closed_below_mm`` says (``OpensAndCloses``).
 
         The width a caller sends is read against ``closed_below_mm``, and a grasp above it
@@ -748,25 +752,70 @@ class JawIOGripper:
         way it went. Where they already stand there it sends nothing and says so in the log.
         An output somebody switched since the last command is refused (:meth:`_toggle`).
 
+        ``wait`` false leaves the stroke to the caller where its wait is the travel time alone: the
+        change goes out exactly as it would, once, and the moment the stroke is over is returned,
+        ``time.monotonic()`` seconds, for :meth:`wait_settled`, so the caller may judge its next
+        leg meanwhile and sends nothing until then (``robot.motion.judge_next_leg``, the owner,
+        2026-10-09). ``None`` where nothing moved, the jaws already standing there, and where the
+        wait reads a switch (a closing solenoid with feedback): that wait runs here, as ever. The
+        next command waits out a stroke left so before it changes anything, as it waited inside
+        this call before. ``wait`` true, the default, returns ``None`` once the stroke is over.
+
         It holds the lock, so it waits while a person is being asked where the jaws stand.
         """
         with self._lock:
             self._require_connected("set_closed")
+            self._stroke_left_out()
             close = bool(closed)
             if self._actuation == "single_toggle":
                 if self._toggle(close):
-                    self._sleep(self._close_settle_s)
-                return
+                    return self._stroke(wait)
+                return None
             was_closed = self._closed
             self._actuate(close=close)
             if close:
+                if not wait and not self.has_feedback:
+                    # Nothing to poll: the travel time is the whole wait, and the caller waits it out.
+                    return self._stroke(wait)
                 self._await_close()
             elif was_closed and self._open_confirm_pin is None:
                 # The jaws travel the same stroke open as closed, and with no open switch the travel time is the only
                 # wait there is. Without it a place returned the moment the valve was told, and the arm backed out of
                 # a Hand-E that takes up to about 2 s to open, dragging the part it had just set down (owner's cell,
                 # 2026-09-23).
-                self._sleep(self._close_settle_s)
+                return self._stroke(wait)
+            return None
+
+    def wait_settled(self, deadline: float | None) -> None:
+        """Wait out what is left of a stroke :meth:`set_closed` left to its caller (``wait=False``): until ``deadline``,
+        ``time.monotonic()`` seconds, and at once where it has passed or is ``None``. It sends nothing and takes no lock:
+        the change went out with the command, and the next command waits out the stroke itself."""
+        if deadline is None:
+            return
+        left = float(deadline) - time.monotonic()
+        if left > 0.0:
+            self._sleep(left)
+        if self._settles_at is not None and self._settles_at <= float(deadline):
+            self._settles_at = None
+
+    def _stroke(self, wait: bool) -> float | None:
+        """The jaws' stroke after a change that moved them: waited out here (``wait``), else its end, for the caller."""
+        if wait:
+            self._sleep(self._close_settle_s)
+            return None
+        self._settles_at = time.monotonic() + self._close_settle_s
+        return self._settles_at
+
+    def _stroke_left_out(self) -> None:
+        """Wait out a stroke :meth:`set_closed` left to its caller before anything else changes the jaws: a change while
+        they still travel turns them round mid-stroke. Called under the lock, as the stroke was waited there before."""
+        settles_at = self._settles_at
+        if settles_at is None:
+            return
+        left = settles_at - time.monotonic()
+        if left > 0.0:
+            self._sleep(left)
+        self._settles_at = None
 
     def jaws_open_for_a_pick(self) -> str:
         """Before a pick moves the arm: ``""`` where the jaws stand open, else why the pick must not start.
@@ -1231,6 +1280,7 @@ class JawIOGripper:
         if changed:
             return changed
         self.logger.warning("%s had them opened (%s)", closed_by, reason)
+        self._stroke_left_out()
         if self._actuation == "single_toggle":
             self._toggle(False)
         else:

@@ -42,12 +42,15 @@ from tests.test_a_side_grasp_never_goes_through_unseen_space import Box, Cylinde
 #: 2026-10-06: SFE, which this calculator runs too, stands its fingers at the anchor and no longer pays for height over
 #: the support, so its grasps sit lower on the part (the owner, 2026-10-05: "wir müssen tiefer gehen"); the 50 mm part's
 #: best grasps now stand at 80 mm, its middle, and 75. That ``scene_obstacles=None`` changes nothing is still pinned
-#: beside it.
+#: beside it. Re-pinned on 2026-10-08: the geometry-first contacts SFE replaces are no longer computed, and the
+#: telemetry says so (``geometry_skipped``); the digests of 2026-10-06 come back from the same results with that one key
+#: left out, so the grasps and the reasons are the ones of before.
 BEFORE_TRACK_A = {
-    # Since the Hand-E's fingers come to 1 mm of the support (2026-10-06).
-    "isolated": "dc24da43bae444f8dd750d17e977dd0e2396f0ee1ffd67e35d3c47b59454a7a4",
-    "photo_layout": "dc24da43bae444f8dd750d17e977dd0e2396f0ee1ffd67e35d3c47b59454a7a4",
-    "boxed_in_bar": "d295b41595cd269611520d16beb7c3f3bbeb5bd07ff4ce19fc53e6ca41bf32fe",
+    # Since the Hand-E's fingers come to 1 mm of the support (2026-10-06), and SFE's replaced stages say they were
+    # skipped (2026-10-08).
+    "isolated": "9de187524729fac1f212ea53c5e669a89d1926f8921261831f245c568c1f47ea",
+    "photo_layout": "9de187524729fac1f212ea53c5e669a89d1926f8921261831f245c568c1f47ea",
+    "boxed_in_bar": "ef60db8b84080797ae68da547a25c803d1a36b1e070416443643fa42687be820",
 }
 
 

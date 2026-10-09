@@ -289,7 +289,15 @@ def _dataset_has_colour(root: Path) -> bool:
 
 
 def verify_dataset(root: Path) -> VerifyReport:
-    """Every scene under ``root/scenes`` that was actually written."""
+    """Check a written dataset against itself: labels, masks, poses and pictures agreeing. Opens no engine.
+
+    Args:
+        root (Path): The dataset folder, holding ``scenes/``.
+
+    Returns:
+        VerifyReport: The scenes, views and objects checked, the problems found and ``ok``; a failed check is returned,
+            never raised.
+    """
     scenes_dir = Path(root) / "scenes"
     if not scenes_dir.is_dir():
         logger.error("no scenes directory under %s; nothing to verify", root)

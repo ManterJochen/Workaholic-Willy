@@ -165,12 +165,24 @@ class SafetyPreflight:
         "motion_continuity",
     )
 
-    def __init__(self, guards: Sequence[SafetyGuard]) -> None:
+    def __init__(self, guards: Sequence[SafetyGuard], *, whole_path_judge: bool = False) -> None:
         # Copy to a tuple, so the pipeline is immutable after construction. A guard
         # instance stays mutable, because it owns its own cache, but the sequence
         # cannot be reordered or extended at runtime.
         self._guards: tuple[SafetyGuard, ...] = tuple(guards)
         self._logger = create_robot_logger("SafetyPreflight", SAFETY_PREFLIGHT_LOG_FILE)
+        # Whether a path gate judges a path whole before it judges it sample by sample
+        # (safety.self_collision.whole_path_judge, :meth:`_first_suspect`). Off, every sample is
+        # judged one at a time from the first, as it always was.
+        self._whole_path_judge = bool(whole_path_judge)
+        # Why a path was judged one sample at a time all the same, each said once at INFO.
+        self._one_at_a_time_said: set[str] = set()
+        if self._whole_path_judge:
+            self._logger.info(
+                "Safety preflight judges each path whole first (safety.self_collision.whole_path_judge): every "
+                "sample before the first a guard might refuse is passed on a proof, every sample from it on is "
+                "judged one at a time, as without the switch"
+            )
         # The continuity memo: the last accepted Pose and JointPositions for this
         # preflight instance. Every accepted evaluation writes it, so the continuity
         # guard has the previous target to compare against on the next call.
@@ -299,7 +311,8 @@ class SafetyPreflight:
             guards.append(MotionContinuityGuard(safety_cfg.motion_continuity))
         guards.extend(extra_guards)
         guards.sort(key=lambda g: cls._guard_order_key(g.name))
-        return cls(guards)
+        whole = bool(getattr(safety_cfg.self_collision, "whole_path_judge", False))
+        return cls(guards, whole_path_judge=whole)
 
     @staticmethod
     def _guard_order_key(name: str) -> int:
@@ -679,6 +692,12 @@ class SafetyPreflight:
         The guards themselves are always asked about a joint configuration, because that
         is what a sample is, whether it came from a joint move or from the inverse
         kinematics of a line.
+
+        With ``safety.self_collision.whole_path_judge`` on, the guards first look at the whole
+        path at once and name the first sample any of them might refuse, never later than
+        the first one does (:meth:`_first_suspect`). Every sample before it is passed on a
+        proof that each guard accepts it; from it on, every sample is judged here exactly as
+        with the switch off, so the verdict, the sample it names and its message are the same.
         """
         from src.robot.core import JointPositions
 
@@ -690,8 +709,9 @@ class SafetyPreflight:
 
         self.reset()  # a judged path is a restart, as a commanded joint move is
         total = len(configs)
+        start = self._first_suspect(configs, arm) if self._whole_path_judge else 0
         rejected: "MotionResult | None" = None
-        for index, values in enumerate(configs):
+        for index, values in enumerate(configs[start:], start):
             joints = JointPositions(tuple(float(v) for v in values))
             ctx = self.context_for_joints(joints, command=MotionCommand.MOVE_JOINTS, arm=arm)
             for guard in self._guards:
@@ -731,6 +751,62 @@ class SafetyPreflight:
                 break
         self.reset()
         return rejected
+
+    def _first_suspect(self, configs: "Sequence[Sequence[float]]", arm: "RobotArm | None") -> int:
+        """The first sample of ``configs`` any guard of a joint move might refuse, each guard asked of the whole path at
+        once (``first_suspect``): never later than the first it refuses, so every sample before it is accepted by
+        every guard, and :meth:`gate_joint_path` judges from it on as it judges every sample with the switch off.
+
+        It never refuses and never accepts on its own. It answers 0, every sample judged one at a time, where any guard
+        cannot say: one that offers no ``first_suspect`` (a site-local guard), one that answers ``None`` (the
+        self-collision guard without the exact mesh engine for these samples, where it would answer with the capsule
+        proxy), one that raises, or a path that is no table of finite configurations. ``len(configs)`` means every guard
+        accepts every sample.
+        """
+        import time  # noqa: PLC0415
+
+        import numpy as np  # noqa: PLC0415
+
+        started = time.perf_counter()
+        try:
+            rows = np.asarray(configs, dtype=np.float64)
+        except (TypeError, ValueError):
+            return self._judged_one_at_a_time("the path is no table of configurations")
+        if rows.ndim != 2 or not rows.shape[0] or not bool(np.isfinite(rows).all()):
+            return self._judged_one_at_a_time("the path is no table of finite configurations")
+        first = int(rows.shape[0])
+        for guard in self._guards:
+            if guard.name in self._JOINT_MOVE_SKIP_GUARDS:
+                continue
+            ask = getattr(guard, "first_suspect", None)
+            if not callable(ask):
+                return self._judged_one_at_a_time(f"the {guard.name} guard judges one sample at a time only")
+            try:
+                found = ask(arm, rows, first)
+            except Exception as exc:  # noqa: BLE001 - the loop judges every sample and raises what the guard raises
+                return self._judged_one_at_a_time(f"the {guard.name} guard could not judge it whole",
+                                                  f"{type(exc).__name__}: {exc}")
+            if found is None or isinstance(found, bool) or not isinstance(found, (int, np.integer)):
+                return self._judged_one_at_a_time(f"the {guard.name} guard cannot judge these samples whole")
+            first = min(first, max(0, int(found)))
+            if first == 0:
+                break
+        self._logger.debug("whole-path judge: %d sample(s), the first a guard might refuse is %s (%.1f ms)",
+                           len(rows), "none" if first == len(rows) else f"sample {first + 1}",
+                           1000.0 * (time.perf_counter() - started))
+        return first
+
+    def _judged_one_at_a_time(self, why: str, detail: str = "") -> int:
+        """0, the first sample, for :meth:`_first_suspect` where a path cannot be judged whole: each reason is said once
+        at INFO, again at DEBUG."""
+        said = f"{why} ({detail})" if detail else why
+        if why in self._one_at_a_time_said:
+            self._logger.debug("whole-path judge: this path is judged one sample at a time: %s", said)
+        else:
+            self._one_at_a_time_said.add(why)
+            self._logger.info("Safety preflight judges this path one sample at a time although "
+                              "safety.self_collision.whole_path_judge is on: %s", said)
+        return 0
 
     @property
     def path_step_mm(self) -> float | None:

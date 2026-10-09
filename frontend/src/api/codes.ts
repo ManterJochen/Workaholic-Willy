@@ -164,6 +164,9 @@ export const EVENT_TYPES = every<EventType>()([
   'task.returned',
   'task.return_failed',
   'task.part_finished',
+  'task.rule',
+  'task.target_relocated',
+  'task.unsorted',
   'home.started',
   'home.arrived',
   'home.refused',
@@ -196,6 +199,7 @@ export const EVENT_TYPES = every<EventType>()([
 
 export const REFUSAL_CODES = every<RefusalCode>()([
   'bad_request',
+  'text_too_long',
   'no_robot_configured',
   'no_such_run',
   'not_built_yet',

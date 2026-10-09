@@ -74,6 +74,16 @@ frame, the part's spheres fitted anew by the attach, a part a measuring hand rea
 still refuse it after the close, and the arm then holds the part where it stands until a person opens the jaws
 (`Robot.release`).
 
+Three of the owner's switches (2026-10-09, each off as shipped) move a judgement to where the arm waits anyway and
+change nothing of what is judged. On an arm that gates its own sends (`safety.dwell.gate_at: send`) the policy asks
+for each move with no steady gate of its own: the arm judges first and waits right before it sends. Where the arm
+holds the world the grasp was judged in ahead (`safety.planning_world.hold.standoff`), the move to the standoff and
+the line down are judged in it, with no frame at the standoff (`holding_the_approach`). Where the arm judges the
+next leg (`robot.motion.judge_next_leg`), the close leaves the jaws' stroke to the policy where the hand can
+(`wait_settled`): the one change goes out, the part is attached, the joint move a task declared after the pick
+(the carry) is judged meanwhile in the world held at the part, and the lift goes out once the stroke is over; a
+hand that leaves no stroke has the lift's send judge it while the lift runs, where the arm can.
+
 | `PolicyOutcome` | Means | Moved |
 | --- | --- | --- |
 | `EXECUTED` | approach, close and lift completed; the part is held or trusted to be | yes |

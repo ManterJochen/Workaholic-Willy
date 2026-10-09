@@ -13,8 +13,11 @@ grasps; it never decides that a motion is safe. Every proposal goes through the 
 same candidate filter and the same exact guard as an analytic grasp.
 
 **What it is not, today.** No trained weights ship in this repository, the owner's cell runs
-`calculator: geometric`, and the learned generator has never touched hardware. Every number below is
-a shape of the model or a setting of the trainer; none is a grasp-success result.
+`calculator: geometric`, and the learned generator has never touched hardware. It is not yet proven
+to generalise: the best full run so far did not beat "straight down" on objects it never saw
+([Status](#status)). So a cell grasps with trained weights only once their own proof has passed
+(`deep/promotion.py`, the owner's decision of 2026-10-09), and nothing can pass one yet. Every other
+number below is a shape of the model or a setting of the trainer; none is a grasp-success result.
 
 ---
 
@@ -170,11 +173,14 @@ aperture would make the conditioning look alive while proving nothing. The decod
 
 **Folds are cut over asset groups**, never over scenes: every variant of one object lands in one fold,
 so a held-out number is about objects the net never saw. Before a run costs anything,
-`GeneratorTraining.probe()` measures the corpus: `oracle_ceiling` (a perfect model; below 100 %
-because a seed with several grasps caps any single answer), `baseline_floor` (an untrained copy of the
-same net), and `memorisation_probe` (the seen-unseen gap against an untrained net's). A **hit** is a
-top-1 slot within 15 degrees and 20 mm of a real label; `top_down`, every slot straight down at the
-seed, is the arm to beat.
+`GeneratorTraining.probe()` measures the corpus: `oracle_ceiling` (a head handed the labels' own
+grasps; its top-1 is 1.0 by construction, above what the shipped head can express, which ties the
+offset to half the width and scored 0.894 with the same grasps on 129 corpus units in the 2026-10-09
+review), `baseline_floor` (four heads that learned nothing: `random`, `top_down`, `normal`,
+`normal_inset`) and the approach headroom. `memorisation_probe` (the seen-unseen gap against an
+untrained net's) needs trained weights, so it runs at the end of each fold, and nothing acts on its
+result. A **hit** is a top-1 slot within 15 degrees and 20 mm of a real label; `top_down`, every slot
+straight down at the seed, is the arm to beat.
 
 ## 7. The generative head: an arm, off by default
 
@@ -230,23 +236,26 @@ idea of where to grasp:
 |---|---|
 | a grasp the calculator offers and the guard refuses 0.1 to 1.6 mm short (a tray's wall, a dense bin's standoff) | **no**: the calculator's world and the guard's disagree, a geometric consistency fix (a millimetre more slack, the guard's own hand meshes in the calculator) |
 | no room at all: the open hand does not fit beside a wall or between two parts | **no**: a network cannot make room; a push, another approach, another hand (a narrower pre-open on a position-controlled Robotiq, a suction cup) can |
-| a part the support-footprint geometry describes badly (curved, hollow, irregular) | **yes**: the network learns grasps from labelled examples of your own parts |
-| which of several valid grasps holds best on the real part | **yes, once trained on your parts**, and measured on your cell first |
+| a part the support-footprint geometry describes badly (curved, hollow, irregular) | **not shown**: learning grasps from labelled examples of your own parts is what the network is for, and no run has shown it yet ([Status](#status)) |
+| which of several valid grasps holds best on the real part | **not shown**: it would take a run that passes its proof in simulation and then on your cell, and none has |
 | time: the fine orientation search costs about 3.4 s per part on the bench | **likely**: one forward pass replaces the search; not measured on a cell |
 
 So the geometric generator is close to its limit where the space is really too tight, and the
 remaining geometric levers are consistency between the calculator and the guard, not new
-orientations. The network is the lever for grasp quality on real, irregular parts and for speed, and
-it needs a corpus of your own parts ([datagen/](../datagen/README.md)), a `full` training run and a
-measurement on the cell before a cell should select it.
+orientations. The network is meant to be the lever for grasp quality on real, irregular parts and for
+speed; that it is one is not shown yet. It needs a corpus of your own parts
+([datagen/](../datagen/README.md)), a `full` training run and a proof of that run that passes before a
+cell may select it, and the factory refuses it for a cell until then.
 
 ## Status
 
 | Capability | Evidence |
 |---|---|
-| From a simulated corpus to trained weights a cell loads | measured in simulation |
+| From a simulated corpus to trained weights the factory loads for evaluation | measured in simulation |
 | From a published corpus to the same weights (`PublicCorpus`) | the import writes the format the loop reads, and a smoke run closes on it |
-| Grasp quality of a trained generator | measured in simulation, on the corpus it was trained on, with the probes of 6 |
+| Grasp quality of a trained generator | not shown. The best full run so far did not beat "straight down" on objects it never saw: +0.017 top-1 over `top_down`, 95 % interval [-0.0004, +0.039], over 54 held-out objects (the 2026-10-09 review). The pipeline is not yet proven to generalise, and a customer's own run gets its own proof before a cell uses it |
+| The corpora it was measured on | a known data defect, being fixed: in every MuJoCo-rendered corpus the jaw labels of scanned meshes sit about 45 mm (median) off the geometry the camera rendered. Every held-out object of that run is such a mesh, so its number cannot tell a working model from a broken one until the labels are fixed |
+| A cell grasping with trained weights | refused until the promotion record beside them says their proof passed at `active` (2026-10-09); nothing writes one yet (`deep judge`, `deep promote`, coming) |
 | The learned generator on a physical cell | never touched hardware; the owner's cell runs `calculator: geometric` |
 
 The training route from a CAD export to a model a cell selects is

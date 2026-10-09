@@ -87,6 +87,14 @@ const de = {
   'scope.inline.once': 'einmal',
   'scope.inline.until_empty': 'bis leer',
 
+  // The looks of a pick, one choice (the owner, 2026-10-08): the switch's label, and the words after "Blicke:".
+  'looks.first': 'Nur erster Blick',
+  'looks.when_needed': 'Bei Bedarf',
+  'looks.every': 'Alle Posen',
+  'looks.inline.first': 'nur der erste',
+  'looks.inline.when_needed': 'bei Bedarf',
+  'looks.inline.every': 'alle Posen',
+
   'verdict.clear': 'frei',
   'verdict.band': 'frei, mit kurzem geraden Anfangsstück',
   'verdict.guard_refused': 'von der Kollisionsprüfung abgelehnt',
@@ -168,6 +176,13 @@ const de = {
   'chat.gap': '{dropped|# Ereignis|# Ereignisse} verloren: Was davor geschah, fehlt hier.',
   'chat.summary': '{command} → {title}',
   'chat.lost': 'Der Server kennt diesen Lauf nicht mehr (neu gestartet?): wie er endete, ist hier nicht zu sehen. Den Arm an der Zelle prüfen.',
+
+  // A sort's rules in a row (the owner, 2026-10-09): "grüne Teile → gelbe Kiste · rote Teile → blaue Kiste". Each item
+  // is a message of its own, so a list reads in the reader's language whatever it holds.
+  'list.rule': '{what} → {where}',
+  'list.rules': '{first} · {rest}',
+  'list.words': '{first}, {rest}',
+  'list.quoted': '„{text}“',
 
   'screen.cockpit.lede': 'Live-Bild, Gespräch und Ablauf an einem Ort. Der Roboter fährt erst nach einem Klick auf Start.',
   'screen.setup.lede': 'Prüfen, aufbauen, verbinden: dann ist die Zelle bereit.',

@@ -279,6 +279,49 @@ class VlmConfig(StrictModel):
     #: ``degrade`` fall back to the simple route, with a warning stamped into the event stream and
     #:             the grasp record so the weaker grounding is visible afterwards.
     on_unavailable: Literal["refuse", "degrade"] = "refuse"
+    #: End a grounding answer where its JSON array closes, rather than one pass of the model later (the
+    #: end token) or three (after a code fence), and a command's reading where its JSON object closes,
+    #: one pass before the end token. The tokens before are the ones greedy decoding writes anyway, and
+    #: the parser and the reader read the same from them; each pass is about 140 ms on the cell's 8B.
+    stop_at_answer_end: bool = True
+    #: How many tokens the answer lookup proposes per pass of a grounding answer; 0 is off. The model
+    #: checks the proposals (taken from its own answer so far) in one pass and keeps those it would
+    #: have written. Measured on the cell's frames with the 4B: three cubes in 47 passes instead of
+    #: 108, 55 % fewer over 90 calls. Off by default because it is not byte-identical: a pass that
+    #: checks several tokens rounds differently, so a coordinate's last digit may come out one off,
+    #: and in 2 of those 90 calls the list held one box more or one fewer. 10 is the measured value.
+    prompt_lookup_tokens: int = Field(default=0, ge=0, le=64)
+    #: The same lookup for the command reader's text answers, whose keys come from its instruction.
+    #: Measured with the 4B on ten commands: 128 passes instead of 617, every answer byte-identical,
+    #: 3.2 times as fast. Off by default: identical on those ten is not identical by construction, and
+    #: with the compact instruction of 2026-10-08 it read 3 of 67 sentences otherwise (2026-10-09).
+    text_prompt_lookup_tokens: int = Field(default=0, ge=0, le=64)
+    #: Run each pass of the model as CUDA graphs: most of a pass handed to the card in a few dozen
+    #: calls instead of about 2400 kernel launches, which is what a pass waits for on the cell (140 ms
+    #: a token for the 8B, where reading its weights takes about 20). The attention over the answer so
+    #: far runs as before, so the arithmetic is the plain pass's and the answers are byte-identical
+    #: (measured with the 4B: the 90 calls on the cell's frames and 67 command sentences, with and
+    #: without the answer lookup, a pass in 19.7 ms instead of 46.3); the first pass of each shape is
+    #: also checked against the plain pass bit for bit.
+    #:
+    #: ``auto``  the default: graphs on a CUDA card of compute capability 8.0 or newer, where that
+    #:           check matched; anything else decodes plainly. Decided per loaded copy and logged.
+    #: ``on``    graphs on any CUDA card, and a check that differed only logs a warning.
+    #: ``off``   every pass as before.
+    #:
+    #: A capture or a pass that fails falls back to the plain pass, for that loaded copy. A bare ``on`` or
+    #: ``off`` in YAML is the word.
+    decode_graphs: Literal["auto", "on", "off"] = "auto"
+
+    @field_validator("decode_graphs", mode="before")
+    @classmethod
+    def _a_bare_switch(cls, value: object) -> object:
+        """YAML reads a bare ``on`` as true and ``off`` as false: each means what it says here."""
+        if value is True:
+            return "on"
+        if value is False:
+            return "off"
+        return value
 
 
 class PromptRouterConfig(StrictModel):

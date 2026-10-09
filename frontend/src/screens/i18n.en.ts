@@ -229,6 +229,30 @@ const en: Record<keyof typeof de, string> = {
   'st.talk.space': 'Space bar',
   'st.talk.current': 'Now: {key}',
   'st.talk.applies': 'Applies the next time the cockpit opens.',
+  'st.task.title': 'Task',
+  'st.task.lede':
+    'How a typed or spoken task starts, for this browser. What to pick and where to put it come from the sentence; these settings apply where it says nothing. They set the mode.',
+  'st.task.start': 'Start',
+  'st.task.start.enter': 'Enter starts at once',
+  'st.task.start.card': 'The card first',
+  'st.task.start.hint':
+    'At once: where the sentence is clear and the cell ready, the robot moves after Enter; otherwise the card opens and says why. The card first: Enter only reads, and Start on the card starts.',
+  'st.task.scope': 'Mode',
+  'st.task.scope.hint': 'For every task Enter starts; “all” in the sentence does not change it.',
+  'st.task.looks': 'Looks',
+  'st.task.looks.hint':
+    'How often the arm looks for each grasp. When needed: on while the grasp is uncertain. Every look: each configured pose, for difficult parts; it costs time. A card may change it for its task.',
+  'st.task.place': 'Place when none is said',
+  'st.task.place.default': 'The cell’s default place',
+  'st.task.place.camera': 'The camera looks for…',
+  'st.task.place.phrase': 'What the camera looks for',
+  'st.task.place.placeholder': 'English, e.g. yellow bin',
+  'st.task.place.hint': 'Where a sentence names no place, Willy puts the part here.',
+  'st.task.anything': 'No part said',
+  'st.task.anything.ask': 'The card asks',
+  'st.task.anything.all': 'Anything',
+  'st.task.anything.hint':
+    '“Anything” ticks “anything the camera sees, bin walls included” on the card. Such a task never starts on Enter: Start on the card does.',
 
   // ── the history ────────────────────────────────────────────────────────────────────────────────────────────
   'hs.lede':

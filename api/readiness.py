@@ -43,6 +43,7 @@ from api.schemas import (
     NO_PART_MODELLED,
     BlockerOut,
     BrakeFactsOut,
+    CarryName,
     CellFactsOut,
     DetectorFactsOut,
     HandOut,
@@ -715,6 +716,15 @@ def _detector_facts(console: "Console") -> DetectorFactsOut:
                             vlm_model_id=stack.vlm_model_id, precision=precision)
 
 
+def _carry_of(arm: Any) -> CarryName | None:
+    """How the cell carries a part to a bin its camera found (``robot.place.carry``), for the console's switch to
+    start from; ``None`` where the arm says nothing."""
+    carry = getattr(getattr(getattr(arm, "config", None), "place", None), "carry", None)
+    if carry == "over_the_rim":
+        return "over_the_rim"
+    return "via_the_look" if carry == "via_the_look" else None
+
+
 def facts(console: "Console") -> CellFactsOut:
     """What this cell is: its cameras and looks, its hand's natural axis, push, detector, brake, carried part, route.
     Read once after build and once after connect; moves nothing."""
@@ -750,6 +760,7 @@ def facts(console: "Console") -> CellFactsOut:
         cameras=cameras,
         looks=looks,
         natural_closing_axis=None if axis is None else str(getattr(axis, "name", None) or axis),
+        carry=_carry_of(arm),
         push=_push_facts(service),
         detector=_detector_facts(console),
         hand_eye_warn_mm=HAND_EYE_DRIFT_WARN_MM,

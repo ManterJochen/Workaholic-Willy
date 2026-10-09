@@ -457,6 +457,68 @@ cameras:
           # [default: 1]
           hole_filling_mode: 1
 
+        # The colour sensor's exposure, gain and white balance, written when the stream opens (the owner,
+        # 2026-10-09). Every key null, as shipped, is today's full auto: nothing is written, and the camera
+        # keeps what it holds. On full auto a D415 on the wrist brightens or darkens the same parts by 1 to
+        # 1.8 stops with what else is in view at each look (measured on the owner's views): orange parts clip
+        # in red and read as yellow, grey cubes drift over the colour check's grey/white limit. Fix the
+        # values auto settles on at look 0 with the work lamp on. The keys are written in this order, each
+        # auto mode before its value, to the sensor that streams colour (never the depth sensor), every value
+        # checked against the range the sensor offers before the first is written. The driver logs what the
+        # sensor holds once the warm-up frames have run, also with every key null, and warns for a value it
+        # holds otherwise. A camera whose colour sensor does not offer a key set here, or whose colour comes off
+        # its depth imagers (a D405), refuses to open, naming the key and the camera. The camera keeps what is
+        # written until it is unplugged or power-cycled: putting the block back to null leaves the last values
+        # in place, so go back to auto with `auto_exposure: true` and `auto_white_balance: true`.
+        color:
+
+          # true lets the colour sensor set its own exposure and gain, false fixes them. Written first;
+          # `exposure` and `gain` need `false`, because librealsense writes its default exposure as auto
+          # exposure goes off and switches it off itself when an exposure or a gain is written.
+          # [default: null]
+          auto_exposure: null
+
+          # The exposure time, in the D400 colour sensor's own unit: 100 microseconds (UVC's exposure time
+          # unit, as librealsense reads and writes it; 156 is 15.6 ms, a D415 offers up to 10000). Needs
+          # `auto_exposure: false`. On Windows librealsense's Media Foundation backend sets the colour
+          # exposure in powers of two of a second, 39, 78, 156, 312, 625 and so on: another value is held as
+          # the nearest of those, and the driver warns and says which.
+          # [default: null]
+          exposure: null
+
+          # The colour sensor's gain, in its own unit (UVC gain: a D415 offers 0 to 128 and starts at 64).
+          # Needs `auto_exposure: false`, which sets the gain too while it is on.
+          # [default: null]
+          gain: null
+
+          # true lets the colour sensor balance white itself, false fixes it. Written before
+          # `white_balance`, which needs `false`.
+          # [default: null]
+          auto_white_balance: null
+
+          # The colour temperature white is balanced for, in Kelvin (a D415 offers 2800 to 6500 in steps of
+          # 10). Needs `auto_white_balance: false`.
+          # [default: null]
+          white_balance: null
+
+        # Record for research (the owner, 2026-10-09: "alles in einem Schalter"). On, the camera also streams
+        # both infrared images (infrared 1 and 2, Y8, at `depth_resolution` and `fps`, with the projector as
+        # `enable_emitter` sets it, never toggled), and every frame carries them, the depth as the sensor sent
+        # it (before the filters and the alignment) and the camera's facts. The views file of every pick a
+        # program keeps (`record_views`; the console keeps every task's) then holds, per look, both infrared
+        # images with their lenses and extrinsics, the raw depth, the colour frame's exposure metadata and every
+        # segmentation's mask (packed bits), box, label, score, SAM2's three predicted IoUs and which one was the
+        # target, and once the camera's name, serial, firmware, depth units, filters, preset, colour settings as
+        # read back, the colour and depth lenses and the depth to colour extrinsics (format 2,
+        # src/robot/execution/record_views.py). Both infrared streams add 442 Mbit/s on the USB link at 1280x720
+        # and 30 fps, half again what colour and depth take, which a USB 3 link carries; a camera that cannot
+        # stream them refuses to open with a sentence. A views
+        # file grows from about 2.1 MB to about 4.4 MB per look (measured on a synthetic look at 1280x720: the
+        # two infrared images 0.8 MB each, the raw depth 0.6 MB). Off, the streams, the frames and the views file
+        # are what they were.
+        # [default: false]
+        record_for_research: false
+
       # Filesystem layout for RGB-D rigs: where the intrinsics artefact lives.
       calibration_paths:
         base_dir: ../calibration/realsense_d435

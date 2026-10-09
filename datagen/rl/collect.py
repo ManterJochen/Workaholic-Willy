@@ -101,7 +101,8 @@ def collect_trials(
     # scenes rather than one bad config line.
     from src.robot.grasping.calculator_factory import preflight_calculator
 
-    logger.info("grasp calculator: %s", preflight_calculator(robot_cfg))
+    # The purpose `build_service` builds with: this sweep measures the generator (2026-10-09).
+    logger.info("grasp calculator: %s", preflight_calculator(robot_cfg, purpose="evaluate"))
 
     for scene_dir in scenes:
         counters["scenes"] += 1

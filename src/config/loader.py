@@ -275,10 +275,19 @@ def load_speech_section(
     *,
     profile: "Maybe[str | None]" = UNSET,
 ) -> SpeechToTextConfig:
-    """``models.stt`` alone, so speech loads without a camera, a robot or a detector.
+    """The speech section alone, ``models.stt``, so speech loads without a camera, a robot or a detector. Not cached.
 
-    ``models/`` is read file by file under the rule :func:`_load_model_keys` states: a model file that
-    cannot be read is tolerated only when the ``stt`` block was found in files that could. Not cached.
+    Args:
+        data_dir (str | Path | None): The config directory; ``None`` is the repository's (default: None).
+        profile (Maybe[str | None]): The profile chain; unset is ``WILLY_PROFILE``'s, ``None`` the base tree (default:
+            UNSET).
+
+    Returns:
+        SpeechToTextConfig: The speech section: the Whisper and voice-gate models and the microphone keys.
+
+    Raises:
+        ConfigError: The section does not load or validate; a model file that cannot be read is tolerated only where the
+            ``stt`` block was found in files that could.
     """
     root, chain = _root_and_chain(data_dir, profile)
     found = _load_model_keys(root, chain, ("stt",))

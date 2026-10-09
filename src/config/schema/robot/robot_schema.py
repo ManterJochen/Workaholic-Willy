@@ -44,6 +44,7 @@ from .safety_schema import (
     SupportPlaneConfig,
 )
 from .tool_frame_schema import ToolFrameConfig
+from .place_schema import PlaceGridConfig, RobotPlaceConfig
 
 from .grasping_schema import (
     BlockerGraphSchemaConfig,
@@ -98,10 +99,12 @@ __all__ = [
     "LimitsSafetyConfig",
     "MotionContinuitySafetyConfig",
     "MotionLimitsConfig",
+    "RobotMotionConfig",
     "NamedPoseConfig",
     "POSE_LABEL_MAX_CHARS",
     "POSE_NAME_MAX_CHARS",
     "PayloadSafetyConfig",
+    "PlaceGridConfig",
     "RLExperimentalConfig",
     "RL_ACTIVE_MODES",
     "RL_MODE_GEOMETRY_ONLY",
@@ -116,6 +119,7 @@ __all__ = [
     "RobotGraspingApproachValidationConfig",
     "RobotGraspingConfig",
     "RobotGraspingFusionConfig",
+    "RobotPlaceConfig",
     "RobotRLConfig",
     "RobotSafetyConfig",
     "SafePoseConfig",
@@ -148,6 +152,28 @@ class MotionLimitsConfig(StrictModel):
 
     max_velocity: float = Field(default=1.0, gt=0.0, le=3.14)
     max_acceleration: float = Field(default=0.5, gt=0.0, le=5.0)
+
+
+class RobotMotionConfig(StrictModel):
+    """When the next leg of a pick or a place is judged: as it runs, or ahead while the arm waits or moves.
+
+    ``judge_next_leg`` (map4 motion C7, the owner, 2026-10-09):
+
+    * ``"off"``, the default and today's behaviour: every leg is judged when the arm stands at its start, and the jaws'
+      stroke is waited out before anything else is asked.
+    * ``"in_settles"``: the change of the jaws goes out once, as ever, and while their stroke is waited out the next leg
+      is judged: the line out of a place, and, in a world held across the stroke (``safety.planning_world.hold``), the
+      joint move a task declared after the pick or the place. Nothing is sent before the stroke is over.
+    * ``"in_settles_and_motion"``: as ``"in_settles"``, and a declared joint move not judged in a stroke is judged on a
+      second thread while the line before it runs, on an arm that watches its sends (``robot.ur.brake_on_halt``: a halt
+      brakes the line in flight). Elsewhere it falls back to ``"in_settles"`` and says so once in the log.
+
+    A leg judged ahead runs only where the arm stands within 0.5 mm of where it was judged from and nothing else it was
+    judged on changed since (the world's refresh, the carried part, the hand, the camera's boxes, a halt); otherwise it
+    is judged again where the arm stands. Judging ahead sends nothing and switches no output.
+    """
+
+    judge_next_leg: Literal["off", "in_settles", "in_settles_and_motion"] = Field(default="off")
 
 
 class SafePoseConfig(StrictModel):
@@ -776,6 +802,8 @@ class RobotConfig(StrictModel):
     dummy: DummyConfig = Field(default_factory=DummyConfig)
     kuka: KukaConfig = Field(default_factory=KukaConfig)
     motion_limits: MotionLimitsConfig = Field(default_factory=MotionLimitsConfig)
+    #: When the next leg of a pick or a place is judged (:class:`RobotMotionConfig`).
+    motion: RobotMotionConfig = Field(default_factory=RobotMotionConfig)
     workspace_limits: WorkspaceLimitsConfig = Field(default_factory=WorkspaceLimitsConfig)
     gripper: GripperConfig = Field(default_factory=GripperConfig)
     #: Joint configuration the arm returns to on ``move_home()``, in radians. ``None`` uses
@@ -824,6 +852,9 @@ class RobotConfig(StrictModel):
     #: The pose a task places at when its command names no target: a name in ``named_poses``, or ``None`` for none, and
     #: a task that names no place is then refused. Chosen in the console.
     default_place_pose: str | None = None
+    #: How a task sets its parts down (:class:`RobotPlaceConfig`): into a box below its rim, side by side on a flat
+    #: place, the hang from what the pick measured, the carry over the rim. Every default is what a task did before.
+    place: RobotPlaceConfig = Field(default_factory=RobotPlaceConfig)
 
     safe_pose: SafePoseConfig = Field(default_factory=SafePoseConfig)
     calibration: RobotCalibrationConfig = Field(default_factory=RobotCalibrationConfig)

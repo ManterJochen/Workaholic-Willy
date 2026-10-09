@@ -176,24 +176,42 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def _request_errors(request: Request, exc: RequestValidationError) -> JSONResponse:
+        errors = exc.errors()
+        # Where and why, never the rejected input itself: it may be no JSON at all (a ``NaN`` the body's bound
+        # refused, an exception in ``ctx``), and an answer that cannot be written would turn a 422 into a 500.
+        found = [{"type": str(e.get("type", "")), "loc": [str(p) if not isinstance(p, int) else p
+                                                          for p in e.get("loc", ())],
+                  "msg": str(e.get("msg", ""))} for e in errors]
+        too_long = _too_long(errors)
+        code = "text_too_long" if too_long is not None else "bad_request"
         # The count and the field locations, never `exc.errors()` itself: that payload embeds the
         # rejected input, which on this server includes a connect token.
         logger.warning(
-            "%s -> 422 bad_request (%d field error(s): %s)",
+            "%s -> 422 %s (%d field error(s): %s)",
             request.url.path,
-            len(exc.errors()),
-            ", ".join(".".join(str(p) for p in e.get("loc", ())) for e in exc.errors()[:5]),
+            code,
+            len(errors),
+            ", ".join(".".join(str(p) for p in e.get("loc", ())) for e in errors[:5]),
         )
+        if too_long is not None:
+            # Only too long, and said as such: "Die Anfrage ist ungültig." for a description of 85 characters was
+            # the morning of 2026-10-08. The limit travels with it, so the console says it in the reader's words.
+            field, limit = too_long
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "code": "text_too_long",
+                    "message": f"{field} is longer than {limit} characters, the most this endpoint takes; nothing "
+                               "was done.",
+                    "detail": {"field": field, "max": limit, "errors": found},
+                },
+            )
         return JSONResponse(
             status_code=422,
             content={
                 "code": "bad_request",
                 "message": "the request body or query does not match this endpoint.",
-                # Where and why, never the rejected input itself: it may be no JSON at all (a ``NaN`` the body's bound
-                # refused, an exception in ``ctx``), and an answer that cannot be written would turn a 422 into a 500.
-                "detail": {"errors": [{"type": str(e.get("type", "")), "loc": [str(p) if not isinstance(p, int) else p
-                                                                                for p in e.get("loc", ())],
-                                       "msg": str(e.get("msg", ""))} for e in exc.errors()]},
+                "detail": {"errors": found},
             },
         )
 
@@ -223,6 +241,22 @@ def create_app() -> FastAPI:
 
     logger.info("Console app built (version %s), 13 routers mounted under /v1.", __version__)
     return app
+
+
+def _too_long(errors: Any) -> tuple[str, int] | None:
+    """The field and its limit where every error of a request is a text over its length (``string_too_long``), the
+    first one's; ``None`` for any other mix, which stays ``bad_request``. The field is its dotted location without the
+    part of the request it was in (``object``, ``place.camera.phrase``, ``text``)."""
+    if not errors or any(e.get("type") != "string_too_long" for e in errors):
+        return None
+    first = errors[0]
+    location = [str(part) for part in first.get("loc", ())]
+    if location and location[0] in ("body", "query", "path"):
+        location = location[1:]
+    limit = (first.get("ctx") or {}).get("max_length")
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        return None
+    return ".".join(location) or "text", limit
 
 
 #: Where the ``frontend`` tree, built with ``npm run build``, writes the console bundle. Not checked

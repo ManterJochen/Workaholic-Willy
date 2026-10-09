@@ -158,6 +158,59 @@ class RealSensePostProcessingConfig(StrictModel):
     hole_filling_mode: int = Field(default=1, ge=0, le=2)
 
 
+class RealSenseColorConfig(StrictModel):
+    """The colour sensor's exposure, gain and white balance, written when the stream opens (the owner, 2026-10-09:
+    "Config-Block im Code").
+
+    Every field ``null`` as shipped, which is today's full auto: nothing is written, and the camera keeps what it holds,
+    auto exposure and auto white balance as it powers up. A value is written to the sensor that streams colour, never to
+    the depth sensor, in the order of the fields: an auto mode goes off before its manual value is written, because
+    librealsense writes the exposure's default when auto exposure goes off. Every value is checked against the range the
+    sensor offers before the first is written, and read back once the warm-up frames have run; the driver logs what the
+    sensor holds, also with every field null. A camera whose colour sensor does not offer an option set here refuses to
+    open, naming the option and the camera: a fixed value was asked for, and a camera left on auto is not it.
+
+    Measured 2026-10-09 on the owner's views, 31 looks: on full auto the same parts come out 1 to 1.8 stops brighter or
+    darker with what else is in view at each look, orange parts clip in red and read as yellow, and grey cubes drift over
+    the colour check's grey/white limit. Fixed at the values auto settles on at look 0 with the work lamp on, look 0 looks
+    as it does today and the other looks stop drifting.
+
+    The values stay in the camera until it is unplugged or power-cycled (RealSense support), so a block put back to null
+    leaves the last values written in place: write ``auto_exposure: true`` and ``auto_white_balance: true`` to go back
+    to auto.
+    """
+
+    #: Whether the colour sensor sets its own exposure and gain. ``false`` is written first, and ``exposure`` and
+    #: ``gain`` need it: librealsense writes its default exposure as it goes off, and turns it off itself when an
+    #: exposure or a gain is written.
+    auto_exposure: bool | None = None
+    #: The exposure time in the D400 colour sensor's own unit, 100 microseconds (UVC's exposure time unit, as
+    #: librealsense reads and writes it: 156 is 15.6 ms; a D415 offers up to 10000). Needs ``auto_exposure: false``. On
+    #: Windows, librealsense's Media Foundation backend sets the colour exposure in powers of two of a second, 39, 78,
+    #: 156, 312, 625 and so on, so another value is held as the nearest of those: the driver logs what the sensor holds.
+    exposure: float | None = Field(default=None, gt=0.0)
+    #: The colour sensor's gain, in its own unit (UVC gain: a D415 offers 0 to 128 and starts at 64). Needs
+    #: ``auto_exposure: false``, which sets the gain too while it is on.
+    gain: float | None = Field(default=None, ge=0.0)
+    #: Whether the colour sensor balances white itself. ``false`` is written before ``white_balance``, which needs it.
+    auto_white_balance: bool | None = None
+    #: The colour temperature white is balanced for, in Kelvin (a D415 offers 2800 to 6500 in steps of 10). Needs
+    #: ``auto_white_balance: false``.
+    white_balance: float | None = Field(default=None, gt=0.0)
+
+    @model_validator(mode="after")
+    def _a_fixed_value_needs_its_auto_off(self) -> RealSenseColorConfig:
+        for key, auto in (("exposure", "auto_exposure"), ("gain", "auto_exposure"),
+                          ("white_balance", "auto_white_balance")):
+            if getattr(self, key) is not None and getattr(self, auto) is not False:
+                stated = "null" if getattr(self, auto) is None else "true"
+                raise ValueError(
+                    f"realsense.color.{key} is a value the colour sensor sets itself while {auto} is on, so it needs "
+                    f"`{auto}: false` beside it, and {auto} is {stated}: librealsense would switch the auto mode off "
+                    "unasked as the value is written, and the config is where what the camera does is said")
+        return self
+
+
 class RealSenseConfig(StrictModel):
     """Intel RealSense (pyrealsense2) device tuning.
 
@@ -179,6 +232,20 @@ class RealSenseConfig(StrictModel):
     post_processing: RealSensePostProcessingConfig = Field(
         default_factory=RealSensePostProcessingConfig
     )
+    #: The colour sensor's exposure, gain and white balance (:class:`RealSenseColorConfig`); every field null, the
+    #: default, writes nothing and leaves the camera on what it holds.
+    color: RealSenseColorConfig = Field(default_factory=RealSenseColorConfig)
+    #: Record for research (the owner, 2026-10-09: "alles in einem Schalter"), off by default. On, the camera streams
+    #: both infrared images as well (infrared 1 and 2, Y8, at the depth resolution and frame rate, with the projector as
+    #: ``enable_emitter`` sets it and never toggled), and every frame carries them, the depth as the sensor streamed it,
+    #: before the filters and the alignment, and the camera's facts. The views file of every pick a program keeps
+    #: (``record_views``; the console keeps every task's) then holds them per look, with their lenses and extrinsics,
+    #: every segmentation's mask, box, label and score, SAM2's predicted IoUs and which one was the target, and once the
+    #: camera's name, serial, firmware, depth units, filters, preset, colour settings, the colour and depth lenses and the
+    #: depth to colour extrinsics (``src/robot/execution/record_views.py``). Both infrared streams add 442 Mbit/s on the
+    #: USB link at 1280 x 720 and 30 fps, half again what colour and depth take; a camera that cannot stream them refuses
+    #: to open. Off, the streams, the frames and the views file are what they were.
+    record_for_research: bool = False
 
 
 class RGBDDeviceRigConfig(BaseRigConfig):

@@ -5,7 +5,8 @@ the Isaac Sim arm, and a dummy arm for a desk. `robot.vendor` in your config pic
 `Robot.from_tree` builds it; `franka` and `ros2` are reserved names with no driver behind them.
 
 ```python
-from willy import Robot, create_arm, load_tree
+from willy import Robot, load_tree
+from src.robot.drivers import create_arm
 
 tree = load_tree()                      # the cell WILLY_PROFILE names
 robot = Robot.from_tree(tree)           # robot.vendor picks the driver; nothing connects yet

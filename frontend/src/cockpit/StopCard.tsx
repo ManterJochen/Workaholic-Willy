@@ -21,6 +21,12 @@
  * included: a hand that measures nothing is offered "Backen leer" for as long as the server would refuse the way back
  * for it. A refusal of Restart or Home is said right above the two buttons and brought into view, never only under the
  * card's foot, where the chat may cut it off.
+ *
+ * **Where the arm stands** (2026-10-08): where the stopped run's pick left the arm that did not get back to its look, as
+ * the pick said it (`stands_at`, `standoff of grasp 3`), is said under what happened. Where a way back was refused
+ * because the wrist camera saw no depth from there (a blind frame) or the planner will not start from there, the
+ * checklist names the way out by hand: freedrive at the teach pendant, or Setup's "Teach a pose", whose Cancel saves
+ * nothing. No button here moves the arm for it.
  */
 
 import { useState } from 'react'
@@ -30,8 +36,9 @@ import { ErrorBanner } from '../components/ui'
 import { useT } from '../i18n'
 import { runKindMsg, stopMsg, stopSayMsg, whereMsg } from '../i18n/codes'
 import { Icon } from '../icons'
-import type { StepId } from '../model/runModel'
+import { isSort, planRulesMsg, type StepId } from '../model/runModel'
 import { useCell } from '../model/useCell'
+import { useRun } from '../model/useRun'
 import { poseLabel } from './draft'
 import { useBroughtIntoView, type RunRecord } from './hooks'
 import { COCKPIT } from './i18n'
@@ -60,9 +67,38 @@ const GATE_KEY: Record<GateId, 'ck.stop.gate.controller' | 'ck.stop.gate.cleared
   idle: 'ck.stop.gate.idle',
 }
 
+/** The pick's own words for where it left the arm (`pick_loop.PickReport.stands_at`): the try's standoff, or the way back. */
+const STANDS_AT_STANDOFF = /^standoff of grasp (\d+)$/
+const STANDS_AT_WAY_BACK = /^way back from the standoff of grasp (\d+)$/
+
+type StandsAt =
+  | { readonly key: 'ck.stop.standsAt.standoff' | 'ck.stop.standsAt.wayBack'; readonly n: number }
+  | { readonly key: 'ck.stop.standsAt.other'; readonly where: string }
+
+/** The line that says where the arm stands, from the pick's words; `null` where the pick said none. */
+function standsAtLine(standsAt: string | null): StandsAt | null {
+  if (!standsAt) return null
+  const standoff = STANDS_AT_STANDOFF.exec(standsAt)
+  if (standoff) return { key: 'ck.stop.standsAt.standoff', n: Number(standoff[1]) }
+  const wayBack = STANDS_AT_WAY_BACK.exec(standsAt)
+  if (wayBack) return { key: 'ck.stop.standsAt.wayBack', n: Number(wayBack[1]) }
+  return { key: 'ck.stop.standsAt.other', where: standsAt }
+}
+
+/**
+ * Whether a refused way back left the arm where only a person's hands get it out: the move was refused before anything
+ * was sent because the wrist camera saw no depth from where the arm stands (the camera world's `blind` verdict), or
+ * because the planner will not start from that configuration. The server says both in the arm's own words.
+ */
+function onlyByHand(stopCode: string, error: string | null | undefined): boolean {
+  if (stopCode !== 'return_failed' || !error) return false
+  return (/could not vouch for the cell/.test(error) && /\(blind\)/.test(error)) || /will not start from/.test(error)
+}
+
 export default function StopCard({ record: stoppedRun, homeTo, running, part, step, poses, tech }: StopCardProps) {
   const t = useT(COCKPIT)
   const { cell, readiness, refresh } = useCell()
+  const { view } = useRun()
   const motions = useMotions()
   const [busy, setBusy] = useState<'clear' | 'jaws' | 'empty' | null>(null)
   const [error, setError] = useState<ApiError | null>(null)
@@ -89,14 +125,20 @@ export default function StopCard({ record: stoppedRun, homeTo, running, part, st
       : (record.kind === 'task' && run?.plan?.return_label) || poseLabel(target, poses) || target
   const where = whereMsg(cell.hand?.where)
   const plan = run?.plan ?? null
-  const then = plan
-    ? t('ck.confirm.restartThen', {
-        what: plan.object_said || plan.object || t('common.anything'),
-        where: plan.place.kind === 'camera' ? plan.place.said || plan.place.phrase || '—' : plan.place.pose_label || plan.place.pose || t('common.defaultPlace'),
-      })
-    : null
+  // What the restart goes on with: a sort with every rule (the owner, 2026-10-09).
+  const then = !plan
+    ? null
+    : isSort(plan)
+      ? t('ck.confirm.restartThenSort', { rules: planRulesMsg(plan) })
+      : t('ck.confirm.restartThen', {
+          what: plan.object_said || plan.object || t('common.anything'),
+          where: plan.place.kind === 'camera' ? plan.place.said || plan.place.phrase || '—' : plan.place.pose_label || plan.place.pose || t('common.defaultPlace'),
+        })
   // The arm itself said its brake was not confirmed: it never said it stands, so neither does the card.
   const brakeUnconfirmed = record.stop_code === 'halted' && cell.halted?.brake === 'unconfirmed'
+  // Where the stopped run's pick left the arm, as the run on screen heard it; another run on screen says nothing here.
+  const standsAt = view.runId === record.run_id ? standsAtLine(view.stopCard?.standsAt ?? view.standsAt) : null
+  const byHand = onlyByHand(record.stop_code, run?.error)
 
   const act = async (what: 'clear' | 'jaws' | 'empty', request: () => Promise<unknown>) => {
     setBusy(what)
@@ -144,6 +186,9 @@ export default function StopCard({ record: stoppedRun, homeTo, running, part, st
       {header}
 
       <p className="ck-say">{brakeUnconfirmed ? t('ck.stop.haltedUnconfirmed') : t.msg(stopSayMsg(record.stop_code))}</p>
+      {standsAt && !brakeUnconfirmed && (
+        <p className="ck-say">{standsAt.key === 'ck.stop.standsAt.other' ? t(standsAt.key, { where: standsAt.where }) : t(standsAt.key, { n: standsAt.n })}</p>
+      )}
       {tech && run?.error && <p className="ck-human">{run.error}</p>}
       {restartable && !known && <p className="ck-quiet">{t(stoppedRun.failed ? 'ck.stop.readFailed' : 'ck.stop.loading')}</p>}
 
@@ -206,6 +251,12 @@ export default function StopCard({ record: stoppedRun, homeTo, running, part, st
                 {t('ck.stop.emptyButton')}
               </button>
             )}
+          </li>
+        )}
+        {byHand && (
+          <li className="ck-check info">
+            <Icon name="controller" size={16} />
+            <span>{t('ck.stop.step.byHand')}</span>
           </li>
         )}
         <li className="ck-check info">

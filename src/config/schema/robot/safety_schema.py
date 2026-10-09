@@ -117,6 +117,24 @@ class IkQualitySafetyConfig(StrictModel):
     min_singular_value: float = Field(default=0.005, gt=0.0, le=1.0)
     max_condition_number: float = Field(default=250.0, gt=0.0, le=1.0e6)
     limit_proximity_deg: float = Field(default=2.0, ge=0.0, le=45.0)
+    #: Who solves the samples of a line a cuRobo UR judges before a ``moveL`` (the line down at the standoff, the lift
+    #: at the part, the lines at the bin, and the lines judged ahead). ``"controller"``, the default and today's
+    #: behaviour: the controller's ``getInverseKinematics``, one round trip of about 33 ms a sample. ``"local"`` (the
+    #: owner, 2026-10-09): the driver solves every sample on the controller's own kinematics, its calibrated DH rows read
+    #: once per connection from its primary interface (nothing sent) and its active TCP, and asks the controller at two
+    #: samples of each line whether it answers the same configuration within 1e-6 rad. Where it does not, where a
+    #: sample cannot be vouched for (no solution, a second as near the seed, a singularity) or where the rows cannot be
+    #: read, that line is solved by the controller as before. Measured on URSim CB3, nominal and calibrated: 5.7e-10 rad
+    #: at worst over 1292 samples.
+    line_ik: Literal["controller", "local"] = Field(default="controller")
+    #: Which forward kinematics the singularity check before every ``moveL`` and ``moveJ`` of ``MotionController``
+    #: differentiates. ``"controller"``, the default and today's behaviour: 12 ``getForwardKinematics`` round trips.
+    #: ``"dh"`` (the owner, 2026-10-09): the arm's own DH chain, the controller's calibrated rows where they can be read
+    #: (as for ``line_ik``) and the model's nominal table where they cannot and the controller's FK confirms the table is
+    #: its chain (once per connection), times the controller's active TCP; the same central differences and thresholds.
+    #: Anywhere else the controller is asked, as with ``"controller"``. On URSim CB3, nominal and calibrated, the verdict
+    #: was the controller's on all 177 line ends tried, the cell's 21 of 2026-10-07/08 and 156 around the thresholds.
+    singularity_fk: Literal["controller", "dh"] = Field(default="controller")
 
 
 class FixtureBoxConfig(StrictModel):
@@ -253,6 +271,18 @@ class SelfCollisionSafetyConfig(StrictModel):
     tool_finger_radius_mm: float = Field(default=16.0, gt=0.0, le=200.0)
     tool_finger_span_mm: float = Field(default=150.0, gt=0.0, le=500.0)
 
+    #: Whether a path gate judges a path whole before it judges it sample by sample
+    #: (``SafetyPreflight.gate_joint_path``, every route, joint move, plan, leg and line). On, each guard of a joint
+    #: move finds, over the whole path at once, the first sample it might refuse, never later than the first it does:
+    #: the joint limits on every sample at once, the payload once, the exact meshes with every part placed at every
+    #: sample in one pass, a sample passed only where a bounding sphere, a part's convex hull (Coal) or a distance
+    #: measured earlier less how far the pair can have moved since proves it keeps its distance. From that sample on the
+    #: gate judges every sample as it does with this off, so the verdict, the sample it names and its message are the
+    #: same (``tests/test_a_whole_path_is_judged_as_every_sample_is.py``). A route the exact guard took 2.3 to 2.6 s for
+    #: on the owner's cell (905 samples, 128 boxes) took 12 ms on the desk instead of 0.96 s, about 0.03 s on the cell.
+    #: Off by default: the sample-by-sample loop, bit for bit. The owner's cell turns it on after the bench.
+    whole_path_judge: bool = Field(default=False)
+
     @field_validator("perceived_min_distance_mm", mode="before")
     @classmethod
     def _keep_at_least_5_mm_from_what_a_camera_saw(cls, value: Any) -> Any:
@@ -365,6 +395,24 @@ class PlannedMotionSafetyConfig(StrictModel):
     line_clearance_mm: float = Field(default=3.0, ge=0.0, le=100.0)
     max_detour_deg: float = Field(default=45.0, gt=0.0, le=360.0)
     mesh_first: bool = Field(default=True)
+    #: How many time-optimal passes a cuRobo joint plan runs after the one that finds it (``_curobo_cspace``). 3, the
+    #: default and today's behaviour, is cuRobo's own ``plan_cspace``; those passes only shrink the plan's time step
+    #: towards cuRobo's acceleration and jerk limits, and the arm runs the plan's positions with ``moveJ`` at its own
+    #: speed, never that timing. 0 (the owner's cell after the desk A/B, 2026-10-09): the first pass's plan, about a
+    #: quarter of the optimiser's work per attempt. A plan is found exactly where it is found today (an attempt stops
+    #: after a first pass that finds none, and a later pass only replaces a plan with a faster one); its positions may
+    #: differ, and the exact guard and the planner's check judge every sample of it as they judge every plan.
+    finetune_passes: int = Field(default=3, ge=0, le=3)
+    #: The robot cuRobo plans with (the owner, 2026-10-08: "CuRobo richtig verwenden"). ``""``, the default and today's
+    #: behaviour: the robot every plan is judged with, the arm's cover fit (747 spheres on a UR10), the hand's and the
+    #: camera's, 172,414 sphere pairs on the owner's cell. ``"lean"``: a planning-only model the way NVIDIA's own UR
+    #: configs are made, a few spheres along each link's axis, fitted to this arm's and this hand's committed meshes,
+    #: the camera's boxes filled coarsely, and the self pairs the exact guard decides left to it
+    #: (``safety/planning/planning_model.py``). The planner, its IK and its graph planner are built from it; every check
+    #: (``check_js``, the start and goal checks, the ready gate), the combination evidence and the exact guard stay on
+    #: the robot they judge with now, and judge every sample of a plan as before. An arm or a hand with no committed
+    #: lean spheres, or a modelled carried part, plans on today's robot and says so.
+    planning_spheres: Literal["", "lean"] = Field(default="")
 
 
 class DwellSafetyConfig(StrictModel):
@@ -381,6 +429,21 @@ class DwellSafetyConfig(StrictModel):
 
     require_steady_before_motion: bool = Field(default=True)
     steady_timeout_s: float = Field(default=5.0, gt=0.0, le=60.0)
+    #: Where the steady gate waits. ``"verb"``, the default and today's behaviour: every verb (a grasp's approach,
+    #: grasp and retreat, a robot's move, a pick's and a place's motions) waits for steady before it asks the arm to
+    #: move, and the arm judges the motion after that. ``"send"``: the judgement goes first, while the arm settles from
+    #: the motion before, and an arm that gates its own sends (the cuRobo UR) waits for steady right before it sends
+    #: anything; where the arm then stands more than 0.5 mm from where the motion was judged from, it is judged again. A
+    #: timeout refuses with nothing sent either way, and the halt refuses every send either way. A verb on an arm that
+    #: does not gate its own sends keeps waiting before it asks (map4 motion C4, the owner, 2026-10-09).
+    gate_at: Literal["verb", "send"] = Field(default="verb")
+    #: What a UR's steady gate reads (``arm.wait_until_steady``, also the zero-move skip at a look). ``"is_steady"``, the
+    #: default and today's behaviour: the controller's ``isSteady``, a script command of about 33 ms, polled every 20 ms.
+    #: ``"joint_speeds"`` (the owner, 2026-10-09): every actual joint speed at most 0.01 rad/s, the brake's stillness, on
+    #: three fresh samples in a row read 8 ms apart, locally from the receive interface with no round trip; ``isSteady``
+    #: decides where the speeds cannot be read. ``steady_timeout_s`` and its refusal are the same either way. On URSim CB3
+    #: the gate answered 16 to 24 ms after a move, ``isSteady`` 562 to 564 ms (it holds about 0.55 s after the arm stops).
+    steady_signal: Literal["is_steady", "joint_speeds"] = Field(default="is_steady")
 
 
 class SupportPlaneConfig(StrictModel):
@@ -664,6 +727,34 @@ class PerceivedWorldConfig(StrictModel):
         return self
 
 
+class HeldWorldConfig(StrictModel):
+    """Where a pick or a place judges a motion in the world it already holds rather than in a new camera frame.
+
+    Each is the owner's decision (2026-10-09: "altes Bild, weil sich in der Kiste so oder so nichts verändert"), off by
+    default, which takes a new frame for every motion as before. A held world is the world the last refresh built, the
+    cameras' frames and boxes of that moment: every judgement still runs in it, the exact guard on every sample and the
+    planner against that world; only no new frame is taken.
+
+    * ``standoff``: at a standoff the line down to a grasp, or the line in to a place, is judged in the world held from
+      before the arm left for the standoff. A grasp judged ahead holds the world its line down was judged in at the look,
+      and the route to the standoff is judged in it too; a place holds the world its route to the standoff was judged
+      in. A standoff frame in a bin had no depth on 12 of 88 arrivals, and flipped a line down 0.05 mm short of the
+      guard distance that had passed ahead (map2 O2).
+    * ``carry``: the world the line down was judged in, held at the part, is held for the joint move a task declared
+      after the pick (the carry to the bin's look), judged while the jaws close (``robot.motion.judge_next_leg``).
+    * ``drop``: the world the line in was judged in is held through the release: the line out is judged in it, while the
+      jaws open where ``robot.motion.judge_next_leg`` says so, and the joint move a task declared after the place (the
+      return) is judged in it too.
+
+    ``carry`` acts only through ``robot.motion.judge_next_leg``: a leg not judged ahead is judged as it runs, in a world
+    of its own.
+    """
+
+    standoff: bool = Field(default=False)
+    carry: bool = Field(default=False)
+    drop: bool = Field(default=False)
+
+
 class PlanningWorldConfig(StrictModel):
     """What the trajectory planner is told about the cell, as axis-aligned boxes in the base frame.
 
@@ -684,8 +775,18 @@ class PlanningWorldConfig(StrictModel):
     payload: AttachedPayloadConfig = Field(default_factory=AttachedPayloadConfig)
     include_fixtures: bool = Field(default=True)
     require_registration: bool = Field(default=True)
+    #: Whether the cuRobo sidecar writes a world of boxes into its storage in one call (``_curobo_world``). Off, the
+    #: default and today's behaviour: ``update_world``, one box after another with a device sync each, 217 ms a refresh
+    #: at 129 boxes on the owner's cell (2026-10-08), about eight refreshes a pick. On (the owner's cell after the desk
+    #: probe, ``scripts/curobo/probe_world_in_place.py``): cuRobo's own ``load_batch``, the same slots bit for bit
+    #: (measured on the CPU: 0.29 ms against 13.9 ms at 129 boxes). A planner holding mesh slots or a voxel grid, and a
+    #: world with meshes or a field, register through ``update_world`` either way; the registration is confirmed before
+    #: the guard is handed the same boxes, as always.
+    register_in_place: bool = Field(default=False)
     perceived: PerceivedWorldConfig = Field(default_factory=PerceivedWorldConfig)
     meshes: list[PlannerMeshConfig] = Field(default_factory=list)
+    #: Where a pick or a place judges in the world it holds rather than in a new frame (:class:`HeldWorldConfig`).
+    hold: HeldWorldConfig = Field(default_factory=HeldWorldConfig)
 
     @model_validator(mode="after")
     def _check_mesh_names(self) -> PlanningWorldConfig:

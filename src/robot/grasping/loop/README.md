@@ -32,7 +32,7 @@ It prints `pick_started`, `attempt_started`, `perceived`, `ranked` with the cand
 | `BinPickingOrchestrator` | the pick service | `run()` | `PickReport` with a `PickOutcome` |
 | a listener | your function taking a `PickProgress` | `service.attach_progress_listener(fn)` | events while the pick runs |
 | `TargetOrderingConfig` | `robot.grasping.ordering` | `select_target(candidates=..., config=...)` | `OrderingDecision` |
-| `LookedAround` | `orch.look_around()`, on a wrist camera | `orch.go_on_with(looked)`; read `orch.looked_around` after the pick | the looks visited, the grasp they judged, the looks refused, the generated view, the move back |
+| `LookedAround` | `orch.look_around()`, on a wrist camera | `orch.go_on_with(looked)`; read `orch.looked_around` after the pick | the looks visited, the grasp they judged, the looks refused, the generated view, the move back, and how many targets each look saw (`targets_by_look`) |
 | the recovery hand-over | the pick service, per pick | `orch.push_gate`, `orch.exclusion_zones`; read `orch.pushes` and `orch.failed_part` after the pick | what each push the pick considered came to (`PickPush`), and the part it failed on, which `next_target` skips |
 
 The orchestrator depends only on the `RobotArm` Protocol, a calculator and a perception Protocol, which
@@ -79,6 +79,33 @@ stops on it.
 
 `relocate` appears only on attempts recorded before 2026-09-29.
 
+## The label gate
+
+Which segmentations may be a target is the label gate's (`_is_target`), asked wherever the loop takes a part for
+one: the ranking, the parts held out of the supports, the parts a later look keeps (`KeptScene.of_view`), the
+regions a blocker is asked about. A segmentation's label is read as its label, else its prim path, and compared
+exactly: the camera source maps the detector's words onto the object labels before (`object_labels`), so a word
+no object name holds is never a target and stays a neighbour for the calculator, the push and the planner.
+
+- **No label** (`target_label` `None`, `target_labels` empty): every segmentation, as ever.
+- **One kind** (`target_label`, from `service.set_prompt(text)` or `set_target_label`): the segmentations of that
+  label alone. None in the frame ends the attempt `exhausted` with `TARGET_LABEL_NOT_FOUND`, and its
+  `NO_CANDIDATE` event carries `target_label` and `labels_seen`.
+- **A sort** (`target_labels`, `target_label` `None`; the owner, 2026-10-09: "Grüne Teile in die gelbe Kiste, rote
+  in die blaue"): any of its kinds, each compared exactly, from a `PickPrompt` whose phrase is a class list
+  (`"each separate green part | each separate red part"`) and whose object labels are the kinds. The detector's
+  `ambiguous` (an object it boxed under two kinds, or one it named by none) and a word no rule names are no
+  targets. None of the kinds in the frame is `TARGET_LABEL_NOT_FOUND`, with `target_labels` beside
+  `target_label` on its telemetry and event. A look that saw only parts its task keeps out says so kind by kind.
+
+`PickReport.target_label` is the label of the segmentation the pick went for, the one its executed grasp belongs
+to, else the one of the last grasp it chose (`""` where it chose none, and for a blocker taken as the pick): a sort
+reads it to tell which rule's place the part goes to. `PickReport.unclaimed_labels`, on a sort, are the labels the
+gate turned away at the pick's first look, one per segmentation in the camera's order, the parts no rule claims:
+a surface the parts lie on and a part standing in a region its task keeps out (its bins, its drops) are left out;
+a later look, a re-look after a push or a blocker and a rescan add none. The service carries both on
+`report.pick_report` and in `report.to_dict()`.
+
 ## Which way the jaws close
 
 Every object's calculator result passes `_closing_along` right after `compute_result`, before the target
@@ -100,6 +127,13 @@ the push read its candidates. So the grasp judged is the grasp executed.
   (`align_closing_to_base_x`, any true value) it turns no grasp, while a push still takes its way round,
   and a value set by hand that names no axis is refused by `run()` and `look_around()` before anything
   moves, naming the field.
+- **The window gap** (the owner, 2026-10-08). Inside the half-turn cable window the natural turn can have
+  no configuration on the branch the arm holds where its twin, half a turn about the approach, has one: on
+  2026-10-07 the natural turn needed wrist 3 at +90 deg, the window ended at +86.4, and the cell judged a
+  shoulder and elbow flip. Where the arm can say so on the closed form alone (`has_a_goal_on_its_branch`,
+  no screen and no controller call), such a grasp is taken as its twin, the same faces with the jaws
+  swapped. `"-y"` stays wherever its turn reaches the branch, however far wrist 3 turns to it; the wrist
+  camera's distance decides after it, and `both_faces` and a named axis keep their own rules.
 - **The overlay.** Where either changed a result, the calculator that computed it draws its overlay again
   over the grasps kept (`redraw_debug_image`), or drops it where it cannot, so the picture a campaign
   pins ranks first the grasp gripped.
@@ -129,6 +163,21 @@ flowchart LR
   with the fixed cameras, acquired once per pick. The grasp is computed again on what they saw together,
   and the looking stops at the first look whose grasp is valid with no rescan reason. An uncertain grasp
   or no candidate goes on to the next look.
+- **Every look** (`orch.every_look`, handed per pick by the service and taken back; the console's "Alle
+  Posen", the owner, 2026-10-08 night). The looking does not stop at a safe grasp: every look is visited,
+  and the pick goes on with the judgement of the last, fused over every look; the generated view still
+  follows only where that is not safe enough. A fixed camera, and a pick handed no looks, ignore it.
+  `LookedAround.every_look` says it ran; the service reports `telemetry['every_look']`.
+- **A weak look** (`orch.weak_look`, set where the cell is built from `robot.grasping.weak_look_trigger`,
+  off by default; the owner's automatic trigger, 2026-10-08 night). On a wrist pick handed looks, a valid
+  grasp whose view of the part is weak carries `ACTIVE_PERCEPTION_RECOMMENDED`, so the looking goes on
+  (`_weak_look`): depth on less than 85 % of the look's own mask (`WEAK_LOOK_DEPTH_SHARE`), a part
+  standing more than 1.5 times its footprint's short side over its support with no side of it seen
+  (`WEAK_LOOK_TALL_RATIO`, the 25 mm extent rule), or two height plateaus in its cloud at least 15 mm
+  apart with 10 % of the points each (`_two_plateaus`). The shape is judged on the views fused so far,
+  so it clears once a side was seen. It only adds looks, and the generated view after them: the grasp the
+  looks end on is gripped as before, with the calculator's own reasons. `LookedAround.weak` names each
+  weak look and why; the service reports `telemetry['looks_weak']`.
 - **One part.** Once a look ranks a valid grasp, its part is kept: later looks find it by association,
   and a look that does not see it is left out and said. Looks that call the part by different labels
   make its grasp uncertain (`RESCAN_RECOMMENDED`); looks that agree change nothing. One INFO account per
@@ -138,6 +187,20 @@ flowchart LR
 - **All the data.** The support plane is refined from the part's cloud fused over two or more looks, and
   the neighbours every look saw reach the candidate filter, so a part only an earlier look saw stays an
   obstacle.
+- **The footprint less the rim** (`robot.grasping.geometry.footprint_rim_mm`, 0.0 by default; the owner,
+  2026-10-09). Where the calculator cuts a rim off the support-footprint stage's input
+  (`GraspCalculator.support_footprint_rim_mm`, read by `_footprint_rim_mm`), every look keeps each surface
+  less its mask's rim beside it (`_LookView.footprints`, `generation/footprint_rim.py`) and says in one INFO
+  line what the rim took; the fusion builds the part's footprint from them by the association its cloud made,
+  and the calculator is handed it beside the fused cloud (`footprint_points_base_mm`), for the stage's footprint
+  alone. The fused cloud, the association, the jaw faces, the support, the planner world's hold-out and the
+  part's centre read the whole surfaces, as before; a blocker's call is handed no footprint of the part, and a
+  push takes the part's footprint out of the earlier looks with its surface. A look ranked alone has its rim
+  cut by the calculator.
+- **The targets each look saw** (`LookedAround.targets_by_look`, in the order of `visited`): the parts of its
+  frame that passed the label gate and were neither a surface nor kept out, 0 for a look that segmented
+  nothing. The service reports them (`telemetry['targets_by_look']`), and a task reads the first look's to
+  tell when the part it takes is the last one there (the check look, 2026-10-08).
 - **A refused look** (a guard or the planner refused it before anything was sent) is skipped with a
   WARNING and counts as used up. A pick that reaches none of its looks ends `look_refused` with nothing
   perceived. A look motion that failed once it may have been commanded, or a controller that stopped,
@@ -180,6 +243,30 @@ flowchart LR
   decision path decides on its judgement and hands it to the next `run()` only through
   `go_on_with(looked)`. A wrist pick handed no looks looks from where the arm stands and rescans there, as
   it always did.
+- **Following the parts a task kept** (`orch.follow`, `orch.follow_looks`, handed per pick by the service and
+  taken back; `robot.grasping.follow_parts`, off by default; the owner, 2026-10-09). `follow` is the parts
+  the task's last pick kept (`src/robot/perception/kept_scene.KeptScene`): the first look of the pick's
+  first look sequence, and only that look, hands the camera source a follow, which finds them again with
+  SAM2 on their boxes and no detector where nothing changed in depth and every part passes every check, and
+  grounds the frame as before where anything does not. The look takes it, so no later look and no pick the
+  recovery loop runs again follows it. With `follow_looks` every later look of the sequence, the generated
+  view among them, segments the parts the first look saw by their boxes projected at its own stamped pose,
+  each mask held to its part's footprint and 15 mm, all or nothing, and a later look ranks the part it keeps
+  first, the others only where that part has no grasp (a ranking that computes every part; a lazy one
+  computes the kept part alone already). The re-looks after a push or a blocker ground as before. A source
+  that does not say it follows parts (`follows_parts`) grounds every frame, said once. `LookedAround`
+  carries `followed`, `follow_why` (what the first look came to, or why it grounded) and `looks_followed`;
+  each PERCEIVED event carries the source's route, `followed` or `grounded`, where a follow was handed.
+- **The task's own places hidden from the detector** (`orch.hide_own_places`, set where the cell is built
+  from `robot.grasping.hide_own_places`, off by default; the owner, 2026-10-08 night). Every acquire, a
+  wrist look's and a fixed camera's, hands the camera source a `hide` (`_hidden`): the regions
+  `exclusion_zones` keeps out of every label (the task's bin, the circles about its drops), placed in the
+  frame by the frame resolver at its stamped pose, against the declared support (`support_config`). The
+  source paints them over the copy of the frame its detector reads
+  (`src/robot/perception/realsense_source.kept_out_pixels`); the segmenter, the depth and every check
+  after them read the real frame. Nothing is handed with the switch off or no such region, and, said once,
+  to a source that does not say it can paint (`hides_places`), with no CAMERA to BASE, or with no support
+  declared: the acquire is then the one it always was.
 
 ## Recovery inside the attempt
 
@@ -191,12 +278,31 @@ best. A stop asked for and the controller are read before each, a wrist pick tha
 look on a judged move first, and a toggle is never switched between tries. Every try is a row of
 `PickAttempt.tries` (rank, outcome, motion status and message, sent, reached the part).
 
+**The arm never stays where the last try left it** (2026-10-08). On the cell (2026-10-07) the line down of try 5
+of 5 was refused at its standoff, and the arm stood there until the operator pressed Home 37.6 s later: every
+motion after the pick was judged on the standoff's own frame, no depth over a bin. Now a wrist pick whose last
+try's last commanded pose is its standoff, and which ended short of the part (refused before it was sent on, the
+planner's own no-plan words, a carried lift the arm would refuse), goes back to its look the same way, inside the
+pick's world (the part kept out, every frame held), with one grasp or `both_faces` too. Never after a stop, a
+halt, a stopped controller, a motion sent and failed or a back-out refused at the part. Where the move back does
+not run, the pick says where the arm stands (`PickReport.stands_at`, `"standoff of grasp N"`, also on the
+attempt's `attempt_finished` event), and a task stops on it for a person.
+
+**A change of branch is the last resort** (the owner's R2, 2026-10-08). On an arm that keeps its branch
+(`keeping_its_branch`, the UR driver), every grasp is first judged and driven inside such a block: the route to
+its standoff on the branch the arm holds, a plan swinging no joint more than `KEPT_BRANCH_OVERSHOOT_DEG` (15) past
+its span. A grasp the block refused for that alone, before anything was sent, waits; only where every grasp of
+that first pass was refused before anything was sent are the ones that waited tried again by the rules outside
+the block, a change of branch a WARNING as ever.
+
 **Every grasp is judged from the look before the arm leaves for it**, where the policy can
 (`refusal_ahead`: the move to the standoff, the line in and the lift with the part in the jaws, on the
 owner's cuRobo UR). On URSim (2026-10-03) a grasp that lifted wrist 1 out of the cable window was refused
 only once the hand stood at the part. Judged ahead, it moves nothing: it is a try with the message
 `judged ahead: ...`, and the next grasp follows. Where every try was refused that way, the scene is changed
-as for a part every grasp of which collided (the trigger `grasps_refused_ahead`, below).
+as for a part every grasp of which collided (the trigger `grasps_refused_ahead`, below). The arm judges each
+of the three once, the line in first and the route last, and runs the route it judged where nothing changed
+since (the judge chain of 2026-10-08, [guide 05](../../../../docs/guide/05-pick-loop.md) 6.4).
 
 Two recovery actions reach into the loop, and only where the service arms them
 ([recovery/](../recovery/README.md)):
@@ -276,6 +382,23 @@ in flight; the physical stop button does that.
 
 ## Which object first
 
+A look's parts are computed in the camera's order and the best grasp is taken, unless the cell takes the
+first good part (`robot.grasping.first_good_part`, on in the shipped tree: the owner's "speed first" of
+2026-10-08). Then the parts are computed one at a time in the order they stand apart, those the hand
+closes across first and the less crowded first, and the first whose result is full, carries no rescan
+reason and scores `good_part_score` (0.75) or more is taken; the rest are not computed. None good, the
+best is taken. With `fine_pass_waits` SFE's fine search waits while another part may have a full
+result: a part whose coarse grid found few grasps gets it only where no part has a full result with a
+grasp, and the choice is then the one of before. A frame with no grasp is computed whole and fails as it
+always did; a later look of a wrist pick computes only the part it keeps; the selector below computes
+every part.
+
+Each part's support-footprint search runs on the cell's worker processes where the cell started them
+(`robot.grasping.workers`; `orch.sfe_workers`, which `build_real_cell` sets): the loop hands the pool to the
+calculator with every ranking and every asking again of the same frame, a blocker's grasps included, and the
+answer is the one process's ([generation/](../generation/README.md)). With none the loop hands nothing, and
+the calculator is asked as before.
+
 `target_selector.py` runs when several objects are graspable at once. It estimates how much removing
 each one would unblock the others and returns an `OrderingDecision`: the chosen index, the scores, the
 mode (`single_best` or `clutter_aware`) and a reason (`local_max`, `unlock_swap`, `guard_blocked_swap`,
@@ -308,7 +431,12 @@ other, and with a target label the choice is made before ordering is asked.
 | The loop, its outcomes and the progress events | measured in simulation: every Isaac pick runs through it |
 | `CONTROLLER_NOT_OPERATIONAL` | measured against real controller software: a protective stop in URSim |
 | Clutter-aware ordering | never touched hardware: tested on synthetic scenes, no measured scene where order matters |
+| The first good part and the fine search waiting | pinned by tests on stand-in calculators and a ray-cast bench; not yet run on the grasp bench or the cell |
+| SFE's units on worker processes | pinned by tests: the recorded Zollstock looks and a ray-cast frame of four parts give the one process's answer to the bit with a pool of two; timed on the morning's look of 2026-10-08 at a desk; not yet run on the cell |
 | The wrist looks, the generated view, the move back and `both_faces` | pinned by tests on fake arms and cameras, and the Isaac arm generates no view; never touched hardware |
+| Following a task's parts, the later looks' projected boxes and the kept part first | pinned by tests on a ray-cast bench through the real source (`tests/test_a_later_look_follows_the_parts_its_first_look_saw.py`); off by default; never touched hardware |
+| Every look, and the weak-look trigger | pinned by tests on the ray-cast bench (`tests/test_a_wrist_pick_drives_every_look_where_asked.py`, `tests/test_a_weak_look_sends_the_pick_on_to_its_next_look.py`); the trigger is off by default, its thresholds the map's, measured on one recorded frame of the cell (the picked cube: none fires); never touched hardware |
+| The task's own places hidden from the detector | pinned by tests on the ray-cast bench through the real source (`tests/test_the_tasks_own_places_are_hidden_from_the_detector.py`); off by default; needs the backend change that hands the detector a copy (`detects_on_a_copy`); never touched hardware |
 | The push inside a wrist camera's attempt | pinned by tests with a fake arm and a fake live world; ran on URSim CB3 on 2026-10-02, a recorded look standing in for the camera ([`probe_push_on_the_mat.py`](../../../../scripts/ursim/probe_push_on_the_mat.py)); never touched hardware |
 
 ## Files
@@ -348,4 +476,6 @@ producer swallows its own exceptions so it cannot break a pick, which is why the
   `tests/test_every_grasp_closes_the_way_round_the_hand_naturally_stands.py`,
   `tests/test_the_looks_say_how_many_agreed_on_the_label.py`,
   `tests/test_a_part_the_axis_refused_is_never_pushed.py`,
-  `tests/test_a_jaw_count_nobody_vouches_for_moves_nothing_more.py`.
+  `tests/test_a_jaw_count_nobody_vouches_for_moves_nothing_more.py`, `tests/test_pick_loop_target_label_gate.py`,
+  `tests/test_a_sort_names_the_kind_it_picked_and_the_parts_no_rule_claims.py`,
+  `tests/test_a_sorts_pick_prompt_passes_only_its_kinds.py`.

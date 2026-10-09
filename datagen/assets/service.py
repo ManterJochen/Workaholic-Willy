@@ -60,13 +60,12 @@ def even_sample(items: Sequence[Any], limit: int) -> list[Any]:
 
 
 def available_sources() -> "list[dict[str, Any]]":
-    """What can be downloaded, how big it is, and on what licence.
+    """Every public mesh collection that can be downloaded, how big it is, and on what licence.
 
-    `licence_verified` is the column that matters. `False` means the collection publishes terms for
-    itself and states nothing per object, so nothing here checked an individual mesh, and a dataset
-    shipped on that basis inherits the collection's claim rather than a verification. A prefix check
-    is not enough to read those strings: `cc-by-sa` and `cc-by-nd` both start with `cc-by`, and
-    `datagen.assets.licensing` refuses them by clause instead.
+    Returns:
+        list[dict[str, Any]]: One dict per collection: ``key``, ``title``, ``objects``, ``approx_gb``, ``licence`` and
+            ``licence_verified``. ``False`` there means the collection publishes terms for itself and states nothing per
+            object, so a dataset shipped on it inherits the collection's claim rather than a verification.
     """
     from datagen.assets.fetch import SOURCES  # noqa: PLC0415
 
@@ -231,11 +230,18 @@ class JawDiagnosis:
 
 @dataclass
 class MeshPreparation:
-    """A customer's mesh collections, normalised, screened, decomposed and diagnosed.
+    """Your mesh collections, fetched, normalised, screened for graspability, decomposed and diagnosed.
 
-    `custom` is excluded from the default sweep on purpose. A customer's own meshes are the point of
-    the package, and they are also the collection nobody else can re-fetch, so a bulk operation
-    never touches them unless it is named.
+        prep = MeshPreparation.from_sources(["custom"])
+        print(prep.describe())
+        print(prep.screen("screen.json"))          # which meshes a jaw can grasp at all
+
+    The ``custom`` collection, your own meshes, is excluded from the default sweep: nobody else can re-fetch it, so a
+    bulk operation never touches it unless it is named.
+
+    Attributes:
+        sources (tuple[str, ...]): The collections to walk.
+        library (Any): The mesh library folder; ``None`` is the repository's ``MESH_LIBRARY_DIR`` (default: None).
     """
 
     sources: tuple[str, ...]
@@ -244,16 +250,34 @@ class MeshPreparation:
     @classmethod
     def from_sources(cls, sources: Sequence[str] | None = None,
                      *, library: Any = None) -> "MeshPreparation":
+        """The preparation over the named collections.
+
+        Args:
+            sources (Sequence[str] | None): The collections, such as ``["custom"]`` or ``["ycb", "gso"]``; ``None`` is
+                every supported one but ``custom`` (default: None).
+            library (Any): The mesh library folder; ``None`` the repository's (default: None).
+
+        Returns:
+            MeshPreparation: The preparation; nothing is read yet.
+        """
         return cls(sources=tuple(library_sources(sources)), library=library)
 
     def describe(self) -> str:
-        """Which collections this would touch, before anything reads a mesh. ASCII, zero arguments."""
+        """Which collections this would touch, before anything reads a mesh.
+
+        Returns:
+            str: ASCII, one line per fact.
+        """
         return _NEWLINE.join([
             f"mesh preparation over {len(self.sources)} collection(s)",
             f"  sources        {', '.join(self.sources)}"])
 
     def entries(self) -> list[tuple[str, str]]:
-        """Every `(asset_id, path)` in the chosen collections, in library order."""
+        """Every mesh in the chosen collections, in library order.
+
+        Returns:
+            list[tuple[str, str]]: ``(asset_id, path)`` pairs.
+        """
         from datagen.assets.library import MeshLibrary  # noqa: PLC0415
 
         library = self.library if self.library is not None else MeshLibrary()
@@ -262,16 +286,17 @@ class MeshPreparation:
 
     def fetch(self, *, library: str | Path | None = None, limit: int | None = None,
               report: Any = None) -> FetchReport:
-        """Download the chosen collections. Step zero of everything else in this class.
+        """Download the chosen collections: step zero of everything else here. A mesh already present is skipped, so an
+        interrupted fetch resumes.
 
-        Returns a report rather than a process exit code. `datagen.assets.fetch.fetch` prints its
-        counts and returns that code, which is what a shell needs; a program needs the counts as
-        values, and the same run can produce both.
+        Args:
+            library (str | Path | None): Where the meshes go; ``None`` is the repository's library (default: None).
+            limit (int | None): Take the first n of each collection: a trial run, not a sample (``even_sample`` is the
+                sample); ``None`` all of them (default: None).
+            report (Any): Called with one progress line at a time; ``None`` says nothing (default: None).
 
-        `limit` takes the first n of a collection, which is a trial run and not a sample. See
-        :func:`even_sample` for why the two differ.
-
-        An already-present mesh is skipped, so an interrupted fetch resumes.
+        Returns:
+            FetchReport: The library folder and, per collection, what was fetched, skipped and refused.
         """
         from datagen.assets.fetch import SOURCES, use_system_trust_store  # noqa: PLC0415
         from datagen.assets.library import MESH_LIBRARY_DIR  # noqa: PLC0415
@@ -301,17 +326,32 @@ class MeshPreparation:
         return FetchReport(library=root, sources=tuple(results))
 
     def normalise(self, **kwargs: Any) -> dict[str, Any]:
-        """Normalise every chosen collection."""
+        """Scale every chosen collection into metres and decimate it into the face budget. Idempotent.
+
+        Args:
+            **kwargs (Any): Passed to ``normalise_meshes``: ``faces`` (the face budget, default 20000), ``scale`` (a
+                factor to apply, ``None`` to infer), ``jobs`` (default 4) and ``report`` (a progress callback).
+
+        Returns:
+            dict[str, Any]: Per collection, how many meshes were read and changed.
+        """
         from datagen.assets.prepare import normalise_meshes  # noqa: PLC0415
 
         return {source: normalise_meshes(source, library=self.library, **kwargs)
                 for source in self.sources}
 
     def screen(self, out: str | Path, *, write_ids: bool = True, **kwargs: Any) -> ScreenReport:
-        """Screen for graspability and write the report, plus the asset-id list beside it.
+        """Label every mesh alone, in every rest pose, and write what the labeller found, with the asset-id list a
+        downstream config reads beside it.
 
-        Two files, not one. `screen_meshes` writes the screen; the `_asset_ids.json` derived from it
-        is what a downstream config reads, so both are produced here and not only in the CLI.
+        Args:
+            out (str | Path): Where the screen report goes.
+            write_ids (bool): Also write ``<out>_asset_ids.json``, the graspable ids (default: True).
+            **kwargs (Any): Passed to ``screen_meshes``: ``density`` (default ``"grid"``), ``jobs`` (default 10),
+                ``want_graspable`` (stop once that many graspable meshes were found) and ``report``.
+
+        Returns:
+            ScreenReport: The screen's and the ids' paths, how many meshes were screened and how many are graspable.
         """
         from datagen.assets.prepare import asset_ids_from_screen, screen_meshes  # noqa: PLC0415
 
@@ -331,15 +371,17 @@ class MeshPreparation:
 
     def decompose(self, config: "DatagenConfig", *, jobs: int = 8,
                   scenes: int | None = None) -> DecompositionReport:
-        """Fill the convex-decomposition cache for everything this config will place, in parallel.
+        """Fill the convex-decomposition cache for everything a config will place, in parallel: before a MuJoCo build,
+        so the build does not decompose each mesh one at a time inside its render loop.
 
-        Before a mujoco build, not instead of one. The engine decomposes on demand and caches, so a
-        build works without this and pays the decomposition per mesh inside its own render loop, one
-        at a time.
+        Args:
+            config (DatagenConfig): The dataset's settings; exactly the assets it places are warmed.
+            jobs (int): Processes in parallel (default: 8).
+            scenes (int | None): Warm only the assets of this many scenes; ``None`` the config's count (default: None).
 
-        The manifest comes from the same config, so this warms exactly the assets that config
-        places, not the whole library and not a different sample of it. That is why it takes a
-        config rather than `self.sources`.
+        Returns:
+            DecompositionReport: How many assets, how many computed, how many already cached, the parts, the cache
+                folder.
         """
         from datagen.build import build_manifest  # noqa: PLC0415
         from datagen.pool import process_pool  # noqa: PLC0415
@@ -373,9 +415,15 @@ class MeshPreparation:
                    report: Any = None) -> JawDiagnosis:
         """Why do these meshes earn no grasp? The question a user with their own parts asks.
 
-        `from_screen` is the sharper question. Without it this samples everything, and the meshes
-        that earn no jaw label are a minority, so most of the budget goes on objects that already
-        work. With it, only the rows the screen scored at zero are asked about.
+        Args:
+            limit (int): How many meshes to ask about (default: 40).
+            density (str): The label density to probe with, ``"default"``, ``"dense"`` or ``"grid"`` (default: "grid").
+            from_screen (str | Path | None): A screen report: ask only about the meshes it scored at zero, the sharper
+                question; ``None`` samples everything (default: None).
+            report (Any): Called with one progress line at a time; ``None`` says nothing (default: None).
+
+        Returns:
+            JawDiagnosis: Per mesh, what kept a jaw from it (too wide, too thin, no antipodal pair, ...).
         """
         from datagen.assets.diagnose import why_no_jaw as diagnose  # noqa: PLC0415
         from datagen.assets.prepare import screen_rows  # noqa: PLC0415

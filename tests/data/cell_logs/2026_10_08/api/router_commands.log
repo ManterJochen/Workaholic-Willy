@@ -1,0 +1,4 @@
+2026-10-08 07:35:14,282 - CommandsRouter - INFO - Laden: the VLM is ready.
+2026-10-08 07:35:43,739 - CommandsRouter - INFO - Command read (typed source, de): intent none, 1 question(s), 7352 ms, a greeting (wave direct).
+2026-10-08 07:36:12,106 - CommandsRouter - INFO - Command read (typed source, de): intent none, 1 question(s), 7129 ms, a greeting (wave direct).
+2026-10-08 07:36:44,921 - CommandsRouter - INFO - Command read (typed source, de): intent task, 1 question(s), 9838 ms.

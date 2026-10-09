@@ -14,6 +14,8 @@
 * :class:`RecordingHooks` records every event of the task and answers the operator's buttons as a test sets them.
 * :class:`ScriptedLocator` stands in for a ``Locator`` over the service's camera: it answers each prompt with what a
   test says the camera sees from where the arm stands.
+* :class:`MeasuringLocator` is a wrist camera over a bench it renders (:class:`BinScene`): it grounds a bin's phrase from
+  the pixels it sees of the bin, and reads a new frame where points should stand (``measure``), as ``Locator`` does.
 * :class:`MeasuringHand` is a hand that is not a toggle: it closes and opens by intent and measures whether it holds a
   part, so a part that sticks after the jaws opened is still measured.
 
@@ -24,7 +26,7 @@ them, sampled every few millimetres.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from types import SimpleNamespace
 from typing import Any, Callable, Iterable, Mapping
 
@@ -59,9 +61,14 @@ __all__ = [
     "BIN_CENTRE",
     "BIN_RIM_MM",
     "BIN_SIZE",
+    "BLUE",
+    "BinScene",
     "GRASP_Z_MM",
     "HOME",
     "MeasuringHand",
+    "MeasuringLocator",
+    "SeenBin",
+    "YELLOW",
     "PART_XY",
     "PLACE_JOINTS",
     "PLACE_TCP",
@@ -361,7 +368,9 @@ class Pick:
     failed pick: parts the task still has to pick), ``failed`` (a part seen and no grasp), ``failed_holding`` (the lift
     was refused with the part closed in the jaws), ``fault``, ``controller``, ``gripper``, ``needs_person`` or
     ``cancelled``. ``detector_failed`` raises the service's detector failure count during the pick. ``grasp`` False
-    reports no grasp pose on a part picked.
+    reports no grasp pose on a part picked. ``looks`` are the looks its report says it perceived from (none, as a pick
+    handed no look reports), and ``targets_first_look`` how many targets its first look counted
+    (``telemetry['targets_by_look']``, as a wrist pick reports them; ``None`` says nothing, as a fixed camera's pick).
     """
 
     kind: str = "part"
@@ -370,6 +379,8 @@ class Pick:
     detector_failed: bool = False
     cloud: "np.ndarray | None" = None
     then: "Callable[[], None] | None" = None
+    looks: tuple[str, ...] = ()
+    targets_first_look: int | None = None
 
 
 def _report(outcome: AutonomousGraspOutcome, *, telemetry: "Mapping[str, Any] | None" = None,
@@ -507,6 +518,10 @@ class TaskService:
         if self.cancel_check is not None and self.cancel_check():
             return _report(AutonomousGraspOutcome.CANCELLED, telemetry={"cancelled_before_start": True})
         report = self._play(pick)
+        if pick.looks or pick.targets_first_look is not None:
+            counted = {} if pick.targets_first_look is None else {
+                "targets_by_look": [pick.targets_first_look] + [0] * max(0, len(pick.looks) - 1)}
+            report = replace(report, looks=tuple(pick.looks), telemetry={**dict(report.telemetry), **counted})
         if pick.then is not None:
             pick.then()
         return report
@@ -751,6 +766,162 @@ class ScriptedLocator:
 
 
 # ---------------------------------------------------------------------------------------------------------------------
+# A camera place's target, measured: a wrist camera over a bench it renders
+# ---------------------------------------------------------------------------------------------------------------------
+
+#: The plastic of the owner's two bins of one model, side by side on the cell, BGR.
+YELLOW = (20, 200, 230)
+BLUE = (200, 90, 20)
+#: The bench, and what stands in front of a bin (a hand, a carried part), BGR.
+_BENCH_BGR = (70, 70, 70)
+_IN_FRONT_BGR = (30, 30, 30)
+#: The rendered wrist camera: 320 x 240 with a 260 px focal length (2 mm a pixel at 520 mm), 200 mm behind the TCP on
+#: the tool's axis and looking along it, so a tool pointing down looks straight down.
+_WIDTH, _HEIGHT, _FOCAL = 320, 240, 260.0
+_LENS = np.array([[_FOCAL, 0.0, _WIDTH / 2.0], [0.0, _FOCAL, _HEIGHT / 2.0], [0.0, 0.0, 1.0]])
+_CAMERA_TO_TOOL = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, -200.0], [0.0, 0.0, 0.0, 1.0]])
+
+
+@dataclass
+class SeenBin:
+    """A bin on the bench: the phrase a detector grounds it by, its middle, its outer size, its rim, its colour (BGR)
+    and the score the detector gives it. Its walls are 8 mm thick, its floor 5 mm."""
+
+    label: str = "yellow bin"
+    centre_xy: tuple[float, float] = BIN_CENTRE
+    size_xy: tuple[float, float] = BIN_SIZE
+    rim_mm: float = BIN_RIM_MM
+    colour_bgr: tuple[int, int, int] = YELLOW
+    score: float = 0.8
+
+
+@dataclass
+class BinScene:
+    """What the bench holds, which a test changes between two looks: its bins, and upright boxes in front of them
+    (``in_front``: a centre and half sizes, BASE mm), as a hand or a carried part hides a rim."""
+
+    bins: list[SeenBin] = field(default_factory=lambda: [SeenBin()])
+    in_front: list[tuple[tuple[float, float, float], tuple[float, float, float]]] = field(default_factory=list)
+
+    def move(self, dx: float, dy: float = 0.0, **changes: Any) -> None:
+        """Move the first bin by ``dx``, ``dy``, changed as ``changes`` say (``size_xy``, ``rim_mm``, ...)."""
+        first = self.bins[0]
+        self.bins[0] = replace(first, centre_xy=(first.centre_xy[0] + dx, first.centre_xy[1] + dy), **changes)
+
+    def take_away(self) -> None:
+        self.bins = []
+
+    def render(self, camera_to_base: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """What a camera at ``camera_to_base`` sees: the depth along its axis (mm, 0 where its ray meets nothing), the
+        colour image (BGR), and which bin each pixel shows (-1: the bench, or what stands in front). Ray cast as
+        ``tests/_seen_scenes.py`` casts, the bench at z = 0, a pixel's centre at its whole index."""
+        from tests._seen_scenes import Solid, open_bin  # noqa: PLC0415
+
+        cols, rows = np.meshgrid(np.arange(_WIDTH, dtype=np.float64), np.arange(_HEIGHT, dtype=np.float64))
+        rays = np.stack([(cols - _LENS[0, 2]) / _FOCAL, (rows - _LENS[1, 2]) / _FOCAL, np.ones_like(cols)], axis=-1)
+        rays = rays @ camera_to_base[:3, :3].T
+        origin = camera_to_base[:3, 3]
+        down = rays[..., 2] < 0.0
+        depth = np.where(down, -origin[2] / np.where(down, rays[..., 2], -1.0), np.inf)
+        shows = np.full(depth.shape, -1)
+        solids = [(solid, index) for index, seen in enumerate(self.bins)
+                  for solid in open_bin(seen.centre_xy, seen.size_xy, seen.rim_mm, wall_mm=8.0, floor_mm=5.0)]
+        solids += [(Solid(centre, half), -2) for centre, half in self.in_front]
+        for solid, index in solids:
+            c, s = math.cos(math.radians(solid.yaw_deg)), math.sin(math.radians(solid.yaw_deg))
+            start = origin - np.asarray(solid.centre, dtype=np.float64)
+            start = np.array([c * start[0] + s * start[1], -s * start[0] + c * start[1], start[2]])
+            way = np.stack([c * rays[..., 0] + s * rays[..., 1], -s * rays[..., 0] + c * rays[..., 1], rays[..., 2]],
+                           axis=-1)
+            half = np.asarray(solid.half, dtype=np.float64)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                low, high = (-half - start) / way, (half - start) / way
+            near = np.nanmax(np.minimum(low, high), axis=-1)
+            far = np.nanmin(np.maximum(low, high), axis=-1)
+            hit = (far >= near) & (near > 0.0) & (near < depth)
+            depth = np.where(hit, near, depth)
+            shows = np.where(hit, index, shows)
+        image = np.empty((*depth.shape, 3), dtype=np.uint8)
+        image[...] = _BENCH_BGR
+        for index, seen in enumerate(self.bins):
+            image[shows == index] = seen.colour_bgr
+        image[shows == -2] = _IN_FRONT_BGR
+        return np.where(np.isfinite(depth), depth, 0.0), image, np.where(shows == -2, -1, shows)
+
+
+class MeasuringLocator:
+    """A camera on the wrist over a bench it renders (:class:`BinScene`), 200 mm behind the TCP the arm reads now.
+
+    ``locate`` grounds a phrase as a detector would: every bin of that phrase in a box of its own, its points the pixels
+    the camera sees of it placed in BASE through the frame, the frame and its colour image kept, as a locator the
+    service lends keeps them (``place_target.located_image``). ``measure`` reads a new frame where given points should
+    stand, through ``Located.measure``, the code ``Locator.measure`` reads its own frame with. ``asked`` is every phrase
+    located, ``measured`` how many points each measure read, and with ``log`` both go on the shared log;
+    ``measure_raises`` makes the next measure raise.
+    """
+
+    on_the_wrist = True
+
+    def __init__(self, scene: BinScene, *, arm: Any, log: "list[Any] | None" = None, rig_id: str = "wrist",
+                 measure_raises: "BaseException | None" = None) -> None:
+        from src.robot.execution import place_target  # noqa: PLC0415
+
+        self.scene = scene
+        self.arm = arm
+        self.log = log
+        self.rig_id = rig_id
+        self.measure_raises = measure_raises
+        self.asked: list[str] = []
+        self.measured: list[int] = []
+        self.count = 0
+        self.sightings = place_target._Sightings(rig_id, keep=True)  # noqa: SLF001
+        place_target._SIGHTINGS[self] = self.sightings  # noqa: SLF001
+
+    def _taken(self) -> tuple[Any, np.ndarray, np.ndarray]:
+        """One frame from where the arm stands: as ``Locator`` keeps it, its colour image (BGR), and what each pixel
+        shows."""
+        from src.robot.perception.locator import _Frame  # noqa: PLC0415 (the frame a locate keeps, as Locator keeps it)
+
+        self.count += 1
+        camera_to_base = np.asarray(self.arm.get_tcp_pose().to_matrix(), dtype=np.float64) @ _CAMERA_TO_TOOL
+        depth, image, shows = self.scene.render(camera_to_base)
+        return _Frame(depth_mm=depth, intrinsics=_LENS.copy(), camera_to_base=camera_to_base), image, shows
+
+    def locate(self, prompt: str) -> Located:
+        from src.robot.grasping.multiview.scene_geometry import to_base_mm  # noqa: PLC0415
+
+        self.asked.append(prompt)
+        if self.log is not None:
+            self.log.append(("locate", prompt))
+        frame, image, shows = self._taken()
+        objects: list[LocatedObject] = []
+        for index, seen in enumerate(self.scene.bins):
+            mask = (shows == index) & (frame.depth_mm > 0.0)
+            if seen.label != prompt or not mask.any():
+                continue
+            points = to_base_mm(mask, frame.depth_mm, frame.intrinsics, frame.camera_to_base)
+            objects.append(LocatedObject(label=prompt, score=seen.score, box_px=None, mask=mask, points_base_mm=points,
+                                         centre_mm=tuple(float(v) for v in np.median(points, axis=0))))  # type: ignore[arg-type]
+        located = Located(camera=self.rig_id, captured_at_s=float(self.count), mounting="eye_in_hand",
+                          tool_to_base_mm=None, objects=tuple(objects), _frame=frame)
+        self.sightings.show_located(located, image, prompt=prompt)
+        return located
+
+    def measure(self, points_base_mm: Any) -> Any:
+        points = np.asarray(points_base_mm, dtype=np.float64).reshape(-1, 3)
+        self.measured.append(int(points.shape[0]))
+        if self.log is not None:
+            self.log.append(("measure", int(points.shape[0])))
+        if self.measure_raises is not None:
+            raising, self.measure_raises = self.measure_raises, None
+            raise raising
+        frame, image, _shows = self._taken()
+        seen = Located(camera=self.rig_id, captured_at_s=float(self.count), mounting="eye_in_hand",
+                       tool_to_base_mm=None, objects=(), _frame=frame)
+        return seen.measure(points, image)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
 # One task, end to end, on the doubles
 # ---------------------------------------------------------------------------------------------------------------------
 
@@ -782,8 +953,10 @@ class Ran:
 def run(picks: "Iterable[Pick | str]" = ("part",), *, place: Any = None, scope: str = "once",
         return_to: str = "home", options: Any = None, first_motion: str = "look", hooks: "RecordingHooks | None" = None,
         arm: "TaskArm | None" = None, jaws: Any = None, closed: bool = False, locators: Any = UNSET,
-        poses: "Mapping[str, JointPositions] | None" = None, plan: Any = None, **service_keywords: Any) -> Ran:
-    """Run one task on the doubles: ``picks`` scripted, a pose place at ``drop_left`` unless ``place`` says otherwise.
+        poses: "Mapping[str, JointPositions] | None" = None, plan: Any = None, known_target: Any = None,
+        **service_keywords: Any) -> Ran:
+    """Run one task on the doubles: ``picks`` scripted, a pose place at ``drop_left`` unless ``place`` says otherwise,
+    handed ``known_target`` where one is given.
 
     Every event the task says is marked on the log as ``("event", name)``, so a test reads what the arm and the hand
     did after it.
@@ -807,5 +980,137 @@ def run(picks: "Iterable[Pick | str]" = ("part",), *, place: Any = None, scope: 
         object="red cube", place=place if place is not None else PlaceAt(pose="drop_left"), return_to=return_to,
         scope=scope, options=options if options is not None else TaskOptions(), first_motion=first_motion)
     keywords: dict[str, Any] = {} if not chosen(locators) else {"locators": locators}
+    if known_target is not None:
+        keywords["known_target"] = known_target
     report = run_task(service, plan, hooks=hooks, poses=POSES if poses is None else poses, **keywords)
     return Ran(report=report, log=log, arm=arm, jaws=jaws, service=service, hooks=hooks)
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# The places of a sort: a class list, located once
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+class ClassListLocator(MeasuringLocator):
+    """A :class:`MeasuringLocator` that grounds a class list as the cell's locator does once it is handed one (the
+    sorting map's S1): ``"yellow bin | blue bin"`` grounds every bin of either phrase in one locate, each labelled with
+    its own phrase, as the camera source labels a box once the locator maps the detector's words onto the list
+    (``object_labels``); one phrase grounds as :class:`MeasuringLocator` does. ``called`` makes the detector call a bin
+    by other words (a bin's own label to what it is called): asked for either, it grounds the bin under that name, as a
+    detector that mistakes one bin for another, or gives a box a label of its own (``ambiguous``), does.
+    """
+
+    def __init__(self, scene: BinScene, *, arm: Any, log: "list[Any] | None" = None, rig_id: str = "wrist",
+                 measure_raises: "BaseException | None" = None, called: "Mapping[str, str] | None" = None) -> None:
+        super().__init__(scene, arm=arm, log=log, rig_id=rig_id, measure_raises=measure_raises)
+        self.called = dict(called or {})
+
+    def locate(self, prompt: str) -> Located:
+        from src.robot.grasping.multiview.scene_geometry import to_base_mm  # noqa: PLC0415
+
+        self.asked.append(prompt)
+        if self.log is not None:
+            self.log.append(("locate", prompt))
+        classes = [phrase.strip() for phrase in prompt.split("|")]
+        frame, image, shows = self._taken()
+        objects: list[LocatedObject] = []
+        for index, seen in enumerate(self.scene.bins):
+            mask = (shows == index) & (frame.depth_mm > 0.0)
+            label = self.called.get(seen.label, seen.label)
+            if (seen.label not in classes and label not in classes) or not mask.any():
+                continue
+            points = to_base_mm(mask, frame.depth_mm, frame.intrinsics, frame.camera_to_base)
+            objects.append(LocatedObject(label=label, score=seen.score, box_px=None, mask=mask, points_base_mm=points,
+                                         centre_mm=tuple(float(v) for v in np.median(points, axis=0))))  # type: ignore[arg-type]
+        located = Located(camera=self.rig_id, captured_at_s=float(self.count), mounting="eye_in_hand",
+                          tool_to_base_mm=None, objects=tuple(objects), _frame=frame)
+        self.sightings.show_located(located, image, prompt=prompt)
+        return located
+
+
+__all__.append("ClassListLocator")
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# A sort: picks that say the kind they went for, a detector asked for one phrase, a cell that keeps the old rule
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+def placing(arm: TaskArm, **place: Any) -> TaskArm:
+    """``arm`` keeping a tree that says only how its parts are set down (``robot.place`` as ``place`` says, every other
+    key its default): every other reading of the tree finds nothing there, as on an arm that keeps none.
+    ``placing(arm, relocate=False)`` is a cell that keeps the old rule: a bin the check lost puts the part back."""
+    from src.config.schema.robot.place_schema import RobotPlaceConfig  # noqa: PLC0415
+
+    arm.config = SimpleNamespace(place=RobotPlaceConfig(**place))  # type: ignore[attr-defined]
+    return arm
+
+
+@dataclass
+class SortPick(Pick):
+    """One scripted pick of a sort, as a sort's pick loop reports it: ``label`` the kind of the part it went for (the
+    label of the segmentation it gripped, ``PickReport.target_label``), ``unclaimed`` the labels its first look turned
+    away that no rule claims (``PickReport.unclaimed_labels``: ``ambiguous``, a word no rule names)."""
+
+    label: str = ""
+    unclaimed: tuple[str, ...] = ()
+
+
+class SortingService(TaskService):
+    """``TaskService`` whose picks carry what a sort's pick loop says (:class:`SortPick`) on their reports."""
+
+    def _play(self, pick: Pick) -> AutonomousGraspReport:
+        report = super()._play(pick)
+        label, unclaimed = str(getattr(pick, "label", "")), tuple(getattr(pick, "unclaimed", ()))
+        if report.pick_report is None or not (label or unclaimed):
+            return report
+        said = SimpleNamespace(**vars(report.pick_report), target_label=label, unclaimed_labels=unclaimed)
+        return replace(report, pick_report=said)
+
+
+class OnePhraseLocator(ClassListLocator):
+    """A :class:`ClassListLocator` that answers one phrase as a detector asked for one description does: every bin in
+    view in a box of that phrase (a locate of one description reads every box as it). A class list still labels each
+    bin with its own phrase, so only a class list tells two bins apart."""
+
+    def locate(self, prompt: str) -> Located:
+        if "|" in prompt:
+            return super().locate(prompt)
+        own, self.called = self.called, {seen.label: prompt.strip() for seen in self.scene.bins}
+        try:
+            return super().locate(prompt)
+        finally:
+            self.called = own
+
+
+def run_sort(plan: Any, picks: "Iterable[Pick | str]" = (), *, hooks: "RecordingHooks | None" = None,
+             arm: "TaskArm | None" = None, jaws: Any = None, locators: Any = UNSET,
+             poses: "Mapping[str, JointPositions] | None" = None, known_target: Any = None, known_targets: Any = None,
+             **service_keywords: Any) -> Ran:
+    """Run ``plan`` (a sort, or a task of one kind) on the doubles with a :class:`SortingService`, handed
+    ``known_target`` and ``known_targets`` where given; every event marked on the log as :func:`run` marks it."""
+    from src.robot.execution.task import run_task  # noqa: PLC0415
+
+    log: list[Any] = arm.log if arm is not None else []
+    arm = arm if arm is not None else TaskArm(log)
+    jaws = jaws if jaws is not None else toggle(log, arm=arm)
+    service = SortingService(arm, jaws, picks, **service_keywords)
+    hooks = hooks if hooks is not None else RecordingHooks()
+    recorded = hooks.on_event
+
+    def mark(name: str, data: dict[str, Any]) -> None:
+        log.append(("event", name))
+        if recorded is not None:
+            recorded(name, data)
+
+    hooks.on_event = mark
+    keywords: dict[str, Any] = {} if not chosen(locators) else {"locators": locators}
+    if known_target is not None:
+        keywords["known_target"] = known_target
+    if known_targets is not None:
+        keywords["known_targets"] = known_targets
+    report = run_task(service, plan, hooks=hooks, poses=POSES if poses is None else poses, **keywords)
+    return Ran(report=report, log=log, arm=arm, jaws=jaws, service=service, hooks=hooks)
+
+
+__all__.extend(["OnePhraseLocator", "SortPick", "SortingService", "placing", "run_sort"])

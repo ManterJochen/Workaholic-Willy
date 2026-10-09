@@ -3,7 +3,7 @@
  *
  * This file DEFINES the prompt area's keys; `i18n.en.ts` is typed by it, so an English text that is missing fails
  * `tsc`. Placeholders are `{name}`. Every text here is factual: what the box does, what it heard, and that nothing
- * moves until a person presses Start.
+ * moves before a person has read the sentence and pressed Enter (where Enter starts) or Start.
  */
 
 const de = {
@@ -13,7 +13,7 @@ const de = {
   'prompt.mic.stop': 'Aufnahme beenden',
   'prompt.mic.transcribing': 'Wird erkannt …',
   'prompt.mic.title':
-    'Klicken zum Sprechen, nochmal klicken zum Beenden. {key} gedrückt halten nimmt auf, solange die Taste gehalten wird: so geht auch ein Fußschalter, der {key} sendet. Der Text landet im Feld; bewegt wird nichts, bis du auf Start drückst.',
+    'Klicken zum Sprechen, nochmal klicken zum Beenden. {key} gedrückt halten nimmt auf, solange die Taste gehalten wird: so geht auch ein Fußschalter, der {key} sendet. Der Text landet im Feld; bewegt wird nichts, bevor du ihn gelesen und Enter gedrückt hast.',
   'prompt.level': 'Pegel',
   'prompt.noMic': 'Kein Mikrofon hier: {why} Bitte den Befehl tippen.',
   'prompt.noMic.insecure': 'Das Mikrofon braucht HTTPS oder localhost; diese Seite kam über einfaches HTTP von einem anderen Rechner.',
@@ -24,7 +24,8 @@ const de = {
   'prompt.nothingHeard': 'In dieser Aufnahme wurde nichts erkannt.',
   'prompt.spoken': 'Aus Sprache erkannt, nicht getippt: vor dem Start lesen. Der Arm fährt nach dem, was gehört wurde.',
   'prompt.send': 'Senden',
-  'prompt.sendTitle': 'Enter oder Senden liest den Satz. Gestartet wird erst mit Start auf der Karte.',
+  'prompt.sendTitle': 'Enter oder Senden liest den Satz. Ob der Auftrag dann sofort startet oder erst mit Start auf der Karte, steht unter dem Feld.',
+  'prompt.count': '{n} von {max} Zeichen',
 }
 
 export default de

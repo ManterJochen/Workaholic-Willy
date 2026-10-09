@@ -212,6 +212,8 @@ EventTypeName: TypeAlias = Literal[
     "task.nothing_found", "task.carry_started", "task.target_checked", "task.target_lost", "task.drop_planned",
     "task.place_started", "task.placed", "task.place_failed", "task.put_back", "task.return_started",
     "task.returned", "task.return_failed", "task.part_finished",
+    # a sort (several rules, 2026-10-09): the rule a gripped part goes by, a place found again, the parts no rule took
+    "task.rule", "task.target_relocated", "task.unsorted",
     # the Home button
     "home.started", "home.arrived", "home.refused",
     # teaching one pose by hand
@@ -264,6 +266,9 @@ class EventType(StrEnum):
     TASK_RETURNED = "task.returned"
     TASK_RETURN_FAILED = "task.return_failed"
     TASK_PART_FINISHED = "task.part_finished"
+    TASK_RULE = "task.rule"
+    TASK_TARGET_RELOCATED = "task.target_relocated"
+    TASK_UNSORTED = "task.unsorted"
     HOME_STARTED = "home.started"
     HOME_ARRIVED = "home.arrived"
     HOME_REFUSED = "home.refused"
@@ -298,7 +303,7 @@ class EventType(StrEnum):
 
 RefusalCodeName: TypeAlias = Literal[
     # the request itself
-    "bad_request", "no_robot_configured", "no_such_run", "not_built_yet",
+    "bad_request", "text_too_long", "no_robot_configured", "no_such_run", "not_built_yet",
     # bringing the cell up (Connect's own: ConnectRefused)
     "not_built", "not_acknowledged", "stale_token", "cell_busy", "no_real_gripper", "driver_refused",
     "wrong_state", "build_refused", "jaws_seam_missing",
@@ -335,6 +340,9 @@ class RefusalCode(StrEnum):
     """
 
     BAD_REQUEST = "bad_request"
+    #: A text over its length, and nothing else wrong with the request: ``detail`` says the field and the limit
+    #: (``{field, max}``).
+    TEXT_TOO_LONG = "text_too_long"
     NO_ROBOT_CONFIGURED = "no_robot_configured"
     NO_SUCH_RUN = "no_such_run"
     #: A route of the console's contract whose body is not built yet (the build's contract stage). Never a refusal of
@@ -423,6 +431,7 @@ class RefusalCode(StrEnum):
 #: the config", 404 "no such thing", 501 "this server cannot", 502 "the controller refused".
 REFUSAL_STATUS: Final[Mapping[RefusalCode, int]] = MappingProxyType({
     RefusalCode.BAD_REQUEST: 422,
+    RefusalCode.TEXT_TOO_LONG: 422,
     RefusalCode.NO_ROBOT_CONFIGURED: 409,
     RefusalCode.NO_SUCH_RUN: 404,
     RefusalCode.NOT_BUILT_YET: 501,

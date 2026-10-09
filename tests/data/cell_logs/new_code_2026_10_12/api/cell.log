@@ -1,0 +1,2 @@
+2026-10-12 08:58:50,000 - Console - INFO - Building the cell (rehearse=False) from D:\cell\cell_config\config, profile chain (none).
+2026-10-12 08:59:51,500 - Console - INFO - Cell built in 61.5 s: arm=URRobotArm, gripper=JawIOGripper, records -> D:\cell\logs.

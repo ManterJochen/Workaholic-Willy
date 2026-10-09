@@ -31,7 +31,18 @@ CINE_RES = (1280, 720)
 
 def record_demo(*, out_path: str = DEFAULT_OUT, headless: bool = True, fps: int = 18,
                 capture_every: int = 1, hold_steps: int = 55) -> dict:
-    """Record one eye-in-hand pick as a cinematic MP4. Returns a summary dict."""
+    """One wrist-camera pick in Isaac Sim, filmed as an MP4. Runs under Isaac's own interpreter.
+
+    Args:
+        out_path (str): Where the film goes (default: "logs/demo/eih_pick_demo.mp4").
+        headless (bool): Run Isaac without a window (default: True).
+        fps (int): Frames per second of the film (default: 18).
+        capture_every (int): Keep every n-th simulation frame (default: 1).
+        hold_steps (int): Simulation steps to hold at the end (default: 55).
+
+    Returns:
+        dict: ``frames``, ``fps``, ``duration_s``, ``lift_mm`` (how far the part rose) and ``out`` (the film's path).
+    """
     import cv2  # type: ignore[import-not-found]
 
     # build_service starts the SimulationApp; the isaacsim.* namespaces only exist after that.

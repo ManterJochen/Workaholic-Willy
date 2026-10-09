@@ -35,9 +35,11 @@ from src.robot.constants import CUROBO_CLIENT_LOG_FILE, create_robot_logger
 
 from ._curobo_attach import ENV_ATTACH_SPHERES
 from ._curobo_body_links import ENV_BODY_LINKS, ENV_DEFAULT_Q, ENV_WRIST_BODY_LINKS
+from ._curobo_cspace import CUROBO_FINETUNE_PASSES, ENV_JOINT_FINETUNE
 from ._curobo_margin import ENV_SELF_COLLISION_MARGIN_MM
 from ._curobo_pairs import PairOverlap
 from ._curobo_plan_policy import CLEARANCE_KEY, MAX_CLEARANCE_M
+from ._curobo_planning import ENV_PLANNING_MODEL
 from ._curobo_protocol import (
     ENV_MEASURE_ONLY,
     IGNORE_PERCEIVED_KEY,
@@ -55,6 +57,7 @@ from ._curobo_protocol import (
     WHERE_START,
     WHERES,
 )
+from ._curobo_world import ENV_WORLD_IN_PLACE
 from .environment import (
     ENV_CUROBO_CUBOID_CACHE,
     ENV_CUROBO_MESH_CACHE,
@@ -789,6 +792,12 @@ class SidecarIdentity:
     older than these fields says nothing, and an empty value would read as one. A sidecar
     handed no wrist body reports neither wrist field. The drivers refuse on the provenance
     and the hashes, and on the wrist bodies (``body_link.wrist_body_refusal``).
+
+    ``planning`` is what a sidecar asked for a planning model says of it (``_curobo_planning``):
+    its name, spheres and self pairs beside the evidence model's, or the reason it ``refused``
+    to build it; ``planning_sha256`` the hash of the config its planner loaded. Neither is checked
+    against any evidence: the evidence names the robot every plan is judged with, which a
+    planning model leaves as it is.
     """
 
     provenance: dict[str, object] | None = None
@@ -804,6 +813,16 @@ class SidecarIdentity:
     #: was sent with.
     wrist_bodies: Maybe[tuple[dict[str, object], ...]] = UNSET
     wrist_bodies_sha256: Maybe[str] = UNSET
+    planning: Maybe[dict[str, object]] = UNSET
+    planning_sha256: Maybe[str] = UNSET
+
+    @property
+    def plans_on(self) -> str:
+        """The planning model the planner was built from, by name, or ``""`` for the evidence model, the one it
+        judges with (a sidecar asked for none, one that refused the one it was asked for, or one older than them)."""
+        if not chosen(self.planning) or self.planning.get("refused") or not chosen(self.planning_sha256):
+            return ""
+        return str(self.planning.get("model") or "")
 
     @property
     def body_names(self) -> tuple[str, ...]:
@@ -822,6 +841,7 @@ class SidecarIdentity:
         wrist_well_formed = isinstance(wrist, list) and all(
             isinstance(row, dict) and isinstance(row.get("link"), str) for row in wrist
         )
+        planning = ready.get("planning")
         return cls(
             provenance=dict(descriptor) if isinstance(descriptor, dict) else None,
             arm_descriptor_sha256=_reported_sha256(ready.get("arm_descriptor_sha256")),
@@ -831,6 +851,8 @@ class SidecarIdentity:
             wrist_bodies=(tuple(dict(row) for row in wrist) if wrist_well_formed and isinstance(wrist, list)
                           else UNSET),
             wrist_bodies_sha256=_reported_sha256(ready.get("wrist_bodies_sha256")),
+            planning=dict(planning) if isinstance(planning, dict) else UNSET,
+            planning_sha256=_reported_sha256(ready.get("planning_sha256")),
         )
 
     @classmethod
@@ -872,6 +894,14 @@ class SidecarIdentity:
             lines.append("  wrist cameras: " + ("; ".join(
                 f"{row.get('link')} ({row.get('model')}), {row.get('spheres')} spheres" for row in self.wrist_bodies
             ) or "none"))
+        if chosen(self.planning):
+            row = self.planning
+            lines.append(
+                f"  planning model: {row.get('model')} refused ({row.get('refused')}), the planner plans on the "
+                "evidence model" if row.get("refused") else
+                f"  planning model: {row.get('model')}, {row.get('spheres')} spheres and {row.get('self_pairs')} self "
+                f"pairs, judged on the evidence model's {row.get('evidence_spheres')} and "
+                f"{row.get('evidence_self_pairs')} (planning sha256 {said(self.planning_sha256)})")
         return "\n".join(lines).encode("ascii", "backslashreplace").decode("ascii")
 
     def to_dict(self) -> dict[str, Any]:
@@ -884,6 +914,8 @@ class SidecarIdentity:
             "bodies": [dict(row) for row in self.bodies] if chosen(self.bodies) else None,
             "wrist_bodies": [dict(row) for row in self.wrist_bodies] if chosen(self.wrist_bodies) else None,
             "wrist_bodies_sha256": self.wrist_bodies_sha256 if chosen(self.wrist_bodies_sha256) else None,
+            "planning": dict(self.planning) if chosen(self.planning) else None,
+            "planning_sha256": self.planning_sha256 if chosen(self.planning_sha256) else None,
         }
 
 
@@ -906,6 +938,9 @@ class CuroboPlanClient:
         wrist_body_links: Sequence[Mapping[str, Any]] = (),
         measure_only: bool = False,
         default_q: "Sequence[float] | None" = None,
+        world_in_place: bool = False,
+        joint_finetune_passes: int = CUROBO_FINETUNE_PASSES,
+        planning_spheres: str = "",
     ) -> None:
         # Every path and knob resolves through safety.planning.environment, the single
         # anchor, so a caller overrides what it needs and the rest tracks the variables
@@ -985,6 +1020,12 @@ class CuroboPlanClient:
         #: The UR model the descriptor names, for placing a refused configuration; ``None`` where it names none the
         #: bundled DH table knows, and a refusal at a configuration is then said without its boxes.
         self._model = _ur_model_of(self._robot)
+        #: How the sidecar registers a world and runs a joint plan, and the robot it plans with: today's ways unless
+        #: the cell's config asks otherwise (``safety.planning_world.register_in_place``, ``safety.planned_motion.
+        #: finetune_passes`` and ``planning_spheres``, through the reservation). Decided before the sidecar starts.
+        self._world_in_place = bool(world_in_place)
+        self._finetune_passes = int(joint_finetune_passes)
+        self._planning_spheres = str(planning_spheres or "")
 
     @property
     def measure_only(self) -> bool:
@@ -1074,6 +1115,29 @@ class CuroboPlanClient:
             "cuRobo sidecar ready after %.1f s: %d joint(s), dt=%.4f s",
             time.monotonic() - started, len(self.joint_names), self.dt,
         )
+        self._say_the_planning_model(asked=ENV_PLANNING_MODEL in env)
+
+    def _say_the_planning_model(self, *, asked: bool) -> None:
+        """Log which robot the started sidecar plans with: the one it was sent, or the evidence model, and why.
+
+        Never a refusal. A planning model decides what cuRobo proposes, and what is judged is the evidence model in any
+        case, so a sidecar that plans on the evidence model is today's sidecar, said once where it was asked otherwise.
+        """
+        row = self.identity.planning
+        if not asked:
+            return
+        if self.identity.plans_on:
+            assert chosen(row)  # noqa: S101 (plans_on reads it)
+            logger.info("the planner plans on the %s model: %s sphere(s) and %s self pair(s), where every check judges "
+                        "on the evidence model's %s and %s (composed_sha256 unchanged, planning_sha256 %s)",
+                        row.get("model"), row.get("spheres"), row.get("self_pairs"), row.get("evidence_spheres"),
+                        row.get("evidence_self_pairs"), self.identity.planning_sha256)
+        elif chosen(row) and row.get("refused"):
+            logger.warning("the sidecar did not build the %s planning model and plans on the evidence model: %s",
+                           row.get("model"), row.get("refused"))
+        else:
+            logger.warning("the sidecar says nothing of the planning model it was sent: it is older than this client and "
+                           "plans on the evidence model; restart it from this tree")
 
     def _pump(self) -> None:
         """The reader thread. It pushes each JSON line from the server stdout onto the queue.
@@ -1697,6 +1761,10 @@ class CuroboPlanClient:
         three environment variables a shell can set, and a disagreeing one is named and
         ignored: a sidecar sized by a stale exported variable refuses the cell's own world
         with nothing in the config to explain why.
+
+        It carries how the sidecar is started as well, from the same config, because the
+        driver hands every client the reservation and nothing else before it starts: boxes
+        registered in place, the time-optimal passes of a joint plan, and the planning model.
         """
         if self._proc is not None:
             logger.warning(
@@ -1721,6 +1789,9 @@ class CuroboPlanClient:
         self._voxel_grid = reservation.voxel_grid
         if reservation.sphere_slots > 0:
             self._attach_spheres = int(reservation.sphere_slots)
+        self._world_in_place = bool(getattr(reservation, "world_in_place", False))
+        self._finetune_passes = int(getattr(reservation, "finetune_passes", CUROBO_FINETUNE_PASSES))
+        self._planning_spheres = str(getattr(reservation, "planning_spheres", "") or "")
         self._reserved = True
 
     def _sidecar_env(self) -> dict[str, str]:
@@ -1773,6 +1844,22 @@ class CuroboPlanClient:
             env[ENV_WRIST_BODY_LINKS] = json.dumps(self._wrist_body_links, sort_keys=True)
         else:
             env.pop(ENV_WRIST_BODY_LINKS, None)
+        # How the world is registered, how many time-optimal passes a joint plan runs, and the robot cuRobo plans with:
+        # written from this client whatever the shell holds, and removed where it asked for today's way, so a leftover
+        # in the shell never changes how a cell plans behind its config's back.
+        if self._world_in_place:
+            env[ENV_WORLD_IN_PLACE] = "1"
+        else:
+            env.pop(ENV_WORLD_IN_PLACE, None)
+        if self._finetune_passes != CUROBO_FINETUNE_PASSES:
+            env[ENV_JOINT_FINETUNE] = str(self._finetune_passes)
+        else:
+            env.pop(ENV_JOINT_FINETUNE, None)
+        planning = self._planning_model()
+        if planning is not None:
+            env[ENV_PLANNING_MODEL] = planning.to_json()
+        else:
+            env.pop(ENV_PLANNING_MODEL, None)
         if self._reserved:
             env[ENV_CUROBO_MESH_CACHE] = str(self._mesh_cache)
             if self._voxel_grid:
@@ -1785,6 +1872,28 @@ class CuroboPlanClient:
         if self._voxel_grid:
             env[ENV_CUROBO_VOXEL_GRID] = self._voxel_grid
         return env
+
+    def _planning_model(self) -> "Any | None":
+        """The planning model this client sends the sidecar (``planning_model.PlanningPayload``), or ``None``.
+
+        ``None`` where none was asked, which is today's sidecar, and where the one asked for cannot be composed for
+        this arm and these bodies: that is said at WARNING, and the sidecar then plans on the evidence model.
+        """
+        if not self._planning_spheres:
+            return None
+        from .planning_model import planning_payload  # noqa: PLC0415 (only a client asked for a model reads the maps)
+
+        try:
+            built = planning_payload(self._planning_spheres, arm=self._model, body_links=self._body_links,
+                                     wrist_body_links=self._wrist_body_links, attach_spheres=self._attach_spheres)
+        except Exception as exc:  # noqa: BLE001 (a planning model is never a reason for a planner not to start)
+            built = f"composing it raised {type(exc).__name__}: {exc}"
+        if isinstance(built, str):
+            logger.warning("planning model %r not sent, the planner plans on the evidence model: %s",
+                           self._planning_spheres, built)
+            return None
+        logger.info("%s", built.render())
+        return built
 
     def reserve_attach_spheres(self, slots: int) -> None:
         """Reserve payload collision spheres. Only takes effect before :meth:`start`."""

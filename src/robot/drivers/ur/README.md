@@ -108,6 +108,19 @@ A goal on another branch is tried only once every goal on the arm's own failed, 
 warning naming both branches. A goal that nothing reaches costs up to three failed joint plans, 7 to
 9 s each measured on the UR10 descriptor.
 
+**A change of branch is the last resort** (the owner's R2, 2026-10-08). Inside `keeping_its_branch(15.0)`
+every Cartesian move keeps the branch the arm holds: the other branches are not screened, lined or
+planned to, a plan swinging a joint more than the block's bound past its span is a detour, and
+`nearest_configuration` answers among the same goals. A move nothing on the branch runs, while another
+branch or a plan within `max_detour_deg` was left untried, is refused before anything is sent,
+`JOINT_LIMIT_REJECTED` ("kept to the branch the arm holds"), and counted on the record the block yields;
+the pick loop leaves such a grasp for after the grasps that keep the branch. A route a grasp judged ahead
+on the arm's branch is judged again by the move to its standoff on that branch alone: a change of branch
+nobody judged ahead is refused the same way. `has_a_goal_on_its_branch(pose, here)` answers on the closed
+form alone, with no screen, planner or controller call, whether a pose has a configuration on the
+branch `here` holds inside the window; the pick loop takes a grasp's half-turned twin where only the twin
+has one (the window gap of 2026-10-07).
+
 **The planner's cushion band.** cuRobo's padded spheres refuse some poses the exact meshes keep well clear,
 such as the owner's LOOK[0], forearm|wrist_2 1.2 mm deep for the spheres and 19.0 mm apart for the meshes.
 On the arm's own pairs the exact guard decides (the owner, 2026-09-30,
@@ -177,6 +190,84 @@ line, a cuRobo plan to which goal, a branch change, a turned joint), how many wa
 and how many ran, and each joint's total and largest turn in degrees on what ran, and warns when a
 joint turns more than half a turn past what its end needs.
 
+## Judged while the arm waits
+
+Three switches move a judgement to where the arm waits anyway (the owner, 2026-10-09, "solange wir keine Qualität
+verlieren"). Each is off as shipped, and none changes what is judged: the exact guard judges every sample of every
+leg before it is sent.
+
+- **The steady gate at the send** (`safety.dwell.gate_at: send`). The motion is judged first, while the arm settles
+  from the one before (the controller's `is_steady()` took 0.54 to 0.61 s after every motion on the cell), and the
+  gate waits right before the `moveJ` or `moveL`, in `_drive_curobo`, `_drive_judged_joints`, `_drive_joint_path` and
+  `_drive_checked_line`. Where the arm then stands more than 0.5 mm from where the motion was judged from, it is
+  judged again from there (three times at most, then `TIMEOUT`); a timeout sends nothing, and a halt is refused by
+  the send itself. A route's first waypoint, where the gate found the arm, is not sent as a `moveJ` of its own.
+  `gates_its_own_sends` tells the verbs (`GraspExecutionPolicy`, `Robot.move`, `Robot.pick`) to ask with no gate
+  of their own.
+- **The world held at the standoff** (`safety.planning_world.hold.standoff`, the map's O2). `grasp_refusal_ahead`
+  judges the route in the world the line down was judged in, and `holding_the_approach(standoff, reason)` holds that
+  world for the move to the standoff and the line down from it, where the route judged ahead stands ready
+  (`_why_judged_again`): no frame is taken at the standoff, where a bin frame often held no depth at all. The line
+  down is still judged sample by sample, in that world.
+- **The next leg judged ahead** (`robot.motion.judge_next_leg`, with `hold.carry` and `hold.drop`). A task declares
+  the joint move after a verb (`expecting_next(joints)`: the carry to the bin's look, the return). While the jaws'
+  stroke is waited out, a verb asks `judge_the_next_leg(after, junction=)`: the straight joint line from where the
+  line to `after` will end (the controller's solution of `after`, seeded where the arm stands) to the declared joints,
+  judged in the world held there; `judge_line_ahead(pose)` judges the line out of a place where the arm stands, as it
+  will run. `move_to_joints` and `move_to_home` run the move as judged, and `_drive_checked_line` the line, only where
+  nothing it was judged on changed: the same planner and refresh, the arm within 0.5 mm of where it was judged from,
+  the carried part, the hand, the camera's boxes and the halt count as they were, at most 10 s since (0.5 s for a
+  route judged ahead), one move. Anything else, and it is judged as it runs. With `in_settles_and_motion` on an arm
+  whose halt brakes the line in flight (`robot.ur.brake_on_halt`), a move no stroke left time for is judged on a
+  second thread while the line before it runs; that thread asks the controller nothing (its start and what it reads
+  are read before the line is sent), and the line's send waits for it once it ended. Without the brake it falls back
+  to the strokes alone and says so once in the log; on a cell that models a carried part while none is carried,
+  whose judgement reads the hand off the controller, the move is judged as it runs.
+
+`scripts/ursim/probe_next_leg.py` measured the judgement during motion against URSim CB3 (2026-10-09, both gate modes,
+every check passed): the joint move judged on the second thread before the line's `moveL` returned, the arm 0.0005 mm
+from where it was judged from at the junction, the move run as judged; a halt 0.4 s into the line braked it with
+`stopL` while the thread still judged, and the move was then judged again (the arm 574 to 581 mm from there). The
+judgement gives up and takes the GIL around every exact-guard query, and at Python's 5 ms switch interval the thread
+that watches the line waited for it up to 451 ms on Windows and 521 ms in WSL. While a judgement runs during a line the
+interval is 0.5 ms (`_WATCHED_SWITCH_S`, put back after it): the stop then went out 0.2 to 15 ms after the halt
+against 0.1 to 7 ms with no thread, and the arm ran at most 3.2 mm further past its brake, five halts each.
+
+## Solved here, not asked
+
+Three switches answer here what the controller was asked, round trip by round trip (the owner, 2026-10-09). Each is off
+as shipped, and each falls back to asking the controller wherever its answer here cannot be vouched for.
+
+- **The line's samples** (`safety.ik_quality.line_ik: local`). A line judged before a `moveL` had every sample solved by
+  `getInverseKinematics`, 32.5 ms each: 28 for the line down, 35 for the lift. The controller's own DH rows, the table
+  plus the arm's factory calibration, are read once per connection from the kinematics info of its primary interface
+  (`URConnection.controller_kinematics`: port 30011, the read-only one, then 30001; nothing is ever sent there), and
+  its active TCP from `getTCPOffset` (`active_tcp_offset`). `_judge_line_samples` solves every sample and knot on them
+  (`_ur_ik.ur_chain_ik_nearest`: the closed form nearest the seed, then Newton on the rows) and asks the controller at
+  the first and the last sample solved; both have to agree within 1e-6 rad. Anything else, and the line is walked again
+  from its start with the controller solving it, as before: an answer that parts, a sample with another configuration
+  about as near the seed, near a singularity or out of the table's reach, rows or a TCP that cannot be read.
+- **The singularity check before a move** (`safety.ik_quality.singularity_fk: dh`). `MotionController` differentiated
+  the controller's FK, 12 round trips before every `moveL`; with `dh` it differentiates the same rows here, times the
+  active TCP, with the same steps and thresholds. Where the rows cannot be read the nominal table stands in only if two
+  FK probes, once per connection, show it is the controller's chain; else the controller is asked, as always.
+- **The steady gate** (`safety.dwell.steady_signal: joint_speeds`). `wait_until_steady` reads the actual joint speeds
+  every 8 ms, locally, and the arm is steady once every joint is under 0.01 rad/s on three reads in a row, each a sample
+  the controller sent since the one before (its timestamp moved on, so a receive stream that stopped never reads as an
+  arm that stands); `isSteady`, a script command of 33 ms polled every 20 ms, decides only where the speeds cannot be
+  read. The timeout and its refusal are the same. The zero-move skip at a look asks the same gate (a wait of 0: three
+  reads, 16 ms). On URSim CB3 the gate answered 16 to 24 ms after a `moveJ` returned, where `isSteady` took 562 to
+  564 ms, and during an asynchronous `moveJ` it said steady first 60 ms after the move's own end, `isSteady` 0.57 s
+  after it: `isSteady` holds about half a second after the arm stopped, and the joint speeds do not.
+
+Measured on URSim CB3 3.15.8 (a UR10 with the owner's TCP set on it), against the controller and against the same
+controller given a `calibration.conf` whose rows put the flange 3.2 mm from the table's: the controller's FK and the rows
+read here agree to 6e-15 m; through `_judge_linear_move`, 168 lines (judged ahead and from where the arm stood) handed
+the gate the controller's configurations to 1.7e-10 rad with 368 round trips instead of 2070, and with rows 1 mm off
+all 46 lines fell back and judged as before; the singularity check gave the controller's verdict on all 177 line ends
+of each controller, the cell's 21 of 2026-10-07/08 and 156 around where the verdict flips toward the wrist, elbow and
+shoulder singularities, down to 1e-7 rad of it, with no round trip (0.4 s to 1.4 ms a check).
+
 ## Halt now
 
 `URRobotArm` carries the halt latch (`SupportsHalt`): `halt(reason)` latches the arm and sends nothing from the
@@ -230,6 +321,10 @@ own profile only after those measurements and a supervised halt at the cell.
 - **`rtde_frequency: 0.0`** means the controller chooses its rate. The driver translates it for
   `ur_rtde`, which would read 0.0 as zero hertz.
 - **Force and torque are read-only.** No force control, no compliant or blended motion, no tool changer.
+- **An inverse kinematics the controller cannot solve ends its control program.** On URSim CB3 3.15.8 with ur_rtde
+  1.6.5, `getInverseKinematics` of a pose out of reach answered `[]` and the control script stopped ("RTDE control
+  script is not running!"): every later call failed until a reconnect. A line with a sample out of reach meets it,
+  `line_ik: local` or not, because such a line is solved by the controller.
 
 ## The I/O bench
 
@@ -261,6 +356,7 @@ or `gripper.vacuum.io_port`; the `io_bench.py` functions under it confirm nothin
 | `setPayload` with its rollback; a protective stop, with the commanded motions refused | measured against real controller software (URSim) |
 | Connect, moves on the straight joint line and cuRobo plans, home, and a tool output switching a Hand-E, on a UR10 (CB3) | run on a physical cell |
 | The halt latch and the brake: latency, stop point, 200 watched moves and 50 watched lines with no early return, a braked path, no DO0 change after a halt, the latch across a reconnect | measured against real controller software (URSim CB3, `probe_halt.py`) |
+| The controller's rows read from its primary interface, lines solved on them and checked at two samples, the singularity check on them, nominal and calibrated | measured against real controller software (URSim CB3, see "Solved here, not asked") |
 | Torque, payload dynamics, a physical emergency stop, a halt on a physical arm | never touched hardware |
 
 The container and the probes behind those measurements are in
@@ -289,9 +385,9 @@ first pick is [real_cell_first_pick.md](../../../../docs/runbooks/real_cell_firs
 | File | Holds |
 |---|---|
 | `arm.py` | `URRobotArm`, `UR_CAPABILITIES`, `ur_capabilities(model)`: `move()`, the connect refusals, the planner switch, the halt, `quick_robot_status()` |
-| `connection.py` | `URConnection`, the RTDE boundary: the halt latch, and with `brake_on_halt` the watched move a halt brakes (`MoveEnd`) |
+| `connection.py` | `URConnection`, the RTDE boundary: the halt latch, and with `brake_on_halt` the watched move a halt brakes (`MoveEnd`); the controller's own rows (`controller_kinematics`) and TCP; the steady gate on `isSteady` or the joint speeds |
 | `freedrive.py` | `URFreedriveSession`: hand guiding on teach mode behind an RTDE watchdog, held again on every way out |
-| `motion.py` | `MotionController`: clamped, workspace-checked point-to-point moves for `move_to` |
+| `motion.py` | `MotionController`: clamped, workspace-checked point-to-point moves for `move_to`, and the singularity check before each, on the controller's FK or the arm's own rows (`singularity_fk`) |
 | `curobo_motion.py` | `CuroboUrPlanner`: a collision-free plan to a pose or a joint goal, from where the arm stands or an explicit `start_ur`, run as one `moveJ` per waypoint of the list the arm judged; `judge_joint_path`, every refused sample of a path with its terms and pairs |
 | `planner_frame.py` | `PlannerFrameClient`: the planner's base is the controller's turned half a turn about Z |
 | `tool_frame.py` | the derived tool frame and its comparison with the declared one |

@@ -163,6 +163,7 @@ if TYPE_CHECKING:
         PickProgressListener,
         ShouldCancel,
     )
+    from src.robot.perception.kept_scene import KeptScene
 
 
 __all__ = [
@@ -335,26 +336,27 @@ def _recovery_action(name: str) -> SceneRecoveryAction:
 
 @dataclass
 class AutonomousGraspService:
-    """High-level operator-facing grasp service.
+    """The pick service a cell builds: one autonomous pick per :meth:`pick`, a typed report each time.
 
-    The service wraps an existing :class:`RuntimePickService` and adds:
+    ``Cell.build()`` returns one (``cell.service``); a program rarely builds it itself. It wraps a
+    ``RuntimePickService`` and adds a typed :class:`GraspMode` with locked behaviour profiles, the
+    :class:`AutonomousGraspReport`, and an honest refusal of a per-call mode whose sampler the wrapped runtime was not
+    built with: no silent degradation.
 
-    * a typed :class:`GraspMode` selector with locked behavior profiles,
-    * a high-level :class:`AutonomousGraspReport` outcome,
-    * honest refusal of a per-call mode whose sampler the wrapped runtime
-      was not built with: no silent degradation.
-
-    The wrapped :class:`RuntimePickService` is the same underlying
-    facade used elsewhere. A caller that already has a configured
-    :class:`RuntimePickService` wraps it directly via the default
-    constructor. A caller that only has components or a
-    :class:`RobotConfig` uses :meth:`from_components` or
-    :meth:`from_robot_config`, which mirror the wrapped facade's
-    constructors one-for-one so no new construction contract is
-    invented here.
-
-    The default :class:`GraspMode` is :attr:`GraspMode.AUTO` to match
-    the resolution of ``None``.
+    Attributes:
+        runtime (RuntimePickService): The wrapped pick facade.
+        default_mode (GraspMode): The profile every pick applies unless a call overrides it (default: AUTO).
+        effective_config (EffectiveGraspingConfig | None): The config snapshot the orchestrator's overlays read;
+            ``None`` for a service built from components (default: None).
+        decision_policy (DecisionPolicy | None): The decision layer's policy (default: None).
+        decision_engine (DecisionEngine | None): The decision layer's engine (default: None).
+        watchdog_history (list[WatchdogSample]): The robot watchdog's samples, newest last (default: []).
+        watchdog_event_listener (RobotWatchdogEventListener | None): Told of watchdog events (default: None).
+        shadow_router (ShadowRouter | None): The shadow router, where the cell runs one (default: None).
+        configured_looks (tuple[LookPose, ...]): The looks the cell profile configures, which ``PickRun`` and the
+            console hand every pick that names none (default: ()).
+        push_cell (PushCell | PushRefusal | None): The cell's push inputs where its recovery may push, or why it may not
+            (default: None).
     """
 
     runtime: RuntimePickService
@@ -425,6 +427,9 @@ class AutonomousGraspService:
         self._record_log_path: Optional[Path] = None
         #: Stamped into each record's ``extra`` (robot vendor/model) so two robots' data are not mixed.
         self._record_provenance: Optional[dict[str, Any]] = None
+        #: Whether each record goes to the process's background writer rather than being written before :meth:`pick`
+        #: returns (:meth:`write_records_in_the_background`). Off by default, and off is byte-identical.
+        self._records_in_the_background: bool = False
         #: Set by :meth:`set_cancel_check`. Consulted by this service's own retry loop, which sits
         #: above the orchestrator's attempt loop and would otherwise start a fresh pick right after a
         #: cancelled one. Default ``None`` leaves the loop unchanged.
@@ -479,33 +484,35 @@ class AutonomousGraspService:
     ) -> "AutonomousGraspService":
         """Build the service directly from raw components.
 
-        ``motion`` is how the pick moves (:class:`GraspMotion`): the service builds the one policy it
-        drives from it, on ``arm`` and ``gripper``, with the base frame guard where ``frame_resolver``
-        is wired, the dwell gate ``arm.config`` asks for, and the jaws opened before every approach.
-        ``policy`` is the older spelling and is still accepted: a policy whose arm or hand is not
-        ``arm`` or ``gripper`` is refused (``ValueError``), because it would move a robot this service
-        never checked, and passing both is a ``TypeError``.
+        Args:
+            arm (RobotArm): The arm driver the picks move.
+            calculator (GraspCalculator): The grasp generator, as ``build_calculator`` builds it.
+            perception (PerceptionSource): Where frames come from and what grounds them: the cell's camera source.
+            mode (GraspMode | str | None): The locked behaviour profile every pick applies unless a call overrides it:
+                ``"easy"``, ``"auto"`` or ``"dense_clutter"``; ``None`` is ``auto`` (default: None).
+            gripper (Gripper | None): The hand on it; ``None`` for an arm-only cell (default: None).
+            max_attempts (int): How many attempts one pick may make (default: 5).
+            standoff_mm (float): How far back along the approach a pick's planned move stops before its line in,
+                millimetres (default: 80.0).
+            retreat_mm (float): How far a pick lifts after it closed, millimetres (default: 100.0).
+            policy (GraspExecutionPolicy | None): The older spelling of ``motion``: a policy whose arm or hand is not
+                this service's is refused; passing both is a ``TypeError`` (default: None).
+            motion (Maybe[GraspMotion]): How the pick moves (:class:`GraspMotion`); the service builds the one policy it
+                drives from it, with every guard (default: UNSET).
+            frame_resolver (FrameResolver | None): Places each frame in BASE; given one, the calculator gets a per-frame
+                camera-to-base transform and a camera-frame grasp is refused before motion (default: None).
+            decision_policy (DecisionPolicy | None): The decision layer's policy, where the cell runs one (default:
+                None).
+            decision_engine (DecisionEngine | None): The decision layer's engine (default: None).
+            record_log_path (str | Path | None): Append one attempt record per pick to this JSONL file; ``None`` logs
+                nothing (default: None).
 
-        ``mode`` selects the locked behavior profile that the service
-        applies on every :meth:`pick` call unless that call passes
-        an explicit per-call ``mode`` override. The
-        :class:`GraspSamplingMode` consumed by the wrapped
-        :class:`RuntimePickService` is always derived from the
-        profile; a free-form sampling mode is not accepted here, which
-        is what prevents profile/sampling drift.
+        Returns:
+            AutonomousGraspService: The service, ``effective_config`` ``None``.
 
-        When ``frame_resolver`` is provided the service:
-
-        * forwards the resolver to the underlying
-          :class:`BinPickingOrchestrator` so the calculator receives
-          a per-frame ``T_cam_to_base`` and produces base-frame
-          candidates, and
-        * configures the default :class:`GraspExecutionPolicy` with
-          ``require_base_frame_grasp=True`` so a camera-frame grasp
-          is refused before motion, closing the frame contract
-          end-to-end. Passing an explicit ``policy`` keeps full control
-          with the caller; the service does not mutate a caller-supplied
-          policy.
+        Raises:
+            ValueError: A ``policy`` whose arm or hand is not ``arm`` or ``gripper``.
+            TypeError: Both ``policy`` and ``motion``.
         """
 
         if policy is not None and chosen(motion):
@@ -630,53 +637,48 @@ class AutonomousGraspService:
         #: from config, which a real vendor refuses below unless `frame_resolver` is passed.
         camera: "Maybe[CameraConfig]" = UNSET,
     ) -> "AutonomousGraspService":
-        """Build the service from a validated ``RobotConfig`` tree.
+        """Build the service from a validated robot section, every decision from config.
 
-        ``arm`` / ``gripper`` accept a live device handle that config cannot describe: the Isaac
-        gripper needs the simulator session its arm already lives on. Without that argument such a
-        cell has to build through ``from_components``, which leaves ``effective_config=None`` and
-        therefore silences the config-driven orchestrator overlays unless a runner re-enables them
-        by hand, so the simulator measures a hand-wired stack while a real cell runs the
-        config-driven one. Supplying the handle here lets every other decision come from config.
+        Args:
+            robot_cfg (RobotConfig): The cell's robot section, ``tree.robot``. Without ``mode`` it must declare a
+                ``grasping`` block: autonomous grasping is opted into, never a schema default.
+            calculator (GraspCalculator): The grasp generator, as ``build_calculator`` builds it.
+            perception (PerceptionSource): Where frames come from and what grounds them: the cell's camera source.
+            mode (GraspMode | str | None): The locked behaviour profile every pick applies unless a call overrides it:
+                ``"easy"``, ``"auto"`` or ``"dense_clutter"``; ``None`` is ``auto`` (default: None).
+            max_attempts (Maybe[int]): How many attempts one pick may make; unset is ``grasping.max_attempts`` (default:
+                UNSET).
+            standoff_mm (float): How far back along the approach a pick's planned move stops before its line in,
+                millimetres (default: 80.0).
+            retreat_mm (float): How far a pick lifts after it closed, millimetres (default: 100.0).
+            policy (GraspExecutionPolicy | None): The older spelling of ``motion``: a policy whose arm or hand is not
+                this service's is refused; passing both is a ``TypeError`` (default: None).
+            motion (Maybe[GraspMotion]): How the pick moves (:class:`GraspMotion`); the service builds the one policy it
+                drives from it, with every guard (default: UNSET).
+            frame_resolver (FrameResolver | None): Places each frame in BASE; given one, the calculator gets a per-frame
+                camera-to-base transform and a camera-frame grasp is refused before motion (default: None).
+            decision_policy (DecisionPolicy | None): The decision layer's policy, where the cell runs one (default:
+                None).
+            decision_engine (DecisionEngine | None): The decision layer's engine (default: None).
+            arm (RobotArm | None): A live arm handle config cannot describe (the Isaac arm); ``None`` builds the one the
+                section names (default: None).
+            gripper (Gripper | None): A live hand handle, likewise (default: None).
+            multi_camera_perception (MultiCameraPerceptionSource | None): Every camera's source, for a cell with several
+                (default: None).
+            primary_camera_id (str | None): The rig id of the camera grasps are synthesised in (default: None).
+            camera_calculators (dict[str, Any] | None): A grasp calculator per rig id, for several cameras (default:
+                None).
+            camera (Maybe[CameraConfig]): The cell's camera section, read for the push inputs and the looks (default:
+                UNSET).
 
-        Mirrors :meth:`RuntimePickService.from_robot_config` and adds
-        the config-driven wiring contract:
+        Returns:
+            AutonomousGraspService: The service; ``effective_config`` the section's snapshot, so the config-driven
+                overlays and the recovery (``grasping.recovery``) run as the section says.
 
-        * Strict fail-closed. When ``mode`` is not supplied and
-          the operator did not explicitly declare a ``grasping`` block
-          on the ``RobotConfig``, this method raises
-          :class:`ValueError`. Production deployments must opt in to
-          autonomous grasping explicitly; relying on the schema default
-          would let a misconfigured YAML silently boot a degraded
-          mode. Callers that pass ``mode`` explicitly bypass the
-          requirement: a caller that already knows which mode it wants
-          does not need to populate the full block.
-        * Mode and ``max_attempts`` resolution. When the caller
-          does not pass these, the values flow from
-          ``robot_cfg.grasping.default_mode`` and
-          ``robot_cfg.grasping.max_attempts``. Explicit kwargs always
-          win.
-        * Recovery. ``robot_cfg.grasping.recovery`` reaches the pick through
-          the effective-config snapshot. ``container_agitate`` needs the
-          fixture envelope declared beside it, ``recovery.fixture``, which
-          the schema refuses to go without; the push (``nudge_target``)
-          needs none, and a declared one only narrows where it may land
-          (owner, 2026-10-01). Where ``nudge_target`` is allowed,
-          the cell's push inputs are read here too (:attr:`push_cell`: the
-          hand from the gripper registry, the workspace, the clearance the
-          arm's line judge keeps, a declared container). The
-          ``verification`` and ``dense_recovery`` sub-policies, and the
-          ``recovery_fixture`` argument the second one took, left on
-          2026-09-29.
-
-        ``frame_resolver`` is plumbed through identically to
-        :meth:`from_components`. See that method's docstring for the
-        full fail-closed contract.
-
-        ``motion`` (:class:`GraspMotion`) is how the pick moves, built into the one policy on the arm
-        and hand this method resolves, with every guard. ``policy`` is still accepted and is refused (``ValueError``)
-        unless it drives the arm and hand this method resolved, which only a caller that also passed
-        ``arm`` and ``gripper`` can hold.
+        Raises:
+            ValueError: No ``mode`` and no ``grasping`` block declared; a ``policy`` that does not drive the arm and
+                hand this method resolved.
+            TypeError: Both ``policy`` and ``motion``.
         """
 
         if policy is not None and chosen(motion):
@@ -815,6 +817,13 @@ class AutonomousGraspService:
             # string and an absent map, which is what every caller got before they existed.
             runtime.orchestrator.primary_camera_id = primary_camera_id or ""
             runtime.orchestrator.camera_calculators = camera_calculators
+            # Two of the cell's own switches for its looks (the owner, 2026-10-08 night), both off unless its tree turns
+            # them on: a weak view of the part drives the next look, and the regions a task keeps out are painted out of
+            # the image its detector reads. Set only where on, so a cell that turns neither builds the loop it built.
+            if getattr(grasping_cfg, "weak_look_trigger", False) is True:
+                runtime.orchestrator.weak_look = True
+            if getattr(grasping_cfg, "hide_own_places", False) is True:
+                runtime.orchestrator.hide_own_places = True
 
         service = cls(
             runtime=runtime,
@@ -876,150 +885,51 @@ class AutonomousGraspService:
         look: "Maybe[Look]" = UNSET,
         both_faces: bool = False,
         multi_view: bool = True,
+        follow: "KeptScene | None" = None,
+        follow_looks: bool = False,
+        every_look: bool = False,
     ) -> AutonomousGraspReport:
-        """Run one autonomous pick attempt and return a typed report.
+        """Run one autonomous pick: perceive, choose a grasp, judge every motion, grip and lift.
 
-        Parameters
-        ----------
-        look
-            Where the camera looks from before it perceives: one
-            :class:`~src.robot.core.JointPositions` (``JointPositions.deg``
-            takes degrees), ``"home"``, or several in order
-            (:mod:`src.robot.execution.looks`). The arm moves to each
-            through its own judged ``move_to_joints`` (or the gated home)
-            and the pick perceives there.
+        Args:
+            mode (GraspMode | str | None): A per-call profile; ``None`` is :attr:`default_mode`. Only modes whose
+                sampler the service was built with are taken; anything else ends ``MODE_NOT_AVAILABLE``, so the report
+                never misstates which sampler ran (default: None).
+            look (Maybe[Look]): Where the camera looks from before it perceives: one ``JointPositions``, ``"home"``, or
+                several in order. A wrist camera fuses its looks one after another and stops at the first whose grasp is
+                valid and certain; a fixed camera stops at the first that finds something. Unset perceives from where
+                the arm stands (default: UNSET).
+            both_faces (bool): Grip only once both jaw contact faces of the chosen grasp were seen (the switch for
+                safety-critical processes); a part no view showed both of ends ``NO_VALID_GRASP``. For this pick alone
+                (default: False).
+            multi_view (bool): ``False`` is "Multi-View aus": the first look only, and no generated view (default:
+                True).
+            follow (KeptScene | None): The parts a task's last pick kept: the first look finds them again with SAM2 on
+                their boxes and no detector where nothing changed, and is grounded as before where anything did
+                (default: None).
+            follow_looks (bool): The later looks segment the parts the first look saw by their projected boxes, and rank
+                the part they keep first; a wrist camera's, for this pick alone (default: False).
+            every_look (bool): "Alle Posen": a wrist pick visits every look however safe an earlier grasp is, and goes
+                on with the grasp judged over all of them (default: False).
 
-            A camera on the wrist hands its looks to the pick loop
-            (``BinPickingOrchestrator.look_around``), which fuses each look
-            with the ones before it and stops at the first whose grasp is
-            valid and carries no rescan reason: what the looks are for is a
-            safe grasp point, never a whole scan of the part. A grasp still
-            uncertain, or no candidate, goes on to the next look. A look the
-            planner refused before anything was sent is skipped and said; a
-            pick that reaches none of its looks ends ``EXECUTION_FAILED``
-            (``CANCELLED`` on a stopped controller) with nothing perceived,
-            and so does a look motion that may have moved the arm. The
-            report's ``looks`` names the looks perceived from,
-            ``looks_fused`` those fused into the grasp's cloud and
-            ``jaw_faces_seen`` which contact faces of the chosen grasp were
-            seen. A fixed camera handed looks moves to each in turn and
-            stops at the first that finds something, as it always did.
+        Returns:
+            AutonomousGraspReport: What the pick did: ``outcome`` (``SUCCEEDED``, ``NO_TARGET``, ``NO_VALID_GRASP``,
+                ``EXECUTION_FAILED``, ``CANCELLED``, ...), the profile in effect, the layers that ran, ``looks``,
+                ``looks_fused``, ``jaw_faces_seen``, ``grasp_pose``. ``pick_report`` is ``None`` where the service
+                refused to dispatch, and the telemetry says why.
 
-            A wrist pick handed looks has had its rescans: its looks and the
-            one view they may generate. Where the cell arms the recovery loop
-            (``grasping.recovery``), that loop rescans nothing for it, so a
-            rescan never drives them again; only ``next_target`` runs the
-            looks again within this call, for another part of the label. A
-            pick handed no look rescans where it stands, as it always did.
+        Raises:
+            ValueError: A look list that names nothing or an entry that is not a look, or ``both_faces`` with a motion
+                that turns every grasp about base Z before it closes; raised before anything moves. A programmer's error
+                still raises.
 
-            Nothing is said to the hand before or between looks, and a
-            camera that could not vouch on the way is a fault. Unset
-            perceives from where the arm stands: a wrist camera then takes
-            a fresh frame there when its grasp calls for another look, the
-            one retry a pick told not to move has. ``PickRun`` and the
-            console hand every pick ``configured_looks``, else ``"home"`` on
-            a wrist camera, when the program names no look. A list that
-            names nothing, or an entry that is not a look, raises before
-            anything moves.
-        both_faces
-            Ask that both jaw contact faces of the chosen grasp be seen
-            before gripping: the owner's switch for safety-critical
-            processes. A wrist pick then looks on until a look shows both,
-            its one generated view included. One whose views show both
-            nowhere is not gripped: it ends ``NO_VALID_GRASP``, the face not
-            seen named in its failure line and ``both_faces`` set on its
-            report, whether the pick loop ends it (the open loop, which
-            ``PickRun`` and the console run) or the decision layer's pick
-            refuses it here. A fixed camera cannot look around, so its pick
-            grips only a grasp its cameras (fused, where the cell fuses
-            them) showed both faces of, and ends the same way otherwise. The
-            grasp gripped is then the one whose faces were judged: the
-            reranks and the approach check's fall-back to another candidate
-            stand down. The cell's natural orientation
-            (``robot.natural_closing_axis``) and a motion naming a closing axis
-            (``GraspMotion(closing_axis=...)``) choose the way round before the
-            faces are judged, so both work with it. A motion that turns every
-            grasp about base Z before it closes
-            (``GraspMotion(align_closing_to_base_x=True)``) would close
-            the jaws on faces nobody judged, so asking for both together raises
-            ``ValueError`` before anything moves. Off, the default and the fast
-            one, a look is good enough when its grasp is valid and certain. A
-            suction cup has no jaw faces to see. Handed to this pick alone: the
-            next pick starts with it off.
-        multi_view
-            The looks as handed, the default. ``False`` is "Multi-View aus" (the
-            owner's Q11, 2026-09-30): the pick looks from the first of its looks
-            only, and a wrist pick generates no view after it
-            (``BinPickingOrchestrator.generated_view``), so it grips a grasp that
-            look found safe or none; a fixed camera handed looks tries the first
-            one only. Handed to this pick alone, and taken back when it ends,
-            whatever ended it.
-        mode
-            Optional per-call override for the :class:`GraspMode`. When
-            omitted the service uses :attr:`default_mode`. The override
-            only changes the behavior profile used to interpret the
-            attempt; it does not rebuild the wrapped
-            :class:`RuntimePickService`. Switching modes at call time
-            therefore cannot change which low-level
-            :class:`GraspSamplingMode` the orchestrator uses on this
-            attempt, because the wrapped service was bound to a sampling
-            mode at construction. The override is restricted to modes
-            whose profile uses the same sampling mode as the default;
-            anything else is refused with a typed
-            :attr:`AutonomousGraspOutcome.MODE_NOT_AVAILABLE` outcome,
-            so the report never misstates which sampler ran.
-
-        Returns
-        -------
-        AutonomousGraspReport
-            The high-level typed report. Whenever
-            ``pick_report is not None`` the wrapped
-            :class:`RuntimePickService` executed; whenever it
-            is :data:`None` the service refused to dispatch and the
-            telemetry explains why.
-
-            A fault of the cell (a controller link that dropped, an
-            e-stop, a camera that could not vouch, a device that stopped
-            delivering) is not raised: the outcome is
-            ``EXECUTION_FAILED``, :attr:`AutonomousGraspReport.fault`
-            carries it and ``pick_report`` is :data:`None`. A programmer
-            error still raises.
-
-            A service with a gripper asks the controller first, as
-            ``Robot.pick`` does: one that cannot move, or whose state
-            cannot be read, ends the pick ``CANCELLED`` before the hand
-            is asked anything, with nothing perceived or commanded and
-            :attr:`AutonomousGraspReport.controller_stopped` set, so a
-            campaign stops on it.
-
-            A hand that toggles with no sensor is asked next, before
-            anything of the pick moves; one that will not start (it
-            believes its jaws closed and nobody at a terminal said
-            otherwise) is ``EXECUTION_FAILED`` with
-            :attr:`AutonomousGraspReport.gripper_fault` saying why.
-
-            Every pick belongs to a campaign (:meth:`start_campaign`):
-            where the cell's recovery allows it, a wrist pick in
-            ``dense_clutter`` pushes a part every grasp of which collided
-            with a neighbour within 25 mm (``nudge_target``, inside the
-            pick attempt, the jaws read and never switched), within the
-            campaign's budgets, and ``next_target`` skips a failed part of
-            the label for this pick and the next two. A toggle's count
-            nobody can vouch for when the push reads it, or a gripper that
-            measures its width found not connected or unreadable then, ends
-            the pick as a gripper fault, nothing pushed; so does a toggle's
-            count nobody can vouch for before ``next_target`` drives the
-            looks again, before any look is driven again. One nobody can
-            vouch for before a contact leg of the push, or once the arm is
-            up, stops the push where the arm stands.
-            A push that stopped
-            once something may have moved leaves the arm where it is and
-            the report :attr:`AutonomousGraspReport.needs_person`; a
-            campaign stops on it, and so does this service: every later
-            pick is refused ``UNSAFE_RECOVERY_REFUSED``, needing a person,
-            with nothing asked, perceived or commanded, until a person
-            decides (:meth:`start_campaign`, which every ``PickRun`` and
-            console run calls, or :meth:`acknowledge_needs_person`).
+        A fault of the cell is not raised: a dropped controller link, an e-stop, a camera that could not vouch, end the
+        pick ``EXECUTION_FAILED`` with :attr:`AutonomousGraspReport.fault`. A controller that cannot move ends it
+        ``CANCELLED`` before the hand is asked anything. A hand that toggles with no sensor is asked before anything
+        moves. Where the cell's recovery allows it, a ``dense_clutter`` wrist pick may push a part within the campaign's
+        budgets; a push that stopped once something may have moved leaves the arm where it is, the report
+        ``needs_person``, and every later pick is refused until a person decides (:meth:`start_campaign`,
+        :meth:`acknowledge_needs_person`).
         """
 
         # A wrong look list is the program's error, raised before anything moves.
@@ -1093,7 +1003,9 @@ class AutonomousGraspService:
         # raised there, and only those are this pick's.
         pushes_before = _pushes_of(_orch)
         try:
-            report = self._look_and_pick(looks, mode=mode, both_faces=both_faces, multi_view=multi_view)
+            report = self._look_and_pick(looks, mode=mode, both_faces=both_faces, multi_view=multi_view,
+                                         follow=follow, follow_looks=follow_looks,
+                                         every_look=bool(every_look) and bool(multi_view))
         except _CELL_FAULTS as exc:
             if isinstance(exc, _NOT_CELL_FAULTS):
                 raise
@@ -1145,7 +1057,8 @@ class AutonomousGraspService:
 
     def _look_and_pick(
         self, looks: "tuple[LookPose, ...]", *, mode: GraspMode | str | None, both_faces: bool = False,
-        multi_view: bool = True,
+        multi_view: bool = True, follow: "KeptScene | None" = None, follow_looks: bool = False,
+        every_look: bool = False,
     ) -> AutonomousGraspReport:
         """One attempt from its looks: a wrist camera's handed to the pick loop, a fixed camera's tried in turn here.
 
@@ -1161,10 +1074,13 @@ class AutonomousGraspService:
 
         ``both_faces`` means one thing on every camera: a fixed camera's pick loop is handed it as a wrist camera's is
         (``orch.both_faces``, taken back in a ``finally``), and grips only a grasp its cameras showed both contact faces
-        of; it cannot look around for the other, so the pick ends ``NO_VALID_GRASP`` naming it.
+        of; it cannot look around for the other, so the pick ends ``NO_VALID_GRASP`` naming it. ``follow``,
+        ``follow_looks`` and ``every_look`` are a wrist camera's looks' alone: a fixed camera grounds every frame and stops
+        at the first look that finds something, as it always did.
         """
         if self.perceives_from_the_wrist:
-            return self._look_around_and_pick(looks, mode=mode, both_faces=both_faces, multi_view=multi_view)
+            return self._look_around_and_pick(looks, mode=mode, both_faces=both_faces, multi_view=multi_view,
+                                              follow=follow, follow_looks=follow_looks, every_look=every_look)
         if not both_faces:
             return self._look_from_a_fixed_camera(looks, mode=mode)
         orchestrator = self.runtime.orchestrator
@@ -1203,7 +1119,8 @@ class AutonomousGraspService:
 
     def _look_around_and_pick(
         self, looks: "tuple[LookPose, ...]", *, mode: GraspMode | str | None, both_faces: bool,
-        multi_view: bool = True,
+        multi_view: bool = True, follow: "KeptScene | None" = None, follow_looks: bool = False,
+        every_look: bool = False,
     ) -> AutonomousGraspReport:
         """One attempt of a wrist camera: its looks handed to the pick loop, which looks from each, fused, and picks.
 
@@ -1222,6 +1139,11 @@ class AutonomousGraspService:
         generated view again, so it rescans nothing for such a pick (:meth:`_run_with_recovery`), the same rule as the
         pick loop's own, which never comes back to a pick handed looks for a second attempt. A pick handed no look
         rescans where it stands, as it always did.
+
+        The parts a task kept (``follow``) and whether the later looks find the first look's parts by their projected
+        boxes (``follow_looks``) are handed the same way (``orch.follow``, ``orch.follow_looks``) and taken back; the
+        pick loop's first look takes ``follow`` as it follows, so a pick the recovery loop runs again grounds. So is
+        "alle Posen" (``every_look``, ``orch.every_look``): every look visited, the early stop off, for this pick alone.
         """
         if looks and self._should_cancel is not None and self._should_cancel():
             return replace(self._cancelled_report(mode=mode), telemetry={
@@ -1233,6 +1155,15 @@ class AutonomousGraspService:
         orchestrator.both_faces = bool(both_faces)
         # Multi-View aus (Q11): no view is generated after the one look this pick was handed.
         orchestrator.generated_view = bool(multi_view)
+        # A task's following (robot.grasping.follow_parts): handed only where asked, so a pick that follows nothing
+        # sets on the loop what it always set.
+        following = follow is not None or bool(follow_looks)
+        if following:
+            orchestrator.follow = follow
+            orchestrator.follow_looks = bool(follow_looks)
+        # "Alle Posen": handed only where asked, as the following is.
+        if every_look:
+            orchestrator.every_look = True
         try:
             report = self._run_with_recovery(mode=mode, rescans=not looks)
         finally:
@@ -1240,6 +1171,11 @@ class AutonomousGraspService:
             orchestrator.looks = ()
             orchestrator.both_faces = False
             orchestrator.generated_view = True
+            if following:
+                orchestrator.follow = None
+                orchestrator.follow_looks = False
+            if every_look:
+                orchestrator.every_look = False
         return _report_of_looking(report, orchestrator.looked_around, handed=bool(looks), both_faces=both_faces)
 
     def _looks_stopped_report(
@@ -1312,13 +1248,16 @@ class AutonomousGraspService:
         return isinstance(getattr(orchestrator, "frame_resolver", None), EyeInHandFrameResolver)
 
     def put_back(self, report: AutonomousGraspReport) -> "HandlingReport":
-        """Put the part a pick lifted back where it was grasped: a planned move to the standoff, a line in, release, out.
+        """Put the part a pick lifted back where it was grasped: a planned move to the standoff, a line in, release, a
+        line out, through ``Robot.place`` on this service's arm and hand.
 
-        The pose is the one the tool closed at (:attr:`AutonomousGraspReport.grasp_pose`), the standoff the pick's own
-        (the policy's ``standoff_mm``), and the verb :meth:`Robot.place <src.robot.execution.robot.Robot.place>` on
-        this service's arm and hand, so every refusal of a place stands and the release is the hand's own (on a toggle
-        hand, one change). What lets a campaign run many times on one part. A report that did not succeed, or carries no
-        grasp pose, is refused with nothing commanded.
+        Args:
+            report (AutonomousGraspReport): The report of the pick that lifted it; its ``grasp_pose`` is where the part
+                goes.
+
+        Returns:
+            HandlingReport: What the place did; every refusal of a place stands. A report that did not succeed, or
+                carries no grasp pose, is refused with nothing commanded.
         """
         from src.robot.execution.handling import HandlingOutcome, HandlingReport, HandlingVerb  # noqa: PLC0415
         from src.robot.execution.robot import Robot  # noqa: PLC0415
@@ -1337,18 +1276,34 @@ class AutonomousGraspService:
     def enable_record_logging(
         self, log_path: "str | Path | None", *, provenance: "Mapping[str, Any] | None" = None
     ) -> None:
-        """Opt into appending one ``GraspAttemptRecord`` JSONL line per :meth:`pick` to ``log_path``:
-        the production data source the soak / KPI / RL layers read. Pass ``None`` to disable. Off by
-        default, so an un-configured service logs nothing and is byte-identical.
+        """Append one attempt record per :meth:`pick` to a JSONL file, the data the soak, KPI and RL layers read. Off by
+        default.
 
-        ``provenance`` is stamped into every record's ``extra`` bag (e.g. ``robot_vendor`` / ``robot_model``)
-        so a corpus from two robots is not silently mixed, which matters the moment a UR3e cell and the
-        UR5e cell both log. ``extra`` is additive: :func:`audit_record` checks only required-key
-        presence and :func:`audit_extra_record` type-checks only the keys it already knows, so new
-        keys leave the frozen contract intact."""
+        Args:
+            log_path (str | Path | None): The file; ``None`` turns it off.
+            provenance (Mapping[str, Any] | None): Stamped into every record's ``extra`` (``robot_vendor``,
+                ``robot_model``, ...), so a corpus from two robots is not silently mixed (default: None).
+        """
 
         self._record_log_path = Path(log_path) if log_path is not None else None
         self._record_provenance = dict(provenance) if provenance else None
+
+    def write_records_in_the_background(self, on: bool = True) -> None:
+        """Hand each pick's record to the process's background writer instead of writing it before :meth:`pick` returns
+        (a cell's record was a 5 MB line, and the arm waited 1.5 to 2.3 s for it). Records are written in pick order,
+        and whatever waits is written before the process ends.
+
+        Args:
+            on (bool): ``True`` writes in the background, ``False`` before :meth:`pick` returns, as before (default:
+                True).
+        """
+        self._records_in_the_background = bool(on)
+
+    @property
+    def writes_in_the_background(self) -> bool:
+        """Whether records, and a task's kept views, are written by the process's background writer
+        (:meth:`write_records_in_the_background`)."""
+        return self._records_in_the_background
 
     @property
     def last_debug_image_png(self) -> "bytes | None":
@@ -1377,11 +1332,12 @@ class AutonomousGraspService:
         return bool(getattr(calculator, "render_debug_images", False))
 
     def enable_debug_image_rendering(self, enabled: bool = True) -> None:
-        """Opt into rendering the grasp-point overlay on every pick (read via
-        :attr:`last_debug_image_png`). Flips the wrapped calculator's ``render_debug_images`` switch so
-        the live pick path forwards the perception-frame rgb into the calculator. Off by default,
-        which is byte-identical and costs no render time; best-effort (no-op if the runtime exposes
-        no calculator)."""
+        """Render the grasp-point overlay on every pick, read through :attr:`last_debug_image_png`. Off by default,
+        costing no render time.
+
+        Args:
+            enabled (bool): Whether to render it (default: True).
+        """
 
         orch = getattr(self.runtime, "orchestrator", None)
         calculator = getattr(orch, "calculator", None)
@@ -1406,9 +1362,12 @@ class AutonomousGraspService:
         )
 
     def controller_refusal(self) -> str:
-        """Why the controller cannot start a pick, or ``""``: the question every pick asks first, for a caller that
-        drives the arm between picks (a task: before its place, after a motion that failed). In ``Robot.pick``'s words;
-        a service with no gripper is not asked. Reads the controller and commands nothing."""
+        """Why the controller cannot start a pick, read with nothing commanded: the question every pick asks first, for
+        a caller that drives the arm between picks.
+
+        Returns:
+            str: ``Robot.pick``'s words for why not, or ``""`` where it can; a service with no hand is not asked.
+        """
         return self._controller_refusal()
 
     def _controller_refusal(self) -> str:
@@ -1525,40 +1484,27 @@ class AutonomousGraspService:
         )
 
     def attach_progress_listener(self, listener: "PickProgressListener | None") -> None:
-        """Opt into live progress events from inside the pick loop. ``None`` detaches.
+        """Receive live progress events from inside the pick loop.
 
-        Without a listener ``pick()`` is a blocking call that reports nothing until it returns, which
-        is enough for a CLI printing a result line and not enough for an operator console watching an
-        arm move.
+        The listener is called inline, on the thread driving the robot; its exceptions are swallowed so it cannot abort
+        a motion, but a slow listener blocks the loop, so a console hands each event to a queue and returns.
 
-        The listener is called inline, on the thread driving the robot. Exceptions are swallowed
-        (a subscriber must not be able to abort a motion in flight) but a slow listener still blocks
-        the loop, so a console hands the event to a queue and returns.
-
-        Post-construction like :meth:`enable_record_logging` and :meth:`enable_debug_image_rendering`,
-        rather than a config key: it describes who is watching, not how the cell behaves, and it would
-        mean nothing in a YAML file a CLI user reads. Off by default and byte-identical.
+        Args:
+            listener (PickProgressListener | None): Called with each event; ``None`` detaches.
         """
         orch = getattr(self.runtime, "orchestrator", None)
         if orch is not None:
             orch.on_progress = listener
 
     def set_cancel_check(self, should_cancel: "ShouldCancel | None") -> None:
-        """Let a caller stop a run between attempts. ``None`` clears it.
+        """Let a caller stop a run between attempts.
 
-        "Stop" here means do not begin the next attempt. It never interrupts a motion already in
-        flight: this code has no safe way to do that, and the thing that does is the physical stop
-        button. A pick with five attempts therefore ends after the one that is running, instead of
-        after all five.
+        "Stop" means do not begin the next attempt; it never interrupts a motion in flight (the physical stop button
+        does). A cancelled run ends with the typed ``CANCELLED`` outcome, so an operator's decision never lowers the
+        measured pick rate.
 
-        Unset, the attempt loop runs unchanged. When it fires the run is no longer byte-identical
-        and it terminates with the typed ``CANCELLED`` outcome rather than a failure, so an
-        operator's decision never lowers the measured pick rate.
-
-        Set in two places on purpose. The orchestrator's attempt loop is one of them; this service is
-        the other, because :meth:`pick` is itself callable in a loop by a caller running a campaign,
-        and a cancel that arrives between two picks must not be silently forgotten just because the
-        orchestrator never got asked.
+        Args:
+            should_cancel (ShouldCancel | None): Asked between attempts; ``True`` stops. ``None`` clears it.
         """
         orch = getattr(self.runtime, "orchestrator", None)
         if orch is not None:
@@ -1566,29 +1512,33 @@ class AutonomousGraspService:
         self._should_cancel = should_cancel
 
     def set_target_label(self, label: "str | None") -> None:
-        """Set a hard label-target for a prompt-driven dense pick: only the segmentation carrying
-        this label is an executable target; the others stay as neighbour clutter (so the dense sampler +
-        the re-rank/approach validators still see them). Pass ``None`` to clear. Unset by default and
-        byte-identical. Best-effort (no-op if the runtime exposes no orchestrator)."""
+        """Make only the segmentation carrying this label an executable target; the others stay as neighbour clutter,
+        still seen by the sampler and the validators.
+
+        Args:
+            label (str | None): The label; ``None`` clears it.
+        """
 
         orch = getattr(self.runtime, "orchestrator", None)
         if orch is not None:
             orch.target_label = label
 
     def set_prompt(self, prompt: "str | PickPrompt") -> PickPrompt:
-        """Say what the next picks look for, and return what they looked for until now.
+        """Say what the next picks look for, and get back what they looked for until now.
 
-        A text is what an operator typed or spoke (:meth:`PickPrompt.from_text`). Every camera whose
-        source grounds a phrase grounds it from the next frame on and maps its detector's words onto it,
-        and the label filter (:meth:`set_target_label`) makes only an object it grounded a target. Pass
-        the returned :class:`PickPrompt` back to put all three back. Nothing reopens and nothing
-        reloads: the detector is handed the phrase on every frame, which is what lets a campaign change
-        it.
+        Every camera that grounds a phrase grounds it from the next frame on and maps its detector's words onto it, and
+        the label filter makes only an object it grounded a target. Nothing reopens and nothing reloads.
 
-        A source that grounds no phrase (the rehearsal scene, a ground-truth sim source) keeps its
-        frames and the label filter still applies, so such a cell reports the prompted label as not
-        found rather than picking whatever it shows. Refused before anything changes: a text that names
-        nothing, and a prompt without a phrase for a cell that grounds one.
+        Args:
+            prompt (str | PickPrompt): What an operator typed or spoke (``PickPrompt.from_text``), or a ``PickPrompt``
+                this method returned, to put everything back. A sort's prompt names its kinds (``target_labels``).
+
+        Returns:
+            PickPrompt: What the picks looked for until now; pass it back to restore it.
+
+        Raises:
+            ValueError: A text that names nothing, or a prompt without a phrase for a cell that grounds one; raised
+                before anything changes.
         """
         wanted = PickPrompt.from_text(prompt) if isinstance(prompt, str) else prompt
         orchestrator = self.runtime.orchestrator
@@ -1603,29 +1553,38 @@ class AutonomousGraspService:
             phrase=str(getattr(first, "prompt", "") or ""),
             target_label=orchestrator.target_label,
             object_labels=tuple(getattr(first, "object_labels", ()) or ()),
+            target_labels=tuple(getattr(orchestrator, "target_labels", ()) or ()),
         )
         for source in sources:
             source.set_prompt(wanted.phrase, object_labels=wanted.object_labels)
         orchestrator.target_label = wanted.target_label
+        orchestrator.target_labels = tuple(wanted.target_labels)
         return previous
 
     def grounds_a_phrase(self) -> bool:
-        """Whether a camera of this cell grounds a phrase (a detector reads one), so a prompt says what its picks look
-        for; ``False`` for a cell whose perception grounds none, such as the rehearsal scene, which picks what it
-        shows. A task refuses an empty object on a cell that grounds a phrase unless the operator said "anything"."""
+        """Whether a camera of this cell grounds a phrase, so a prompt says what its picks look for.
+
+        Returns:
+            bool: ``True`` where a detector reads the prompt; ``False`` for a cell that picks what it shows (the
+                rehearsal scene).
+        """
         return bool(_grounding_sources(getattr(self.runtime, "orchestrator", None)))
 
     def set_closing_axis(self, axis: Any) -> "ClosingAxis | None":
-        """Have the next picks grip only grasps that close along ``axis``, and return the axis they closed along until
-        now; ``None`` lets them close along any, as the cell's motion named.
+        """Have the next picks grip only grasps that close along an axis, and get back the axis they closed along until
+        now.
 
-        The opt-in filter a task's Advanced drawer sets for that task alone (``GraspMotion(closing_axis=...)`` is the
-        program's way): ``axis`` is a name ``Pose.tool_down`` takes (``"-y"``), an orientation, or a ``ClosingAxis``,
-        read by ``closing_axis_of`` and set on the execution policy, which the pick loop reads before anything reads a
-        candidate (it chooses, it never twists). Refused before anything changes: a value that names no axis
-        (``ValueError``, ``TypeError``), and any axis beside a motion that turns every grasp about base Z before it
-        closes (``align_closing_to_base_x``), which would close the jaws off the axis named. Pass the returned value
-        back to put it back.
+        Args:
+            axis (Any): A name ``Pose.tool_down`` takes (``"-y"``), an orientation, or a ``ClosingAxis``; ``None`` lets
+                them close along any, as the cell's motion named.
+
+        Returns:
+            ClosingAxis | None: The axis until now; pass it back to restore it.
+
+        Raises:
+            ValueError: A value that names no axis, or any axis beside a motion that turns every grasp about base Z
+                before it closes; raised before anything changes.
+            TypeError: A value of another type.
         """
         policy = getattr(self.runtime.orchestrator, "policy", None)
         wanted = self._closing_axis_wanted(axis)
@@ -1634,8 +1593,14 @@ class AutonomousGraspService:
         return previous
 
     def closing_axis_refusal(self, axis: Any) -> str:
-        """Why :meth:`set_closing_axis` would refuse ``axis``, in its words, read with nothing changed; ``""`` where it
-        takes it. What a task asks before it says or sets anything, so its refusal comes before its first event."""
+        """Why :meth:`set_closing_axis` would refuse an axis, with nothing changed.
+
+        Args:
+            axis (Any): What :meth:`set_closing_axis` would be handed.
+
+        Returns:
+            str: The refusal in its words, or ``""`` where it takes it.
+        """
         try:
             self._closing_axis_wanted(axis)
         except (TypeError, ValueError) as exc:
@@ -1656,13 +1621,14 @@ class AutonomousGraspService:
         return wanted
 
     def detector_failures(self) -> int:
-        """How many times the detectors of this cell's grounding cameras failed and answered nothing, so far: each
-        backend counted once, whichever cameras share it.
+        """How many times this cell's detectors failed and answered nothing, so far: each backend counted once,
+        whichever cameras share it.
 
-        A backend swallows a detector's exception and perceives nothing (``TwoStageBackend``), so a pick that met one
-        reads as "nothing there"; a caller that reads this before and after a pick tells the two apart (a task's
-        ``detector_failed``). Read off each backend's ``failures`` count, where it keeps one; a backend that keeps none
-        counts nothing.
+        A backend swallows a detector's exception and perceives nothing, so a pick that met one reads as "nothing
+        there"; reading this before and after a pick tells the two apart.
+
+        Returns:
+            int: The count; a backend that keeps none counts nothing.
         """
         total = 0
         counted: list[Any] = []
@@ -1677,14 +1643,18 @@ class AutonomousGraspService:
         return total
 
     def push_distance(self, push_mm: "Maybe[float]" = UNSET) -> float:
-        """How far a push of a campaign asking ``push_mm`` moves its part, in mm: ``ValueError`` with the sentence
-        where the request is refused.
+        """How far a push of a campaign moves its part.
 
-        Unset, the config's ``recovery.fixture.push_distance_mm`` (30 mm unless the cell says otherwise). A request is
-        taken as asked up to the cell's ceiling, ``recovery.fixture.max_nudge_mm`` (50 mm unless the cell says less),
-        and refused above it or above the owner's hard cap of 50 mm, never shortened; one under 10 mm is refused too,
-        since it cannot open room for a finger (``push_planner.resolve_push_distance``). A cell that declares no fixture
-        takes the defaults: 30 mm unset, and the hard cap of 50 mm as its ceiling.
+        Args:
+            push_mm (Maybe[float]): The distance asked, millimetres; unset is the config's
+                ``recovery.fixture.push_distance_mm`` (30 mm unless the cell says otherwise) (default: UNSET).
+
+        Returns:
+            float: The distance, millimetres; a request is taken as asked, never shortened.
+
+        Raises:
+            ValueError: A request above the cell's ``recovery.fixture.max_nudge_mm``, above the owner's hard cap of 50
+                mm, or under 10 mm (it cannot open room for a finger); the message is the sentence.
         """
         from src.robot.grasping.recovery.push_planner import (  # noqa: PLC0415
             DEFAULT_PUSH_DISTANCE_MM,
@@ -1708,8 +1678,12 @@ class AutonomousGraspService:
         return float(resolved)
 
     def push_ceiling(self) -> float:
-        """The longest push the cell allows, in mm: ``recovery.fixture.max_nudge_mm``, or the owner's hard cap of 50 mm
-        where no fixture is declared."""
+        """The longest push the cell allows.
+
+        Returns:
+            float: ``recovery.fixture.max_nudge_mm`` in millimetres, or the owner's hard cap of 50 mm where no fixture
+                is declared.
+        """
         from src.robot.grasping.recovery.push_planner import PUSH_DISTANCE_CAP_MM  # noqa: PLC0415
 
         recovery = getattr(self.effective_config, "recovery_orchestrator", None)
@@ -1721,14 +1695,28 @@ class AutonomousGraspService:
                        recovery_actions: "Maybe[tuple[str, ...] | None]" = UNSET,
                        blocker_is_the_pick: "Maybe[bool]" = UNSET) -> "PushCampaign":
         """Start a campaign of picks: fresh push budgets (1 per part, 2 per pick, 5 per campaign), no part skipped, and
-        the push distance ``push_mm`` settles to (:meth:`push_distance`, whose ``ValueError`` it raises before
-        anything changes). Where nobody asked for a distance, a push that opens too little room may go as far as the
-        cell allows (:meth:`push_ceiling`); one asked for is taken as asked. ``critical_parts`` is the run's word on the
-        owner's switch (``recovery.critical_parts``); unset or ``None``, the cell's stands. ``blocker_is_the_pick`` says a
-        blocker a pick takes away is the part it picks, which its caller sets down where its parts go (a task that takes
-        every part into one place, the owner, 2026-10-06); unset, it is set aside. ``PickRun`` and a console run
-        each start one; a pick no caller started one for starts it. Starting one is a person's decision too: after a
-        recovery that stopped where the arm stands (:attr:`stopped_where_the_arm_stands`), picks may start again."""
+        the push distance settled.
+
+        ``PickRun`` and a console run each start one. Starting one is a person's decision too: after a recovery that
+        stopped where the arm stands, picks may start again.
+
+        Args:
+            push_mm (Maybe[float]): The push distance, as :meth:`push_distance` takes it; unset lets a push that opens
+                too little room go as far as the cell allows (default: UNSET).
+            critical_parts (Maybe[bool | None]): The run's word on ``recovery.critical_parts``; unset or ``None`` keeps
+                the cell's (default: UNSET).
+            recovery_actions (Maybe[tuple[str, ...] | None]): The recovery actions this campaign allows (``rescan``,
+                ``nudge_target``, ...), in place of the cell's ``recovery.allowed_actions`` for it alone; ``()`` allows
+                none; unset or ``None`` keeps the cell's list (default: UNSET).
+            blocker_is_the_pick (Maybe[bool]): A blocker a pick takes away is the part it picks, set down where the
+                parts go; unset sets it aside (default: UNSET).
+
+        Returns:
+            PushCampaign: The campaign the picks now belong to.
+
+        Raises:
+            ValueError: ``push_mm`` refused, raised before anything changes.
+        """
         from src.robot.grasping.recovery.push_gate import PushCampaign  # noqa: PLC0415
 
         critical = critical_parts if chosen(critical_parts) and critical_parts is not None else None
@@ -1848,13 +1836,17 @@ class AutonomousGraspService:
         if path is None:
             return
         try:
-            from .record_logging import log_record
+            from .record_logging import background_writer, log_record
 
             attempt_id = str(report.telemetry.get("attempt_id", "")) or "pick"
-            log_record(
-                report, attempt_id=attempt_id, log_path=path,
-                extra=self._extra_with_route(),
-            )
+            extra = self._extra_with_route()
+            if self._records_in_the_background:
+                # Read now, written after the pick has gone on (the report is frozen), stamped when the pick ended.
+                ended = time.time()
+                background_writer().submit(f"the record of {attempt_id}", lambda: log_record(
+                    report, attempt_id=attempt_id, log_path=path, timestamp=ended, extra=extra))
+                return
+            log_record(report, attempt_id=attempt_id, log_path=path, extra=extra)
         except Exception:  # noqa: BLE001 (a logging failure must never break the pick)
             pass
 
@@ -2845,11 +2837,23 @@ def _report_of_looking(
     started from where the arm stood, is ``move_back_refused``. A generated view or a move back that ended the pick on
     its motion is said as a look not reached is. The fail-closed ending of ``both_faces`` reaches the report as its
     outcome, ``NO_VALID_GRASP``, and :meth:`AutonomousGraspReport.failure_summary` names the face from
-    ``jaw_faces_seen``.
+    ``jaw_faces_seen``. How many targets each look perceived from held is ``targets_by_look``, in the looks' order (the
+    pick loop's count: past the label gate, no surface, none kept out). A pick handed the parts its task kept says
+    whether its first look ``followed`` them with no detector and ``follow_why``, what it came to or why the detector
+    grounded them; ``looks_followed`` names every look whose parts were found with no detector. A pick that followed
+    nothing says neither. A pick that drove every look ("alle Posen") says ``every_look``, and the looks the cell's
+    trigger judged weak are ``looks_weak``, each ``"look: why"``; a pick that did neither says neither.
     """
     if looked is None:
         return replace(report, both_faces=True) if both_faces else report
     telemetry = dict(report.telemetry)
+    if getattr(looked, "every_look", False) is True:
+        telemetry["every_look"] = True
+    weak = tuple(getattr(looked, "weak", ()) or ())
+    if weak:
+        # The looks the owner's trigger judged weak (robot.grasping.weak_look_trigger): what a bench reads to tell the
+        # looks it drove on from the looks a grasp's doubt drove on.
+        telemetry["looks_weak"] = [f"{look}: {why}" for look, why in weak]
     if handed and looked.cancelled:
         telemetry.update({"cancelled_before_start": not looked.visited, "stage": "look"})
     if looked.stopped is not None:
@@ -2863,6 +2867,19 @@ def _report_of_looking(
     if looked.move_back_refused:
         # The approach started from where the arm stood, not from the look its grasp was ranked on.
         telemetry["move_back_refused"] = looked.move_back_refused
+    if looked.targets_by_look:
+        # How many targets each look perceived from held, in its order: a task reads the first look's to tell the part
+        # it takes is the last one there, and checks once from that look before it ends (the owner, 2026-10-08).
+        telemetry["targets_by_look"] = [int(count) for count in looked.targets_by_look]
+    follow_why = getattr(looked, "follow_why", "")
+    if follow_why:
+        # Whether the first look found the parts the task kept with no detector, or why the detector grounded them
+        # (robot.grasping.follow_parts): what a bench reads to tell following from grounding.
+        telemetry["followed"] = bool(getattr(looked, "followed", False))
+        telemetry["follow_why"] = str(follow_why)
+    followed_looks = tuple(getattr(looked, "looks_followed", ()) or ())
+    if followed_looks:
+        telemetry["looks_followed"] = list(followed_looks)
     return replace(
         report,
         telemetry=telemetry,

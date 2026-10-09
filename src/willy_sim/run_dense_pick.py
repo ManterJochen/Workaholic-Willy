@@ -978,6 +978,8 @@ def build_service(
     calculator = build_calculator(
         cell.robot,
         data_dir=data_dir,
+        # A simulated cell measures the generator; only a real one asks for its proof (2026-10-09).
+        purpose="evaluate",
         camera_matrix=np.asarray(overhead_cam.get_intrinsics_matrix(), dtype=np.float64),
         max_grip_width_mm=cell.robot.gripper.max_width_mm,
         min_grip_width_mm=cell.robot.gripper.min_width_mm,

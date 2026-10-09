@@ -397,6 +397,25 @@ class LiveView(WindowThread):
         gui: Any = None,
         say: Callable[[str], None] | None = None,
     ) -> None:
+        """One window per camera, live at a few frames a second, all drawn by one thread. Display only: it reads each
+        camera through ``Camera.peek()``, so what the robot measures is unchanged.
+
+            with LiveView(cell.cameras) as view:
+                ...
+
+        Args:
+            cameras (Iterable[Any]): The camera owners to watch, each with ``rig_id`` and ``peek()`` (default: ()).
+            show (bool): Open windows at all; ``False`` keeps the view silent (default: True).
+            title (str): The windows' title (default: "willy camera").
+            live_hz (float): Live frames per second per window (default: 4.0).
+            pin_s (float): How long a pinned image or located result stays, seconds (default: 4.0).
+            max_width (int): The widest a window draws, pixels (default: 640).
+            goes_on (str): What the console says goes on when no window can show (default: "everything else runs as it
+                would without them").
+            on_close (str): What the console says happens when a window is closed (default: "the program goes on").
+            gui (Any): The window toolkit; ``None`` is OpenCV's (default: None).
+            say (Callable[[str], None] | None): Where its one console line goes; ``None`` prints it (default: None).
+        """
         super().__init__(gui=gui, say=say)
         self.show = bool(show)
         self.title = _ascii(title)
@@ -455,21 +474,27 @@ class LiveView(WindowThread):
         super().start()
 
     def watch(self, *cameras: Any) -> None:
-        """Give each camera a window of its own, by its ``rig_id``: a rig watched already keeps its window, and a new
-        owner of it takes the old one's place. Returns at once; the view's thread opens the windows."""
+        """Give each camera a window of its own, by its rig id; a rig watched already keeps its window, and a new owner
+        of it takes the old one's place. Returns at once; the view's thread opens the windows.
+
+        Args:
+            *cameras (Any): The camera owners to add.
+        """
         with self._lock:
             for camera in cameras:
                 rig_id = _ascii(str(getattr(camera, "rig_id", "") or f"camera {len(self._sources) + 1}"))
                 self._sources[rig_id] = camera
 
     def show_located(self, located: Any, image: Any = None, *, prompt: str = "") -> None:
-        """Pin what a locator located (a ``Located``) on its camera's window for ``pin_s`` seconds: every object's
-        mask tinted, its label, score and centre, and a line saying what was located. On a fixed camera the masks go
-        over each live frame; on one that moves with the arm, over ``image``, the BGR or grey colour image the locate
-        was made on, copied here (shrunk to ``max_width``), held for the pin with a line saying when it was located,
-        and with no ``image`` over a blank that says so (the module docstring says why never a frame of the view's).
-        A locate that found nothing pins nothing: the window says ``nothing located for '<prompt>' at <shutter>`` and
-        stays live. A camera the view has no window for shows nothing: its masks belong on no other camera's image."""
+        """Pin what a locator located on its camera's window for ``pin_s`` seconds: every object's mask tinted, its
+        label, score and centre, and a line saying what was located.
+
+        Args:
+            located (Any): A ``Located``.
+            image (Any): For a camera on the wrist: the BGR or grey image the locate was made on, copied here; ``None``
+                draws over a blank that says so. A fixed camera draws over its live frame (default: None).
+            prompt (str): What was asked for, for the line (default: "").
+        """
         if not self._taking():
             return
         try:
@@ -488,10 +513,14 @@ class LiveView(WindowThread):
             logger.debug("live view: located objects not handed over: %s", exc)
 
     def show_image(self, rig_id: str | None, image: Any, caption: str = "", *, ok: bool | None = None) -> None:
-        """Pin ``image`` on the window of ``rig_id`` for ``pin_s`` seconds, in the live image's place, with
-        ``caption`` as its line: PNG or JPEG bytes (a pick's ``last_debug_image_png``), or a BGR or grey array, copied
-        here. ``ok`` puts the caption on green (``True``) or red (``False``). ``None``, or a rig the view has no window
-        for, is its first window."""
+        """Pin an image on a camera's window for ``pin_s`` seconds, in the live image's place.
+
+        Args:
+            rig_id (str | None): Which window; ``None``, or a rig with no window, is the first.
+            image (Any): PNG or JPEG bytes (a pick's ``last_debug_image_png``), or a BGR or grey array, copied here.
+            caption (str): The line under it (default: "").
+            ok (bool | None): ``True`` puts the caption on green, ``False`` on red, ``None`` on neither (default: None).
+        """
         if not self._taking():
             return
         try:
@@ -503,7 +532,12 @@ class LiveView(WindowThread):
             logger.debug("live view: image not handed over: %s", exc)
 
     def note(self, text: str, rig_id: str | None = None) -> None:
-        """Say ``text`` as the last thing that happened, on the window of ``rig_id``, or on every window."""
+        """Say a line as the last thing that happened, on one window or on every window.
+
+        Args:
+            text (str): The line.
+            rig_id (str | None): Which window; ``None`` every window (default: None).
+        """
         if not self._taking():
             return
         self._hand(_Handed("note", None if rig_id is None else _ascii(str(rig_id)), None, _ascii(str(text)),

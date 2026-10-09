@@ -874,6 +874,7 @@ def take_down(console: Console, why: str) -> None:
     always be able to do is put the cell down.
     """
     from api import jaws as browser_jaws  # noqa: PLC0415
+    from api.task_run import forget_bins  # noqa: PLC0415
 
     lent: Any = None
     try:
@@ -890,7 +891,12 @@ def take_down(console: Console, why: str) -> None:
                     if abandoned is not None and abandoned.kind in MOVING_KINDS:
                         lent = _latch_what_moves(console, abandoned)
     finally:
-        console.session.disconnect()
+        try:
+            console.session.disconnect()
+        finally:
+            # A bin a task kept stood in the cell that is coming down: the next task looks for it again. A cell with a
+            # controller lock forgets it anyway (``remembered_bin``); a dummy or sim cell claims none.
+            forget_bins(console, f"the cell was taken down ({why})")
         # Only once the cell is down: a disconnect that raised keeps the latch, and a person says the cell is clear.
         if lent is not None:
             _give_back_the_teardown_latch(console, *lent)

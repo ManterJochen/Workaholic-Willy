@@ -264,7 +264,9 @@ class TheNextGraspOfTheSameLookTests(unittest.TestCase):
         (attempt,) = report.attempts
         self.assertEqual([True], [row["reached_part"] for row in attempt.tries])
         self.assertEqual((), attempt.reasons, "a try that stood at the part is never typed as a refusal before sending")
-        self.assertEqual(_keys(LOOK_PLUS_X), cell.joint_moves(), "the arm was sent back to the look")
+        # No other grasp, and still the arm never stays at the standoff the try ended at, short of the part (S1,
+        # 2026-10-08): it goes back to the look, as it would before a next grasp.
+        self.assertEqual(_keys(LOOK_PLUS_X, LOOK_PLUS_X), cell.joint_moves(), "the arm was not sent back to the look")
 
     def test_no_next_grasp_after_a_carried_lift_was_refused(self) -> None:
         cell = _Cell({0: CARRIED})

@@ -20,6 +20,17 @@ Three things matter most:
 The real model's answers from the dev box are replayed too (`TheRealModelsAnswersTests`): the reader's own checks
 must not cost a good answer a second question.
 
+The owner's speed round (2026-10-08) adds three things, each pinned against the same measured answers: the known
+sentences' table answers a closed grammar of everyday sentences as the model did, word for word, and gives every
+other sentence to the model (`TheKnownSentencesTests`); a question the loaded copy answered before is answered from
+memory and checked again (`RememberedAnswersTests`); and a reading says whether Enter may start it without the card
+(`StartableTests`).
+
+Its second wave shortens the answer and widens the reading: the model writes only the keys a sentence fills, compact
+(`SparseAnswersTests`; a full answer in the earlier format still reads, which the measured answers above pin), and a
+sentence may single out one part (`which`) and say where the parts lie (`from`). `TheOwnersDayTests` reads the
+sentences of 2026-10-08 that way, from canned answers in the new format.
+
 Every test tears down with `shared_vlm().forget()`: the reader shares one process-wide VLM holder with detection,
 and a holder that kept a grounder would leak it into the perception tests that assert a build loads nothing.
 """
@@ -42,13 +53,22 @@ from src.models.vlm import (
     understand,
 )
 from src.models.vlm.command import (
+    ANSWER_KEYS,
     COMMAND_EXAMPLES,
     EXAMPLE_POSES,
+    KNOWN_SENTENCE_MODEL,
     MAX_PHRASE_CHARS,
     MAX_SENTENCE_CHARS,
+    MAX_WHICH_CHARS,
+    REMEMBERED_ANSWERS,
     CommandAnswer,
+    _example,
+    _json,
     extract_command_object,
+    forget_remembered_answers,
+    read_command,
 )
+from src.models.vlm.known import known_answer, read_known
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -57,13 +77,20 @@ POSES = {"Ablage links": "ablage_links", "Wartepose": "wartepose"}
 
 
 def _answer(**fields: Any) -> str:
-    """One model answer with every key, as the instruction asks; ``fields`` overrides the defaults."""
+    """One model answer with every key, as the instruction asked until 2026-10-08 and as the measured answers were
+    given; ``fields`` overrides the defaults."""
     base: dict[str, Any] = {
         "intent": "task", "object": "", "object_said": None, "place": None, "place_said": None,
         "place_pose": None, "scope": "once", "count": None, "return_to": None,
     }
     base.update(fields)
     return json.dumps(base, ensure_ascii=False)
+
+
+def _sparse(**fields: Any) -> str:
+    """One model answer as the instruction asks now: compact, ``intent`` and only the keys given (``source`` is
+    ``from``)."""
+    return _json(_example(**fields))
 
 
 class _Canned:
@@ -278,10 +305,11 @@ class OneCorrectiveRetryTests(_ForgetsTheSharedHolder):
     def test_an_answer_without_json_is_asked_again(self) -> None:
         self._retried("Sure! You want the green cube in the blue bin.", problem_says="no JSON object")
 
-    def test_a_missing_key_is_asked_again(self) -> None:
+    def test_a_missing_intent_is_asked_again(self) -> None:
+        """Every other key may be left out, as "not said" (2026-10-08); the intent never."""
         incomplete = json.loads(self.GOOD)
-        del incomplete["count"]
-        self._retried(json.dumps(incomplete), problem_says="'count' is missing")
+        del incomplete["intent"]
+        self._retried(json.dumps(incomplete), problem_says="'intent' is missing")
 
     def test_an_extra_key_is_asked_again(self) -> None:
         extra = json.loads(self.GOOD)
@@ -792,6 +820,597 @@ class TheRealModelsAnswersTests(_ForgetsTheSharedHolder):
                         reading.place_pose, reading.scope, reading.return_to, reading.count, reading.notes)
                 self.assertEqual(card, want)
 
+    def test_each_answer_written_as_the_instruction_asks_now_reads_the_same_card(self) -> None:
+        """The same keys the model set, compact and with nothing else: what the 8B is asked for since 2026-10-08."""
+        for sentence, fields, want in _REAL_ANSWERS:
+            with self.subTest(sentence=sentence):
+                ask = _Canned(_sparse(**fields))
+                reading = understand(sentence, ask=ask, poses=POSES)
+                self.assertEqual((True, 1), (reading.understood, len(ask.calls)), reading.reason)
+                self.assertEqual(want, (reading.intent,) if len(want) == 1 else _card_of(reading))
+                self.assertEqual((None, None), (reading.which, reading.source))
+
+
+def _card_of(reading: CommandReading) -> tuple[Any, ...]:
+    """A task's card as the measured rows write it: object, place, place pose, scope, return, count, notes."""
+    return (reading.object.phrase if reading.object else None, reading.place.phrase if reading.place else None,
+            reading.place_pose, reading.scope, reading.return_to, reading.count, reading.notes)
+
+
+#: The measured sentences the known sentences' table answers itself; the model reads every other one.
+_KNOWN_OF_THE_MEASURED: frozenset[str] = frozenset({
+    "Leg den grünen Würfel in die blaue Kiste",
+    "Nimm alle Schrauben und leg sie auf Ablage links",
+    "Put the green cube in the blue bin",
+    "Take all screws and put them on Ablage links",
+    "Leg den Würfel in die Box",
+    "Leg den Becher auf Ablage links",
+    "Leg den Würfel in den blauen Kasten",
+})
+
+
+class TheKnownSentencesTests(_ForgetsTheSharedHolder):
+    """The owner, 2026-10-08 ("speed first"): the everyday sentences are answered without the model, as the model
+    answered them, and the reader makes the card of that answer with its own checks; any other sentence goes to the
+    model."""
+
+    def test_each_measured_sentence_it_takes_reads_as_the_model_read_it(self) -> None:
+        taken = set()
+        for sentence, _fields, want in _REAL_ANSWERS:
+            with self.subTest(sentence=sentence):
+                reading = read_known(sentence, poses=POSES)
+                if reading is None:
+                    continue
+                taken.add(sentence)
+                self.assertEqual(want, (reading.intent,) if len(want) == 1 else _card_of(reading))
+        self.assertEqual(_KNOWN_OF_THE_MEASURED, taken)
+
+    def test_the_sentences_the_model_was_asked_twice_for_go_to_the_model(self) -> None:
+        for sentence, *_ in _REAL_RETRIES:
+            with self.subTest(sentence=sentence):
+                self.assertIsNone(read_known(sentence, poses=POSES))
+
+    def test_the_instruction_examples_it_takes_are_answered_word_for_word(self) -> None:
+        offered = dict(EXAMPLE_POSES)
+        taken = []
+        for sentence, answer in COMMAND_EXAMPLES:
+            reading = read_known(sentence, poses=offered)
+            if reading is None:
+                continue
+            taken.append(sentence)
+            with self.subTest(sentence=sentence):
+                self.assertEqual(answer, json.loads(reading.raw))
+        self.assertEqual(["nimm den grünen Würfel und leg ihn in die blaue Kiste", "alle Schrauben in die Kiste",
+                          "leg den Becher auf Ablage links"], taken)
+
+    def test_the_cells_sentence_of_the_morning_reads_without_a_model(self) -> None:
+        reading = read_known("Alle grauen Würfel in die Gelbe Kiste.", poses=POSES)
+        assert reading is not None
+        self.assertEqual(("gray cube", "yellow bin", None, "until_empty", None, None, ()), _card_of(reading))
+        self.assertEqual((PhraseReading("gray cube", "grauen Würfel", True),
+                          PhraseReading("yellow bin", "in die Gelbe Kiste", True)), (reading.object, reading.place))
+        self.assertEqual((KNOWN_SENTENCE_MODEL, 0, False, False),
+                         (reading.model_id, reading.attempts, reading.loaded_now, reading.remembered))
+        self.assertTrue(reading.known)
+
+    def test_hallo_willy_is_a_greeting_without_a_model(self) -> None:
+        for sentence in ("Hallo Willy", "Hallo Willy!", "Willy, wink mal!"):
+            with self.subTest(sentence=sentence):
+                reading = read_known(sentence, poses=POSES)
+                assert reading is not None
+                self.assertEqual((True, "none", True, KNOWN_SENTENCE_MODEL),
+                                 (reading.understood, reading.intent, reading.greeting, reading.model_id))
+
+    def test_a_command_with_a_greeting_in_front_goes_to_the_model(self) -> None:
+        self.assertIsNone(read_known("Hallo Willy, nimm den roten Würfel", poses=POSES))
+
+    def test_near_misses_go_to_the_model(self) -> None:
+        for sentence in (
+            "Nimm die Würfel und leg sie in die Kiste",  # several without "alle": the model read that as once
+            "Nimm die Schrauben und leg sie in die Kiste",
+            "Nimm zwei Würfel und leg sie in die Kiste",  # a count
+            "Nimm alle drei Würfel und leg sie in die Kiste",
+            "Nimm einen Würfel und leg ihn in die Kiste",  # "einen" may be a count of one
+            "Put a red cube into the blue bin",
+            "Leg den Würfel nicht in die Kiste",  # a negation
+            "Leg den Würfel in die Kiste und fahr danach nach Home",  # where the arm goes after
+            "Leg den Würfel in die Kiste neben Ablage links",  # a place beside a pose
+            "Alle grauen Würfel auf der schwarzen Matte in die gelbe Kiste",  # where the parts lie
+            "Alle Teile in die gelbe Kiste",  # a word for any part
+            "Leg den Würfel auf Home",  # Home is where the arm returns
+            "Nimm den Würfel in der Kiste",  # the cube that lies in the bin
+            "Nimm den Würfel aus der Kiste",
+            "Take the cube in the bin",  # the cube that may lie in the bin
+            "All gray cubes in the yellow bin",
+            "Nimm den Becher auf Ablage links",  # the cup that may stand on the pose
+            "Leg den grauen cube in die Kiste",  # two languages
+            "Put all grey cubes into the yellow bin",  # a spelling the model was not measured on
+            "Leg bitte den Würfel in die Kiste",
+            "Willy, leg den Würfel in die Kiste",
+            "Leg den Würfel auf die Kiste",  # a bin is put into
+            "Leg den Würfel in Kiste",
+            "Leg den Würfel in der Kiste",
+            "Nimm den Würfel",  # no place: the model reads it
+            "Räum die Kiste aus",
+            "Stopp!",
+        ):
+            with self.subTest(sentence=sentence):
+                self.assertIsNone(read_known(sentence, poses=POSES))
+
+    def test_a_pose_named_by_its_name_or_label_in_any_case_is_that_pose(self) -> None:
+        for sentence in ("Leg den Becher auf ablage_links", "LEG DEN BECHER AUF ABLAGE LINKS",
+                         "Leg den Becher auf die Ablage links", "Lege den Becher in die Wartepose"):
+            with self.subTest(sentence=sentence):
+                reading = read_known(sentence, poses=POSES)
+                assert reading is not None
+                self.assertIn(reading.place_pose, ("ablage_links", "wartepose"))
+                self.assertEqual((), reading.notes)
+
+    def test_an_answer_the_readers_checks_refuse_goes_to_the_model(self) -> None:
+        """The table's answers pass the checks by construction; were one to fail, it would never be a card."""
+        from unittest import mock
+
+        german = {"intent": "task", "object": "grüner würfel", "object_said": "den grünen Würfel", "place": None,
+                  "place_said": None, "place_pose": "ablage_links", "scope": "once", "count": None,
+                  "return_to": None}
+        with mock.patch("src.models.vlm.known.known_answer", return_value=german):
+            self.assertIsNone(read_known("Leg den grünen Würfel auf Ablage links", poses=POSES))
+
+    def test_the_answer_is_the_instructions_json(self) -> None:
+        """As the instruction writes an answer since 2026-10-08: only what the sentence says, a scope only for all."""
+        from src.models.vlm.command import _Offered
+
+        offered = _Offered.of(POSES)
+        self.assertEqual(_example(object="cube", object_said="den Würfel", place="box", place_said="in die Box"),
+                         known_answer("Leg den Würfel in die Box", offered))
+        self.assertEqual(_example(object="screw", object_said="Schrauben", place="bin", place_said="in die Kiste",
+                                  scope="until_empty"),
+                         known_answer("Alle Schrauben in die Kiste", offered))
+
+    def test_the_door_asks_the_table_first_and_loads_nothing(self) -> None:
+        """Before the load rule: a GroundingDINO cell whose model is not loaded reads a known sentence, and refuses
+        any other as before."""
+        from src.models.vlm import CommandRefused
+        from tests.test_vlm_holder import _holder, _Loads, _models
+
+        loads = _Loads()
+        holder = _holder(loads)
+        self.addCleanup(holder.forget)
+        reading = read_command("Leg den Würfel in die Box", models=_models(backend="grounded_sam"), poses=POSES,
+                               weights_present=True, holder=holder, known=True)
+        self.assertEqual(("cube", "box", KNOWN_SENTENCE_MODEL), (reading.object.phrase if reading.object else None,
+                                                                 reading.place.phrase if reading.place else None,
+                                                                 reading.model_id))
+        self.assertEqual(0, loads.calls)
+        with self.assertRaises(CommandRefused) as refused:
+            read_command("Leg den Würfel in die Box", models=_models(backend="grounded_sam"), poses=POSES,
+                         weights_present=True, holder=holder)
+        self.assertEqual("vlm_not_loaded", refused.exception.code, "without the switch the table is not asked")
+
+
+class RememberedAnswersTests(_ForgetsTheSharedHolder):
+    """R2 (2026-10-08): a question the loaded copy answered before is answered from memory, keyed by the weights, the
+    instruction and the user message, and checked again; a copy that is not loaded is asked (and loaded) as before."""
+
+    SENTENCE = "Nimm alle Schrauben und leg sie auf Ablage links"
+    ANSWER = ('"intent": "task", "object": "screw", "object_said": "Schrauben", "place": null, "place_said": null, '
+              '"place_pose": "ablage_links", "scope": "until_empty", "count": null, "return_to": null}')
+
+    def setUp(self) -> None:
+        super().setUp()
+        forget_remembered_answers()
+        self.addCleanup(forget_remembered_answers)
+
+    def _door(self, answer: str | None = None) -> tuple[Any, Any]:
+        from tests.test_vlm_holder import _holder, _Loads
+
+        loads = _Loads(answer=answer or self.ANSWER)
+        holder = _holder(loads)
+        self.addCleanup(holder.forget)
+        return loads, holder
+
+    def _read(self, holder: Any, sentence: str | None = None, poses: dict[str, str] | None = None) -> CommandReading:
+        from tests.test_vlm_holder import _models
+
+        return read_command(sentence or self.SENTENCE, models=_models(backend="vlm"), poses=poses or POSES,
+                            weights_present=True, holder=holder)
+
+    def test_the_same_question_asks_the_model_once(self) -> None:
+        loads, holder = self._door()
+        first = self._read(holder)
+        again = self._read(holder)
+        self.assertEqual(1, len(loads.model.calls))
+        self.assertEqual((False, True), (first.remembered, again.remembered))
+        self.assertEqual(_card_of(first), _card_of(again))
+        self.assertEqual((first.attempts, first.raw), (again.attempts, again.raw))
+
+    def test_another_pose_list_is_another_question(self) -> None:
+        loads, holder = self._door()
+        self._read(holder)
+        self._read(holder, poses={**POSES, "Ablage rechts": "ablage_rechts"})
+        self.assertEqual(2, len(loads.model.calls))
+
+    def test_another_instruction_is_another_question(self) -> None:
+        from unittest import mock
+
+        loads, holder = self._door()
+        self._read(holder)
+        with mock.patch("src.models.vlm.command.COMMAND_INSTRUCTION", COMMAND_INSTRUCTION + "\nOne more rule."):
+            self._read(holder)
+        self.assertEqual(2, len(loads.model.calls))
+
+    def test_other_weights_are_asked_again(self) -> None:
+        from src.models.vlm import VlmWeights
+        from src.models.vlm.command import _Remembering
+
+        ask = _Canned(_answer(intent="none"), _answer(intent="none"))
+        ask.grounder = _LoadedCopy()  # type: ignore[attr-defined]
+        for model_id in ("Qwen/Qwen3-VL-4B-Instruct", "Qwen/Qwen3-VL-8B-Instruct"):
+            _Remembering(ask, weights=VlmWeights(model_id=model_id))("system", "user")
+        self.assertEqual(2, len(ask.calls))
+
+    def test_a_replay_keeps_the_notes_of_the_reading(self) -> None:
+        loads, holder = self._door('"intent": "task", "object": "screw", "object_said": "Muttern", "place": null, '
+                                   '"place_said": null, "place_pose": "ablage_links", "scope": "once", "count": 3, '
+                                   '"return_to": null}')
+        first = self._read(holder)
+        again = self._read(holder)
+        self.assertEqual(("object_not_in_sentence", "count_not_supported"), first.notes)
+        self.assertEqual((first.notes, True, False), (again.notes, again.remembered, again.startable))
+
+    def test_a_reading_not_understood_replays_as_not_understood(self) -> None:
+        loads, holder = self._door("no json at all")
+        first = self._read(holder)
+        again = self._read(holder)
+        self.assertEqual((False, False, 2), (first.understood, again.understood, again.attempts))
+        self.assertEqual(2, len(loads.model.calls))
+        self.assertTrue(again.remembered)
+
+    def test_a_copy_that_was_unloaded_is_asked_and_loaded_again(self) -> None:
+        loads, holder = self._door()
+        self._read(holder)
+        holder.asker_for(_vlm_block(), may_load=True).grounder.unload()
+        again = self._read(holder)
+        self.assertEqual((2, 2), (loads.calls, len(loads.model.calls)))
+        self.assertEqual((True, False), (again.loaded_now, again.remembered))
+
+    def test_an_answer_that_raised_is_not_remembered(self) -> None:
+        from src.models.vlm import CommandRefused
+
+        loads, holder = self._door()
+        self._read(holder)  # loads the copy
+        loads.model.fail = RuntimeError("CUDA out of memory")
+        with self.assertRaises(CommandRefused):
+            self._read(holder, "Nimm alle Schrauben")
+        loads.model.fail = None
+        reading = self._read(holder, "Nimm alle Schrauben")
+        self.assertFalse(reading.remembered)
+
+    def test_forgetting_asks_the_model_again(self) -> None:
+        loads, holder = self._door()
+        self._read(holder)
+        forget_remembered_answers()
+        self.assertFalse(self._read(holder).remembered)
+        self.assertEqual(2, len(loads.model.calls))
+
+    def test_at_most_the_newest_answers_are_kept_per_copy(self) -> None:
+        from src.models.vlm import VlmWeights
+        from src.models.vlm.command import _Remembering
+
+        ask = _Canned(*[_answer(intent="none")] * (REMEMBERED_ANSWERS + 2))
+        ask.grounder = _LoadedCopy()  # type: ignore[attr-defined]
+        weights = VlmWeights(model_id="fake/qwen")
+        for index in range(REMEMBERED_ANSWERS + 1):
+            _Remembering(ask, weights=weights)("system", f"user {index}")
+        _Remembering(ask, weights=weights)("system", f"user {REMEMBERED_ANSWERS}")
+        self.assertEqual(REMEMBERED_ANSWERS + 1, len(ask.calls), "the newest answer was asked again")
+        _Remembering(ask, weights=weights)("system", "user 0")
+        self.assertEqual(REMEMBERED_ANSWERS + 2, len(ask.calls), "the oldest answer was kept")
+
+
+class _LoadedCopy:
+    """A copy of the weights that is loaded, as the asker hands it over: memory is kept per copy."""
+
+    loaded = True
+
+
+def _vlm_block() -> Any:
+    from tests.test_vlm_holder import _vlm
+
+    return _vlm()
+
+
+class StartableTests(_ForgetsTheSharedHolder):
+    """R3 (2026-10-08): Enter starts only a clean reading; every other opens the card."""
+
+    def _read(self, sentence: str, *answers: str) -> CommandReading:
+        return understand(sentence, ask=_Canned(*answers), poses=POSES)
+
+    def test_a_clean_reading_may_start(self) -> None:
+        reading = self._read("Leg den grünen Würfel in die blaue Kiste",
+                             _answer(object="green cube", object_said="den grünen Würfel", place="blue bin",
+                                     place_said="in die blaue Kiste"))
+        self.assertTrue(reading.startable)
+        self.assertTrue(reading.to_dict()["startable"])
+
+    def test_a_clean_reading_with_a_pose_may_start(self) -> None:
+        reading = self._read("Leg den Becher auf Ablage links",
+                             _answer(object="cup", object_said="den Becher", place_pose="ablage_links"))
+        self.assertTrue(reading.startable)
+
+    def test_each_note_opens_the_card(self) -> None:
+        for sentence, answers in (
+            ("Leg das Teil in die blaue Kiste", (_answer(object="green cube", object_said="den grünen Würfel",
+                                                         place="blue bin", place_said="in die blaue Kiste"),)),
+            ("Leg den grünen Würfel weg", (_answer(object="green cube", object_said="den grünen Würfel",
+                                                   place="blue bin", place_said="in die blaue Kiste"),)),
+            ("Leg den Becher auf Ablage rechts", (_answer(object="cup", object_said="den Becher",
+                                                          place_pose="ablage_rechts"),)),
+            ("Nimm drei Würfel", (_answer(object="cube", object_said="Würfel", count=3),)),
+            ("Leg den grünen Würfel in die blaue Kiste",
+             ("kein JSON", _answer(object="green cube", object_said="den grünen Würfel", place="blue bin",
+                                   place_said="in die blaue Kiste"))),
+        ):
+            with self.subTest(sentence=sentence):
+                reading = self._read(sentence, *answers)
+                self.assertTrue(reading.understood)
+                self.assertNotEqual((), reading.notes)
+                self.assertFalse(reading.startable)
+
+    def test_an_object_without_its_words_opens_the_card(self) -> None:
+        reading = self._read("Leg den grünen Würfel in die blaue Kiste",
+                             _answer(object="green cube", place="blue bin", place_said="in die blaue Kiste"))
+        self.assertFalse(reading.startable)
+
+    def test_no_part_named_opens_the_card(self) -> None:
+        self.assertFalse(self._read("Räum die Kiste aus", _answer(scope="until_empty")).startable)
+
+    def test_what_is_no_task_never_starts(self) -> None:
+        for sentence, answers in (("Stopp!", (_answer(intent="stop"),)),
+                                  ("Hallo Willy, wie geht's?", (_answer(intent="none"),)),
+                                  ("Hallo", ("x", "y"))):
+            with self.subTest(sentence=sentence):
+                self.assertFalse(self._read(sentence, *answers).startable)
+
+    def test_nothing_but_a_greeting_read_as_a_task_never_starts(self) -> None:
+        reading = self._read("Hallo Willy!", _answer(object="cube", object_said="Willy"))
+        self.assertTrue(reading.greeting)
+        self.assertFalse(reading.startable)
+
+    def test_a_part_singled_out_in_the_sentences_words_may_start(self) -> None:
+        reading = self._read("Nimm den oberen grauen Würfel und leg ihn in die gelbe Kiste",
+                             _sparse(object="gray cube", which="the upper gray cube",
+                                     object_said="den oberen grauen Würfel", place="yellow bin",
+                                     place_said="in die gelbe Kiste"))
+        self.assertTrue(reading.startable)
+
+    def test_a_which_or_a_from_the_sentence_does_not_hold_opens_the_card(self) -> None:
+        for fields in (dict(which="the upper gray cube"), dict(source="on the black mat")):
+            with self.subTest(**fields):
+                reading = self._read("Nimm den grauen Würfel und leg ihn in die gelbe Kiste",
+                                     _sparse(object="gray cube", object_said="den oberen grauen Würfel",
+                                             place="yellow bin", place_said="in die gelbe Kiste", **fields))
+                self.assertEqual(("object_not_in_sentence",), reading.notes)
+                self.assertFalse(reading.startable)
+
+
+#: The owner's long sentence of 2026-10-08 (348 characters): where the parts lie, the one part, the bin, and the pose
+#: to go to after, in one breath.
+_LONG_SENTENCE = (
+    "Willy, sei bitte so gut und nimm von den Teilen, die da vorne auf der schwarzen Schaumstoffmatte liegen, den "
+    "kleinen grauen Würfel, der oben auf dem größeren grauen Würfel liegt, und leg ihn vorsichtig in die gelbe Kiste "
+    "rechts daneben, und wenn du fertig bist, fahr bitte wieder in die Wartepose zurück, damit ich die nächsten Teile "
+    "hinlegen kann."
+)
+
+
+class TheOwnersDayTests(_ForgetsTheSharedHolder):
+    """The sentences of 2026-10-08 on the cell, each with the answer the instruction asks for now: compact, only what
+    the sentence says, the one part it singles out in ``which`` and where the parts lie in ``from``. Size stays in the
+    object, as it worked; a selection is a which, and reads once."""
+
+    def _read(self, sentence: str, *answers: str) -> tuple[CommandReading, _Canned]:
+        ask = _Canned(*answers)
+        return understand(sentence, ask=ask, poses=POSES), ask
+
+    def test_the_mornings_sentence_is_the_gray_cubes_into_the_yellow_bin(self) -> None:
+        reading, ask = self._read("Alle grauen Würfel in die Gelbe Kiste.",
+                                  _sparse(object="gray cube", object_said="grauen Würfel", place="yellow bin",
+                                          place_said="in die Gelbe Kiste", scope="until_empty"))
+        self.assertEqual(("gray cube", "yellow bin", None, "until_empty", None, None, ()), _card_of(reading))
+        self.assertEqual((1, None, None, True), (len(ask.calls), reading.which, reading.source, reading.startable))
+
+    def test_where_the_parts_lie_is_the_from_and_never_the_object(self) -> None:
+        sentence = "Alle grauen Würfel von der schwarzen Matte in die gelbe Kiste"
+        reading, ask = self._read(sentence, _sparse(
+            object="gray cube", source="on the black mat", object_said="grauen Würfel von der schwarzen Matte",
+            place="yellow bin", place_said="in die gelbe Kiste", scope="until_empty"))
+        self.assertEqual(("gray cube", "yellow bin", None, "until_empty", None, None, ()), _card_of(reading))
+        self.assertEqual(("on the black mat", None, 1), (reading.source, reading.which, len(ask.calls)))
+        self.assertNotIn("mat", reading.object.phrase if reading.object else "mat")
+        self.assertTrue(reading.startable)
+
+    def test_an_object_that_holds_the_mat_is_asked_again(self) -> None:
+        sentence = "Alle grauen Würfel von der schwarzen Matte in die gelbe Kiste"
+        good = _sparse(object="gray cube", source="on the black mat", object_said="grauen Würfel von der schwarzen Matte",
+                       place="yellow bin", place_said="in die gelbe Kiste", scope="until_empty")
+        reading, ask = self._read(sentence, _sparse(
+            object="gray cube on black mat", source="on the black mat",
+            object_said="grauen Würfel von der schwarzen Matte", place="yellow bin", place_said="in die gelbe Kiste",
+            scope="until_empty"), good)
+        self.assertEqual(2, len(ask.calls))
+        self.assertIn("holds where the parts lie", ask.calls[1][1])
+        self.assertEqual(("gray cube", ("retried",)), (reading.object.phrase if reading.object else None, reading.notes))
+
+    def test_the_cube_on_top_of_the_other_is_singled_out(self) -> None:
+        sentence = "Nimm den grauen Würfel, der oben auf dem anderen liegt, und leg ihn in die gelbe Kiste"
+        reading, ask = self._read(sentence, _sparse(
+            object="gray cube", which="the gray cube on top of the other one",
+            object_said="den grauen Würfel, der oben auf dem anderen liegt", place="yellow bin",
+            place_said="in die gelbe Kiste"))
+        self.assertEqual((1, "the gray cube on top of the other one"), (len(ask.calls), reading.which))
+        self.assertEqual(PhraseReading("gray cube", "den grauen Würfel, der oben auf dem anderen liegt", True),
+                         reading.object)
+        self.assertEqual(("once", (), True), (reading.scope, reading.notes, reading.startable))
+
+    def test_the_upper_and_the_smallest_are_each_one_part(self) -> None:
+        for sentence, fields, which in (
+            ("Nimm den oberen grauen Würfel",
+             dict(object="gray cube", which="the upper gray cube", object_said="den oberen grauen Würfel"),
+             "the upper gray cube"),
+            ("Nimm den kleinsten Würfel",
+             dict(object="cube", which="the smallest cube", object_said="den kleinsten Würfel"), "the smallest cube"),
+        ):
+            with self.subTest(sentence=sentence):
+                reading, ask = self._read(sentence, _sparse(**fields))
+                self.assertEqual((which, "once", (), 1), (reading.which, reading.scope, reading.notes, len(ask.calls)))
+
+    def test_a_size_stays_in_the_object(self) -> None:
+        reading, ask = self._read("Nimm den großen grauen Würfel",
+                                  _sparse(object="large gray cube", object_said="den großen grauen Würfel"))
+        self.assertEqual(("large gray cube", None, 1), (reading.object.phrase if reading.object else None,
+                                                        reading.which, len(ask.calls)))
+
+    def test_links_beside_the_pose_ablage_links(self) -> None:
+        reading, ask = self._read("Nimm den Becher links von der Kiste und leg ihn auf Ablage links", _sparse(
+            object="cup", which="the cup left of the bin", object_said="den Becher links von der Kiste",
+            place_pose="ablage_links"))
+        self.assertEqual(("the cup left of the bin", "ablage_links", None, (), 1),
+                         (reading.which, reading.place_pose, reading.place, reading.notes, len(ask.calls)))
+        self.assertTrue(reading.startable)
+
+    def test_the_cola_bottle_is_english_and_a_copied_colaflasche_is_asked_again(self) -> None:
+        sentence = "Nimm die Colaflasche und leg sie in die gelbe Kiste"
+        good = _sparse(object="cola bottle", object_said="die Colaflasche", place="yellow bin",
+                       place_said="in die gelbe Kiste")
+        reading, ask = self._read(sentence, good)
+        self.assertEqual(("cola bottle", 1), (reading.object.phrase if reading.object else None, len(ask.calls)))
+        reading, ask = self._read(sentence, _sparse(object="colaflasche", object_said="die Colaflasche",
+                                                    place="yellow bin", place_said="in die gelbe Kiste"), good)
+        self.assertEqual(2, len(ask.calls))
+        self.assertIn("German words", ask.calls[1][1])
+        self.assertEqual(("cola bottle", ("retried",)), (reading.object.phrase if reading.object else None,
+                                                         reading.notes))
+
+    def test_the_long_sentence_reads_in_one_question(self) -> None:
+        self.assertEqual(348, len(_LONG_SENTENCE))
+        reading, ask = self._read(_LONG_SENTENCE, _sparse(
+            object="small gray cube", source="on the black foam mat",
+            which="the small gray cube on top of the larger gray cube",
+            object_said="den kleinen grauen Würfel, der oben auf dem größeren grauen Würfel liegt",
+            place="yellow bin", place_said="in die gelbe Kiste", return_to="wartepose"))
+        self.assertEqual(1, len(ask.calls))
+        self.assertEqual(("small gray cube", "yellow bin", None, "once", "wartepose", None, ()), _card_of(reading))
+        self.assertEqual(("the small gray cube on top of the larger gray cube", "on the black foam mat"),
+                         (reading.which, reading.source))
+        assert reading.object is not None and reading.object.said is not None
+        self.assertTrue(reading.object.verified)
+        self.assertLessEqual(len(reading.object.said.split()), 15)
+
+
+class SparseAnswersTests(_ForgetsTheSharedHolder):
+    """R1 (2026-10-08): ``intent`` and only the keys the sentence fills, compact. A key left out is "not said", never
+    "all"; ``intent`` left out, or a key that is none of the instruction's, is asked again; a which and a from are
+    checked as the object is."""
+
+    SENTENCE = "Nimm den grauen Würfel, der oben auf dem anderen liegt, und leg ihn in die gelbe Kiste"
+    GOOD = _sparse(object="gray cube", which="the gray cube on top of the other one",
+                   object_said="den grauen Würfel, der oben auf dem anderen liegt", place="yellow bin",
+                   place_said="in die gelbe Kiste")
+
+    def _read(self, sentence: str, *answers: str) -> tuple[CommandReading, _Canned]:
+        ask = _Canned(*answers)
+        return understand(sentence, ask=ask, poses=POSES), ask
+
+    def _retried(self, first: str, *, problem_says: str) -> CommandReading:
+        reading, ask = self._read(self.SENTENCE, first, self.GOOD)
+        self.assertEqual(2, len(ask.calls))
+        self.assertIn(problem_says, ask.calls[1][1])
+        self.assertEqual(("the gray cube on top of the other one", ("retried",)), (reading.which, reading.notes))
+        return reading
+
+    def test_intent_alone_reads_in_one_question(self) -> None:
+        for sentence, answer, intent in (("Hallo Willy, wie geht's?", '{"intent":"none"}', "none"),
+                                         ("Stopp!", '{"intent":"stop"}', "stop")):
+            with self.subTest(sentence=sentence):
+                reading, ask = self._read(sentence, answer)
+                self.assertEqual((True, intent, 1), (reading.understood, reading.intent, len(ask.calls)))
+
+    def test_a_scope_or_a_count_left_out_is_not_said(self) -> None:
+        reading, ask = self._read("Leg den grünen Würfel in die blaue Kiste", _sparse(
+            object="green cube", object_said="den grünen Würfel", place="blue bin", place_said="in die blaue Kiste"))
+        self.assertEqual(("once", None, None, None, (), 1),
+                         (reading.scope, reading.count, reading.which, reading.source, reading.notes, len(ask.calls)))
+
+    def test_no_intent_is_asked_again(self) -> None:
+        self._retried("{}", problem_says="'intent' is missing")
+
+    def test_a_key_that_is_none_of_the_instructions_is_asked_again(self) -> None:
+        self._retried(self.GOOD[:-1] + ',"colour":"gray"}', problem_says="'colour'")
+
+    def test_nulls_and_spaces_read_as_the_compact_answer_does(self) -> None:
+        compact, _ = self._read(self.SENTENCE, self.GOOD)
+        spaced, _ = self._read(self.SENTENCE, json.dumps(json.loads(self.GOOD), ensure_ascii=False))
+        full = {key: None for key in ANSWER_KEYS} | {"object": "", "scope": "once"} | json.loads(self.GOOD)
+        written, ask = self._read(self.SENTENCE, json.dumps(full, ensure_ascii=False))
+        self.assertEqual(1, len(ask.calls))
+        for reading in (spaced, written):
+            self.assertEqual((_card_of(compact), compact.which, compact.source),
+                             (_card_of(reading), reading.which, reading.source))
+
+    def test_a_german_which_is_asked_again(self) -> None:
+        self._retried(_sparse(object="gray cube", which="der obere graue würfel",
+                              object_said="den grauen Würfel, der oben auf dem anderen liegt", place="yellow bin",
+                              place_said="in die gelbe Kiste"), problem_says="not English")
+
+    def test_a_which_with_both_in_it_is_asked_again(self) -> None:
+        self._retried(_sparse(object="gray cube", which="the upper one of both gray cubes",
+                              object_said="den grauen Würfel, der oben auf dem anderen liegt", place="yellow bin",
+                              place_said="in die gelbe Kiste"), problem_says="quantifier")
+
+    def test_a_which_that_does_not_name_the_object_is_asked_again(self) -> None:
+        self._retried(_sparse(object="gray cube", which="the one on top",
+                              object_said="den grauen Würfel, der oben auf dem anderen liegt", place="yellow bin",
+                              place_said="in die gelbe Kiste"), problem_says="does not name the object")
+
+    def test_an_overlong_which_is_asked_again(self) -> None:
+        self._retried(_sparse(object="gray cube", which="the gray cube " + "right on top " * 10,
+                              object_said="den grauen Würfel, der oben auf dem anderen liegt", place="yellow bin",
+                              place_said="in die gelbe Kiste"), problem_says=f"longer than {MAX_WHICH_CHARS}")
+
+    def test_a_which_may_name_the_object_in_the_plural(self) -> None:
+        reading, ask = self._read("Nimm den kleinsten der Würfel", _sparse(
+            object="cube", which="the smallest of the cubes", object_said="den kleinsten der Würfel"))
+        self.assertEqual(("the smallest of the cubes", 1), (reading.which, len(ask.calls)))
+
+    def test_a_german_from_is_asked_again(self) -> None:
+        sentence = "Alle grauen Würfel von der schwarzen Matte in die gelbe Kiste"
+        good = _sparse(object="gray cube", source="on the black mat", object_said="grauen Würfel von der schwarzen Matte",
+                       place="yellow bin", place_said="in die gelbe Kiste", scope="until_empty")
+        reading, ask = self._read(sentence, _sparse(
+            object="gray cube", source="von der schwarzen matte", object_said="grauen Würfel von der schwarzen Matte",
+            place="yellow bin", place_said="in die gelbe Kiste", scope="until_empty"), good)
+        self.assertEqual(2, len(ask.calls))
+        self.assertIn("the from phrase 'von der schwarzen matte' is not English", ask.calls[1][1])
+        self.assertEqual("on the black mat", reading.source)
+
+    def test_a_which_reads_once_whatever_scope_the_model_gave(self) -> None:
+        reading, _ = self._read(self.SENTENCE, self.GOOD[:-1] + ',"scope":"until_empty"}')
+        self.assertEqual(("once", ()), (reading.scope, reading.notes))
+
+    def test_a_which_and_a_from_reach_the_card_and_the_report(self) -> None:
+        from api.schemas import CommandOut
+
+        reading, _ = self._read("Nimm von der Matte den grauen Würfel, der oben auf dem anderen liegt", _sparse(
+            object="gray cube", source="on the mat", which="the gray cube on top of the other one",
+            object_said="den grauen Würfel, der oben auf dem anderen liegt"))
+        card = CommandOut.model_validate(reading.to_dict())
+        self.assertEqual(("the gray cube on top of the other one", "on the mat"), (card.which, card.source))
+        text = reading.render()
+        text.encode("ascii")
+        self.assertIn("which   : the gray cube on top of the other one", text)
+        self.assertIn("from    : on the mat", text)
+
 
 class TheQuestionTests(_ForgetsTheSharedHolder):
     """What the model is asked: one fixed instruction, and the poses and the command in the user message."""
@@ -828,7 +1447,8 @@ class TheQuestionTests(_ForgetsTheSharedHolder):
                 self.assertTrue(name.isidentifier(), f"{name!r} is not a pose name")
                 self.assertNotEqual(label, name)
                 self.assertIn(f'"{label}" -> "{name}"', COMMAND_INSTRUCTION)
-        self.assertNotIn('"place_pose": "Ablage links"', COMMAND_INSTRUCTION)
+        for written in ('"place_pose": "Ablage links"', '"place_pose":"Ablage links"'):
+            self.assertNotIn(written, COMMAND_INSTRUCTION)
 
     def test_every_example_in_the_instruction_is_an_answer_the_reader_accepts(self) -> None:
         """The examples teach the model the answer format; one the reader would refuse teaches a retry."""
@@ -836,22 +1456,46 @@ class TheQuestionTests(_ForgetsTheSharedHolder):
         for sentence, answer in COMMAND_EXAMPLES:
             with self.subTest(sentence=sentence):
                 CommandAnswer.model_validate(answer)
-                line = f"{sentence} -> {json.dumps(answer, ensure_ascii=False)}"
+                line = f"{sentence} -> {_json(answer)}"
                 self.assertIn(line, COMMAND_INSTRUCTION)
-                reading = understand(sentence, ask=_Canned(json.dumps(answer, ensure_ascii=False)),
-                                     poses=example_poses)
+                reading = understand(sentence, ask=_Canned(_json(answer)), poses=example_poses)
                 self.assertTrue(reading.understood, reading.reason)
                 self.assertEqual(reading.attempts, 1)
                 self.assertEqual(set(reading.notes) - {"count_not_supported"}, set(), reading.notes)
 
+    def test_every_example_writes_only_what_its_sentence_says_compactly(self) -> None:
+        """The answer is the cost on the cell (about 140 ms a token, 2026-10-08): no null, no empty phrase, no "once",
+        no space after a colon or a comma, and the keys in the instruction's order."""
+        for sentence, answer in COMMAND_EXAMPLES:
+            with self.subTest(sentence=sentence):
+                self.assertNotIn(None, answer.values())
+                self.assertNotIn("", answer.values())
+                self.assertNotEqual("once", answer.get("scope"))
+                self.assertEqual([key for key in ANSWER_KEYS if key in answer], list(answer))
+                self.assertNotIn(': "', _json(answer))
+                self.assertNotIn('", "', _json(answer))
+
     def test_the_owners_sentences_cover_both_scopes_a_place_and_a_pose(self) -> None:
         answers = [answer for _, answer in COMMAND_EXAMPLES]
-        self.assertTrue(any(a["scope"] == "until_empty" for a in answers))
-        self.assertTrue(any(a["place"] for a in answers))
-        self.assertTrue(any(a["place_pose"] for a in answers))
-        self.assertTrue(any(a["return_to"] for a in answers))
+        self.assertTrue(any(a.get("scope") == "until_empty" for a in answers))
+        self.assertTrue(any(not a.get("scope") and a["intent"] == "task" for a in answers))
+        self.assertTrue(any(a.get("place") for a in answers))
+        self.assertTrue(any(a.get("place_pose") for a in answers))
+        self.assertTrue(any(a.get("return_to") for a in answers))
         self.assertTrue(any(a["intent"] == "stop" for a in answers))
         self.assertTrue(any(a["intent"] == "none" for a in answers))
+
+    def test_the_examples_teach_a_part_singled_out_and_where_the_parts_lie(self) -> None:
+        """The owner's sentences of 2026-10-08: a part on top of another, a region, and "links" beside "Ablage
+        links"."""
+        answers = [answer for _, answer in COMMAND_EXAMPLES]
+        self.assertGreaterEqual(sum(1 for a in answers if a.get("which")), 2)
+        self.assertGreaterEqual(sum(1 for a in answers if a.get("from")), 2)
+        self.assertTrue(any(a.get("which") and a.get("place_pose") == "ablage_links" for a in answers))
+        for answer in answers:
+            if answer.get("which"):
+                with self.subTest(which=answer["which"]):
+                    self.assertIn(answer["object"].split()[-1], answer["which"].split())
 
 
 class AnswerExtractionTests(unittest.TestCase):
@@ -957,7 +1601,7 @@ class ReadingMovesNothingTests(_ForgetsTheSharedHolder):
 
     def test_the_reader_imports_no_robot_camera_or_console_module(self) -> None:
         """Checked in the source: an import is how a reader could reach the cell, and none is there."""
-        for module in ("command.py", "holder.py", "availability.py", "qwen.py"):
+        for module in ("command.py", "known.py", "holder.py", "availability.py", "qwen.py"):
             with self.subTest(module=module):
                 tree = ast.parse((_ROOT / "src" / "models" / "vlm" / module).read_text(encoding="utf-8"))
                 imported = set()
@@ -975,7 +1619,7 @@ class ReadingMovesNothingTests(_ForgetsTheSharedHolder):
         """Measured in a fresh interpreter: this one has already imported torch elsewhere."""
         probe = (
             "import sys;"
-            "import src.models.vlm.command, src.models.vlm.holder;"
+            "import src.models.vlm.command, src.models.vlm.known, src.models.vlm.holder;"
             "heavy=[m for m in ('torch','transformers') if m in sys.modules];"
             "print(','.join(heavy) or 'clean')"
         )

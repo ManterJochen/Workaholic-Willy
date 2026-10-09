@@ -72,6 +72,8 @@ def build_service(robot_cfg: Any, rig: Any) -> Any:
 
     calculator = build_calculator(
         robot_cfg,
+        # A sweep over recorded scenes measures the generator; only a cell asks for its proof (2026-10-09).
+        purpose="evaluate",
         camera_matrix=rig.primary.intrinsics_mm,
         max_grip_width_mm=robot_cfg.gripper.max_width_mm,
         min_grip_width_mm=robot_cfg.gripper.min_width_mm,
@@ -146,7 +148,7 @@ def measure_occupancy(
     # zeros. Raised here it arrives as itself, before any scene is loaded.
     from src.robot.grasping.calculator_factory import preflight_calculator
 
-    logger.info("grasp calculator: %s", preflight_calculator(robot_cfg))
+    logger.info("grasp calculator: %s", preflight_calculator(robot_cfg, purpose="evaluate"))
 
     for scene_dir in scenes:
         try:

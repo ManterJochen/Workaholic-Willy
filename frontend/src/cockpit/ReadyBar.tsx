@@ -10,9 +10,11 @@
  * the style (`.ck-verdict`): the catalogs never shout. The commands light is named for what it is, the language model,
  * and where there is none the Understood card is filled in by hand ("Karte von Hand").
  *
- * **During a run: the run header**, what the task is, where it stands and how long it has run. **After a problem stop:
- * the stop** in red, where it stopped; the stop card in the chat says what to do, and a cell that is not connected
- * (the record survives a Disconnect and a rebuild) is said there too, with the way to Setup.
+ * **During a run: the run header**, what the task is, where it stands and how long it has run. A sort (the owner,
+ * 2026-10-09) shows its rules there instead of one part and one place, each with the parts it placed, the rule of the
+ * part in hand lit once the run said it. **After a problem stop: the stop** in red, where it stopped; the stop card in
+ * the chat says what to do, and a cell that is not connected (the record survives a Disconnect and a rebuild) is said
+ * there too, with the way to Setup.
  *
  * An action is offered only where it can work: "Planer starten" needs a built cell (before that, Setup is the way), so
  * a cell that is not built offers none. A refusal of an action gets a row of its own under the lights.
@@ -26,7 +28,7 @@ import { ErrorBanner } from '../components/ui'
 import { useT } from '../i18n'
 import { blockerMsg, lightIdMsg, lightMsg, runKindMsg, stopMsg } from '../i18n/codes'
 import { Icon } from '../icons'
-import { phaseMsg, type RunView, type StepId } from '../model/runModel'
+import { currentRule, isSort, phaseMsg, planRulesMsg, sortRules, type RunView, type StepId } from '../model/runModel'
 import { useCell } from '../model/useCell'
 import { useRun } from '../model/useRun'
 import { poseLabel } from './draft'
@@ -216,7 +218,7 @@ function RunHeader({ view, poses }: { view: RunView; poses: PosesOut | null }) {
   switch (view.kind) {
     case 'task': {
       const { what, where } = taskWords(plan, t('common.anything'), t('common.defaultPlace'))
-      title = t('ck.run.task', { what, where })
+      title = isSort(plan) ? t('ck.run.sort') : t('ck.run.task', { what, where })
       const back = plan?.return_to && plan.return_to !== 'home' ? plan.return_label || poseLabel(plan.return_to, poses) || plan.return_to : t('common.home')
       meta = t('ck.run.taskMeta', { scope: t(plan?.scope === 'until_empty' ? 'scope.until_empty' : 'scope.once'), back })
       break
@@ -243,6 +245,7 @@ function RunHeader({ view, poses }: { view: RunView; poses: PosesOut | null }) {
   return (
     <section className="ck-top ck-runhead" aria-label={t('chip.run')}>
       <strong className="ck-run-title">{headline(title, t.lang)}</strong>
+      {view.kind === 'task' && <RuleStrip view={view} />}
       {view.current.part !== null && <span className="ck-run-part">{t('ck.run.part', { part: view.current.part })}</span>}
       {meta && <span className="ck-run-meta">{meta}</span>}
       <span className="ck-run-right mono">
@@ -254,12 +257,38 @@ function RunHeader({ view, poses }: { view: RunView; poses: PosesOut | null }) {
   )
 }
 
+/**
+ * A sort's rules while it runs (the owner, 2026-10-09), where a task of one kind shows its part and its place: each rule
+ * in the operator's words with the parts it placed, the rule of the part in hand lit once `task.rule` said it. Nothing
+ * for a task of one kind.
+ */
+function RuleStrip({ view }: { view: RunView }) {
+  const t = useT(COCKPIT)
+  const rules = sortRules(view)
+  if (rules.length === 0) return null
+  const lit = currentRule(view)
+  return (
+    <ol className="ck-rules" aria-label={t('ck.rules.label')}>
+      {rules.map((rule, index) => (
+        <li key={index} className={`ck-rule${index === lit ? ' current' : ''}`} aria-current={index === lit ? 'true' : undefined}>
+          <span>{t.msg({ key: 'list.rule', params: { what: rule.what, where: rule.where } })}</span>
+          <b className="mono" title={t('ck.rules.placed', { n: rule.placed })}>
+            {rule.placed}
+          </b>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
 function StoppedHeader({ run, at }: { run: RunOut | null; at: { part: number | null; step: StepId | null } }) {
   const t = useT(COCKPIT)
   const { cell } = useCell()
   const record = cell?.recovery
   if (!record) return null
   const task = run?.plan ? taskWords(run.plan, t('common.anything'), t('common.defaultPlace')) : null
+  // A stopped sort is said by its rules, as it was started.
+  const words = run?.plan && isSort(run.plan) ? t.msg({ key: 'common.raw', params: { text: planRulesMsg(run.plan) } }) : task ? t('ck.run.task', task) : null
   return (
     <section className="ck-top ck-runhead stopped" aria-label={t('chip.run')}>
       <Icon name="alert" size={20} className="ck-alarm-icon" />
@@ -267,7 +296,7 @@ function StoppedHeader({ run, at }: { run: RunOut | null; at: { part: number | n
       {at.part !== null && at.step !== null && (
         <span className="ck-run-meta">{t('ck.run.stoppedAt', { part: at.part, at: t(`ck.at.${at.step}`) })}</span>
       )}
-      {task && <span className="ck-run-meta">{headline(t('ck.run.task', task), t.lang)}</span>}
+      {words && <span className="ck-run-meta">{headline(words, t.lang)}</span>}
       <span className="ck-run-right mono">{t('ck.run.stoppedRun', { kind: runKindMsg(record.kind) })}</span>
       {cell.state !== 'connected' && (
         // The record outlives a Disconnect and a rebuild: the way back starts with connecting the cell again.

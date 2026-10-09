@@ -1,0 +1,5 @@
+2026-10-12 08:59:00,000 - src.models.vlm.qwen - INFO - VLM Qwen/Qwen3-VL-8B-Instruct answers with prompt_lookup_tokens=10, text_prompt_lookup_tokens=10, stop_at_answer_end=True
+2026-10-12 09:00:40,000 - src.models.vlm.qwen - INFO - VLM Qwen/Qwen3-VL-8B-Instruct ready in 140.0 s
+2026-10-12 09:01:32,400 - src.models.vlm.qwen - INFO - VLM grounded 1 box(es) for 'yellow bin' in 2700 ms, 21 token(s): 'yellow bin' at (500, 300)
+2026-10-12 09:01:39,500 - src.models.vlm.qwen - INFO - VLM grounded 3 box(es) for 'each separate gray cube' in 6200 ms, 47 token(s): 'gray cube' at (300, 400), 'gray cube' at (420, 410), 'gray cube' at (600, 380)
+2026-10-12 09:02:31,500 - src.models.vlm.qwen - INFO - VLM grounded nothing for 'each separate gray cube' in 5800 ms, 3 token(s) (raw answer: [])

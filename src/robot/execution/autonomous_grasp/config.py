@@ -15,29 +15,12 @@ from src.robot.grasping.types.modes import GraspSamplingMode
 
 
 class GraspMode(StrEnum):
-    """High-level grasp behavior profile selected by the operator.
+    """The grasp mode a cell is built in: which sampler runs and which recovery actions are allowed.
 
-    Values are stable strings so they can flow through YAML config, JSON
-    telemetry, and REST payloads without translation. Each value maps to a fixed
-    :class:`GraspSamplingMode` plus a fixed set of behavior toggles via
-    :class:`GraspBehaviorProfile`. ``_PROFILES`` below is the authority on what each
-    value means.
-
-    EASY behaves exactly as the plain ``RuntimePickService`` path does unless an operator opts
-    in, so adopting this service is not itself a behaviour change.
-
-    Whether a close holds a part is the gripper's own hold evidence, read by the execution policy
-    right after every close in every mode: ``is_object_detected`` where the gripper advertises it,
-    and ``hold_evidence`` where the gripper says whether that answer was measured (a Robotiq on its
-    socket reports gOBJ there; a jaw on digital I/O with no feedback says unmeasured). An empty
-    close ends the pick as ``verification_failed``. The separate post-grasp verification stage and
-    its verifiers were removed on 2026-09-29: no pick path ran them.
-
-    ``closed_loop`` and ``dense_autonomous`` were removed on 2026-09-29 with the two-scan pre-grasp
-    refinement they ran. :func:`resolve_grasp_mode` refuses either name, and the schema a tree that
-    writes one, with the sentence that names the mode to use instead
-    (``src/config/schema/_removed.py``). A record logged before then keeps its mode string, which
-    the replay layer still reads.
+    Attributes:
+        EASY: One object, no recovery at all: a guarantee rather than a default.
+        AUTO: The automatic sampler, with ``rescan`` and ``next_target``; ``robot.yaml``'s default.
+        DENSE_CLUTTER: The dense sampler for a pile, with ``rescan``, ``next_target`` and ``nudge_target`` (the push).
     """
 
     EASY = "easy"

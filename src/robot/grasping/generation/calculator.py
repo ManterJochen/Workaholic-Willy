@@ -35,6 +35,7 @@ from src.robot.grasping.generation._support_footprint_stage import (
     support_footprint_breakdowns,
 )
 from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps
+from src.robot.grasping.generation.footprint_rim import footprint_rim
 from src.robot.grasping.generation.scene_obstacles import (
     NO_GRASP_SAID,
     SceneObstacleRules,
@@ -240,6 +241,15 @@ class GraspCalculator:
         # inputs are missing. See support_footprint.py.
         support_footprint_geometry: bool = True,
         support_footprint_inflate_mm: float = 0.0,
+        # The rim SFE's footprint input loses, millimetres at the part (``robot.grasping.geometry.footprint_rim_mm``, the
+        # owner's "Ja, für Montag", 2026-10-09): a look's mask eroded by ceil(rim * fx / z) px for the cloud SFE builds
+        # its footprint from and for nothing else, never more than 30 % of the mask (footprint_rim.py). The D415 smears a
+        # part's far edge into a ramp of depths the mask's outer ~3 px lie on, and SFE's hull follows the ramp: on 23 of
+        # the cell's recorded grey cubes the centre lay 2.53 mm off at the median, 0.77 mm with a 2 mm rim and
+        # ``support_footprint_inflate_mm`` at 1.25 giving the faces back. The pick loop reads it here and cuts the same
+        # rim off the looks it fuses (``compute(footprint_points_base_mm=...)``). 0.0, the default, is SFE's input of
+        # before, byte for byte.
+        support_footprint_rim_mm: float = 0.0,
         # Keep the silhouette candidates when SFE produced nothing (``reconstruct_support_prism`` in
         # support_footprint.py gives up below 20 cloud points), instead of letting its empty list
         # replace them. Default False. Over the 354 jaw-graspable reference objects it moves top-1
@@ -457,6 +467,9 @@ class GraspCalculator:
         self._level_closing_to_support_plane = bool(level_closing_to_support_plane)
         self._support_footprint_geometry = bool(support_footprint_geometry)
         self._support_footprint_inflate_mm = float(support_footprint_inflate_mm)
+        if not (np.isfinite(support_footprint_rim_mm) and support_footprint_rim_mm >= 0.0):
+            raise ValueError(f"support_footprint_rim_mm must be finite and >= 0, got {support_footprint_rim_mm!r}")
+        self._support_footprint_rim_mm = float(support_footprint_rim_mm)
         self._support_footprint_fallback = bool(support_footprint_fallback)
         self._support_footprint_full_resolution = bool(support_footprint_full_resolution)
         self._support_footprint_palm_aware = bool(support_footprint_palm_aware)
@@ -541,6 +554,15 @@ class GraspCalculator:
         # per pick. Default False: pick_loop forwards ``rgb_image=None``, which is byte-identical
         # and costs no render; a runner flips it on for ``--debug-frames``.
         self.render_debug_images: bool = False
+        # Whether SFE runs its fine search where its coarse grid finds few grasps. True, the default, is the search as
+        # it always was. The pick loop turns it off for one ranking at a time where it may leave a part's fine search
+        # for later (``robot.grasping.fine_pass_waits``): the result then says ``support_footprint_fine: "deferred"``
+        # and holds the coarse grid's grasps alone, and the loop asks again in full before it takes that part.
+        self.sfe_fine_pass: bool = True
+        # Whether SFE builds each closing line's grasps at once (``robot.grasping.batched_builds``, set by
+        # ``build_calculator``): the same candidates, refusal counts and telemetry, to the bit, in a tenth of the time
+        # on a boxed-in part (2026-10-09). False, the default, builds them one at a time, as before.
+        self.sfe_batched: bool = False
 
 
     @property
@@ -560,6 +582,17 @@ class GraspCalculator:
         back-projecting with, and nothing would notice.
         """
         return self._geom._K
+
+    @property
+    def support_footprint_rim_mm(self) -> float:
+        """The rim SFE's footprint input loses, millimetres at the part (``robot.grasping.geometry.footprint_rim_mm``),
+        0.0 for none.
+
+        Read by the pick loop (``loop/pick_loop.py``), which cuts the same rim off the looks' surfaces it fuses and hands
+        the result beside the fused cloud (``compute(footprint_points_base_mm=...)``): one number, so a look's own input
+        and a fused one lose the same rim. Read-only for the same reason as :attr:`camera_matrix`.
+        """
+        return self._support_footprint_rim_mm
 
     def _resolve_grasp_depth(
         self, valid_depth: np.ndarray, median_depth_mm: float, scale: float
@@ -639,6 +672,55 @@ class GraspCalculator:
             table_clearance_mm=float(min_table_clearance_mm),
         )
 
+    def _without_the_rim(
+        self, mask: np.ndarray, sfe_mask: np.ndarray, depth_mm: np.ndarray, intrinsics: CameraIntrinsics,
+        max_depth_mm: float | None, telemetry: dict,
+    ) -> "tuple[np.ndarray, bool]":
+        """``sfe_mask`` less the rim of ``mask`` (:attr:`support_footprint_rim_mm`, ``footprint_rim``), and whether that
+        took a point off SFE's input; the rim in pixels and the points it took are stamped
+        (``support_footprint_rim_px``, ``support_footprint_rim_points``) and said in the log, every compute.
+
+        A point is a pixel with a depth the cloud keeps (1 mm and over, and within the depth band where one is set).
+        Where the rim would leave SFE no point the mask had, nothing is cut: a footprint is never built from nothing.
+        """
+        rim = footprint_rim(mask, depth_mm, intrinsics.fx, self._support_footprint_rim_mm)
+
+        def points(pixels: np.ndarray) -> int:
+            depth = depth_mm[pixels]
+            with np.errstate(invalid="ignore"):
+                kept = np.isfinite(depth) & (depth >= 1.0)
+                if max_depth_mm is not None:
+                    kept &= depth <= max_depth_mm
+            return int(np.count_nonzero(kept))
+
+        cut = sfe_mask & rim.mask
+        off = points(sfe_mask & ~rim.mask)
+        if off and not points(cut):
+            telemetry["support_footprint_rim_px"] = 0
+            telemetry["support_footprint_rim_points"] = 0
+            self.logger.info("footprint rim: not cut, it would leave SFE no point (%s)", rim.said())
+            return sfe_mask, False
+        telemetry["support_footprint_rim_px"] = int(rim.px)
+        telemetry["support_footprint_rim_points"] = off
+        self.logger.info("footprint rim: %s; %d point(s) off SFE's input", rim.said(), off)
+        return cut, off > 0
+
+    def _fused_footprint(self, fused: np.ndarray, footprint: Any, telemetry: dict) -> np.ndarray:
+        """What SFE builds its footprint from where a fused cloud comes with its rim cut (``footprint_points_base_mm``,
+        the pick loop's looks less :attr:`support_footprint_rim_mm`): that cloud, the points it holds fewer than the
+        fused one stamped (``support_footprint_rim_points``) and said in the log. The fused cloud whole where the
+        footprint holds no point and the fused cloud does: a footprint is never built from nothing."""
+        points = np.asarray(footprint, dtype=np.float64).reshape(-1, 3)
+        if not points.shape[0] and fused.shape[0]:
+            telemetry["support_footprint_rim_points"] = 0
+            self.logger.info("footprint rim: the fused cloud less its rim holds no point, so SFE reads it whole")
+            return fused
+        off = int(fused.shape[0] - points.shape[0])
+        telemetry["support_footprint_rim_points"] = off
+        self.logger.info("footprint rim: SFE's footprint reads the looks' surfaces less their rim, %d of %d point(s) off",
+                         off, int(fused.shape[0]))
+        return points
+
     def compute(
         self,
         segmentation: SegmentationLike,
@@ -652,6 +734,10 @@ class GraspCalculator:
         scene_points_mm: np.ndarray | None = None,
         rigid_obstacle_points_mm: np.ndarray | None = None,
         geometry_points_base_mm: np.ndarray | None = None,
+        # The fused cloud less its rim (``robot.grasping.geometry.footprint_rim_mm``): the same views' surfaces, each mask
+        # eroded as :attr:`support_footprint_rim_mm` says, BASE. Read beside ``geometry_points_base_mm`` alone, and by SFE
+        # alone, for the footprint it builds; everything else reads the fused cloud whole. None reads it whole.
+        footprint_points_base_mm: np.ndarray | None = None,
         support_plane: SupportPlane | None = None,
         workspace: WorkspaceBox | None = None,
         gripper_model: GripperGeometryStrategy | None = None,
@@ -688,6 +774,10 @@ class GraspCalculator:
         # what of its pixels is support, SFE's support is the higher of the plane and the model's reading under the
         # part, and the open hand keeps the guard's distance from its solids. None reads the plane alone.
         support_model: Any = None,
+        # Who runs SFE's units in other processes (``src.robot.grasping.workers.SfeWorkers``, the cell's warm pool,
+        # ``robot.grasping.workers``), handed per call by the pick loop where the cell started one. The same candidates,
+        # counts and telemetry as without it, and a part it cannot answer for is searched here. None searches here.
+        sfe_workers: Any = None,
     ) -> list[GraspPoint]:
         """Generate ranked grasp candidates.
 
@@ -1001,7 +1091,14 @@ class GraspCalculator:
             other_object_masks=other_object_masks,
             telemetry=telemetry,
         )
-        if dense_decision:
+        if sfe_ready and not self._support_footprint_fallback:
+            # SFE replaces every candidate of the stages below (``ranked_all = sfe_ranked`` further down, its fallback
+            # off), so the dense samples and the geometry-first contacts were computed and never taken: 0.84 s of every
+            # look on the owner's cell (2026-10-08), and the one branch here that read a clock (the dense budget). The
+            # candidates and the refusals are the same without them.
+            geometry_poses = []
+            telemetry["geometry_skipped"] = "replaced_by_support_footprint"
+        elif dense_decision:
             # Dense runtime budget with silhouette fallback.
             import time as _time
 
@@ -1222,21 +1319,32 @@ class GraspCalculator:
                 # SFE's input is trimmed, and a mask with no step inside it gives the same cloud.
                 sfe_cloud = cloud
                 if not cloud.is_empty:
-                    behind = pixels_behind_depth_steps(mask_bool, depth_arr * scale)
+                    depth_mm = depth_arr * scale
+                    behind = pixels_behind_depth_steps(mask_bool, depth_mm)
                     telemetry["support_footprint_depth_step_pixels"] = int(np.count_nonzero(behind))
-                    if self._support_footprint_full_resolution or behind.any():
+                    sfe_mask = mask_bool & ~behind
+                    # And without the mask's rim, where the cell cuts one (``support_footprint_rim_mm``): the ramp of
+                    # depths the D415 smears a far edge into lies on it, and the hull follows the ramp. A fused cloud
+                    # comes with its rim cut by the pick loop (``footprint_points_base_mm``), so it is cut here only
+                    # where SFE reads this look alone.
+                    rimmed = False
+                    if self._support_footprint_rim_mm > 0.0 and geometry_points_base_mm is None:
+                        sfe_mask, rimmed = self._without_the_rim(
+                            mask_bool, sfe_mask, depth_mm, intrinsics, cloud_max_depth_mm, telemetry)
+                    if self._support_footprint_full_resolution or behind.any() or rimmed:
                         sfe_cloud = masked_point_cloud(
-                            mask_bool & ~behind, depth_arr, intrinsics, unit=unit, min_depth_mm=1.0,
+                            sfe_mask, depth_arr, intrinsics, unit=unit, min_depth_mm=1.0,
                             max_depth_mm=cloud_max_depth_mm,
                             voxel_size_mm=(None if self._support_footprint_full_resolution
                                            else self.geometry_voxel_size_mm),
                         )
-                target_base = (
-                    np.asarray(geometry_points_base_mm, dtype=np.float64).reshape(-1, 3)
-                    if geometry_points_base_mm is not None
-                    else (transform[:3, :3] @ np.asarray(
+                if geometry_points_base_mm is not None:
+                    target_base = np.asarray(geometry_points_base_mm, dtype=np.float64).reshape(-1, 3)
+                    if footprint_points_base_mm is not None:
+                        target_base = self._fused_footprint(target_base, footprint_points_base_mm, telemetry)
+                else:
+                    target_base = (transform[:3, :3] @ np.asarray(
                         sfe_cloud.points_mm, dtype=np.float64).reshape(-1, 3).T).T + transform[:3, 3]
-                )
                 obstacles_base = None
                 if scene is not None and scene.part_points is not None and bool(scene.part_points.any()):
                     # A named neighbour's points leave the grid: the boxes the camera world builds of them hold the
@@ -1275,6 +1383,9 @@ class GraspCalculator:
                     floor_margin_mm=self._support_footprint_floor_margin_mm,
                     seen_envelope=seen_envelope,
                     hand_floor=hand_floor,
+                    fine_pass=self.sfe_fine_pass,
+                    runner=sfe_workers,
+                    batched=self.sfe_batched,
                     **sfe_side,
                 )
                 telemetry.update(sfe_telemetry)

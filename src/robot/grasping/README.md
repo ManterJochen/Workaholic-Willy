@@ -6,7 +6,8 @@ nothing by itself: the UR, KUKA and Isaac arm drivers gate every commanded move 
 safety preflight, and nothing here can relax a guard.
 
 ```python
-from willy import Scene, load_tree
+from willy import load_tree
+from src.robot.grasping.scene import Scene
 
 tree = load_tree()                      # the cell WILLY_PROFILE names
 # cloud_base_mm: the object's points, an (N, 3) array in the robot's base frame, millimetres
@@ -19,9 +20,8 @@ if best is not None:
 
 `best.pose()` is what `Robot.pick` takes: base frame, +Z the approach, +X the closing axis. The jaw and
 the support height come from the tree. `Scene.from_cloud(cloud_base_mm, support_height_mm=0.0)` needs no
-tree and plans for the library's default jaw. Run it at a desk with
-[grasps_for_a_cloud.py](../../../examples/offline/grasping/grasps_for_a_cloud.py); a camera supplies the
-cloud in [15_speak_pick_and_hand_handover.py](../../../examples/real_robot/15_speak_pick_and_hand_handover.py).
+tree and plans for the library's default jaw. A camera supplies the cloud in
+[15_speak_pick_and_hand_handover.py](../../../examples/real_robot/15_speak_pick_and_hand_handover.py).
 
 **Which way the jaws close.** `Scene.from_robot_config` reads `robot.natural_closing_axis`: `grasps()`
 asked for no axis turns every grasp, of its two wrist turns half a turn apart, to the one whose tool +X
@@ -42,7 +42,7 @@ grasp, not the same one seen again (example 13).
 
 | You have | Call | Shown in |
 | --- | --- | --- |
-| an object's cloud in the base frame | `Scene.from_robot_config(tree.robot, cloud).grasps()` | [grasps_for_a_cloud.py](../../../examples/offline/grasping/grasps_for_a_cloud.py) |
+| an object's cloud in the base frame | `Scene.from_robot_config(tree.robot, cloud).grasps()` | the block above |
 | a mask, a depth image, a camera matrix | `build_calculator(tree.robot, data_dir=tree.root, camera_matrix=K)` | [generation/](generation/README.md) |
 | a cell and a prompt | `PickRun.from_cell(Cell.from_tree(tree, prompt=...), ...)` | [12_pick_with_the_camera.py](../../../examples/real_robot/12_pick_with_the_camera.py) |
 
@@ -63,9 +63,15 @@ print(report)
 
 `robot.grasping.calculator` chooses the generator: `geometric`, the default, or `deep`, the learned one
 in [deep/](deep/README.md). Every cell builds through `build_calculator`, the only reader of that key,
-and `preflight_calculator` checks the choice without building anything
-([select_grasp_generator.py](../../../examples/offline/grasping/select_grasp_generator.py)). `Scene`
-always runs the analytic generator and names it in `SceneGrasps.generator`.
+and `preflight_calculator` checks the choice without building anything. `Scene` always runs the
+analytic generator and names it in `SceneGrasps.generator`.
+
+`deep` builds for a cell only from weights whose proof has passed: the promotion record beside them
+says so at phase `active` ([deep/promotion.py](deep/promotion.py), the owner's decision of 2026-10-09).
+No finished models ship and every customer trains their own, the pipeline is not yet proven to
+generalise, and nothing writes a promotion yet (`deep judge`, coming), so today every trained artifact
+refuses a cell. `build_calculator(..., purpose="evaluate")` is how the ladder and the simulation
+runners build one anyway, to measure it; it skips that check and no other.
 
 The command lines belong to the subpackages; `src.robot.grasping` itself has no `python -m` entry.
 
@@ -139,6 +145,7 @@ to move a rate.
 | --- | --- | --- |
 | `FileNotFoundError` from `build_calculator` | `calculator: deep` and no file at `deep_generator.artifact_path` | train one ([deep/](deep/README.md)) or set `geometric` |
 | `ValueError` from `build_calculator` | not a generator artifact of this version, or the cell's hand is unset or not trained on | name a finished run's artifact and the cell's hand |
+| `ValueError` from `build_calculator` for a cell | `calculator: deep` and an artifact whose proof has not passed, which today is every one | set `geometric`, or evaluate it ([deep/](deep/README.md#what-it-refuses)) |
 | `ConfigError` at load | a switch that reaches nothing is on: `occlusion.hard_reject_enabled` | set it back to `false` |
 | `ConfigError` at load, `removed on purpose` | a removed mode (`closed_loop`, `dense_autonomous`), recovery action (`next_viewpoint`) or block (`closed_loop`, `verification`, `dense_recovery`) | write what the sentence names |
 | outcome `MODE_NOT_AVAILABLE` | a `mode=` per pick whose sampler the service was not built with | build the service in that mode |
@@ -178,10 +185,11 @@ friction-cone argument under a contact model, not a substitute for force feedbac
 | [recovery/](recovery/README.md) | bounded recovery: rescan, skip a failed part, the push. Off by default. `closed_loop/`, which held the post-grasp verifiers no pick path ran, left on 2026-09-29 |
 | [loop/](loop/README.md), [telemetry/](telemetry/README.md) | `BinPickingOrchestrator`, one attempt across the tiers and a wrist camera's looks; the frozen `GraspAttemptRecord` |
 | [multiview/](multiview/README.md), [suction/](suction/README.md) | fusion across fixed cameras and a wrist camera's looks, and which jaw contact faces were seen; suction candidates |
-| [deep/](deep/README.md) | the learned 6-DoF generator; no trained weights ship |
+| [deep/](deep/README.md) | the learned 6-DoF generator; no trained weights ship, and a cell grasps only with weights whose proof passed |
 | `uncertainty.py`, [visualization/](visualization/README.md) | fusion of the uncertainty channels; grasp debug images |
 | [calibration/](calibration/README.md), [replay/](replay/README.md), [rl/](rl/README.md) | the offline tail: reads what the pick path logged, never imported by it at module top level |
-| `scene.py`, `calculator_factory.py` | `Scene`; `build_calculator` and `preflight_calculator` |
+| `scene.py`, `calculator_factory.py` | `Scene`; `build_calculator` and `preflight_calculator`; both hand `robot.grasping.batched_builds` to the support-footprint stage, `build_calculator` after asking this machine's numpy whether it answers to the bit; `build_calculator` hands it `robot.grasping.geometry.footprint_rim_mm` too, where it is set (`support_footprint_rim_mm`), which `Scene` does not read |
+| `workers.py` | `SfeWorkers`: the support-footprint stage's units on a warm pool of worker processes (`robot.grasping.workers`), the same grasps spread over the cores; a worker makes its units' builds at once where the part's inputs ask for it (`batched_builds`) |
 
 ## Details
 

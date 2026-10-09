@@ -1,0 +1,44 @@
+2026-10-08 07:31:11,321 - URRobotArm - INFO - controller SIZE verified: config 'ur10' and the controller's 'UR10' are both a UR10. The series was NOT checked here and cannot be from this string, because a ur10e controller reports 'UR10' too. The tool-frame check next tells the two apart by asking which of them explains the controller better.
+2026-10-08 07:31:11,387 - URRobotArm - INFO - tool frame verified: source=polyscope, controller matches within 6.29 mm / 0.58 deg
+2026-10-08 07:35:47,237 - URRobotArm - INFO - mesh first: the exact guard alone judged 273 sample(s) of these legs clear; cuRobo was not asked
+2026-10-08 07:35:47,239 - URRobotArm - INFO - move_through_joints_on_the_line: one joint path through 5 waypoint(s); 2 waypoint(s) dense, 6 executed (5 leg(s)); joint travel in deg, total/largest leg: shoulder_pan_joint 0.0/0.0, shoulder_lift_joint 0.0/0.0, elbow_joint 0.0/0.0, wrist_1_joint 0.0/0.0, wrist_2_joint 120.0/30.0, wrist_3_joint 0.0/0.0
+2026-10-08 07:36:14,421 - URRobotArm - INFO - mesh first: the exact guard alone judged 273 sample(s) of these legs clear; cuRobo was not asked
+2026-10-08 07:36:14,421 - URRobotArm - INFO - move_through_joints_on_the_line: one joint path through 5 waypoint(s); 2 waypoint(s) dense, 6 executed (5 leg(s)); joint travel in deg, total/largest leg: shoulder_pan_joint 0.0/0.0, shoulder_lift_joint 0.0/0.0, elbow_joint 0.0/0.0, wrist_1_joint 0.0/0.0, wrist_2_joint 120.0/30.0, wrist_3_joint 0.0/0.0
+2026-10-08 07:37:14,120 - URRobotArm - INFO - mesh first: the exact guard alone judged 433 sample(s) of this straight joint line clear; cuRobo was not asked
+2026-10-08 07:37:14,122 - URRobotArm - INFO - move_to_joints: direct line; 2 waypoint(s) dense, 2 executed (1 leg(s)); joint travel in deg, total/largest leg: shoulder_pan_joint 0.2/0.2, shoulder_lift_joint 17.4/17.4, elbow_joint 26.1/26.1, wrist_1_joint 20.4/20.4, wrist_2_joint 4.5/4.5, wrist_3_joint 13.5/13.5
+2026-10-08 07:37:30,175 - URRobotArm - INFO - mesh first: the exact guard alone judged 2 sample(s) of this straight joint line clear; cuRobo was not asked
+2026-10-08 07:37:30,176 - URRobotArm - INFO - move_to_joints: direct line; 2 waypoint(s) dense, 2 executed (1 leg(s)); joint travel in deg, total/largest leg: shoulder_pan_joint 0.0/0.0, shoulder_lift_joint 0.0/0.0, elbow_joint 0.0/0.0, wrist_1_joint 0.0/0.0, wrist_2_joint 0.0/0.0, wrist_3_joint 0.0/0.0
+2026-10-08 07:38:17,391 - URRobotArm - INFO - mesh first: the exact guard alone judged 115 sample(s) of the line to approach_03 clear; cuRobo was not asked
+2026-10-08 07:38:20,819 - URRobotArm - INFO - mesh first: the exact guard alone judged 905 sample(s) of this straight joint line clear; cuRobo was not asked
+2026-10-08 07:38:22,589 - URRobotArm - INFO - mesh first: the exact guard alone judged 115 sample(s) of the line to approach_03 clear; cuRobo was not asked
+2026-10-08 07:38:24,174 - URRobotArm - INFO - mesh first: the exact guard alone judged 137 sample(s) of the line to retreat clear; cuRobo was not asked
+2026-10-08 07:38:24,175 - URRobotArm - INFO - a lift to retreat judged as if the jaws held a part 42.2 mm across: it would run
+2026-10-08 07:38:27,093 - URRobotArm - INFO - mesh first: the exact guard alone judged 905 sample(s) of this straight joint line clear; cuRobo was not asked
+2026-10-08 07:38:27,093 - URRobotArm - INFO - move to approach_00: direct line to goal 1 of 8 (branch shoulder -, wrist 2 +, elbow -, 78.8 deg at most); 2 waypoint(s) dense, 2 executed (1 leg(s)); joint travel in deg, total/largest leg: shoulder_pan_joint 16.0/16.0, shoulder_lift_joint 26.3/26.3, elbow_joint 29.8/29.8, wrist_1_joint 78.8/78.8, wrist_2_joint 6.0/6.0, wrist_3_joint 8.8/8.8
+2026-10-08 07:38:37,208 - URRobotArm - INFO - mesh first: the exact guard alone judged 109 sample(s) of the line to approach_03 clear; cuRobo was not asked
+2026-10-08 07:38:39,859 - URRobotArm - INFO - the world is held (the way back up from the part, judged against the world the line down was judged in): judged against the 129 box(es) the last refresh registered
+2026-10-08 07:38:40,044 - URRobotArm - INFO - mesh first: the exact guard alone judged 137 sample(s) of the line to retreat clear; cuRobo was not asked
+2026-10-08 07:38:40,044 - URRobotArm - INFO - a lift to retreat judged as if the jaws held a part 42.2 mm across: it would run
+2026-10-08 07:38:43,293 - URRobotArm - INFO - the world is held (the way back up from the part, judged against the world the line down was judged in): judged against the 129 box(es) the last refresh registered
+2026-10-08 07:38:43,652 - URRobotArm - INFO - mesh first: the exact guard alone judged 137 sample(s) of the line to retreat clear; cuRobo was not asked
+2026-10-08 07:39:30,847 - URRobotArm - INFO - mesh first: the exact guard alone judged 888 sample(s) of this straight joint line clear; cuRobo was not asked
+2026-10-08 07:39:30,848 - URRobotArm - INFO - move_home: direct line; 2 waypoint(s) dense, 2 executed (1 leg(s)); joint travel in deg, total/largest leg: shoulder_pan_joint 16.3/16.3, shoulder_lift_joint 25.5/25.5, elbow_joint 28.7/28.7, wrist_1_joint 76.9/76.9, wrist_2_joint 6.5/6.5, wrist_3_joint 8.9/8.9
+2026-10-08 07:39:39,397 - URRobotArm - INFO - mesh first: the exact guard alone judged 2 sample(s) of this straight joint line clear; cuRobo was not asked
+2026-10-08 07:39:39,398 - URRobotArm - INFO - move_to_joints: direct line; 2 waypoint(s) dense, 2 executed (1 leg(s)); joint travel in deg, total/largest leg: shoulder_pan_joint 0.0/0.0, shoulder_lift_joint 0.0/0.0, elbow_joint 0.0/0.0, wrist_1_joint 0.0/0.0, wrist_2_joint 0.0/0.0, wrist_3_joint 0.0/0.0
+2026-10-08 07:39:50,469 - URRobotArm - INFO - mesh first: the exact guard alone judged 2 sample(s) of this straight joint line clear; cuRobo was not asked
+2026-10-08 07:39:50,503 - URRobotArm - INFO - move_to_joints: direct line; 2 waypoint(s) dense, 2 executed (1 leg(s)); joint travel in deg, total/largest leg: shoulder_pan_joint 0.0/0.0, shoulder_lift_joint 0.0/0.0, elbow_joint 0.0/0.0, wrist_1_joint 0.0/0.0, wrist_2_joint 0.0/0.0, wrist_3_joint 0.0/0.0
+2026-10-08 07:40:40,218 - URRobotArm - INFO - mesh first: the exact guard alone judged 144 sample(s) of the line to approach_03 clear; cuRobo was not asked
+2026-10-08 07:40:43,268 - URRobotArm - INFO - mesh first: the exact guard alone judged 822 sample(s) of this straight joint line clear; cuRobo was not asked
+2026-10-08 07:40:45,533 - URRobotArm - INFO - mesh first: the exact guard alone judged 144 sample(s) of the line to approach_03 clear; cuRobo was not asked
+2026-10-08 07:40:48,218 - URRobotArm - INFO - mesh first: the exact guard alone judged 166 sample(s) of the line to retreat clear; cuRobo was not asked
+2026-10-08 07:40:48,218 - URRobotArm - INFO - a lift to retreat judged as if the jaws held a part 40.9 mm across: it would run
+2026-10-08 07:40:51,559 - URRobotArm - INFO - mesh first: the exact guard alone judged 822 sample(s) of this straight joint line clear; cuRobo was not asked
+2026-10-08 07:40:51,559 - URRobotArm - INFO - move to approach_00: direct line to goal 1 of 8 (branch shoulder -, wrist 2 +, elbow -, 118.0 deg at most); 2 waypoint(s) dense, 2 executed (1 leg(s)); joint travel in deg, total/largest leg: shoulder_pan_joint 2.4/2.4, shoulder_lift_joint 12.3/12.3, elbow_joint 47.3/47.3, wrist_1_joint 82.3/82.3, wrist_2_joint 6.0/6.0, wrist_3_joint 118.0/118.0
+2026-10-08 07:41:01,461 - URRobotArm - INFO - mesh first: the exact guard alone judged 136 sample(s) of the line to approach_03 clear; cuRobo was not asked
+2026-10-08 07:41:04,135 - URRobotArm - INFO - the world is held (the way back up from the part, judged against the world the line down was judged in): judged against the 129 box(es) the last refresh registered
+2026-10-08 07:41:04,623 - URRobotArm - INFO - mesh first: the exact guard alone judged 166 sample(s) of the line to retreat clear; cuRobo was not asked
+2026-10-08 07:41:04,623 - URRobotArm - INFO - a lift to retreat judged as if the jaws held a part 40.9 mm across: it would run
+2026-10-08 07:41:07,836 - URRobotArm - INFO - the world is held (the way back up from the part, judged against the world the line down was judged in): judged against the 129 box(es) the last refresh registered
+2026-10-08 07:41:08,301 - URRobotArm - INFO - mesh first: the exact guard alone judged 166 sample(s) of the line to retreat clear; cuRobo was not asked
+2026-10-08 07:42:03,365 - URRobotArm - INFO - mesh first: the exact guard alone judged 802 sample(s) of this straight joint line clear; cuRobo was not asked
+2026-10-08 07:42:03,365 - URRobotArm - INFO - move_home: direct line; 2 waypoint(s) dense, 2 executed (1 leg(s)); joint travel in deg, total/largest leg: shoulder_pan_joint 2.9/2.9, shoulder_lift_joint 11.2/11.2, elbow_joint 46.2/46.2, wrist_1_joint 80.1/80.1, wrist_2_joint 6.4/6.4, wrist_3_joint 117.9/117.9

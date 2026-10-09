@@ -893,3 +893,132 @@ describe('a wave at a greeting', () => {
     expect(view.stopCard).not.toBeNull()
   })
 })
+
+// Where a pick left the arm that was not driven back to its look (the pick loop's `stands_at`, 2026-10-08): said on the
+// attempt's end, carried onto the stop card of the problem stop the task ends on, and forgotten by the next pick.
+describe('where the pick left the arm', () => {
+  const begun = [
+    ev(1, 'run_started', { kind: 'task', plan: { ...PLAN, countdown: false } }),
+    ev(2, 'task.part_started', { part: 1, of: 1 }),
+    ev(3, 'pick.pick_started', { attempt_total: 1 }),
+    ev(4, 'pick.attempt_started', { attempt: 0, attempt_total: 1 }),
+  ]
+
+  it('is the standoff the move back did not leave, on the stop card of the task that stopped for a person', () => {
+    const view = replay([
+      ...begun,
+      ev(5, 'pick.attempt_finished', { action: 'execution_failed', outcome: 'PickOutcome.EXECUTION_FAILED', stands_at: 'standoff of grasp 3' }),
+      ev(6, 'run_finished', ended('task', 'failed', 'recovery_needs_person', 'problem', { error: 'the arm stands where the pick left it (standoff of grasp 3)' })),
+    ])
+    expect(view.standsAt).toBe('standoff of grasp 3')
+    expect(view.stopCard?.stopCode).toBe('recovery_needs_person')
+    expect(view.stopCard?.standsAt).toBe('standoff of grasp 3')
+  })
+
+  it('rides the pick a stop cut short between two grasps', () => {
+    const view = replay([
+      ...begun,
+      ev(5, 'pick.cancelled', { attempt: 0, stands_at: 'standoff of grasp 1' }),
+      ev(6, 'run_finished', ended('task', 'failed', 'halted', 'problem')),
+    ])
+    expect(view.stopCard?.standsAt).toBe('standoff of grasp 1')
+  })
+
+  it('is forgotten when the next pick starts, so a pick that got back to its look names none', () => {
+    const view = replay([
+      ...begun,
+      ev(5, 'pick.attempt_finished', { action: 'execution_failed', stands_at: 'standoff of grasp 1' }),
+      ev(6, 'pick.pick_started', { attempt_total: 1 }),
+      ev(7, 'pick.attempt_started', { attempt: 0, attempt_total: 1 }),
+      ev(8, 'pick.attempt_finished', { action: 'execution_failed' }),
+      ev(9, 'run_finished', ended('task', 'failed', 'failed_in_a_row', 'problem')),
+    ])
+    expect(view.standsAt).toBeNull()
+    expect(view.stopCard?.standsAt).toBeNull()
+  })
+})
+
+describe('an empty pick says how many looks saw nothing (2026-10-08)', () => {
+  const PLAN_UNTIL_EMPTY = { ...PLAN, scope: 'until_empty' }
+  const sayCk = (line: ChatLine | undefined, lang: 'de' | 'en' = 'de'): string => {
+    if (!line) throw new Error('no line')
+    return translate(lang, line.msg.key as never, line.msg.params, COCKPIT)
+  }
+
+  it('says "4 Blicke leer" for one empty pass over four looks', () => {
+    const view = replay([
+      ev(1, 'run_started', { kind: 'task', plan: PLAN_UNTIL_EMPTY }),
+      ev(2, 'task.part_started', { part: 1, of: null }),
+      ev(3, 'task.nothing_found', { part: 1, empty_in_a_row: 4, only_excluded: false, looks: 4, check_look: false }),
+    ])
+    expect(sayCk(lineOf(view, 'ck.nothing.looks'))).toBe('Nichts Passendes gesehen: 4 Blicke leer.')
+    expect(sayCk(lineOf(view, 'ck.nothing.looks'), 'en')).toBe('Nothing matching seen: 4 looks empty.')
+  })
+
+  it('says one look in the singular, and the task\'s own parts apart', () => {
+    const view = replay([
+      ev(1, 'run_started', { kind: 'task', plan: PLAN_UNTIL_EMPTY }),
+      ev(2, 'task.part_started', { part: 1, of: null }),
+      ev(3, 'task.nothing_found', { part: 1, empty_in_a_row: 1, only_excluded: true, looks: 1, check_look: true }),
+    ])
+    expect(sayCk(lineOf(view, 'ck.nothing.looks.excluded'))).toBe('Nur schon abgelegte Teile gesehen: 1 Blick leer.')
+  })
+
+  it('keeps the old line for an event that names no looks', () => {
+    const view = replay([
+      ev(1, 'run_started', { kind: 'task', plan: PLAN_UNTIL_EMPTY }),
+      ev(2, 'task.part_started', { part: 1, of: null }),
+      ev(3, 'task.nothing_found', { part: 1, empty_in_a_row: 2, only_excluded: false }),
+    ])
+    expect(keys(view)).toContain('event.task.nothing_found')
+    expect(keys(view)).not.toContain('ck.nothing.looks')
+  })
+})
+
+describe('the place and the follow say what they did (wave 3A, 2026-10-09)', () => {
+  const PLAN_CAMERA = { ...PLAN, place: { kind: 'camera', phrase: 'yellow bin', said: 'in die gelbe Kiste' } }
+  const begun = [
+    ev(1, 'run_started', { kind: 'task', plan: PLAN_CAMERA }),
+    ev(2, 'task.part_started', { part: 1, of: 1 }),
+  ]
+
+  it('says a part set down below the rim, and how far under it', () => {
+    const view = replay([...begun, ev(3, 'task.drop_planned', { kind: 'camera', air_mm: 20, release: 'below_the_rim', below_rim_mm: 30 })])
+    expect(say(lineOf(view, 'event.task.drop_planned.below'))).toBe('Ablage 30 mm unter dem Rand.')
+    expect(say(lineOf(view, 'event.task.drop_planned.below'), 'en')).toBe('Set down 30 mm below the rim.')
+    expect(keys(view)).not.toContain('event.task.drop_planned.camera')
+  })
+
+  it('keeps the drop over the rim where the drop is not below it', () => {
+    const view = replay([...begun, ev(3, 'task.drop_planned', { kind: 'camera', air_mm: 20 })])
+    expect(say(lineOf(view, 'event.task.drop_planned.camera'))).toBe('Ablage 20 mm über dem Rand.')
+  })
+
+  it('says a carry straight over the rim, and the carry to the bin\'s look as before', () => {
+    const over = replay([...begun, ev(3, 'task.carry_started', { to_look: null, over_the_rim: true })])
+    expect(say(lineOf(over, 'event.task.carry_started.over_the_rim'))).toBe('Direkt über den Rand zur Kiste.')
+    expect(say(lineOf(over, 'event.task.carry_started.over_the_rim'), 'en')).toBe('Carrying the part straight over the rim.')
+    expect(over.current.step).toBe('place')
+    const via = replay([...begun, ev(3, 'task.carry_started', { to_look: 'look_1' })])
+    expect(keys(via)).toContain('event.task.carry_started')
+    expect(keys(via)).not.toContain('event.task.carry_started.over_the_rim')
+  })
+
+  it('says a part let go over the rim where its way into the box was refused, and counts it placed', () => {
+    const view = replay([...begun, ev(3, 'task.placed', { outcome: 'executed', no_sensor: false, line_out_refused: false, below_the_rim: false })])
+    expect(say(lineOf(view, 'event.task.placed.over_the_rim'))).toBe('Über dem Rand abgelegt: der Weg in die Kiste wurde abgelehnt.')
+    expect(view.parts[0]?.placed).toBe(true)
+    const inside = replay([...begun, ev(3, 'task.placed', { outcome: 'executed', below_the_rim: true })])
+    expect(keys(inside)).toContain('event.task.placed')
+    expect(keys(inside)).not.toContain('event.task.placed.over_the_rim')
+  })
+
+  it('says a look whose parts a task followed found them again with no detector asked', () => {
+    const view = replay([...begun, ev(3, 'pick.perceived', { look: 'look_1', segmentation_count: 3, route: 'followed', route_reason: '3 part(s) followed' })])
+    expect(say(lineOf(view, 'event.pick.perceived.followed'))).toBe('look_1: 3 Teile wiedergefunden, ohne Erkennung.')
+    expect(say(lineOf(view, 'event.pick.perceived.followed'), 'en')).toBe('look_1: 3 parts found again, no detector asked.')
+    const grounded = replay([...begun, ev(3, 'pick.perceived', { look: 'look_1', segmentation_count: 3, route: 'grounded' })])
+    expect(keys(grounded)).toContain('event.pick.perceived')
+    expect(keys(grounded)).not.toContain('event.pick.perceived.followed')
+  })
+})

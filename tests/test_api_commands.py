@@ -14,7 +14,11 @@ label, the scope. What is held here:
 * ``GET /v1/commands/status`` says where the reader stands and loads nothing;
 * the reader's own words are the console's: its refusals are catalog codes, its notes the card's notes, its states the
   status's and the ready bar's commands light's; a refusal the catalog does not know is ``vlm_unavailable``, never a
-  500.
+  500;
+* the owner's speed round (2026-10-08): a known sentence is read by the table with no model asked, before the load
+  rule, as long as the app config says so (``runtime.commands.known_sentences``); a sentence the loaded model answered
+  before is answered from memory; the card says whether Enter may start it (``startable``), and only a clean reading
+  may.
 
 Honesty bucket (2): the VLM is the real holder and the real reader over a scripted model (``tests/test_vlm_holder``'s
 doubles); no weights, no GPU.
@@ -54,10 +58,14 @@ ANSWER = _continuation(object="green cube", object_said="den grünen Würfel", p
 
 
 class _CommandCell(LayerCell):
-    """The layer cell (``drop_left`` labelled "Ablage links"), its VLM a scripted one through a fresh holder."""
+    """The layer cell (``drop_left`` labelled "Ablage links"), its VLM a scripted one through a fresh holder.
+
+    The known sentences' table is off here (``runtime.commands.known_sentences: false``) unless a class says
+    ``KNOWN``: :data:`SENTENCE` is one of its sentences, and these tests pin the model's path."""
 
     BACKEND = "vlm"
     WEIGHTS = True
+    KNOWN = False
 
     def setUp(self) -> None:
         super().setUp()
@@ -67,12 +75,21 @@ class _CommandCell(LayerCell):
                              flags=re.MULTILINE)
         assert hits == 1, "the backend line was not found"
         models.write_text(text, encoding="utf-8")
+        self.known_sentences(self.KNOWN)
         shared_vlm().forget()
         self.addCleanup(shared_vlm().forget)
         self.loads = self.scripted(ANSWER)
         weights = patch("api.routers.diagnostics._vlm_weights_present", side_effect=lambda *_a: self.WEIGHTS)
         weights.start()
         self.addCleanup(weights.stop)
+
+    def known_sentences(self, on: bool) -> None:
+        """``runtime.commands.known_sentences`` of the cell's app config, which the route reads at each parse."""
+        runtime = self.tmp / "app" / "runtime.yaml"
+        text, hits = re.subn(r"^(\s*)known_sentences: \w+", rf"\g<1>known_sentences: {'true' if on else 'false'}",
+                             runtime.read_text(encoding="utf-8"), count=1, flags=re.MULTILINE)
+        assert hits == 1, "the known_sentences line was not found"
+        runtime.write_text(text, encoding="utf-8")
 
     def scripted(self, answer: str, **kwargs: Any) -> _Loads:
         """A fresh holder whose model writes ``answer``; the console's door asks it."""
@@ -212,6 +229,122 @@ class AGroundingDinoCellLoadsOnlyOnLadenTests(_CommandCell):
         self.assertEqual((501, "vlm_unavailable"), (refused.status_code, refused.json()["code"]), refused.text)
         self.assertEqual("not_configured", self.client.get("/v1/commands/status").json()["state"])
         self.assertEqual(0, loads.calls)
+
+
+class AKnownSentenceAsksNoModelTests(_CommandCell):
+    """The owner, 2026-10-08 ("speed first"): the cell's everyday sentences are read by the known sentences' table,
+    with no model asked and nothing loaded; the card is the one the model's answer makes, with its routes, and
+    reading still moves nothing."""
+
+    KNOWN = True
+
+    def test_the_sentence_becomes_the_card_the_model_makes_with_no_model_asked(self) -> None:
+        answered = self.parse()
+
+        self.assertEqual(200, answered.status_code, answered.text)
+        card = answered.json()
+        self.assertEqual((True, "task", "once", "drop_left", None),
+                         (card["understood"], card["intent"], card["scope"], card["place_pose"], card["place"]))
+        self.assertEqual(("green cube", "den grünen Würfel", True),
+                         (card["object"]["phrase"], card["object"]["said"], card["object"]["verified"]))
+        self.assertEqual(("green cube", "simple"), (card["object"]["route"]["prompt"], card["object"]["route"]["route"]))
+        self.assertEqual(("known-sentence", 0, False, False),
+                         (card["model"]["model_id"], card["model"]["attempts"], card["model"]["loaded_now"],
+                          card["model"]["remembered"]))
+        self.assertEqual((0, 0), (self.loads.calls, len(self.loads.model.calls)))
+
+    def test_a_clean_known_sentence_may_start_on_enter(self) -> None:
+        self.assertTrue(self.parse().json()["startable"])
+
+    def test_a_camera_place_is_previewed_too(self) -> None:
+        card = self.parse("Alle grauen Würfel in die Gelbe Kiste.").json()
+        self.assertEqual(("gray cube", "grauen Würfel", "until_empty"),
+                         (card["object"]["phrase"], card["object"]["said"], card["scope"]))
+        self.assertEqual(("yellow bin", "in die Gelbe Kiste", True, "yellow bin"),
+                         (card["place"]["phrase"], card["place"]["said"], card["place"]["verified"],
+                          card["place"]["route"]["prompt"]))
+        self.assertEqual(0, len(self.loads.model.calls))
+
+    def test_a_greeting_is_answered_without_the_model(self) -> None:
+        card = self.parse("Hallo Willy").json()
+        self.assertEqual(("none", "direct", None, False),
+                         (card["intent"], card["greeting"], card["object"], card["startable"]))
+        self.assertEqual((0, 0), (self.loads.calls, len(self.loads.model.calls)))
+
+    def test_any_other_sentence_goes_to_the_model(self) -> None:
+        card = self.parse("Nimm den grünen Würfel und fahr danach in die Parkposition").json()
+        self.assertEqual(("Qwen/Qwen3-VL-4B-Instruct", 1), (card["model"]["model_id"], card["model"]["attempts"]))
+        self.assertEqual(1, len(self.loads.model.calls))
+
+    def test_reading_a_known_sentence_starts_nothing(self) -> None:
+        self.parse()
+        self.assertEqual([], self.client.get("/v1/runs").json())
+        self.assertIsNone(self.cell.active_run_id)
+
+    def test_a_run_in_progress_refuses_it_before_anything_is_read(self) -> None:
+        self.cell.active_run_id = "run-busy"
+        refused = self.parse()
+        self.assertEqual((409, "run_active"), (refused.status_code, refused.json()["code"]), refused.text)
+
+    def test_the_app_config_turns_it_off_without_a_rebuild(self) -> None:
+        self.known_sentences(False)
+        card = self.parse().json()
+        self.assertEqual(("Qwen/Qwen3-VL-4B-Instruct", 1), (card["model"]["model_id"], len(self.loads.model.calls)))
+
+
+class AKnownSentenceIsReadBeforeLadenTests(_CommandCell):
+    """On a GroundingDINO cell the model loads only on "Laden" (Q8 A): a known sentence is read before it, and loads
+    nothing; any other sentence is refused as before."""
+
+    BACKEND = "grounded_sam"
+    KNOWN = True
+
+    def test_a_known_sentence_is_read_and_another_is_refused_until_laden(self) -> None:
+        read = self.parse()
+        self.assertEqual(200, read.status_code, read.text)
+        self.assertEqual("known-sentence", read.json()["model"]["model_id"])
+        refused = self.parse("Nimm den Becher")
+        self.assertEqual((409, "vlm_not_loaded"), (refused.status_code, refused.json()["code"]), refused.text)
+        self.assertEqual(0, self.loads.calls, "a sentence loaded the VLM on a cell that does not detect with it")
+
+
+class ARepeatedSentenceIsAnsweredFromMemoryTests(_CommandCell):
+    """R2 (2026-10-08): the loaded copy answers the same question once; the answer is checked again each time."""
+
+    def test_the_same_sentence_asks_the_model_once_and_reads_the_same(self) -> None:
+        first = self.parse().json()
+        second = self.parse().json()
+
+        self.assertEqual(1, len(self.loads.model.calls))
+        self.assertEqual((False, True), (first["model"]["remembered"], second["model"]["remembered"]))
+        for key in ("object", "place", "place_pose", "scope", "notes", "startable", "raw"):
+            self.assertEqual(first[key], second[key], key)
+
+    def test_another_sentence_asks_the_model_again(self) -> None:
+        self.parse()
+        self.parse("Nimm den grünen Würfel und leg ihn auf die Ablage links")
+        self.assertEqual(2, len(self.loads.model.calls))
+
+
+class TheCardSaysWhetherEnterMayStartTests(_CommandCell):
+    """R3 (2026-10-08): ``startable`` only for a clean reading; the console opens the card for every other."""
+
+    def test_a_clean_reading_may_start(self) -> None:
+        self.assertTrue(self.parse().json()["startable"])
+
+    def test_a_reading_with_a_note_opens_the_card(self) -> None:
+        self.scripted(_continuation(object="green cube", object_said="den roten Würfel", place_pose="Ablage links"))
+        card = self.parse().json()
+        self.assertEqual((["object_not_in_sentence"], False), (card["notes"], card["startable"]))
+
+    def test_a_reading_that_names_no_part_opens_the_card(self) -> None:
+        self.scripted(_continuation(scope="until_empty"))
+        card = self.parse("Räum die Kiste aus").json()
+        self.assertEqual((None, False), (card["object"], card["startable"]))
+
+    def test_a_stop_is_never_startable(self) -> None:
+        self.scripted(_continuation(intent="stop"))
+        self.assertFalse(self.parse("Stopp!").json()["startable"])
 
 
 class TheReaderSpeaksTheConsoleSWordsTests(_CommandCell):

@@ -206,15 +206,20 @@ def select_rig(camera_cfg: Any, *, rig_id: Maybe[str] = UNSET, open_disabled: Ma
 
 
 class Camera:
-    """The owner of one rig's device: open it, hand out handles, give it back.
+    """The owner of one rig's device: open it, hand out frames and handles, give it back.
 
-    Built by `from_config` from a camera section, or by `from_rig` from one rig; building touches no
-    device. `open` claims the device in the process registry and opens it, `release` gives both back
-    and never raises. Every grab and every lens read goes through the rig's lock. A ``with`` block
-    does both:
+    Build it with :meth:`from_tree` (the usual way), :meth:`from_config` or :meth:`from_rig`; building touches no
+    device. A ``with`` block opens and releases it:
 
-        with Camera.from_config(app.camera, rig_id="overhead") as camera:
-            frame = camera.grab()
+        with Camera.from_tree(load_tree()) as camera:
+            frame = camera.grab()          # colour (BGR uint8) and depth (uint16 millimetres)
+
+    :meth:`open` claims the device in the process registry, so two owners never share one, and :meth:`release` gives
+    both back and never raises. Every grab and every lens read goes through the rig's lock.
+
+    Args:
+        rig (CameraRigConfig): The rig, one entry of ``camera.cameras.rigs``.
+        streamer (Any): The device streamer behind the owner: the rig's own, or a device double.
     """
 
     def __init__(self, rig: CameraRigConfig, streamer: Any) -> None:
@@ -229,40 +234,78 @@ class Camera:
 
     @classmethod
     def from_rig(cls, rig: CameraRigConfig, *, streamer: Maybe[Any] = UNSET) -> Camera:
-        """The owner of ``rig``. ``streamer`` UNSET is the device streamer the rig names; a caller
-        passes one to put a device double, or the catalogue's own streamer, behind the owner."""
+        """The owner of one rig, not yet open.
+
+        Args:
+            rig (CameraRigConfig): The rig, one entry of ``camera.cameras.rigs``.
+            streamer (Maybe[Any]): The device streamer to put behind the owner, such as a device double; unset is the
+                streamer the rig names (default: UNSET).
+
+        Returns:
+            Camera: The owner; nothing is opened.
+        """
         return cls(rig, streamer if chosen(streamer) else create_streamer(rig))
 
     @classmethod
     def from_config(cls, camera_cfg: Any, *, rig_id: Maybe[str] = UNSET,
                     open_disabled: Maybe[bool] = UNSET) -> Camera:
-        """The owner of the rig a camera section gives (see `select_rig`), not yet open."""
+        """The owner of the rig a camera section gives, not yet open.
+
+        Args:
+            camera_cfg (Any): The camera section, ``tree.app_config.camera``.
+            rig_id (Maybe[str]): Which rig of ``camera.cameras.rigs``; unset is the one the cell runs on,
+                ``camera.cameras.primary_rig_id`` (default: UNSET).
+            open_disabled (Maybe[bool]): ``True`` opens a rig switched off (``enabled: false``), as the bench exerciser
+                does; unset refuses it (default: UNSET).
+
+        Returns:
+            Camera: The owner; nothing is opened.
+
+        Raises:
+            CameraRefused: The section does not configure the rig, the rig is switched off, or it has no depth (the
+                message lists the RGB-D rigs it has).
+        """
         return cls.from_rig(select_rig(camera_cfg, rig_id=rig_id, open_disabled=open_disabled))
 
     @classmethod
     def from_tree(cls, tree: Any, *, rig_id: Maybe[str] = UNSET,
                   open_disabled: Maybe[bool] = UNSET) -> Camera:
-        """The owner of the rig a loaded tree's camera section gives, not yet open (see
-        :meth:`from_config`).
+        """The owner of the rig a loaded tree's camera section gives, not yet open.
 
-        A tree that did not load is refused with its own refusal, as ``ConfigError``.
+        Args:
+            tree (Any): A loaded tree, ``load_tree()``.
+            rig_id (Maybe[str]): Which rig of ``camera.cameras.rigs``; unset is the one the cell runs on,
+                ``camera.cameras.primary_rig_id`` (default: UNSET).
+            open_disabled (Maybe[bool]): ``True`` opens a rig switched off (``enabled: false``), as the bench exerciser
+                does; unset refuses it (default: UNSET).
+
+        Returns:
+            Camera: The owner; nothing is opened.
+
+        Raises:
+            ConfigError: The tree did not load.
+            CameraRefused: The rig is not configured, switched off, or has no depth.
         """
         return cls.from_config(tree.app_config.camera, rig_id=rig_id, open_disabled=open_disabled)
 
     @property
     def rig(self) -> CameraRigConfig:
+        """The rig this owner holds, as the camera section configures it."""
         return self._rig
 
     @property
     def rig_id(self) -> str:
+        """The rig's id, as ``camera.cameras.rigs`` names it."""
         return self._rig.rig_id
 
     @property
     def source(self) -> str:
+        """The rig's device kind, such as ``"realsense"``."""
         return self._rig.source
 
     @property
     def enabled(self) -> bool:
+        """Whether the rig is switched on in the camera section (``enabled``)."""
         return bool(self._rig.enabled)
 
     @property
@@ -277,12 +320,20 @@ class Camera:
         return getattr(self._rig, "extrinsics", None) is not None
 
     def calibration(self) -> RigCalibration:
-        """The rig's calibration, through the one loader. `RigNotCalibrated` names the key for a rig
-        that declares none, and `RigCalibrationError` names it for an artifact that does not load."""
+        """The rig's calibration: where the camera sits against the robot, through the one loader.
+
+        Returns:
+            RigCalibration: Its mounting (fixed or on the wrist), its transform and where it was solved.
+
+        Raises:
+            RigNotCalibrated: The rig declares no calibration; it names the key.
+            RigCalibrationError: The declared artifact does not load; it says which key and why.
+        """
         return RigCalibration.from_config(self.rig_id, getattr(self._rig, "extrinsics", None))
 
     @property
     def is_open(self) -> bool:
+        """Whether the device is open for this owner."""
         return self._open
 
     def open(self) -> None:
@@ -333,11 +384,15 @@ class Camera:
         self.release()
 
     def grab(self) -> AnyFrame:
-        """One frame, taken under the rig's lock and stamped with the host time read just before the
-        grab.
+        """One frame for measuring, taken under the rig's lock and stamped with the host time read just before the grab.
 
-        Every grab is a measuring one, and it keeps the rig quiet for display frames for a while
-        after it (:meth:`peek`)."""
+        Returns:
+            AnyFrame: An ``RGBDFrame`` for an RGB-D rig: ``color`` (BGR ``uint8``), ``depth`` (``uint16`` millimetres)
+                and the stamp. Every grab keeps the rig quiet for display frames for a while after it (:meth:`peek`).
+
+        Raises:
+            CameraNotOpen: The owner is not open.
+        """
         with self._lock:
             self._require_open()
             captured_at_s = time.time()
@@ -366,28 +421,20 @@ class Camera:
                 moved()
 
     def peek(self) -> PeekFrame | None:
-        """A colour image for a person to look at, never one to measure with; ``None`` while the rig measures.
+        """A colour image for a person to look at, never one to measure with: what a camera window takes.
 
-        What a camera window takes (``src/camera/live_view.py``), built so that a window changes nothing the grabs of
-        the planning world, the pick perception or a calibration rely on:
+        It changes nothing the measuring grabs rely on: a RealSense is read through its display path (the newest colour
+        image, no filter, no alignment), and it never waits for the rig. It answers ``None`` while a measuring grab
+        holds the lock, for :data:`PEEK_QUIET_S` after every measuring grab and :meth:`camera_moved`, and where the
+        device has no new image.
 
-        * The device is read through its display path where it has one (``peek()`` on the streamer; a RealSense
-          polls the newest colour image and runs no filter and no alignment on it, and does not touch its pause
-          clock), so a RealSense's temporal filter holds the frames the measuring grabs handed it and nothing else,
-          and a carried camera still drops that history after a pause between two grabs, however many frames were
-          looked at in it. A device that keeps no history (no ``camera_moved``) is read with a plain grab, which then
-          feeds nothing. A device that keeps a history and offers no display path is refused with ``RuntimeError``,
-          untouched: looking at it would change what it measures.
-        * It never waits for the rig: while a measuring grab holds the lock it answers ``None`` at once. And it
-          answers ``None`` for :data:`PEEK_QUIET_S` (three frame periods on a slow rig) after every measuring grab and
-          every :meth:`camera_moved`, so a look never lands inside a burst of grabs. A measuring grab can therefore
-          wait behind at most one look, begun before its burst, for as long as the look holds the lock: a poll and a
-          copy on a RealSense, a frame period on a device read with a grab. A look can take the frameset the device
-          held, and the grab after it then waits for the next one, which is at least as new.
-        * A grab's stamp stays the host time read just before its own device read, and a look carries a stamp of its
-          own (:class:`PeekFrame`), which marks no measuring frame.
-        * ``None`` also where the device has no new image to give. An owner that is not open is refused with
-          :class:`CameraNotOpen` before its device is touched, as a grab is.
+        Returns:
+            PeekFrame | None: The image with a stamp of its own, which marks no measuring frame; ``None`` as above.
+
+        Raises:
+            CameraNotOpen: The owner is not open.
+            RuntimeError: A device that keeps a depth history and offers no display path: looking would change what it
+                measures.
         """
         if not self._lock.acquire(blocking=False):
             return None  # a measuring grab holds the rig: it goes first, and the window looks again later
@@ -418,21 +465,33 @@ class Camera:
         return max(PEEK_QUIET_S, frames)
 
     def get_intrinsics(self) -> np.ndarray | None:
-        """The camera matrix the device reports, or None where the rig has no single pinhole matrix."""
+        """The camera matrix the device reports.
+
+        Returns:
+            np.ndarray | None: The 3 x 3 pinhole matrix in pixels; ``None`` where the rig has no single one.
+        """
         with self._lock:
             self._require_open()
             read = getattr(self._streamer, "get_intrinsics", None)
             return read() if callable(read) else None
 
     def get_distortion(self) -> np.ndarray | None:
-        """The lens distortion coefficients the device reports, or None where it has none."""
+        """The lens distortion coefficients the device reports.
+
+        Returns:
+            np.ndarray | None: The coefficients, OpenCV's order; ``None`` where it has none.
+        """
         with self._lock:
             self._require_open()
             read = getattr(self._streamer, "get_distortion", None)
             return read() if callable(read) else None
 
     def handle(self) -> RigHandle:
-        """A handle shaped like the streamer its consumer expects, reaching this owner and no other."""
+        """A handle shaped like the streamer its consumer expects, reaching this owner and no other.
+
+        Returns:
+            RigHandle: What a perception source or a planner world reads frames through.
+        """
         from src.camera.orchestration.frame_provider import RigHandle  # noqa: PLC0415 (it imports this module)
 
         return RigHandle.of_camera(self)
@@ -442,12 +501,22 @@ class Camera:
         return self.render()
 
     def render(self) -> str:
+        """The camera as a person reads it.
+
+        Returns:
+            str: Such as ``camera 'EIH_Cam' (realsense, serial ...): open``.
+        """
         switched = "" if self.enabled else ", enabled: false"
         state = "open" if self._open else "closed"
         devices = " and ".join(_describe(key) for key in dict.fromkeys(self._keys))
         return f"camera {self.rig_id!r} ({self.source}, {devices}): {state}{switched}"
 
     def to_dict(self) -> dict[str, Any]:
+        """The camera as plain data.
+
+        Returns:
+            dict[str, Any]: ``rig_id``, ``source``, ``enabled``, ``open`` and ``devices``.
+        """
         return {
             "rig_id": self.rig_id,
             "source": self.source,

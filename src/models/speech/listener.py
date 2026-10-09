@@ -124,8 +124,24 @@ def _checked_bound(bound: float | None) -> float | None:
 
 
 class Listener:
-    """A voice stream cut into utterances. Build it with `from_config` or `from_parts`; the verb is
-    `listen()`, and `start()`/`stop()` (or `with`) open and close the source."""
+    """A voice stream cut into utterances, each transcribed: say something, get the words.
+
+        speech = load_speech_section()
+        engine = shared_speech().for_config(config=speech).engine
+        with Listener.from_config(config=speech, engine=engine) as listener:
+            utterance = listener.listen(timeout_s=10.0)
+
+    Build it with :meth:`from_config` or :meth:`from_parts`; the verb is :meth:`listen`, and ``start()``/``stop()`` (or
+    ``with``) open and close the source.
+
+    Args:
+        source (AudioSource): Where audio comes from: a microphone, or a ``PushToTalkSource``.
+        detector (VoiceActivityDetector): Decides where speech begins and ends (Silero).
+        engine (SpeechEngine): Transcribes each utterance (Whisper).
+        endpointing (Endpointing): How much silence closes an utterance, and the pre-roll kept.
+        timeout_s (float | None): The bound ``listen()`` uses when a call names none, seconds; ``None`` no bound.
+        clock (Callable[[], float]): The clock the waits are measured on, seconds.
+    """
 
     def __init__(
         self,
@@ -155,13 +171,23 @@ class Listener:
         endpointing: Maybe[Endpointing] = UNSET,
         timeout_s: Maybe[float | None] = UNSET,
     ) -> Listener:
-        """The YAML door: the microphone keys of `models.stt` describe the cell PC's microphone.
+        """A listener on the cell PC's microphone, from the keys of ``models.stt``. Opens and loads nothing.
 
-        The engine is handed in rather than built, because it is the one the upload path already holds
-        (`shared_speech().for_config(config=config).engine`). ``source`` UNSET is the cell PC's
-        microphone (`MicrophoneSource.from_config`); `PushToTalkSource.from_config(config=config)` is the
-        same microphone behind the talk switch. ``detector`` UNSET is Silero from
-        `models.stt.vad_model_path`, a detector of this listener's own. Opens and loads nothing.
+        Args:
+            config (SpeechToTextConfig): The speech section, ``load_speech_section()``.
+            engine (SpeechEngine): The transcriber, the one the process holds:
+                ``shared_speech().for_config(config=config).engine``.
+            source (Maybe[AudioSource]): Where audio comes from; unset is the cell PC's microphone, and
+                ``PushToTalkSource.from_config(config=config)`` the same behind the talk switch (default: UNSET).
+            detector (Maybe[VoiceActivityDetector]): The voice detector; unset is Silero from
+                ``models.stt.vad_model_path``, this listener's own (default: UNSET).
+            endpointing (Maybe[Endpointing]): How utterances close; unset is ``Endpointing()``, whose values are
+                placeholders (default: UNSET).
+            timeout_s (Maybe[float | None]): The bound ``listen()`` uses, seconds; unset is 30, ``None`` no bound
+                (default: UNSET).
+
+        Returns:
+            Listener: The listener; open it with ``with``.
         """
         if not chosen(detector):
             from src.models.speech.silero import SileroVoiceActivityDetector
@@ -188,10 +214,20 @@ class Listener:
         timeout_s: Maybe[float | None] = UNSET,
         clock: Callable[[], float] = time.monotonic,
     ) -> Listener:
-        """The Python door. Opens nothing.
+        """A listener over parts you built. Opens nothing.
 
-        ``timeout_s`` is the bound `listen()` uses when a call chooses none: UNSET means 30 s, None
-        means no bound. ``endpointing`` UNSET is `Endpointing()`, whose values are placeholders.
+        Args:
+            source (AudioSource): Where audio comes from.
+            detector (VoiceActivityDetector): The voice detector.
+            engine (SpeechEngine): The transcriber.
+            endpointing (Maybe[Endpointing]): How utterances close; unset is ``Endpointing()``, whose values are
+                placeholders (default: UNSET).
+            timeout_s (Maybe[float | None]): The bound ``listen()`` uses, seconds; unset is 30, ``None`` no bound
+                (default: UNSET).
+            clock (Callable[[], float]): The clock, seconds (default: time.monotonic).
+
+        Returns:
+            Listener: The listener.
         """
         if detector.samplerate != source.samplerate:
             raise ValueError(
@@ -245,7 +281,13 @@ class Listener:
     def listen(self, *, timeout_s: Maybe[float | None] = UNSET) -> Utterance:
         """The first utterance that closes from now on, transcribed; or why there was none.
 
-        ``timeout_s`` UNSET uses the listener's own bound; None waits for the source to end.
+        Args:
+            timeout_s (Maybe[float | None]): How long to wait, seconds; unset is the listener's own bound, ``None``
+                waits for the source to end (default: UNSET).
+
+        Returns:
+            Utterance: ``outcome`` (``HEARD``, or why not), ``transcript`` (the words, when heard), ``ended_by``,
+                ``speech_s`` and ``waited_s``; prints as itself.
         """
         import numpy as np
 

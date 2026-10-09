@@ -1,0 +1,25 @@
+2026-10-08 07:37:44,091 - src.robot.grasping.loop.pick_loop - INFO - the camera world finds what the part stands on at 9.6 mm under its foot, over the 0.0 mm declared: its grasps are planned on that
+2026-10-08 07:37:44,091 - src.robot.grasping.loop.pick_loop - INFO - support plane observed at 63.7 mm, 54.1 mm above the declared 9.6 mm, from this object's own cloud
+2026-10-08 07:38:08,398 - src.robot.grasping.loop.pick_loop - INFO - the camera world finds what the part stands on at 56.1 mm under its foot, over the 0.0 mm declared: its grasps are planned on that
+2026-10-08 07:38:08,399 - src.robot.grasping.loop.pick_loop - INFO - support plane observed at 56.4 mm, 0.3 mm above the declared 56.1 mm, from this object's own cloud
+2026-10-08 07:38:11,675 - src.robot.grasping.loop.pick_loop - INFO - the wrist camera keeps the guard's distance at 12 grasp(s) as turned, at 0 only turned half a turn (turned), at 0 neither way (tried last)
+2026-10-08 07:38:11,829 - src.robot.grasping.loop.pick_loop - INFO - the camera world finds what the part stands on at 56.6 mm under its foot, over the 0.0 mm declared: its grasps are planned on that
+2026-10-08 07:38:11,830 - src.robot.grasping.loop.pick_loop - INFO - support plane observed at 59.5 mm, 2.9 mm above the declared 56.6 mm, from this object's own cloud
+2026-10-08 07:38:13,941 - src.robot.grasping.loop.pick_loop - INFO - the wrist camera keeps the guard's distance at 12 grasp(s) as turned, at 0 only turned half a turn (turned), at 0 neither way (tried last)
+2026-10-08 07:38:13,943 - src.robot.grasping.loop.pick_loop - INFO - look (-75.1, -83.0, -72.4, -137.3, 96.0, -76.3) deg: a valid grasp with no rescan reason; the looking ends here
+2026-10-08 07:38:13,943 - src.robot.grasping.loop.pick_loop - INFO - the looks stop at look (-75.1, -83.0, -72.4, -137.3, 96.0, -76.3) deg, whose grasp is safe enough (looked from (-75.1, -83.0, -72.4, -137.3, 96.0, -76.3) deg); label agreed in 1 of 1 look
+2026-10-08 07:38:14,029 - src.robot.grasping.loop.pick_loop - INFO - try 1 of 12: the grasp the look ranked first (rank 0 of the look's grasps)
+2026-10-08 07:38:15,722 - src.robot.grasping.loop.pick_loop - WARNING - try 1 of 12 (rank 0) judged from where the arm stands, nothing moved: the line down to the grasp would be refused (self_collision_rejected: [safety:self_collision/self_collision] sample 92 of 116 of a path sampled at 2.963 mm a step: lfinger|fixture:seen_00: mesh distance 2.675 mm < 3.000 mm); the next grasp of the same look follows
+2026-10-08 07:38:15,722 - src.robot.grasping.loop.pick_loop - INFO - try 2 of 12: the next grasp of the same look (rank 1 of the look's grasps)
+2026-10-08 07:40:05,750 - src.robot.grasping.loop.pick_loop - INFO - the camera world finds what the part stands on at 60.2 mm under its foot, over the 0.0 mm declared: its grasps are planned on that
+2026-10-08 07:40:05,750 - src.robot.grasping.loop.pick_loop - INFO - support plane observed at 64.0 mm, 3.8 mm above the declared 60.2 mm, from this object's own cloud
+2026-10-08 07:40:31,782 - src.robot.grasping.loop.pick_loop - INFO - the wrist camera keeps the guard's distance at 12 grasp(s) as turned, at 0 only turned half a turn (turned), at 0 neither way (tried last)
+2026-10-08 07:40:31,984 - src.robot.grasping.loop.pick_loop - INFO - the camera world finds what the part stands on at 56.4 mm under its foot, over the 0.0 mm declared: its grasps are planned on that
+2026-10-08 07:40:31,984 - src.robot.grasping.loop.pick_loop - INFO - support plane observed at 56.9 mm, 0.5 mm above the declared 56.4 mm, from this object's own cloud
+2026-10-08 07:40:34,915 - src.robot.grasping.loop.pick_loop - INFO - the wrist camera keeps the guard's distance at 12 grasp(s) as turned, at 0 only turned half a turn (turned), at 0 neither way (tried last)
+2026-10-08 07:40:34,952 - src.robot.grasping.loop.pick_loop - INFO - the camera world finds what the part stands on at 54.9 mm under its foot, over the 0.0 mm declared: its grasps are planned on that
+2026-10-08 07:40:34,952 - src.robot.grasping.loop.pick_loop - INFO - support plane observed at 59.4 mm, 4.4 mm above the declared 54.9 mm, from this object's own cloud
+2026-10-08 07:40:37,466 - src.robot.grasping.loop.pick_loop - INFO - the wrist camera keeps the guard's distance at 12 grasp(s) as turned, at 0 only turned half a turn (turned), at 0 neither way (tried last)
+2026-10-08 07:40:37,550 - src.robot.grasping.loop.pick_loop - INFO - look (-75.1, -83.0, -72.4, -137.3, 96.0, -76.3) deg: a valid grasp with no rescan reason; the looking ends here
+2026-10-08 07:40:37,557 - src.robot.grasping.loop.pick_loop - INFO - the looks stop at look (-75.1, -83.0, -72.4, -137.3, 96.0, -76.3) deg, whose grasp is safe enough (looked from (-75.1, -83.0, -72.4, -137.3, 96.0, -76.3) deg); label agreed in 1 of 1 look
+2026-10-08 07:40:37,672 - src.robot.grasping.loop.pick_loop - INFO - try 1 of 12: the grasp the look ranked first (rank 0 of the look's grasps)

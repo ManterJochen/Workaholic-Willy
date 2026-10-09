@@ -1,10 +1,11 @@
 # Runtime tuning for the app-level services.
 #
-# Both blocks are operator-tunable. image_encoding cannot move the robot. greeting decides whether
+# Every block is operator-tunable. image_encoding cannot move the robot. greeting decides whether
 # "Hallo Willy" in the chat waves at once, on a click, or not at all: the wave is two swings of the
-# wrist, each judged by the exact guard like every motion. The file is optional and the schema
-# defaults apply when it is absent. Validation is by `RuntimeConfig` in
-# src/config/schema/runtime.py on every load.
+# wrist, each judged by the exact guard like every motion. commands decides whether the cell's
+# everyday sentences are read without the language model; a reading moves nothing either way. The
+# file is optional and the schema defaults apply when it is absent. Validation is by
+# `RuntimeConfig` in src/config/schema/runtime.py on every load.
 
 runtime:
   image_encoding:
@@ -13,3 +14,9 @@ runtime:
     # "Hallo Willy" in the chat: direct (Willy waves at once, no click), confirm (a dialog like
     # Home's asks first), off (Willy only greets back). The owner, 2026-10-06: direct for now.
     wave: direct
+  commands:
+    # Known sentences ("Alle grauen Würfel in die Gelbe Kiste.", "Hallo Willy") are read without
+    # the language model, as the model was measured to read them: well under a millisecond instead
+    # of about ten seconds. Every other sentence goes to the model. false: every sentence goes to
+    # the model. The owner, 2026-10-08: on.
+    known_sentences: true

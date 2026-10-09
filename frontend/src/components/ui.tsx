@@ -124,7 +124,7 @@ export function ErrorBanner({ error, onRetry }: { error: ApiError; onRetry?: () 
   const hasDetail = Object.keys(error.detail).length > 0
   // No answer at all is its own situation (the server is not running), not a refusal with a code.
   const noAnswer = error.httpStatus === 0
-  const said = noAnswer ? t('common.noAnswer', { origin: window.location.origin }) : t.msg(refusalMsg(error.code))
+  const said = noAnswer ? t('common.noAnswer', { origin: window.location.origin }) : t.msg(refusalMsg(error.code, error.detail))
   // The server's own English sentence and the code are details (OD adopted; OD 1, little jargon in the demo view):
   // open under the words in the tech view, folded behind "Details" in the demo view, where a generic refusal ("Der
   // Aufbau wurde abgelehnt.") would otherwise lose its only reason. The code is quotable in both, one click away there.

@@ -20,6 +20,7 @@ worse comparison than no rung at all, because it would look fair.
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -261,4 +262,37 @@ class EveryDeepRungBuildsTheDeepCalculatorTest(unittest.TestCase):
         missing = [c.name for c in DEEP_CONFIGURATIONS
                    if c.name.startswith("deep") and c.make is None]
         self.assertEqual(missing, [], f"these deep rungs would be built as GraspCalculator: {missing}")
+
+
+class TheRungGradesWhatNoCellMayUseYetTests(unittest.TestCase):
+    """2026-10-09. A cell refuses an artifact whose proof has not passed, and the rung is part of how that proof is
+    made, so it builds with `purpose="evaluate"`: that one check is not asked, every other refusal holds."""
+
+    def setUp(self) -> None:
+        from datagen.eval import ladder as evaluate
+
+        evaluate._DEEP_CACHE.clear()                            # noqa: SLF001 - per-process cache
+        self.addCleanup(evaluate._DEEP_CACHE.clear)             # noqa: SLF001
+
+    def test_the_rung_builds_for_evaluation(self) -> None:
+        from datagen.eval.ladder import _make_deep                # noqa: PLC0415
+
+        with mock.patch.dict(os.environ, {ENV_DEEP_ARTIFACT: "/the/rung/artifact.pt"}, clear=False), \
+             mock.patch("src.robot.grasping.calculator_factory.build_calculator") as build:
+            _make_deep(camera_matrix=None)                        # noqa: SLF001
+        self.assertEqual(build.call_args.kwargs["purpose"], "evaluate")
+
+    def test_the_rung_builds_and_loads_an_artifact_that_carries_no_promotion(self) -> None:
+        """Through the real factory and the real loader, on a real (tiny) artifact with no record beside it."""
+        from datagen.eval.ladder import _make_deep                # noqa: PLC0415
+        from src.robot.grasping.deep.promotion import why_not_deployable
+        from tests.test_deep_set_calculator import _artifact
+
+        with tempfile.TemporaryDirectory() as name:
+            artifact = _artifact(Path(name))
+            self.assertIn("carries no promotion", why_not_deployable(artifact))
+            with mock.patch.dict(os.environ, {ENV_DEEP_ARTIFACT: str(artifact)}, clear=False):
+                built = _make_deep(camera_matrix=None, min_grip_width_mm=5.0, max_grip_width_mm=85.0)
+        self.assertEqual(type(built).__name__, "DeepGraspCalculator")
+        self.assertEqual(built._family, "set", "the rung did not load the artifact")   # noqa: SLF001
 

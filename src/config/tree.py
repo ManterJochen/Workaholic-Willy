@@ -172,18 +172,24 @@ def _plain(value: Any) -> Any:
 
 @dataclass(frozen=True, slots=True)
 class LoadedTree:
-    """A validated tree, and the three facts it was validated under.
+    """A validated config tree, and the three facts it was validated under: the directory, the profile chain and the
+    values given in memory. What ``load_tree()`` returns.
 
-    The ask methods live here rather than on `ConfigTree` because they need the loaded config as
-    well as the root and the layers, and this is the only object that holds all three. A method
-    taking the config as an argument would let the three disagree again.
+        tree = load_tree("console_dummy")
+        print(tree)                                   # the verdict in one line
+        print(tree.robot.gripper.model)               # a validated section
+        print(tree.explain("robot.gripper.model"))    # its value and the file that decided it
+        bench = tree.with_values({"robot.grasping.colour_check": "log"})   # a change in memory, validated
 
-    A noun that spans sections takes this object and reads it under names that stay: `app_config`
-    and `robot` for the validated sections, `root` for the directory the registries and the
-    evidence are read from, `profile` and `layers` for the chain, and `values` for what
-    `with_values` gave in memory. A door reads the sections from here and never loads `root` under
-    `profile` a second time: the values given in memory live only in this object, and a second
-    load drops them without a word.
+    A tree that does not load is still returned, with ``ok`` false and its refusal; any ``from_tree`` on it raises
+    ``ConfigError``.
+
+    Attributes:
+        tree (ConfigTree): Where the YAML lives and which layers apply.
+        config (Any): The validated ``AppConfig``; ``None`` when the tree did not load (default: None).
+        error (str): The loader's refusal, verbatim; empty when it loaded (default: "").
+        hands (tuple[str, ...]): The hands in the tree's gripper registry, sorted (default: ()).
+        values (Mapping[str, Any]): What :meth:`with_values` gave in memory, dotted key to value (default: {}).
     """
 
     tree: "ConfigTree"
@@ -199,6 +205,7 @@ class LoadedTree:
 
     @property
     def ok(self) -> bool:
+        """Whether the tree loaded and validated."""
         return self.config is not None
 
     @property
@@ -267,28 +274,25 @@ class LoadedTree:
     # --- a change in memory --------------------------------------------------------------------
 
     def with_values(self, values: Mapping[str, object]) -> "LoadedTree":
-        """This tree with `values` given in memory, loaded as a load loads it.
+        """This tree with values given in memory, loaded as a load loads it. Nothing is written.
 
-        Nothing is written. `values` maps a dotted key to its value,
-        `{"robot.gripper.model": "robotiq_hande"}`, with `[n]` for an item of a list the tree holds
-        (`"camera.cameras.rigs[1].enabled"`). The files are read again under this tree's root and
-        chain, so a file edited since this tree loaded is read as it is now. The values merge on
-        top of every layer, and then the load runs as it always runs: the named hand fills the
-        thirteen numbers it supplies, the schema validates the whole tree, and the registries are
-        checked. A value that does not validate comes back as a tree that did not load, with the
-        load's own refusal, where the key is said to be written in `LoadedTree.with_values` rather
-        than at a file line that holds another value.
+        The files are read again under this tree's root and chain, the values merge on top of every layer, and the load
+        runs as always: a named hand fills the numbers it supplies, the schema validates the whole tree, the registries
+        are checked. ``model_copy`` is no substitute: it runs no validator and skips the hand fill.
 
-        The values this tree already holds stay, and a key given again, a key inside it or a block
-        holding it takes the new value. A mapping value merges key by key; a list, an empty
-        mapping and a scalar replace; `None` sets `None`. A relative path given here is read against
-        this tree's folder, as the same value written in a layer would be (`src.config.paths`), so
-        a path a program computed goes in absolute. A key that is not a dotted string, or a
-        model object given as a value, is a programmer error and raises `ValueError` or
-        `TypeError`.
+        Args:
+            values (Mapping[str, object]): Dotted keys to values, ``{"robot.gripper.model": "robotiq_hande"}``, with
+                ``[n]`` for an item of a list (``"camera.cameras.rigs[1].enabled"``). A mapping merges key by key; a
+                list, an empty mapping and a scalar replace; ``None`` sets ``None``; a relative path is read against the
+                tree's folder.
 
-        `model_copy` is no substitute: it runs no validator and skips the named hand fill, so
-        naming the Hand-E that way keeps the 2F-85's widths and finger geometry and raises nothing.
+        Returns:
+            LoadedTree: The new tree. A value that does not validate comes back as a tree that did not load, its refusal
+                naming the key as written in ``with_values``.
+
+        Raises:
+            ValueError: A key that is not a dotted string.
+            TypeError: A model object given as a value.
         """
         return self.tree._load(_merged_values(self.values, _flattened(values)))
 
@@ -297,12 +301,13 @@ class LoadedTree:
     def explain(self, key: str) -> "KeyExplanation":
         """Everything known about one key: its value here, and which file decided it.
 
-        `explain_in` reads the value out of a config and walks `root` plus `layers` for the origin.
-        All three come from this tree, so the value and the provenance cannot describe two
-        different loads.
+        Args:
+            key (str): A dotted key, such as ``"robot.gripper.model"``.
 
-        A key given in memory is said to be set in `LoadedTree.with_values`. The file lines that
-        also write it stay in the chain, and none of them wins.
+        Returns:
+            KeyExplanation: The value, its schema description and default, and the file and line that set it (or
+                ``LoadedTree.with_values``); a key the schema does not know, and a tree that did not load, say so.
+                Prints as itself.
         """
         from .explain import Layer, _yaml_path, explain_in  # noqa: PLC0415
 
@@ -329,8 +334,14 @@ class LoadedTree:
     ) -> str:
         """Only the values that differ from their schema default: what someone actually decided.
 
-        Neither filter is defaulted here: `explain.decisions` already declares `section=None` and
-        `tier=None`, and repeating them in this signature would declare one fact twice.
+        Args:
+            section (Maybe[str | None]): Only keys under this dotted prefix, such as ``"robot.grasping"``; unset or
+                ``None`` every section (default: UNSET).
+            tier (Maybe[str | None]): Only keys of this schema tier; unset or ``None`` every tier (default: UNSET).
+
+        Returns:
+            str: One line per decided key, its value and the file that set it. Check ``ok`` first: a tree that did not
+                load holds no values, and reads as if nothing were decided.
         """
         from .explain import decisions as _decisions  # noqa: PLC0415
 
@@ -353,9 +364,10 @@ class LoadedTree:
         return self.render()
 
     def render(self) -> str:
-        """The verdict as one ASCII line, no trailing newline, taking no arguments.
+        """The verdict in one line: the chain and whether it loaded, naming any values given in memory.
 
-        A tree given values in memory names their keys, so its verdict is never read as the files'.
+        Returns:
+            str: ASCII, no trailing newline. ``print(tree)`` shows the same; a refused tree shows its refusal.
         """
         memory = ", ".join(self.values)
         if not self.ok:
@@ -369,10 +381,11 @@ class LoadedTree:
         return f"{line}  hands: {', '.join(self.hands)}" if self.hands else line
 
     def to_dict(self) -> dict[str, Any]:
-        """Plain data: the tree, the chain, the values given in memory and the verdict.
+        """The tree as plain data: the root, the chain, the values given in memory and the verdict. The config itself is
+        not in it (it has its own ``model_dump_json``).
 
-        The config itself is not in here. It is a Pydantic model with its own `model_dump_json`,
-        and a second serialisation of it would be a second answer.
+        Returns:
+            dict[str, Any]: ``json.dumps`` safe.
         """
         return {
             "root": str(self.tree.root),
@@ -578,16 +591,20 @@ class ConfigTree:
 def load_tree(
     profile: "Maybe[str | None]" = UNSET, *, root: "Maybe[str | Path | None]" = UNSET
 ) -> LoadedTree:
-    """The tree at ``root`` under ``profile``, loaded in one call.
+    """Load and validate a cell's config tree in one call.
 
-        tree = load_tree()               # the cell WILLY_PROFILE names
-        tree = load_tree("console_dummy")
+        tree = load_tree()                    # the cell WILLY_PROFILE names
+        tree = load_tree("console_dummy")     # the desk profile
         tree = load_tree(None, root="D:/cells/line3")
 
-    It is ``ConfigTree.from_directory(root=root, profile=profile).load()``. Unset ``profile`` is
-    the chain ``WILLY_PROFILE`` names, so a program run as ``WILLY_PROFILE=<cell> python ...``
-    names no robot itself; ``None`` is the base tree; a string is that chain. Unset ``root`` is the
-    repository's tree. A tree that does not load comes back with ``ok`` false and its refusal, as
-    ``ConfigTree.load`` returns it.
+    Args:
+        profile (Maybe[str | None]): The profile chain, comma separated (``"ur5e,hande"``), the ``*.<profile>.yaml``
+            layers merged in order; unset is the chain ``WILLY_PROFILE`` names, so a program run as
+            ``WILLY_PROFILE=<cell> python ...`` names no robot itself; ``None`` is the base tree (default: UNSET).
+        root (Maybe[str | Path | None]): The config directory; unset is the repository's ``config/`` (default: UNSET).
+
+    Returns:
+        LoadedTree: The tree. One that does not load comes back with ``ok`` false and its refusal, the file and line to
+            fix; it does not raise.
     """
     return ConfigTree.from_directory(root=root, profile=profile).load()

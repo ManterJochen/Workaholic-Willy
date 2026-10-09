@@ -82,13 +82,15 @@ and 3 when the sweep raised. Every line below is used by
 |---|---|---|
 | `python -m src.robot.execution.real_cell --runs 3 --prompt "<phrase>"` | Moves the arm: a campaign of picks under one connect; exit 0 only when every attempt succeeded | [real_cell_first_pick](runbooks/real_cell_first_pick.md) |
 | `python -m src.robot.grasping.replay --records <file>` | rolls up the KPIs of the record file a run wrote, once the tree sets `grasping.record_log_path` | [real_cell_first_pick](runbooks/real_cell_first_pick.md) |
+| `python scripts/cell/pick_timeline.py <logs> [<other logs>]` | reads a cell's logs folder back: every task split into its survey, its picks and its places, and each into stages, with their best, median and worst; two folders set A against B, stage by stage; `<logs>#last` keeps the runs of the last connect; moves nothing | [scripts/cell](../scripts/cell/README.md) |
 
 A spoken command, the locator and a pick at a known pose have no command: they are objects a program
 holds between calls, so they are Python only ([examples/real_robot/](../examples/README.md)).
 
 ### The operator console
 
-The console moves the arm only on a person's click in the browser, on a button that names the motion, bar a
+The console moves the arm only on a person's click in the browser, on a button that names the motion, or the
+person's Enter on a sentence read as a task that needs no card (the owner, 2026-10-08), bar a
 greeting: "Hallo Willy" in the chat waves at once where `runtime.greeting.wave` says `direct`, the shipped
 default (the owner, 2026-10-06), two swings of the wrist the exact guard judges. Its routes are in
 [`api/README.md`](../api/README.md), its pages in [`frontend/README.md`](../frontend/README.md).
@@ -166,8 +168,8 @@ Routing a prompt has no command; the operator console answers `GET /v1/diagnosti
 | `python -m src.robot.execution.real_cell --check` | its `fixtures` and `planning world` rows say what the cell declared about the space it moves through |
 | `python -m src.config` | after declaring the bench, the tree still loads |
 
-No command judges a trajectory; [gate_the_whole_path.py](../examples/offline/safety/gate_the_whole_path.py)
-does it from Python.
+No command judges a trajectory: the arm's driver judges every one before it sends it
+([src/robot/safety/](../src/robot/safety/README.md)).
 
 ### Grasping
 
@@ -178,11 +180,11 @@ does it from Python.
 | `python -m src.config explain robot.gripper.vacuum` | the pins, the port and the time the ejector takes to build vacuum |
 | `python -m src.config explain robot.grasping.calculator` | `geometric` or `deep` |
 | `python -m src.config explain robot.grasping.deep_generator.artifact_path` | where the deep branch reads its weights |
-| `python -m src.robot.grasping.deep inspect --artifact <file>` | what a weights file says about itself: kind, version, gripper |
+| `python -m src.robot.grasping.deep inspect --artifact <file>` | what a weights file says about itself: first whether a cell may grasp with it (`NOT DEPLOYABLE` and why), then kind, version, gripper |
 | `python -m src.robot.grasping.calibration --replay <records.jsonl> --out <file>.json` | fits the uncertainty calibration of the grasp score from a replay of pick records |
 
-Nothing on the command line proposes a suction grasp or triggers the deep generator's refusal; the
-examples under [offline/grasping/](../examples/README.md) do both from Python.
+Nothing on the command line proposes a suction grasp; [src/robot/grasping/suction/](../src/robot/grasping/suction/README.md)
+shows the call from Python.
 
 ### Data generation
 
@@ -230,3 +232,4 @@ when it does not, 2 when there is nothing to check. Run each under the cell's pr
 | `python scripts/checks/safety_guards.py` | makes every wired guard refuse a violation of its own family | |
 | `python scripts/checks/camera_artifacts.py` | opens every calibration artifact the configuration names | |
 | `python scripts/checks/grasping_switches.py` | which grasping block is reachable in which grasp mode | |
+| `python scripts/checks/batched_builds.py` | whether this PC builds a closing line's grasps at once exactly as one at a time, bit for bit, before `robot.grasping.batched_builds` goes on for the cell; CPU only, moves nothing; 2 where the checkout has no `tests` folder | |

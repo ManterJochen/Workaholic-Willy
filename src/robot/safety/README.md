@@ -4,7 +4,9 @@
 and the first one that rejects vetoes the move.
 
 ```python
-from willy import SafetyPreflight, create_arm, load_tree
+from willy import load_tree
+from src.robot.drivers import create_arm
+from src.robot.safety import SafetyPreflight
 
 tree = load_tree()                                      # the cell WILLY_PROFILE names
 gate = SafetyPreflight.from_tree(tree)
@@ -18,9 +20,6 @@ print("clear" if refusal is None else refusal)
 
 The UR and other vendor drivers build this gate from the same tree, so a `Robot` or a `Cell` on one of
 them already runs it before each move; the dummy arm carries none.
-Quick checks: 
-[gate_the_whole_path.py](../../../examples/offline/safety/gate_the_whole_path.py) and
-[self_collision_backend.py](../../../examples/offline/safety/self_collision_backend.py).
 [`scripts/checks/safety_guards.py`](../../../scripts/checks/safety_guards.py) makes every guard your cell
 wires refuse a violation of its own family, and exits 1 when one does not.
 
@@ -132,6 +131,26 @@ commanded, with the joint-limit, self-collision (fixtures included) and payload 
 them off and there is no stride. The step is the self-collision margin (`path_step_mm`), and the reach
 comes from the arm and what its flange carries: the hand, a wrist camera and a declared carried part.
 
+**A path judged whole** (`self_collision.whole_path_judge`, off by default). On, the gate first asks each
+guard of a joint move for the first sample it might refuse, over the whole path at once (`first_suspect`):
+the joint limits on every sample at once, the payload once, the exact meshes with every part placed at every
+sample in one pass (`_ur_kinematics.ur_link_transforms_mm_many`, bit for bit the chain one sample is placed
+with). A sample before that one is passed only on a proof that every distance the guard would measure there
+keeps its limit: the bounding spheres the guard culls by; a part's convex hull (Coal only), which holds the
+mesh and is taken 0.001 mm nearer than it measures; or a distance measured at an earlier sample less how far
+the pair can have moved since, an arm pair in either part's frame and a part against a box as the guard's own
+box rule. Where none proves it, the pair is measured exactly as the guard measures it, and a distance under
+the limit plus 1e-6 mm ends the pass there. From that sample on the gate judges every sample one at a time
+exactly as with the switch off, so the verdict, the sample it names and its message are the same
+(`tests/test_a_whole_path_is_judged_as_every_sample_is.py`: routes, lines and paths over the cell's worlds
+of 2026-10-07, the borderline at 3 mm give or take 1e-7 mm, the guard order). A guard that offers no such
+pass, a site-local one, or the self-collision guard where it would answer with the capsule proxy, leaves
+every sample to the loop, and the log says so once. On the desk the owner's route of 905 samples over 128
+boxes took 12 ms instead of 0.96 s, the way home 9 to 11 ms instead of 1.2 to 1.4 s, a line down 4 to 6 ms
+instead of 160 to 180 ms. The UR driver's mesh first asks the support plane and the robot's base of a whole
+path the same way (`ExactPairs.first_low`, `first_near_base`), and takes its sentence from the configuration
+the loop names.
+
 `ContinuousCollisionMonitor` checks exact meshes at every control step of a move, arm against itself and
 against fixtures. A check that overruns its budget or cannot run stops the move. It is opt-in: the
 default `ContinuousGuardProfile` has `enabled=False`, a margin of 8.0 mm and a budget of 12.0 ms, and
@@ -164,7 +183,8 @@ under 19.6 mm, the wrist clearance of a natural grasp, or a good pick stops.
 | [`singularity.py`](singularity.py) | Jacobian and singular-value analysis |
 | [`continuous_monitor.py`](continuous_monitor.py) | the per-step monitor and its profile |
 | [`attestation.py`](attestation.py) | `SafetyAttestation` and `SafetyPosture` |
-| `_capsule.py`, `_ur_kinematics.py`, `_fcl_self_collision.py` | capsule distances, the UR DH tables, the exact mesh backend |
+| `_capsule.py`, `_ur_kinematics.py`, `_fcl_self_collision.py` | capsule distances, the UR DH tables and the chain of many configurations at once, the exact mesh backend and its whole-path pass |
+| `_ur_ik.py` | the closed-form inverse kinematics of the UR flange and its branches; on a controller's own calibrated rows (`_ur_kinematics.URDhChain`), the configuration nearest a seed as its `getInverseKinematics` answers it, or why that cannot be vouched for (`ur_chain_ik_nearest`, `robot.safety.ik_quality.line_ik`) |
 | [`planning/`](planning/README.md) | the planner sidecar and the two external engines |
 | `data/` | the committed mesh bundles and `bundles.json` |
 

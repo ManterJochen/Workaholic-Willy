@@ -23,13 +23,23 @@ KPI sourcing:
   the jaws empty) is a distinct terminal outcome that never co-occurs with ``SUCCEEDED``, so there is no
   honest signal to write. The key stays wired: the KPI reads it the moment a false-positive detector (a
   post-grasp re-check) is added.
+
+Writing a record and the views took 1.5 to 2.3 s after every pick on the owner's cell (a 5 MB line, 2026-10-08), while
+the arm waited for them. A cell that writes in the background (``build_real_cell`` turns it on:
+``AutonomousGraspService.write_records_in_the_background``) hands each record to the process's one
+:class:`BackgroundWriter` (:func:`background_writer`) and the pick returns at once: the records are written in the
+order they were handed in, a write that fails is logged and stops nothing else, and whatever is still waiting is written
+before the process ends. A task's kept views go the same way (``pick_run.keep_pick_views``).
 """
 
 from __future__ import annotations
 
+import atexit
 import json
+import queue
+import threading
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from src.robot.constants import GRASP_RECORD_LOG_FILE, create_robot_logger
 from src.robot.grasping.telemetry.outcome_logging import (
@@ -331,8 +341,80 @@ def log_record(
     return record
 
 
+#: How long the end of the process waits for what the background writer still holds, seconds: a record is 1 to 2 s on
+#: the cell, and a few picks may wait.
+_FLUSH_AT_EXIT_S = 60.0
+
+
+class BackgroundWriter:
+    """One thread that writes what a pick leaves behind once the pick has gone on, in the order it was handed in.
+
+    :meth:`submit` hands it a job and returns at once; the thread starts with the first job. A job that raises is logged
+    and the next one written: a record or a views file that is lost never stops a pick, a task or another write.
+    :meth:`flush` waits until everything handed in so far is written. One per process (:func:`background_writer`),
+    flushed when the process ends.
+    """
+
+    def __init__(self, name: str = "willy-record-writer") -> None:
+        self._name = name
+        self._jobs: "queue.Queue[tuple[str, Callable[[], object]]]" = queue.Queue()
+        self._thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+
+    def submit(self, what: str, job: Callable[[], object]) -> None:
+        """Write ``job`` after everything handed in before it; ``what`` names it in the log where it fails."""
+        with self._lock:
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._run, name=self._name, daemon=True)
+                self._thread.start()
+            self._jobs.put((what, job))
+
+    def flush(self, timeout_s: Optional[float] = None) -> bool:
+        """Wait until everything handed in so far is written; whether it was, within ``timeout_s`` (``None``: until it
+        is)."""
+        if self._thread is None:
+            return True
+        done = threading.Event()
+        self.submit("the writer's flush", done.set)
+        return done.wait(timeout_s)
+
+    def _run(self) -> None:
+        while True:
+            what, job = self._jobs.get()
+            try:
+                job()
+            except Exception as exc:  # noqa: BLE001 (a lost file is said, and the next one written)
+                logger.warning("%s was not written: %s: %s", what, type(exc).__name__, exc)
+            finally:
+                self._jobs.task_done()
+
+
+_WRITER_LOCK = threading.Lock()
+_WRITER: Optional[BackgroundWriter] = None
+
+
+def background_writer() -> BackgroundWriter:
+    """The process's one :class:`BackgroundWriter`, made at the first ask and flushed when the process ends."""
+    global _WRITER  # noqa: PLW0603 (one writer per process)
+    with _WRITER_LOCK:
+        if _WRITER is None:
+            _WRITER = BackgroundWriter()
+            atexit.register(_flush_at_exit)
+        return _WRITER
+
+
+def _flush_at_exit() -> None:
+    """Whatever the writer still holds is written before the process ends; what it cannot write in time is said."""
+    writer = _WRITER
+    if writer is not None and not writer.flush(_FLUSH_AT_EXIT_S):
+        logger.warning("the background writer did not finish within %.0f s of the process's end: the records and views "
+                       "still waiting were not written", _FLUSH_AT_EXIT_S)
+
+
 __all__ = [
     "SAFETY_REJECTED_OUTCOMES",
+    "BackgroundWriter",
+    "background_writer",
     "to_attempt_record",
     "log_record",
 ]

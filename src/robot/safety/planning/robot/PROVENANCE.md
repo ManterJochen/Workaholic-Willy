@@ -262,6 +262,24 @@ its arm and the fact that it carries no hand under `_provenance`, and a planner 
 another arm, and one that models a hand of its own. A planner is kept only on a combination a committed
 evidence file measured ([`evidence/`](evidence/)).
 
+## The planning-only maps
+
+`{arm}_arm_lean_spheres.yml` and `{hand}_gripper_lean_spheres.yml` are a second robot, for cuRobo's planner alone
+(`safety.planned_motion.planning_spheres: lean`, [`../planning_model.py`](../planning_model.py)). They claim less than
+the cover maps above, on purpose: holes are allowed. They are NVIDIA's pattern for its own UR configs (`ur10e.yml`:
+19 arm spheres, one on the shoulder, seven along each tube, one per wrist; measured on the ur10e's meshes, holes of 16
+to 71 mm and a reach up to 29 mm), fitted to these bundles by `scripts/curobo/fit_planning_spheres.py`: spheres along
+each link's axis, each the link's thickness there plus the reach its plan asks, kept while every surface sample lies
+within the plan's hole of one of them. On the UR10, 26 spheres, holes up to 20 mm on the shoulder and the upper arm, 15
+on the forearm and the wrists, reach up to 30 mm; on the Hand-E a housing of 6 and 3 per finger at the evidence map's
+12 mm reach. Each file records per body what it was asked and what a fresh sample measures, and the DH rows its arm is
+placed with.
+
+Nothing is judged on them. The planner proposes on them, and `check_js`, the ready gate, the combination evidence and
+the exact guard judge every sample of every plan on the cover maps and the meshes, as they always did. A hole here
+costs a plan the judgement refuses; reach costs a plan cuRobo does not find. Which of the two is cheaper on the
+owner's cell is the desk A/B's to say (`scripts/curobo/ab_planning_spheres.py`).
+
 ## A descriptor build reproduces
 
 A re-run reproduces the URDF half byte for byte, and it reproduces the YAML half as well, because

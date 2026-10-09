@@ -656,7 +656,8 @@ class APickSaysNothingOfTheLastPicksLooksTests(unittest.TestCase):
 
 class TheViewsOfAPickAreKeptOnlyWhenAskedTests(unittest.TestCase):
     def test_a_campaign_asked_to_keeps_each_picks_looks_where_it_says(self) -> None:
-        from src.robot.execution.record_views import RECORD_VIEWS_FORMAT
+        # A file none of whose looks a camera recorded for research is format 1, byte for byte (format 2, 2026-10-09).
+        from src.robot.execution.record_views import RECORD_VIEWS_FORMAT_WITHOUT_RESEARCH
 
         cell = _Cell(grasps_on=(1,))
         with tempfile.TemporaryDirectory() as folder, \
@@ -668,7 +669,7 @@ class TheViewsOfAPickAreKeptOnlyWhenAskedTests(unittest.TestCase):
             self.assertEqual([written], sorted(Path(folder).glob("*.npz")))
             self.assertIn(written.name, attempt.render())
             with np.load(written, allow_pickle=False) as views:
-                self.assertEqual(RECORD_VIEWS_FORMAT, int(views["format"]))
+                self.assertEqual(RECORD_VIEWS_FORMAT_WITHOUT_RESEARCH, int(views["format"]))
                 self.assertEqual([_label(LOOK_PLUS_X), _label(LOOK_MINUS_X)], views["labels"].tolist())
                 self.assertEqual([f"wrist@{_label(LOOK_PLUS_X)}", f"wrist@{_label(LOOK_MINUS_X)}"],
                                  views["views"].tolist())

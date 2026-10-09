@@ -255,6 +255,10 @@ class GripperController:
             "Gripper move: width=%.2f mm (cnt=%d), speed=%.2f, force=%.2f",
             clamped_mm, target_count, speed, force,
         )
+        # The same line the toggle hand writes ("actuating jaws CLOSED via ..."), so a cell's log times a URCap hand's
+        # close and release as it times a toggle's (scripts/cell/pick_timeline.py).
+        self.logger.info("actuating jaws %s via robotiq: %.1f mm",
+                         "OPEN" if clamped_mm >= self.max_width_mm - 0.5 else "CLOSED", clamped_mm)
         drv.move(target_count, speed_count, force_count)
         self._wait_for_the_fingers(drv)
 

@@ -244,8 +244,11 @@ def _sentence(event: "PickProgress") -> tuple[Severity, str]:
         # (``target_label_not_found``); phrasing it is this module's job, as for ``_STAGE_COPY``.
         seen = [str(x) for x in event.extra.get("labels_seen") or ()]
         named = ", ".join(repr(x) for x in seen if x) or "nothing (this source emits no labels)"
+        # A sort's pick asks for every rule's kind at once (``target_labels``, 2026-10-09), and names no one label.
+        kinds = [str(x) for x in event.extra.get("target_labels") or () if x]
+        called = " or ".join(repr(x) for x in kinds) if kinds else repr(event.extra.get("target_label"))
         sentence = (
-            f"Nothing in this frame is called {event.extra.get('target_label')!r}. "
+            f"Nothing in this frame is called {called}. "
             f"Perception returned {len(seen)} object(s), labelled: {named}. "
             f"Re-prompt with a name the detector actually uses; the cell will not substitute "
             f"another object for the one you asked for."

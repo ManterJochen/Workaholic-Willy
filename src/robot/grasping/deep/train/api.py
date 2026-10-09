@@ -138,7 +138,23 @@ def _corpus_paths(corpus: Sequence[str | Path] | str | Path) -> tuple[Path, ...]
 
 @dataclass
 class GeneratorTraining:
-    """Fit a set generator. Construct with a factory, then call `train()` once."""
+    """Train a learned grasp generator (the set generator) on a point-cloud corpus.
+
+        run = GeneratorTraining.from_recipe(corpus="corpora/my_parts", recipe="v1", tier="smoke",
+                                            out_dir="models/my_parts")
+        print(run.describe())       # what it will do, before it costs anything
+        print(run.probe())          # the floor and the ceiling of this corpus; trains nothing
+        report = run.train()
+        run.write_report(report)
+
+    A trained artifact drives a cell only once its proof has passed (``deep/promotion.py``); until then it can be
+    inspected and evaluated (``deep propose``, the ladder's deep rung).
+
+    Attributes:
+        plan (SetTrainingPlan): Every training setting, resolved.
+        context (TrainingContext): The corpus, the out dir, the device and the run's handles.
+        recipe_notes (Mapping[str, Any]): What the recipe and the tier set, for a caller that logs it (default: {}).
+    """
 
     plan: "SetTrainingPlan"
     context: TrainingContext
@@ -158,10 +174,32 @@ class GeneratorTraining:
                   artifact_gripper: str | None = None,
                   probe_units: int = 256,
                   hands: Sequence[str] | None = None) -> "GeneratorTraining":
-        """Raw handles, no recipe resolution. The `from_components` analogue.
+        """A run from a plan you built yourself, with no recipe resolution.
 
-        `corpus` takes a directory to walk or an explicit sequence, so a notebook can hand in
-        `stratified_scenes(...)` directly.
+        Args:
+            corpus (Sequence[str | Path] | str | Path): The corpus: a directory to walk for scene files, or an explicit
+                sequence of them (such as ``stratified_scenes(...)``).
+            plan (SetTrainingPlan | None): Every setting; ``None`` is the defaults (default: None).
+            out_dir (str | Path | None): Where the run writes ``epochs.json``, the fold checkpoints and the artifact;
+                required before ``train()`` (default: None).
+            device (str | None): ``"cuda"``, ``"cpu"`` or ``"mps"``; ``None`` is ``WILLY_DEVICE`` or the first of CUDA,
+                MPS and the CPU (default: None).
+            init_from (str | Path | None): Start from the weights in this checkpoint instead of from random:
+                fine-tuning, a new run with its own optimiser and split, not a resume. A checkpoint that does not fit is
+                refused (default: None).
+            freeze_backbone (bool): Train only the heads and hold the encoder still: the cheap fine-tuning for a small
+                new corpus, since 99 % of the parameters are in the backbone (default: False).
+            resume (bool): Continue an interrupted run in ``out_dir``; any change to the corpus or the plan is refused
+                (default: False).
+            artifact_gripper (str | None): Which hand the written artifact plans for, by model name; taken from the
+                corpus where it carries exactly one, refused rather than guessed where it carries several (default:
+                None).
+            probe_units (int): How many units each probe draws (default: 256).
+            hands (Sequence[str] | None): Train across these hands on the same clouds, each read from its grasp table
+                (``datagen build-grasp-tables``); ``None`` is the hand each cloud was extracted for (default: None).
+
+        Returns:
+            GeneratorTraining: The run; nothing is read or trained yet.
         """
         from src.robot.grasping.deep.train.trainer import (  # noqa: PLC0415
             SetTrainingPlan,
@@ -192,11 +230,40 @@ class GeneratorTraining:
                     artifact_gripper: str | None = None,
                     probe_units: int = 256,
                     hands: Sequence[str] | None = None) -> "GeneratorTraining":
-        """Resolve a named bundle plus explicit overrides into a plan. The `from_robot_config` analogue.
+        """A run from a named recipe and tier, plus what you chose explicitly.
 
-        Fails closed with `ValueError`: an unknown recipe or tier refuses rather than falling back to
-        the defaults, because a customer who typed `v2` before it exists would otherwise get `v1`'s
-        behaviour under `v2`'s name, which is the failure a version string exists to prevent.
+        Args:
+            corpus (Sequence[str | Path] | str | Path): The corpus: a directory, or a sequence of scene files.
+            recipe (str | None): The frozen recipe, such as ``"v1"``; ``None`` is the plan's defaults (default: None).
+            tier (str | None): ``"smoke"`` (two epochs on few units: proves the chain, says nothing about grasp
+                quality), ``"full"``, ...; ``None`` the recipe's own (default: None).
+            overrides (PlanOverrides | None): The settings you choose explicitly; they outrank the recipe and the tier
+                (default: None).
+            base (SetTrainingPlan | None): The plan everything is laid onto; ``None`` the defaults (default: None).
+            out_dir (str | Path | None): Where the run writes ``epochs.json``, the fold checkpoints and the artifact;
+                required before ``train()`` (default: None).
+            device (str | None): ``"cuda"``, ``"cpu"`` or ``"mps"``; ``None`` is ``WILLY_DEVICE`` or the first of CUDA,
+                MPS and the CPU (default: None).
+            init_from (str | Path | None): Start from the weights in this checkpoint instead of from random:
+                fine-tuning, a new run with its own optimiser and split, not a resume. A checkpoint that does not fit is
+                refused (default: None).
+            freeze_backbone (bool): Train only the heads and hold the encoder still: the cheap fine-tuning for a small
+                new corpus, since 99 % of the parameters are in the backbone (default: False).
+            resume (bool): Continue an interrupted run in ``out_dir``; any change to the corpus or the plan is refused
+                (default: False).
+            artifact_gripper (str | None): Which hand the written artifact plans for, by model name; taken from the
+                corpus where it carries exactly one, refused rather than guessed where it carries several (default:
+                None).
+            probe_units (int): How many units each probe draws (default: 256).
+            hands (Sequence[str] | None): Train across these hands on the same clouds, each read from its grasp table
+                (``datagen build-grasp-tables``); ``None`` is the hand each cloud was extracted for (default: None).
+
+        Returns:
+            GeneratorTraining: The run; nothing is read or trained yet.
+
+        Raises:
+            ValueError: An unknown recipe or tier: refused rather than falling back to the defaults, so a ``v2`` typed
+                before it exists never runs ``v1`` under its name.
         """
         plan, notes = build_plan(recipe=recipe, tier=tier, overrides=overrides, base=base)
         built = cls.from_plan(
@@ -209,27 +276,21 @@ class GeneratorTraining:
     # ------------------------------------------------------------------ opt-in side channels
     def attach_progress_listener(
             self, listener: Callable[[Mapping[str, Any]], None] | None) -> None:
-        """Called once per finished epoch with that epoch's raw row. `None` detaches.
+        """Be told as each epoch finishes, on the training thread. A slow listener slows the run; its exceptions are not
+        caught.
 
-        Opt-in and off by default, so a run started without one is byte-identical. The terminal
-        bar is unaffected: `train/progress.py` writes to stderr only when stderr is a tty, and the
-        training core holds no `print` at all.
-
-        Called inline, on the thread running the training loop. A slow listener slows the run, so
-        a service hands the row to a queue and returns. Exceptions from a listener are not caught
-        here: a broken callback surfaces rather than corrupting a six-hour run silently.
+        Args:
+            listener (Callable[[Mapping[str, Any]], None] | None): Called with the epoch's raw row; ``None`` detaches.
         """
         self._on_epoch = listener
 
     # ------------------------------------------------------------------ what is about to run
     def describe(self) -> str:
-        """What this run will do, as operator text, before it costs anything.
+        """What this run will do, before it costs anything, so a mistyped run can be stopped in the first second rather
+        than the sixth hour.
 
-        This exists so a mistyped run can be stopped in the first second rather than the sixth
-        hour. It is the counterpart to `TrainingRunReport.render()`, which says what happened, and
-        the two deliberately do not repeat each other.
-
-        ASCII only: this reaches a Windows console under cp1252.
+        Returns:
+            str: The plan, the corpus and the hands, as operator text, ASCII.
         """
         head, backbone = self.plan.model.head, self.plan.model.backbone
         lines = [
@@ -253,19 +314,18 @@ class GeneratorTraining:
 
     # ------------------------------------------------------------------ before it costs anything
     def probe(self, *, units: int = 256, seed: int = 0) -> CorpusProbe:
-        """The floor, the ceiling and the approach headroom of this corpus. Trains nothing.
+        """The floor, the ceiling and the approach headroom of this corpus, with no weights, on a CPU, in minutes: a hit
+        rate is unreadable without both ends of its scale.
 
-        The question to ask before a six-hour run and before quoting any number out of one: a hit
-        rate is unreadable without both ends of its scale, and both ends are properties of the
-        corpus and the plan rather than of a model. `train()` runs the same probes per fold; this
-        runs them on the whole corpus with no weights, on a CPU, in minutes.
+        Args:
+            units (int): How many training units each instrument draws; more costs time linearly (default: 256).
+            seed (int): The draw's seed; the same seed draws the same units (default: 0).
 
-        `units` is how many training units each instrument draws. Raising it costs time linearly
-        and narrows nothing else; the same `seed` draws the same units, so two corpora compared at
-        one seed are compared on the same draw.
+        Returns:
+            CorpusProbe: The floor (what a straight-down grasp scores), the ceiling and the headroom; prints as itself.
 
-        Raises `ValueError` where the corpus yields no supervised seed at all, which is the honest
-        answer to "what can be learned here" for a corpus that carries no reachable label.
+        Raises:
+            ValueError: The corpus yields no supervised seed at all: nothing can be learned there.
         """
         from src.robot.grasping.deep.eval.probes import (  # noqa: PLC0415 (torch, only for this)
             approach_headroom, baseline_floor, oracle_ceiling,
@@ -283,15 +343,16 @@ class GeneratorTraining:
 
     # ------------------------------------------------------------------ the one verb
     def train(self) -> TrainingRunReport:
-        """Run the folds, the probes and the optional refit, and return what happened.
+        """Run the folds, the probes and the optional refit; writes ``epochs.json`` after every epoch and the artifact
+        at the end, as a shell run does.
 
-        Raises `ValueError` for anything the run cannot proceed with: a corpus that cannot be cut
-        into `plan.folds` asset-disjoint groups, a checkpoint whose plan does not match a `resume`,
-        an ambiguous `artifact_gripper`. Never raises `SystemExit`.
+        Returns:
+            TrainingRunReport: What happened: per fold the held-out numbers against their floors, the probes, where the
+                artifact went; prints as itself. ``report.json`` is written by :meth:`write_report`.
 
-        Writes `epochs.json` after every epoch and the artifact at the end, exactly as a shell run
-        does. `report.json` is not written here: see `write_report`, which is separate so a caller
-        who wants the numbers without the file can have that.
+        Raises:
+            ValueError: A corpus that cannot be cut into ``plan.folds`` asset-disjoint groups, a checkpoint whose plan
+                does not match a ``resume``, an ambiguous ``artifact_gripper``. Never ``SystemExit``.
         """
         from src.robot.grasping.deep.train.trainer import (  # noqa: PLC0415
             train_set_generator,
@@ -308,11 +369,14 @@ class GeneratorTraining:
         return TrainingRunReport.from_trainer(raw, self.plan)
 
     def write_report(self, report: TrainingRunReport, path: str | Path | None = None) -> Path:
-        """Write `report.json` beside the run, and return where it went.
+        """Write ``report.json`` beside the run; ``deep report --run DIR`` reads it.
 
-        `deep report --run DIR` reads this file: it merges `report.json` when `epochs.json` carries
-        no `held_floor`. A run that skips it leaves an output directory the analysis tool degrades
-        on, and the five stamps this file carries exist nowhere else.
+        Args:
+            report (TrainingRunReport): What :meth:`train` returned.
+            path (str | Path | None): Where to write it; ``None`` is ``out_dir/report.json`` (default: None).
+
+        Returns:
+            Path: Where it went.
         """
         import json  # noqa: PLC0415
 

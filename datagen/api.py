@@ -170,7 +170,24 @@ class DatasetReport:
 
 @dataclass
 class DatasetBuild:
-    """Describe a cell, then generate data from it. Construct with a factory, then call a verb."""
+    """Describe a cell's dataset, then generate it: scenes, images and depth, grasp labels, and the point-cloud corpus a
+    grasp generator trains on.
+
+        build = DatasetBuild.from_file(name="my_parts", scenes=200, seed=0, engine="mujoco")
+        print(build.describe())        # what it will do, before it costs anything
+        print(build.cost())            # hours and gigabytes
+        report = build.run("corpora/my_parts")
+        print(report)
+
+    Build it with :meth:`from_file` (the usual way) or :meth:`from_config`, then call a verb: :meth:`run` does render,
+    label and clouds in one go and stops at the first step that fails.
+
+    Attributes:
+        config (DatagenConfig): The dataset's settings: scenes, seed, domain, engine, cameras, output.
+        name (str): The dataset's name; its folder under ``out_root``.
+        out_root (Path | None): Where datasets go; ``None`` is the config's ``output.root`` (default: None).
+        notes (Mapping[str, Any]): What a recipe or a file override supplied, for a caller that logs it (default: {}).
+    """
 
     config: DatagenConfig
     name: str
@@ -183,7 +200,16 @@ class DatasetBuild:
     @classmethod
     def from_config(cls, config: DatagenConfig, *, name: str,
                     out_root: str | Path | None = None) -> "DatasetBuild":
-        """Raw handles. The `from_components` analogue: the caller already has a config."""
+        """A build from a config you already have.
+
+        Args:
+            config (DatagenConfig): The dataset's settings.
+            name (str): The dataset's name.
+            out_root (str | Path | None): Where datasets go; ``None`` is ``config.output.root`` (default: None).
+
+        Returns:
+            DatasetBuild: The build; nothing has run.
+        """
         return cls(config=config, name=name,
                    out_root=Path(out_root) if out_root is not None else None)
 
@@ -195,15 +221,28 @@ class DatasetBuild:
                   engine: str | None = None,
                   overrides: Mapping[str, Any] | None = None,
                   out_root: str | Path | None = None) -> "DatasetBuild":
-        """A JSON config with overrides on top. The `from_robot_config` analogue.
+        """A build from a JSON config with overrides on top, merged as ``datagen`` on the command line merges them, so
+        this door and the command line cannot drift.
 
-        The merge is `merged_settings`, shared with `__main__._config(args)`, so this door and the
-        command line cannot drift. `--engine` names a key nested under `render`: a caller who writes
-        `{"engine": "mujoco"}` at the top level gets a config that keeps the engine it already had,
-        without a word, and the only trace is a `provenance.json` naming a renderer nobody asked for.
+        Args:
+            path (str | Path | None): The JSON config; ``None`` is the shipped default (default: None).
+            name (str): The dataset's name.
+            scenes (int | None): How many scenes to request; ``None`` keeps the config's (default: None).
+            seed (int | None): The seed every scene is laid out from; ``None`` keeps the config's (default: None).
+            domain (str | None): The scene domain: ``"cell"`` (the cell's own robot and cameras) or ``"tabletop"``
+                (general-purpose data, no robot); ``None`` keeps the config's (default: None).
+            engine (str | None): What settles and renders the scenes: ``"isaac"``, ``"mujoco"`` or ``"none"`` (the
+                engine-free backend); set as ``render.engine``. ``None`` keeps the config's (default: None).
+            overrides (Mapping[str, Any] | None): A nested mapping applied last, merged one level deep, so a
+                ``camera_rig`` block needs no restating of the rest (default: None).
+            out_root (str | Path | None): Where datasets go (default: None).
 
-        `overrides` is applied last and is a plain nested mapping, merged one level deep, so a
-        caller can hand in a `camera_rig` block without restating the rest of it.
+        Returns:
+            DatasetBuild: The build; nothing has run.
+
+        Raises:
+            FileNotFoundError: ``path`` names no file.
+            ValueError: The merged settings do not validate (pydantic's ``ValidationError`` is one).
         """
         base, applied = merged_settings(path, scenes=scenes, seed=seed, domain=domain,
                                         engine=engine, overrides=overrides)
@@ -214,11 +253,11 @@ class DatasetBuild:
     # ------------------------------------------------------------------ opt-in side channel
     def attach_stage_listener(
             self, listener: "Callable[[StageResult], None] | None") -> None:
-        """Called once per finished step. `None` detaches.
+        """Be told as each step finishes. Called inline on the thread running the build, so a slow listener slows it:
+        hand the result to a queue.
 
-        Off by default, so a build started without one behaves exactly as it does without this seam.
-        Called inline on the thread running the build, so a slow listener slows the build: hand the
-        result to a queue.
+        Args:
+            listener (Callable[[StageResult], None] | None): Called once per finished step; ``None`` detaches.
         """
         self._on_stage = listener
 
@@ -230,10 +269,11 @@ class DatasetBuild:
         return base / self.name
 
     def describe(self) -> str:
-        """What this build will do, before it costs anything.
+        """What this build will do, before it costs anything: a mistyped engine, cameras that are not the ones meant, or
+        a scene count off by a decimal place show in the first second.
 
-        A render is hours. A mistyped engine, a cell whose cameras are not the ones the caller
-        meant, or a scene count off by a decimal place should be visible in the first second.
+        Returns:
+            str: The settings that matter, one per line.
         """
         rig = self.config.camera_rig
         if rig.cameras is not None:
@@ -258,13 +298,26 @@ class DatasetBuild:
     def cost(self, *, scenes: int | None = None, engine: str | None = None, jobs: int = 1,
              label: bool = True, corpus: bool = True, epochs: int = 0, folds: int = 1,
              refit: bool = True, dense: bool = False) -> "Estimate":
-        """Hours, gigabytes and the request a yield needs, for the dataset this build describes.
+        """Hours, gigabytes and the request a yield needs, for this dataset; reads and writes nothing.
 
-        The question before `run()`, and the only verb here that reads nothing and writes nothing.
-        `scenes` and `engine` are the what-if; left out, the build's own config answers, so this
-        prices the corpus that would actually be produced rather than a neighbouring one.
+        Args:
+            scenes (int | None): The usable scenes to price; ``None`` is the build's own count (default: None).
+            engine (str | None): The engine to price (``"isaac"``, ``"mujoco"``, ``"none"``); ``None`` the build's own
+                (default: None).
+            jobs (int): Render jobs in parallel (default: 1).
+            label (bool): Include labelling (default: True).
+            corpus (bool): Include extracting the corpus (default: True).
+            epochs (int): Training epochs to include; 0 prices no training (default: 0).
+            folds (int): Cross-validation folds of that training (default: 1).
+            refit (bool): Include the refit on all data after the folds (default: True).
+            dense (bool): Price dense labels instead of the default density (default: False).
 
-        `print(build.cost())` is the report `datagen cost` prints, from the same function.
+        Returns:
+            Estimate: Hours, gigabytes, the scenes to request for the usable ones, and warnings; ``print`` shows the
+                report ``datagen cost`` prints.
+
+        Raises:
+            ValueError: A count that is not positive, an unknown engine, or ``jobs`` under 1.
         """
         from datagen.cost import estimate_for_config  # noqa: PLC0415 (a leaf, only for this verb)
 
@@ -275,10 +328,15 @@ class DatasetBuild:
     # ------------------------------------------------------------------ the verbs
     def render(self, *, headless: Any = UNSET, preview: Any = UNSET,
                limit: Any = UNSET) -> StageResult:
-        """Scenes to images and geometry. The expensive step, and the only one that wants a GPU.
+        """Scenes to images and geometry: the expensive step, and the only one that wants a GPU.
 
-        No defaults here: every parameter starts at `UNSET`. `build_dataset` declares the defaults,
-        and repeating them would make this layer a second, competing source for the same facts.
+        Args:
+            headless (Any): Run the engine without a window; unset is ``True`` (default: UNSET).
+            preview (Any): Write preview images beside the scenes; unset is ``False`` (default: UNSET).
+            limit (Any): Render only this many scenes; unset renders the config's count (default: UNSET).
+
+        Returns:
+            StageResult: ``ok``, the step's ``summary`` (what was rendered) and, on a failure, its ``reason``.
         """
         from datagen.build import build_dataset  # noqa: PLC0415
 
@@ -292,12 +350,19 @@ class DatasetBuild:
 
     def label(self, *, limit: Any = UNSET, label_budget: Any = UNSET,
               density: str | None = None, jaw: Any = UNSET) -> StageResult:
-        """Images and geometry to grasp labels. Minutes, no GPU, re-runnable on its own.
+        """Images and geometry to grasp labels: minutes, no GPU, re-runnable on its own.
 
-        `density` defaults to `default` here and to `grid` for a screen, and the two produce label
-        counts an order of magnitude apart on the same object. Whether the caller chose is decided
-        by `None`, never by comparing the value to the flag's own default string: typing the default
-        explicitly has to stay distinguishable from not typing it.
+        Args:
+            limit (Any): Label only this many scenes; unset labels all (default: UNSET).
+            label_budget (Any): Stop after this many label rows, scenes taken in a balanced order; unset is no budget
+                (default: UNSET).
+            density (str | None): ``"default"``, ``"dense"`` or ``"grid"``; the counts they produce are an order of
+                magnitude apart on the same object. ``None`` is ``"default"`` (default: None).
+            jaw (Any): Label for this hand instead of the 2F-85, a procedural jaw or a registry hand by model name, into
+                its own ``grasps_jaw_<name>.jsonl``; unset labels for the default (default: UNSET).
+
+        Returns:
+            StageResult: ``ok``, the step's ``summary`` (rows, scenes) and, on a failure, its ``reason``.
         """
         from datagen.grasps.labels import DENSITIES, label_dataset  # noqa: PLC0415
 
@@ -315,16 +380,28 @@ class DatasetBuild:
                mask_suffix: Any = UNSET, voxel_mm: Any = UNSET,
                with_environment: Any = UNSET, environment_voxel_mm: Any = UNSET,
                environment_margin_mm: Any = UNSET) -> StageResult:
-        """Labels to the point-cloud corpus a generator eats.
+        """Labels to the point-cloud corpus a generator trains on: one ``.npz`` per scene, the fused cloud and its grasp
+        table.
 
-        Every keyword `build_cloud_corpus` takes is forwarded, because those keywords are what
-        defines the corpus: `mask_suffix` chooses between ground-truth masks and the ones a real
-        camera would produce, `voxel_mm` decides how much geometry survives at all, and the
-        environment settings decide what surrounds the object.
+        Args:
+            out_dir (str | Path): Where the corpus goes.
+            scenes (Any): Extract only this many scenes; unset all (default: UNSET).
+            physics (Any): A physics verdicts file to join into the grasp tables; unset none (default: UNSET).
+            kinds (Sequence[str] | None): Which grasps go in, ``("jaw",)`` or ``("jaw", "suction")``; ``None`` is
+                ``("jaw",)`` (default: None).
+            labels (Any): The label file inside the dataset; unset is ``"grasps.jsonl"`` (``label(jaw=)`` writes
+                ``grasps_jaw_<name>.jsonl``) (default: UNSET).
+            mask_suffix (Any): Which masks cut the objects: ``"instances"`` (ground truth) or the ones a real camera
+                would produce; unset is ``"instances"`` (default: UNSET).
+            voxel_mm (Any): The object cloud's voxel size, millimetres; unset is 3.0 (default: UNSET).
+            with_environment (Any): Keep what surrounds the object; unset is ``True`` (default: UNSET).
+            environment_voxel_mm (Any): The surroundings' voxel size, millimetres; unset is 6.0 (default: UNSET).
+            environment_margin_mm (Any): How far around the object the surroundings reach, millimetres; unset is 150.0
+                (default: UNSET).
 
-        A missing parameter is quieter than a wrong one. Nothing raises: a caller simply gets the
-        default and a corpus that is not the one they meant, stamped with a name that says nothing
-        about which.
+        Returns:
+            StageResult: ``ok``, the step's ``summary`` and, on a failure, its ``reason``. Nothing raises for a missing
+                setting: it takes the default, so set what defines your corpus.
         """
         from datagen.corpus.clouds import build_cloud_corpus  # noqa: PLC0415
 
@@ -346,11 +423,15 @@ class DatasetBuild:
 
     def run(self, corpus_out: str | Path | None = None, *,
             headless: Any = UNSET, density: str | None = None) -> DatasetReport:
-        """Render, label and optionally extract the corpus, stopping at the first step that fails.
+        """Render, label and, given an out dir, extract the corpus, stopping at the first step that fails.
 
-        It stops rather than continuing. Labelling a directory nothing rendered into produces a
-        report saying zero labels, which reads like a labelling problem and is not one. The first
-        failure is the one worth reporting.
+        Args:
+            corpus_out (str | Path | None): Where the corpus goes; ``None`` renders and labels only (default: None).
+            headless (Any): Run the engine without a window; unset is ``True`` (default: UNSET).
+            density (str | None): The label density, as :meth:`label` takes it (default: None).
+
+        Returns:
+            DatasetReport: Each step's ``StageResult``, ``succeeded``, and ``failure_summary()`` for the first failure.
         """
         stages: list[StageResult] = [self.render(headless=headless)]
         if stages[-1].ok:
@@ -360,14 +441,11 @@ class DatasetBuild:
         return DatasetReport(root=self.root, stages=tuple(stages))
 
     def verify(self) -> "VerifyReport":
-        """Check what was written against itself: labels, masks, poses and pictures agreeing.
+        """Check what was written against itself: labels, masks, poses and pictures agreeing. Opens no engine, so it
+        also answers for a dataset built months ago (``verify_dataset(root)`` is the same check by path).
 
-        After a run rather than inside it, and it opens no engine: everything it reads is on disk,
-        so it also answers for a dataset built months ago. `verify_dataset(root)` is the same check
-        pointed at a path, for a dataset no `DatasetBuild` in this process produced.
-
-        A failed check is returned, never raised. A caller that ignores `ok` leaves no other trace
-        that the labels disagreed with the pixels.
+        Returns:
+            VerifyReport: Each check and ``ok``; a failed check is returned, never raised.
         """
         from datagen.verify import verify_dataset  # noqa: PLC0415 (a leaf, only for this verb)
 

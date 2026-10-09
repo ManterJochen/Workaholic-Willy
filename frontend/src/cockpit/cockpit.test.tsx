@@ -3,9 +3,14 @@
  * statistics and the chat to its right, against a stubbed server and fake sockets.
  *
  * The pins that matter most are safety, and they are pinned in both languages: Start is the confirmation and names the
- * first motion; nothing a person says or types starts anything; "Sofort anhalten" is one click and is not the e-stop;
- * the red "press the e-stop" alarm appears only where the arm brakes a move in flight; Restart and Home ask first; the
- * jaws question is never answered here; nothing starts by itself after a stop.
+ * first motion; nothing a person says or types starts anything but by the person's Enter; "Sofort anhalten" is one
+ * click and is not the e-stop; the red "press the e-stop" alarm appears only where the arm brakes a move in flight;
+ * Restart and Home ask first; the jaws question is never answered here; nothing starts by itself after a stop.
+ *
+ * Every test here runs with the setting "Erst die Karte" (`willy.taskStart=card`, set before each), where Enter only
+ * reads and the card's Start starts: the card is what Enter opens wherever a reading is not clean, so its pins hold
+ * in both settings. Enter starting a clean reading at once, the default since the owner's decision of 2026-10-08, is
+ * pinned in "Enter starts the task" (it sets `enter`), with every case that sends it to the card instead.
  *
  * The three pins of the old Pick screen (`screens.test.tsx`, "Pick") live here now, with the cockpit's copy.
  */
@@ -186,6 +191,8 @@ let sockets: FakeSockets
 
 beforeEach(() => {
   localStorage.clear()
+  // Today's card: Enter reads, Start starts. "Enter starts the task" below switches to the default, `enter`.
+  localStorage.setItem('willy.taskStart', 'card')
   clearConversation()
   sockets = fakeSockets()
 })
@@ -258,7 +265,8 @@ describe('Start', () => {
       place: { kind: 'pose', pose: 'drop_left' },
       return_to: 'home',
       scope: 'until_empty',
-      options: { multi_view: true, both_faces: false, record_views: false, pick_anything: false },
+      // The looks when needed, and every task the console starts keeps its looks (the owner, 2026-10-08 night).
+      options: { multi_view: true, every_look: false, both_faces: false, record_views: true, pick_anything: false },
       command: { text: 'Räum alle grünen Würfel auf die Ablage links', source: 'typed', parsed: true, edited: [] },
     })
     // The 202 answer is followed at once: a run that ends between two cell polls is still drawn.
@@ -426,6 +434,20 @@ describe('reading a command', () => {
     const bubble = (await screen.findByText('Räum die gelbe Kiste aus')).closest('.ck-bubble') as HTMLElement
     expect(bubble).toBeTruthy()
     expect(within(bubble).getByText('gesprochen')).toBeTruthy()
+  })
+
+  it('takes a phrase of up to the server\'s 200 characters on the card, and counts it from 160 on', async () => {
+    // The morning of 2026-10-08: a description of 85 characters typed into the card was refused at Start.
+    server({ 'POST /v1/commands/parse': { ...PARSED, place_pose: null, place: { phrase: 'blue bin', said: 'in die blaue Kiste', verified: true, route: null } } })
+    cockpit()
+    await command('Räum alle grünen Würfel in die blaue Kiste')
+    const card = await screen.findByRole('region', { name: 'Verstanden' })
+    const pick = within(card).getByRole('textbox', { name: 'Greifen' }) as HTMLInputElement
+    const target = within(card).getByRole('textbox', { name: 'Was die Kamera sucht' }) as HTMLInputElement
+    expect([pick.maxLength, target.maxLength]).toEqual([200, 200])
+    expect(within(card).queryByText(/\/200$/)).toBeNull()
+    fireEvent.change(pick, { target: { value: 'g'.repeat(160) } })
+    expect(await within(card).findByText('160/200')).toBeTruthy()
   })
 
   it('is locked while a run is active: the box and the microphone', async () => {
@@ -1224,6 +1246,21 @@ describe('the chat', () => {
     })
   }
 
+  it('says a target found by a survey that counted no parts without any count (2026-10-08: the survey grounds the bin alone)', async () => {
+    server({ '/v1/cell': { ...CELL, active_run_id: 'run-n' }, '/v1/runs/run-n': { ...ACCEPTED, id: 'run-n' } })
+    cockpit('de')
+    const socket = await follow(sockets, 'run-n')
+    const plan = { object: 'gray cube', place: { kind: 'camera', phrase: 'yellow bin', said: 'in die gelbe Kiste' }, return_to: 'home', scope: 'once', first_motion: 'look', countdown: false }
+    act(() => socket.deliver([
+      ev('run-n', 1, 'run_started', { kind: 'task', plan }),
+      ev('run-n', 2, 'task.survey_started', { phrase: 'yellow bin', looks: ['look_1'] }),
+      ev('run-n', 3, 'task.target_found', { target: { label: 'yellow bin', score: 0.9, look: 'look_1', overlay: null }, look: 'look_1', parts_seen: null, known: false, by: 'detector' }),
+    ]))
+    const log = screen.getByRole('log', { name: 'Gesprächsverlauf' })
+    expect(await within(log).findByText('Ziel gefunden (0,9).')).toBeTruthy()
+    expect(within(log).queryByText(/Teile gesehen|Teil gesehen/)).toBeNull()
+  })
+
   it('says that a Home run stops before its move is sent, and that a pose the task did not screen ahead is judged as it runs', async () => {
     localStorage.setItem('willy.view', 'tech')
     server({ '/v1/cell': { ...CELL, active_run_id: 'run-h' }, '/v1/runs/run-h': { ...ACCEPTED, id: 'run-h', kind: 'home' } })
@@ -1766,6 +1803,91 @@ describe('the Advanced drawer and the numbers', () => {
     })
   })
 
+  // The owner, 2026-10-08 night: "Multi-View" and "Alle Posen" one choice; no switch for recordings (always kept) or
+  // for both jaw faces (a program's); a switch to carry straight over the rim, the cell's own where untouched.
+  const BLUE_BIN = { ...PARSED, place_pose: null, place: { phrase: 'blue bin', said: 'in die blaue Kiste', verified: true, route: { ...ROUTE, prompt: 'blue bin' } } }
+
+  async function drawer(sentence = 'Räum alle grünen Würfel auf die Ablage links') {
+    await command(sentence)
+    const card = await screen.findByRole('region', { name: 'Verstanden' })
+    fireEvent.click(within(card).getByText('Erweitert'))
+    return card
+  }
+
+  async function startFrom(card: HTMLElement, calls: ReturnType<typeof server>) {
+    const start = within(card).getByRole('button', { name: /^Start/ })
+    await waitFor(() => expect(start.hasAttribute('disabled')).toBe(false))
+    fireEvent.click(start)
+    await waitFor(() => expect(sent(calls, 'POST /v1/task')).toHaveLength(1))
+    return sent(calls, 'POST /v1/task')[0].body
+  }
+
+  it('offers how the picks look as one choice, with no switch for recordings or both jaw faces, and sends it', async () => {
+    const calls = server()
+    cockpit()
+    const card = await drawer()
+    const looks = within(card).getByRole('combobox', { name: /^Blicke/ }) as HTMLSelectElement
+    expect(looks.value).toBe('when_needed')
+    expect(within(card).getByText(/Blicke: bei Bedarf/)).toBeTruthy()
+    for (const gone of [/Multi-View/, /Beide Backenflächen/, /Aufnahmen/]) {
+      expect(within(card).queryByRole('checkbox', { name: gone })).toBeNull()
+    }
+    expect(within(card).queryByText(/beide Backenflächen/)).toBeNull()
+    fireEvent.change(looks, { target: { value: 'every' } })
+    await waitFor(() => expect(within(card).getByText(/Blicke: alle Posen/)).toBeTruthy())
+    expect(within(card).getByText(/Jede eingestellte Pose anfahren/)).toBeTruthy()
+    expect(await startFrom(card, calls)).toMatchObject({ options: { multi_view: true, every_look: true, record_views: true } })
+  })
+
+  it('sends the first look alone as multi-view off', async () => {
+    const calls = server()
+    cockpit()
+    const card = await drawer()
+    fireEvent.change(within(card).getByRole('combobox', { name: /^Blicke/ }), { target: { value: 'first' } })
+    await waitFor(() => expect(within(card).getByText(/Blicke: nur der erste/)).toBeTruthy())
+    expect(await startFrom(card, calls)).toMatchObject({ options: { multi_view: false, every_look: false } })
+  })
+
+  it('starts from the looks the settings set', async () => {
+    localStorage.setItem('willy.taskLooks', 'every')
+    const calls = server()
+    cockpit()
+    const card = await drawer()
+    expect((within(card).getByRole('combobox', { name: /^Blicke/ }) as HTMLSelectElement).value).toBe('every')
+    expect(await startFrom(card, calls)).toMatchObject({ options: { multi_view: true, every_look: true } })
+  })
+
+  it('carries straight over the rim of a bin the camera finds only where the switch was touched', async () => {
+    const calls = server({ 'POST /v1/commands/parse': BLUE_BIN })
+    cockpit()
+    const card = await drawer('Räum alle grünen Würfel in die blaue Kiste')
+    const carry = within(card).getByRole('checkbox', { name: /Direkt über die Kante tragen/ }) as HTMLInputElement
+    expect(carry.checked).toBe(false)
+    expect(within(card).getByText(/über den Blick zur Kiste/)).toBeTruthy()
+    fireEvent.click(carry)
+    await waitFor(() => expect(carry.checked).toBe(true))
+    expect(within(card).getByText(/direkt über die Kante/)).toBeTruthy()
+    expect(await startFrom(card, calls)).toMatchObject({ options: { carry: 'over_the_rim' } })
+  })
+
+  it("starts the carry from the cell's own and leaves it to the cell where nobody touched it", async () => {
+    const calls = server({ 'POST /v1/commands/parse': BLUE_BIN, '/v1/cell/facts': { ...FACTS, carry: 'over_the_rim' } })
+    cockpit()
+    const card = await drawer('Räum alle grünen Würfel in die blaue Kiste')
+    await waitFor(() =>
+      expect((within(card).getByRole('checkbox', { name: /Direkt über die Kante tragen/ }) as HTMLInputElement).checked).toBe(true),
+    )
+    expect(await startFrom(card, calls)).toMatchObject({ options: { carry: null } })
+  })
+
+  it('offers no carry for a place at a taught pose, and sends none', async () => {
+    const calls = server()
+    cockpit()
+    const card = await drawer()
+    expect(within(card).queryByRole('checkbox', { name: /Direkt über die Kante tragen/ })).toBeNull()
+    expect(await startFrom(card, calls)).toMatchObject({ options: { carry: null } })
+  })
+
   it('brings Start back into the chat\'s view when Advanced opens above it', async () => {
     const shown: Element[] = []
     const scroll = vi.fn(function (this: Element) {
@@ -1882,5 +2004,305 @@ describe('a greeting in the chat (the owner, 2026-10-06: "Sofort winken", the ap
     await command('Räum alle grünen Würfel auf die Ablage links')
     await screen.findByRole('region', { name: 'Verstanden' })
     expect(sent(calls, 'POST /v1/cell/wave')).toHaveLength(0)
+  })
+})
+
+describe('Enter starts the task (the owner, 2026-10-08: "Enter ist der Klick der Person")', () => {
+  /** A clean reading: the reader calls it startable, its part and its place found in the sentence. */
+  const CLEAN = { ...PARSED, startable: true }
+  const NOT_READY = { ready: false, blockers: [], lights: [...LIGHTS.filter((l) => l.id !== 'planner'), light('planner', 'wait', 'starting')] }
+
+  beforeEach(() => {
+    // The default: nothing stored says "Erst die Karte".
+    localStorage.removeItem('willy.taskStart')
+  })
+
+  it('reads once and starts once: the settings\' mode, nothing edited, no card and no dialog', async () => {
+    const calls = server({ 'POST /v1/commands/parse': CLEAN })
+    cockpit()
+    await command('Räum alle grünen Würfel auf die Ablage links')
+    await waitFor(() => expect(sent(calls, 'POST /v1/task')).toHaveLength(1))
+    expect(sent(calls, 'POST /v1/commands/parse')).toHaveLength(1)
+    expect(calls.indexOf(sent(calls, 'POST /v1/commands/parse')[0])).toBeLessThan(calls.indexOf(sent(calls, 'POST /v1/task')[0]))
+    expect(sent(calls, 'POST /v1/task')[0].body).toMatchObject({
+      object: 'green cube',
+      object_said: 'alle grünen Würfel',
+      place: { kind: 'pose', pose: 'drop_left' },
+      scope: 'once',
+      command: { text: 'Räum alle grünen Würfel auf die Ablage links', source: 'typed', parsed: true, edited: [] },
+    })
+    await follow(sockets, 'run-new')
+    expect(screen.queryByRole('region', { name: 'Verstanden' })).toBeNull()
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(moved(calls)).toHaveLength(1)
+  })
+
+  it('says what it starts: the first motion, and the mode the settings set where the sentence said another', async () => {
+    server({ 'POST /v1/commands/parse': CLEAN })
+    cockpit()
+    await command('Räum alle grünen Würfel auf die Ablage links')
+    expect(await screen.findByText('Verstanden, ich fange an: der Roboter fährt zu Blick 1.')).toBeTruthy()
+    expect(screen.getByText('Modus aus den Einstellungen: einmal.')).toBeTruthy()
+  })
+
+  it('names the hands-off countdown first where one is due', async () => {
+    server({ 'POST /v1/commands/parse': CLEAN, '/v1/cell': { ...CELL, countdown_due: true } })
+    cockpit()
+    await command('Räum alle grünen Würfel auf die Ablage links')
+    expect(await screen.findByText('Verstanden, ich fange an (zuerst 3 s Countdown „Hände weg“): der Roboter fährt zu Blick 1.')).toBeTruthy()
+  })
+
+  it('runs until empty where the settings say so, whatever the sentence', async () => {
+    localStorage.setItem('willy.taskScope', 'until_empty')
+    const calls = server({ 'POST /v1/commands/parse': { ...CLEAN, scope: 'once' } })
+    cockpit()
+    await command('Leg den grünen Würfel auf die Ablage links')
+    await waitFor(() => expect(sent(calls, 'POST /v1/task')).toHaveLength(1))
+    expect(sent(calls, 'POST /v1/task')[0].body).toMatchObject({ scope: 'until_empty' })
+  })
+
+  it('puts the part where the settings say when the sentence names no place: the camera\'s target', async () => {
+    localStorage.setItem('willy.taskPlace', 'camera:yellow bin')
+    const calls = server({ 'POST /v1/commands/parse': { ...CLEAN, place_pose: null, place: null } })
+    cockpit()
+    await command('Nimm alle grünen Würfel')
+    await waitFor(() => expect(sent(calls, 'POST /v1/task')).toHaveLength(1))
+    expect(sent(calls, 'POST /v1/task')[0].body).toMatchObject({ place: { kind: 'camera', phrase: 'yellow bin', said: null } })
+  })
+
+  it('opens the card for a reading with a note, says why, and starts nothing', async () => {
+    const noted = { ...CLEAN, startable: false, notes: ['object_not_in_sentence'], object: { ...PARSED.object, verified: false } }
+    const calls = server({ 'POST /v1/commands/parse': noted })
+    cockpit()
+    await command('Räum alles auf die Ablage links')
+    expect(await screen.findByRole('region', { name: 'Verstanden' })).toBeTruthy()
+    expect(screen.getByText('Verstanden. Bitte die Karte prüfen und auf Start drücken: Was gegriffen werden soll, steht nicht im Satz.')).toBeTruthy()
+    expect(moved(calls)).toHaveLength(0)
+  })
+
+  it('opens the card for a reading the reader does not call startable', async () => {
+    const calls = server()
+    cockpit()
+    await command('Räum alle grünen Würfel auf die Ablage links')
+    expect(await screen.findByRole('region', { name: 'Verstanden' })).toBeTruthy()
+    expect(screen.getByText(/die Lesung ist nicht eindeutig genug/)).toBeTruthy()
+    expect(moved(calls)).toHaveLength(0)
+  })
+
+  it('opens the card for a sentence that names no part, ticked for anything where the settings say so, and starts nothing', async () => {
+    localStorage.setItem('willy.taskAnything', 'anything')
+    const calls = server({ 'POST /v1/commands/parse': { ...CLEAN, startable: false, object: null } })
+    cockpit()
+    await command('Räum auf')
+    const card = await screen.findByRole('region', { name: 'Verstanden' })
+    expect((within(card).getByRole('checkbox', { name: /alles, was die Kamera sieht/ }) as HTMLInputElement).checked).toBe(true)
+    expect(screen.getByText(/der Satz nennt kein Teil/)).toBeTruthy()
+    expect(moved(calls)).toHaveLength(0)
+  })
+
+  it('asks the server afresh: a cell that is no longer ready opens the card with the reason', async () => {
+    let ready = true
+    const calls = server({ 'POST /v1/commands/parse': CLEAN, '/v1/cell/readiness': () => (ready ? READY : NOT_READY) })
+    cockpit()
+    expect(await screen.findByText('Alles bereit')).toBeTruthy()
+    ready = false
+    const asked = sent(calls, 'GET /v1/cell/readiness').length
+    await command('Räum alle grünen Würfel auf die Ablage links')
+    expect(await screen.findByRole('region', { name: 'Verstanden' })).toBeTruthy()
+    expect(sent(calls, 'GET /v1/cell/readiness').length).toBeGreaterThan(asked)
+    expect(screen.getByText('Verstanden. Bitte die Karte prüfen und auf Start drücken: Planer: Startet …')).toBeTruthy()
+    expect(moved(calls)).toHaveLength(0)
+  })
+
+  it('opens the card with "Laden" said first where the cell detects with a language model not loaded yet', async () => {
+    const idle = { ready: true, blockers: [], lights: [...LIGHTS.slice(0, 5), light('commands', 'info', 'idle')] }
+    const calls = server({ 'POST /v1/commands/parse': { ...CLEAN, model: { ...PARSED.model, model_id: 'known-sentence', attempts: 0 } }, '/v1/cell/readiness': idle })
+    cockpit()
+    await command('Räum alle grünen Würfel auf die Ablage links')
+    expect(await screen.findByRole('region', { name: 'Verstanden' })).toBeTruthy()
+    expect(screen.getByText(/erst das Sprachmodell laden/)).toBeTruthy()
+    expect(moved(calls)).toHaveLength(0)
+  })
+
+  it('opens the card with the refusal where the server refuses the start, and says it did not start', async () => {
+    const calls = server({
+      'POST /v1/commands/parse': CLEAN,
+      'POST /v1/task': refusal(409, 'camera_target_unavailable', 'this cell has no camera to find a target with'),
+    })
+    cockpit()
+    await command('Räum alle grünen Würfel auf die Ablage links')
+    const card = await screen.findByRole('region', { name: 'Verstanden' })
+    expect((await within(card).findByRole('alert')).textContent).toMatch(/Diese Zelle kann kein Ziel mit der Kamera suchen\./)
+    expect(screen.getByText('Nicht gestartet: Diese Zelle kann kein Ziel mit der Kamera suchen.')).toBeTruthy()
+    expect(sent(calls, 'POST /v1/task')).toHaveLength(1)
+  })
+
+  it('starts one task for a second Enter while the first is still read', async () => {
+    let answer: (value: unknown) => void = () => undefined
+    const calls = server({ 'POST /v1/commands/parse': () => new Promise((resolve) => (answer = resolve)) })
+    cockpit()
+    await command('Räum alle grünen Würfel auf die Ablage links')
+    const box = screen.getByRole('textbox', { name: 'Befehl an Willy' })
+    fireEvent.change(box, { target: { value: 'Räum alle grünen Würfel auf die Ablage links' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    answer(CLEAN)
+    await waitFor(() => expect(sent(calls, 'POST /v1/task')).toHaveLength(1))
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(sent(calls, 'POST /v1/commands/parse')).toHaveLength(1)
+    expect(sent(calls, 'POST /v1/task')).toHaveLength(1)
+  })
+
+  it('never starts from "Satz nochmal lesen": a button that does not say it starts', async () => {
+    let loaded = false
+    const calls = server({
+      'POST /v1/commands/parse': () => (loaded ? CLEAN : refusal(409, 'vlm_not_loaded', 'load it first')),
+      'POST /v1/commands/warmup': () => {
+        loaded = true
+        return { state: 'ready', model_id: 'Qwen/Qwen3-VL-4B-Instruct', weights_present: true, cause: '', last_latency_ms: null, shared_with_detection: false }
+      },
+    })
+    cockpit()
+    await command('Räum alle grünen Würfel auf die Ablage links')
+    const manual = await screen.findByRole('region', { name: 'Auftrag von Hand' })
+    fireEvent.click(within(manual).getByRole('button', { name: 'Laden' }))
+    await screen.findByText('Das Sprachmodell ist geladen.')
+    fireEvent.click(within(screen.getByRole('region', { name: 'Auftrag von Hand' })).getByRole('button', { name: 'Satz nochmal lesen' }))
+    await screen.findByRole('region', { name: 'Verstanden' })
+    expect(moved(calls)).toHaveLength(0)
+  })
+
+  it('waves at a greeting and starts no task, as it does with the card', async () => {
+    const calls = server({ 'POST /v1/commands/parse': { ...PARSED, intent: 'none', object: null, place_pose: null, scope: null, greeting: 'direct' } })
+    cockpit()
+    await command('Hallo Willy')
+    await waitFor(() => expect(sent(calls, 'POST /v1/cell/wave')).toHaveLength(1))
+    expect(sent(calls, 'POST /v1/task')).toHaveLength(0)
+  })
+
+  it('says under the box what Enter does, with the way to the settings', async () => {
+    server()
+    cockpit()
+    const line = (await screen.findByText(/Enter startet sofort/)).closest('.prompt-mode') as HTMLElement
+    expect(line.textContent).toBe('Enter startet sofort · Einmal · ohne Ort: Standard-Ablage · Einstellungen')
+    expect(within(line).getByRole('link', { name: 'Einstellungen' }).getAttribute('href')).toBe('/settings')
+  })
+
+  it('says the settings\' place and the card under the box where they are set', async () => {
+    localStorage.setItem('willy.taskPlace', 'pose:park')
+    localStorage.setItem('willy.taskScope', 'until_empty')
+    server()
+    cockpit()
+    expect(await screen.findByText(/Enter startet sofort · Bis leer · ohne Ort: Parkposition/)).toBeTruthy()
+    cleanup()
+    localStorage.setItem('willy.taskStart', 'card')
+    server()
+    cockpit()
+    expect(await screen.findByText(/Enter öffnet die Karte, Start startet/)).toBeTruthy()
+  })
+
+  it('stops a sentence at the reader\'s 1000 characters', async () => {
+    server()
+    cockpit()
+    const box = (await screen.findByRole('textbox', { name: 'Befehl an Willy' })) as HTMLInputElement
+    expect(box.maxLength).toBe(1000)
+  })
+})
+
+describe('the one part a sentence singles out, and where the parts lie (2026-10-08)', () => {
+  /** "Nimm von der schwarzen Matte den grauen Würfel, der oben auf dem anderen liegt", as the reader answers it. */
+  const SINGLED = {
+    ...PARSED,
+    object: { phrase: 'gray cube', said: 'den grauen Würfel, der oben auf dem anderen liegt', verified: true, route: ROUTE },
+    which: 'the gray cube on top of the other one',
+    source: 'on the black mat',
+    scope: 'once',
+  }
+  const SENTENCE = 'Nimm von der schwarzen Matte den grauen Würfel, der oben auf dem anderen liegt'
+
+  function fields(card: HTMLElement) {
+    return {
+      which: within(card).getByRole('textbox', { name: 'Welches' }) as HTMLInputElement,
+      source: within(card).getByRole('textbox', { name: 'Woher' }) as HTMLInputElement,
+    }
+  }
+
+  it('shows both on the card as read, editable, and Start sends them with the edit recorded', async () => {
+    const calls = server({ 'POST /v1/commands/parse': SINGLED })
+    cockpit()
+    await command(SENTENCE)
+    const card = await screen.findByRole('region', { name: 'Verstanden' })
+    const { which, source } = fields(card)
+    expect([which.value, source.value]).toEqual(['the gray cube on top of the other one', 'on the black mat'])
+    expect(within(card).getByText('Die Kamera sucht nur dieses eine Teil.')).toBeTruthy()
+    fireEvent.change(which, { target: { value: 'the upper gray cube' } })
+    const start = within(card).getByRole('button', { name: /^Start/ })
+    await waitFor(() => expect(start.hasAttribute('disabled')).toBe(false))
+    fireEvent.click(start)
+    await waitFor(() => expect(sent(calls, 'POST /v1/task')).toHaveLength(1))
+    expect(sent(calls, 'POST /v1/task')[0].body).toMatchObject({
+      object: 'gray cube',
+      which: 'the upper gray cube',
+      source: 'on the black mat',
+      scope: 'once',
+      command: { parsed: true, edited: ['which'] },
+    })
+  })
+
+  it('leaves both empty where the sentence said neither, and sends them empty', async () => {
+    const calls = server()
+    cockpit()
+    await command('Räum alle grünen Würfel auf die Ablage links')
+    const card = await screen.findByRole('region', { name: 'Verstanden' })
+    const { which, source } = fields(card)
+    expect([which.value, source.value]).toEqual(['', ''])
+    expect(within(card).queryByText('Die Kamera sucht nur dieses eine Teil.')).toBeNull()
+    const start = within(card).getByRole('button', { name: /^Start/ })
+    await waitFor(() => expect(start.hasAttribute('disabled')).toBe(false))
+    fireEvent.click(start)
+    await waitFor(() => expect(sent(calls, 'POST /v1/task')).toHaveLength(1))
+    expect(sent(calls, 'POST /v1/task')[0].body).toMatchObject({ which: '', source: '' })
+  })
+
+  it('takes up to the server\'s 200 characters in each, and counts them from 160 on', async () => {
+    server()
+    cockpit()
+    await command('Räum alle grünen Würfel auf die Ablage links')
+    const card = await screen.findByRole('region', { name: 'Verstanden' })
+    const { which, source } = fields(card)
+    expect([which.maxLength, source.maxLength]).toEqual([200, 200])
+    fireEvent.change(source, { target: { value: 'o'.repeat(160) } })
+    expect(await within(card).findByText('160/200')).toBeTruthy()
+    fireEvent.change(which, { target: { value: 'w'.repeat(170) } })
+    expect(await within(card).findByText('170/200')).toBeTruthy()
+  })
+
+  it('routes the pick by the one part a person singles out, as the server\'s guard judges it', async () => {
+    const calls = server({
+      'POST /v1/commands/parse': SINGLED,
+      '/v1/diagnostics/route': { ...ROUTE, prompt: 'the smallest cube', route: 'vlm', reason: 'comparative', runnable: true },
+    })
+    cockpit()
+    await command(SENTENCE)
+    const card = await screen.findByRole('region', { name: 'Verstanden' })
+    fireEvent.change(fields(card).which, { target: { value: 'the smallest cube' } })
+    const asked = () => sent(calls, 'GET /v1/diagnostics/route').map((c) => new URLSearchParams(c.query).get('prompt'))
+    await waitFor(() => expect(asked()).toContain('the smallest cube'))
+    expect(await within(card).findByText('VLM')).toBeTruthy()
+  })
+
+  it('starts a reading that singles out one part once on Enter, with both, whatever mode the settings set', async () => {
+    localStorage.removeItem('willy.taskStart')
+    localStorage.setItem('willy.taskScope', 'until_empty')
+    const calls = server({ 'POST /v1/commands/parse': { ...SINGLED, startable: true } })
+    cockpit()
+    await command(SENTENCE)
+    await waitFor(() => expect(sent(calls, 'POST /v1/task')).toHaveLength(1))
+    expect(sent(calls, 'POST /v1/task')[0].body).toMatchObject({
+      which: 'the gray cube on top of the other one',
+      source: 'on the black mat',
+      scope: 'once',
+      command: { edited: [] },
+    })
+    expect(moved(calls)).toHaveLength(1)
   })
 })

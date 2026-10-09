@@ -42,6 +42,7 @@ GOLDEN: tuple[tuple[str, Route, RouteReason], ...] = (
     ("cardboard tray", Route.SIMPLE, RouteReason.PLAIN_NOUN_PHRASE),
     ("the sugar box", Route.SIMPLE, RouteReason.PLAIN_NOUN_PHRASE),
     ("a yellow banana", Route.SIMPLE, RouteReason.PLAIN_NOUN_PHRASE),
+    ("the gray cube", Route.SIMPLE, RouteReason.PLAIN_NOUN_PHRASE),
 
     # --- English, complex: each names the property the phrase grounder cannot represent ------------
     ("the cube that is on the box", Route.VLM, RouteReason.RELATIVE_CLAUSE),
@@ -60,6 +61,14 @@ GOLDEN: tuple[tuple[str, Route, RouteReason], ...] = (
     ("the cube and the cup", Route.VLM, RouteReason.CONJUNCTION),
     ("the small shiny metal cube", Route.VLM, RouteReason.MULTI_ATTRIBUTE),
     ("pick up the thing i pointed at before", Route.VLM, RouteReason.TOO_LONG),
+
+    # --- one part singled out by where it stands among its kind (the command reader's which, 2026-10-08):
+    # --- the phrase grounder boxes every gray cube for "the upper gray cube" ------------------------
+    ("the upper gray cube", Route.VLM, RouteReason.COMPARATIVE),
+    ("the lowermost part", Route.VLM, RouteReason.COMPARATIVE),
+    ("the cup left of the bin", Route.VLM, RouteReason.SPATIAL_RELATION),
+    ("the gray cube on top", Route.VLM, RouteReason.SPATIAL_RELATION),
+    ("the cube on the right", Route.VLM, RouteReason.SPATIAL_RELATION),
 
     # --- German: routes to the VLM regardless of how simple it looks -------------------------------
     ("ein roter Würfel", Route.VLM, RouteReason.NON_ENGLISH),
@@ -186,6 +195,46 @@ class RoutingRuleTests(unittest.TestCase):
 
     def test_decisions_are_deterministic_and_comparable(self) -> None:
         self.assertEqual(route("the largest cube"), route("the largest cube"))
+
+
+class APartSingledOutByWhereItStandsGoesToTheVlmTests(unittest.TestCase):
+    """The command reader writes a which for the one part a sentence singles out (2026-10-08), and the task's detector
+    is asked that phrase alone. Asked "the upper gray cube", a phrase grounder boxes every gray cube, as it boxes every
+    cup for "the cup left of the bin": a which said by height or by side goes to the VLM, and a cell without one
+    refuses it before anything moves (``prompt_not_routable``)."""
+
+    def test_the_whichs_the_reader_wrote_on_the_owners_day_go_to_the_vlm(self) -> None:
+        for prompt, reason in (("the upper gray cube", RouteReason.COMPARATIVE),
+                               ("the cup left of the bin", RouteReason.SPATIAL_RELATION),
+                               ("the gray cube on top", RouteReason.SPATIAL_RELATION)):
+            with self.subTest(prompt=prompt):
+                decision = route(prompt)
+                self.assertEqual((Route.VLM, reason), (decision.route, decision.reason), decision.describe())
+
+    def test_every_word_for_a_height_among_its_kind_is_a_comparative(self) -> None:
+        for word in ("upper", "lower", "uppermost", "lowermost", "highest", "lowest"):
+            with self.subTest(word=word):
+                self.assertIs(RouteReason.COMPARATIVE, route(f"the {word} cube").reason)
+
+    def test_the_german_words_count_with_every_ending_their_articles_leave(self) -> None:
+        """German goes to the VLM whatever else it holds; the comparative is still read, for the reason's signals."""
+        for prompt in ("der obere Würfel", "den oberen Würfel", "ein oberer Würfel", "ein oberes Teil",
+                       "die untere Kiste", "der unteren Kiste", "ein unterer Würfel", "ein unteres Teil"):
+            with self.subTest(prompt=prompt):
+                decision = route(prompt)
+                self.assertIs(RouteReason.NON_ENGLISH, decision.reason)
+                self.assertTrue(decision.signals.has_comparative)
+
+    def test_a_side_or_a_top_said_without_to_the_is_a_spatial_relation(self) -> None:
+        for prompt in ("the cup left of the bin", "the cup right of the bin", "the gray cube on top",
+                       "the cube on the left", "the cube on the right"):
+            with self.subTest(prompt=prompt):
+                self.assertIs(RouteReason.SPATIAL_RELATION, route(prompt).reason)
+
+    def test_the_parts_named_plainly_still_take_the_fast_path(self) -> None:
+        for prompt in ("the gray cube", "gray cube", "a cup", "the bin", "the yellow bin", "the top cover"):
+            with self.subTest(prompt=prompt):
+                self.assertIs(Route.SIMPLE, route(prompt).route, route(prompt).describe())
 
 
 class NormalizerTests(unittest.TestCase):

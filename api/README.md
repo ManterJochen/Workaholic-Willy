@@ -12,9 +12,10 @@ cell the browser drives is the cell your code drives. The pages themselves are i
 [`frontend/`](../frontend/README.md).
 
 **Three promises.** Nothing moves but on a request that says it moves (the **Moves** column below), and the
-pages send one only on a person's click on a button that names the motion, bar the one exception the owner
-chose: a greeting typed in the chat ("Hallo Willy") waves at once where the app config says `direct`, the
-shipped default since 2026-10-06 (`runtime.greeting.wave`; `confirm` asks first), two swings of the wrist the
+pages send one only on a person's click on a button that names the motion, or the person's Enter on a sentence
+read as a task that needs no card (the owner, 2026-10-08: Enter is the person's click; see Commands), bar the one
+exception the owner chose: a greeting typed in the chat ("Hallo Willy") waves at once where the app config says
+`direct`, the shipped default since 2026-10-06 (`runtime.greeting.wave`; `confirm` asks first), two swings of the wrist the
 exact guard judges, and never a way back after a stop. Nothing moves on its own after a
 stop: a person says the cell is clear, then chooses Restart or Home, and the stop outlives a restart of the
 server (`python -m api` keeps it in a file). And there is **no emergency stop endpoint**: "halt now" stops the
@@ -140,6 +141,7 @@ with. **Moves** says what a route can do to the arm and the hand.
 | `GET /v1/camera/live.mjpeg?rig=&max_width=&fps=` | the same frames as a continuous MJPEG stream, up to 30 a second; a frame only when the camera has a new one | no |
 | `GET /v1/runs/{run_id}/overlays/{n}` | the n-th grasp overlay a task captured, as a PNG | no |
 | `GET /v1/runs/{run_id}/target/overlay` | the bin a task's camera found, drawn over the frame it was seen in | no |
+| `GET /v1/runs/{run_id}/targets/{n}/overlay` | the bin of a sort's n-th place a camera finds, 0 the first (the one above) | no |
 | `GET /v1/camera` | one picture and one sentence saying what it is | no |
 | `POST /v1/overlay/enable` | turn on the grasp overlay render; it costs time on every pick | no |
 | `WS /v1/overlay` | each new overlay image, with its age | no |
@@ -174,7 +176,8 @@ controller refused, 400 an empty patch or an empty recording, 415 a recording th
 
 | Code | Status | When | What to do |
 |---|---|---|---|
-| `bad_request` | 422 | a body or query that does not match the endpoint, a plan the library cannot build, both jaw faces asked of a cell that turns every grasp off them, a sentence that is no sentence | the message names the field |
+| `bad_request` | 422 | a body or query that does not match the endpoint, a plan the library cannot build (a sort with one kind in two rules, or a `\|` in a phrase), a sort on a cell whose perception grounds no phrase, both jaw faces asked of a cell that turns every grasp off them, a sentence that is no sentence | the message names the field |
+| `text_too_long` | 422 | a sentence over 1000 characters (`CommandIn.text`, `CommandProvenanceIn.text`) or a card's phrase over 200 (`TaskIn.object`, `CameraPlaceIn.phrase`), and nothing else wrong with the request | shorten it; `detail` says the field and the limit, and the console's fields stop at the same numbers |
 | `no_such_run` | 404 | a run id the console does not hold (it keeps the newest 200), or a stop with no run | read `GET /v1/runs` |
 | `not_built_yet` | 501 | a route of the console's contract this server has not built; no route of 0.2.0 answers it | the server is older than the page |
 | `no_robot_configured` | 409 | the tree and profile configure no robot | start with the profile that has the arm |
@@ -198,10 +201,10 @@ controller refused, 400 an empty patch or an empty recording, 415 a recording th
 | `route_refused` | 409 | the arm's place and return go through no planner that judges them: a UR on `ik`, a KUKA | run cuRobo; a part picked there could not be set down |
 | `carried_part_not_modelled` | 409 | a task on an arm that models no carried part | declare `safety.planning_world.payload.length_mm` |
 | `camera_target_unavailable` | 409 | a camera place on a cell with no camera to find it with (the rehearsal cell), or a wrist camera whose arm holds no frames | place at a taught pose |
-| `object_required` | 422 | a task's object is empty on a cell whose detector grounds a phrase | name the part, or tick "everything the camera sees" (`options.pick_anything`) |
+| `object_required` | 422 | a task's object is empty on a cell whose detector grounds a phrase, or a sort's rule names no kind (`detail.rule`) | name the part, or tick "everything the camera sees" (`options.pick_anything`); a sort names every kind |
 | `prompt_not_routable`, `target_not_routable` | 422 | the object, or the camera place's phrase, needs the VLM route and this cell has none | configure the VLM, or set `on_unavailable: degrade` |
 | `push_distance_refused` | 422 | a `push_mm` above the cell's `recovery.fixture.max_nudge_mm` or 50 mm, or under 10 mm; no run starts | ask within the ceiling; the message says it |
-| `unknown_pose` | 422 | a place, return or Home pose nobody taught; `detail.which` says which | teach it, or name a taught one |
+| `unknown_pose` | 422 | a place, return or Home pose nobody taught; `detail.which` says which (`place of rule 2` for a sort's further rule) | teach it, or name a taught one |
 | `no_place_declared` | 422 | a pose place with no pose and no `robot.default_place_pose` | choose a default place, or name the pose |
 | `closing_axis_refused` | 422 | an axis that names no direction, or one this cell's motion turns every grasp off | `x`, `-x`, `y`, `-y`, `radial`, `-radial`, `tangential`, `-tangential` |
 | `not_a_task`, `not_a_pick` | 409 | `POST /v1/task/stop` on a pick, teach or planner run; `POST /v1/pick/stop` on anything but a pick run | the other stop, or halt now |
@@ -279,7 +282,8 @@ The blockers are `run_active`, `cell_not_cleared`, `restart_required`, `needs_pe
 whose own fields say it can move lets anything go: a status that does not say refuses as surely as a stopped one.
 
 **The cell's facts** are `GET /v1/cell/facts`, read once after a build and once after a connect: the cameras with
-their mounting and the looks, the natural closing axis, the push (`can_push`, `default_mm`, `ceiling_mm`, the
+their mounting and the looks, the natural closing axis, how a part is carried to a bin (`carry`, the cell's
+`robot.place.carry`, null where it says none), the push (`can_push`, `default_mm`, `ceiling_mm`, the
 50 mm hard cap where the cell declares no fixture, `critical_parts` and `blocker_into_the_place`, the cell's switches), the detector
 (`backend`, the router, the VLM's id, and its `precision`: `fp32 weights, fp16 autocast` where
 `optim.torch_dtype` is unset, the configured dtype otherwise, `auto (the checkpoint's own)` for the VLM, both
@@ -298,18 +302,22 @@ cell is down.
 ## Tasks and their events
 
 **A command is a task.** `POST /v1/task` takes `TaskIn` and answers `202` with the run (kind `task`) at once;
-everything after that arrives on the run's event stream. Start on the cockpit's card is the confirmation:
-nothing else starts a task, and a parse never does.
+everything after that arrives on the run's event stream. Start on the cockpit's card is the confirmation, and so
+is the person's Enter on a reading the reader calls `startable`, where the console's settings say Enter starts
+(see Commands): nothing else starts a task, and a parse never does. Either way the route checks every gate below.
 
 | `TaskIn` field | What it says |
 |---|---|
-| `object` | the English phrase the detector grounds, at most 80 characters; `""` is anything, which a real cell takes only with `options.pick_anything` |
+| `object` | the English phrase the detector grounds, at most 200 characters; `""` is anything, which a real cell takes only with `options.pick_anything` |
 | `object_said` | the operator's own words for it, for display |
-| `place` | `{"kind": "pose", "pose": <name or null>}`, where `null` is `robot.default_place_pose`; or `{"kind": "camera", "phrase": "blue bin", "said": ...}`, a target the camera finds |
+| `which` | the one part the operator singled out, in English ("the gray cube on top of the other one"), at most 200 characters: the detector is asked this alone; `""` (the default) is every part of the object's kind |
+| `source` | where the parts lie, in English with its preposition ("on the black mat"), at most 200 characters: every part of the kind there is grounded ("each separate gray cube on the black mat"); `""` is wherever the camera sees one |
+| `place` | `{"kind": "pose", "pose": <name or null>}`, where `null` is `robot.default_place_pose`; or `{"kind": "camera", "phrase": "blue bin", "said": ...}`, a target the camera finds, its phrase at most 200 characters |
+| `more_rules` | a sort's further rules, at most 3 (`MAX_FURTHER_RULES`): each `{object, object_said, which, source, place}` as the task's own fields, which are its first rule; each part the picks grip goes to the place of its kind's rule, and two rules may share one place. Empty (the default) is a task of one kind |
 | `return_to` | `home`, or a taught pose's name |
 | `scope` | `once`, or `until_empty` |
-| `options` | `multi_view` (on: the configured looks; off: the first look, no generated view), `both_faces`, `closing_axis`, `push_mm`, `critical_parts` (true: nothing is pushed, and a blocker is cleared instead; unset: the cell's `recovery.critical_parts`), `blocker_into_the_place` (true: a task that names no object takes a blocker as the part its pick takes and sets it down where the parts go; false: it is set aside on the support; unset: the cell's `recovery.blocker_into_the_place`, on), `record_views`, `rim_air_mm` (10 to 50, the cell's 20 when unset; a camera place only), `pick_anything`, `overlay` |
-| `command` | `{text, source, language, parsed, edited}`: the sentence it came from, for the record only |
+| `options` | `multi_view` (on: the configured looks; off: the first look, no generated view), `every_look` (true with `multi_view`: every look of each pick, however safe an earlier look's grasp; with `multi_view` off it is `422 bad_request`; the console's one choice "Nur erster Blick", "Bei Bedarf", "Alle Posen" sets the two), `carry` (`via_the_look` or `over_the_rim`, how a part goes to a bin a wrist camera found; unset: the cell's `robot.place.carry`; the console's "Direkt über die Kante tragen"), `both_faces` (a program's switch; the console no longer offers it), `closing_axis`, `push_mm`, `critical_parts` (true: nothing is pushed, and a blocker is cleared instead; unset: the cell's `recovery.critical_parts`), `blocker_into_the_place` (true: a task that names no object takes a blocker as the part its pick takes and sets it down where the parts go; false: it is set aside on the support; unset: the cell's `recovery.blocker_into_the_place`, on), `rescan`, `push`, `clear` (this task's own word on looking again, pushing a boxed-in part and clearing a blocker, over the cell's `recovery.allowed_actions`; unset: the cell's), `record_views` (the console asks for it on every task), `rim_air_mm` (10 to 50, the cell's 20 when unset; a camera place only), `pick_anything`, `overlay` |
+| `command` | `{text, source, language, parsed, edited}`: the sentence it came from (at most 1000 characters, as a parse takes it), for the record only |
 
 **Refused before anything moves, in this order.** The cell's state first: `not_connected`, `run_active`,
 `halted`, `controller_stopped`, `cell_not_cleared`, `restart_required`, `needs_person`,
@@ -318,11 +326,24 @@ nothing else starts a task, and a parse never does.
 `prompt_not_routable`, `target_not_routable`, `push_distance_refused`, `unknown_pose` (the place's, then the
 return's), `no_place_declared`, `closing_axis_refused`, `bad_request`. The run registry reads the stop record
 once more under its run lock as it starts the run, so a stop that landed between the gates and the start
-still refuses it.
+still refuses it. `prompt_not_routable` judges what the picks will ground (`task.pick_phrase`) without the "each
+separate" every task puts in front of a kind: the `which` alone, else the object where the parts lie. A which only
+the VLM grounds ("the gray cube on top of the other one", and one said by its height or its side, "the upper gray
+cube", "the cup left of the bin", "the gray cube on top") is refused on a cell without one.
+
+**A sort is refused rule by rule**, in the same order, its own rule first: `camera_target_unavailable` once where
+any place is a camera's, `object_required` for a rule that names no kind (`detail.rule`, 1 the task's own; a sort
+names every kind, and `pick_anything` names none), each rule's phrase and each camera place's, `unknown_pose` with
+`detail.which` `place of rule 2` (the task's own stays `place`), `no_place_declared` for a rule whose pose place names
+none on a cell with no default; then `bad_request` for a sort on a cell whose perception grounds no phrase (the
+rehearsal scene, a detector of fixed classes), which tells no kind from another, and for what the library's plan
+refuses: one kind in two rules, two rules that ground one phrase, a `|` or the word `ambiguous` in a phrase.
 
 **The plan is resolved and echoed.** `RunOut.plan` (`TaskPlanOut`) carries the place pose's label and joints,
 the return pose's, the resolved push distance and rim air, `first_motion` (`look` for a new task, `return`
-for a Restart) and `countdown`. Its options say whether the operator asked for the push distance
+for a Restart) and `countdown`. A sort's `more_rules` come back each with its place resolved as the first's: a taught
+pose's label and joints, the default place pose where a pose place names none, a camera's phrase and the words said
+for it. Its options say whether the operator asked for the push distance
 (`push_asked`: an asked distance is taken as asked, the cell's may go longer, to 40 and 50 mm, where 30
 frees no direction) and the parts' switch as asked (`critical_parts`, null for the cell's). A Restart runs
 exactly this plan again.
@@ -332,18 +353,51 @@ exactly this plan again.
 then picks, places and returns, part after part:
 
 - **A taught place pose says where the part's bottom is let go.** The tool goes there raised by the part's
-  hang, the grasp height over the declared support, so every error goes toward more air.
-- **A camera place goes into the bin over its rim**: the drop stands at rim + hang + air (20 mm unless
-  `rim_air_mm` says 10 to 50); a grasp within 5 degrees of vertical is turned about the vertical along
-  `robot.natural_closing_axis`. The bin is checked again before every drop, from the look it was found at;
-  moved more than min(100 mm, half its diagonal), or another footprint or rim, it is lost: the part goes back
-  where it was gripped, the arm returns, and the task asks.
+  hang, the grasp height over the declared support, so every error goes toward more air. With
+  `robot.place.part_bottom: measured` the hang is measured from what the pick's looks read under the part, and
+  5 mm of air is kept; with `robot.place.side_by_side` the parts lie side by side, each at a spot of its own (one
+  the camera reads free, else the next of a grid about the pose), and a place with no spot left puts the part back
+  where it was gripped and asks (`part_does_not_fit`). Both are off as shipped.
+- **A camera place goes into the bin over its rim, or below it**: the drop stands at rim + hang + air (20 mm
+  unless `rim_air_mm` says 10 to 50). With `robot.place.release_in_a_box: below_the_rim` (off as shipped) the
+  part is set down `below_the_rim_mm` (30) under the rim instead, never lower than 10 mm over what the check reads
+  inside the box, and let go over the rim wherever that cannot be: an inside the check could not read, a box full
+  to within 10 mm of its rim, a part or an open hand that would not stand inside the opening, a grasp more than
+  5 degrees off vertical, a line in refused before anything was sent. A grasp within 5 degrees of vertical is
+  turned about the vertical along `robot.natural_closing_axis`. The bin is checked again before every drop, from
+  the look it was found at: its rim's depth and colour on one frame first, no detector asked (`by: depth`), the
+  detector wherever that is unsure (`by: detector`); moved more than min(100 mm, half its diagonal), or another
+  footprint or rim, it is lost, and looked for again with the part in the jaws (`robot.place.relocate`, on; the
+  owner, 2026-10-09: "wenn sie dies nicht mehr tut, dann kann er seine Ablage nochmal neu errechnen"): from the task's
+  looks once more, a bin of the size the survey found and the colour it followed, standing in no other place, is
+  kept instead and the drop planned anew over it (`task.target_relocated`). Once per part: found nowhere, or lost
+  again, the part goes back where it was gripped, the arm returns, and the task asks. With
+  `robot.place.carry: over_the_rim` (off as shipped) a part one of whose pick's looks was the bin's is carried
+  straight up and over the rim on judged lines, the bin checked on that look's frame; anything unsure there, and
+  it is carried via the bin's look as before.
+- **The bin a task kept is remembered** for the next task into the same phrase, while the same built cell, the
+  same controller lock and the same config stand. That task looks at it first, from its look, and keeps it where
+  its rim reads as it did, with no detector asked and no other look (`task.target_found` says `known` and `by`);
+  anywhere else it surveys every look as before. A task that kept no bin, a run taken down under itself, a
+  Disconnect and a rebuild forget it. A sort remembers each of its bins so, by its own phrase.
+- **A sort puts each kind where its rule says** (the owner, 2026-10-09: "Grüne Teile in die gelbe Kiste, rote in die
+  blaue"). Every place a camera finds is found before the first pick, one locate of every missing bin per look; a
+  place no look saw stops the task before it picks anything, `target_not_found`, naming each place it missed
+  (`task.target_missing` for each). Each pick grounds every rule's kind in one call, and the part it gripped goes by
+  the rule of the kind it went for (`task.rule`). A part no rule clearly claims (the detector's `ambiguous`, or a word
+  no rule names) stays where it lies, and the end names what the last look saw of them (`task.unsorted`). Every bin
+  is kept out of the picks, so no pick takes a sorted part back out. A sort follows no parts from pick to pick and sets
+  every blocker aside.
 - **Its own drop area stays out of its picks**: a camera place's bin for both scopes, and 150 mm about a pose
   place's drop for `until_empty`, where the arm's own kinematics say where the pose puts the tool (the dummy's
-  do not). A look that sees only those parts is an empty one.
+  do not), a circle about each spot a part was laid at too. A look that sees only those parts is an empty one.
 - **Benign ends return, problems stay.** `once` ends when the part is placed and the arm is back.
-  `until_empty` ends after 2 empty looks in a row. 3 failed picks in a row end it where the arm stands, and
-  100 parts end it `part_limit`.
+  `until_empty` ends after 2 empty looks in a row, and every look an empty pick perceived from counts: one empty
+  pass over a wrist camera's four looks ends it. Where the part placed last was the only one its pick's first look
+  counted, the next pick is the check look, its first look alone with no generated view, and nothing there ends the
+  task `nothing_left` at once. 3 failed picks in a row end it where the arm stands, 100 parts end it `part_limit`,
+  and a pick that left the arm at a standoff it could not drive back from ends it `recovery_needs_person`, naming
+  the standoff.
 - **A toggle hand changes DO0 exactly twice per part**: the close at the part, the release at the drop.
 - **Nobody is asked on a run's thread.** A hand that would ask is a refusal, and the run ends.
 
@@ -370,14 +424,17 @@ gave way to a jaws check that began as it started. `GET /v1/history/runs.csv` ad
 | Event | Says |
 |---|---|
 | `task.pose_screened` | a taught pose the task will use, and its verdict, before any motion |
-| `task.survey_started`, `task.target_found`, `task.target_missing` | the camera place's bin, found or not, before the first pick |
+| `task.survey_started`, `task.target_found`, `task.target_missing` | the camera place's bin, found or not, before the first pick; the survey grounds the bin alone, so `parts_seen` is null. `task.target_found` says `known` (it is the bin the last task kept, still standing there) and `by` (`depth`: its rim read as it did, no detector asked; `detector`). Each names its place's `phrase`, and `task.survey_started` every place's (`phrases`); a sort says one `task.target_found` per bin, its picture at that place's overlay URL |
 | `task.part_started` | part n (of 1, or of no bound), its pick |
-| `pick.*`, `pick_result` | the pick loop's stages, and each pick's result with the overlay URL it captured |
-| `task.nothing_found` | a look that saw nothing to pick, or only parts the task keeps out |
-| `task.carry_started`, `task.target_checked`, `task.target_lost` | the carry to the bin's look, the bin checked again, or lost |
-| `task.drop_planned`, `task.place_started`, `task.placed`, `task.place_failed`, `task.put_back` | the drop and how it went |
+| `pick.*`, `pick_result` | the pick loop's stages, and each pick's result with the overlay URL it captured; `pick.attempt_finished` and `pick.cancelled` carry `stands_at` (`"standoff of grasp 2"`) where a try left the arm at a standoff it could not drive back from |
+| `task.nothing_found` | a pick that saw nothing to pick, or only parts the task keeps out: `looks` (the looks it perceived from, each an empty look), `empty_in_a_row`, `only_excluded`, and `check_look` (true: the check look saw nothing, and the task ends `nothing_left`) |
+| `task.rule` | a sort's part and the rule it goes by, once its pick gripped it: `part`, `rule` (0 the task's own), `object`, `place` (`pose:<name>` or `target:<phrase>`) and `place_label` |
+| `task.carry_started`, `task.target_checked`, `task.target_lost` | the carry to the bin (`to_look`, the look it goes to; `over_the_rim: true` and no look where it goes straight over the rim), the bin checked again (`by`, `moved_mm`, `followed`), or lost |
+| `task.target_relocated` | a bin the check lost, looked for again (`WARN` where it was found nowhere): `phrase`, `found`, `moved_mm` from where the survey found it, `by` (`check`: the check's own sighting; `detector`), `look`, `target` (its picture at its place's overlay URL), `looks_tried`, `refused` (looks skipped, each with why) and `passed_over` (what was seen and not taken for it) |
+| `task.drop_planned`, `task.place_started`, `task.placed`, `task.place_failed`, `task.put_back` | the drop and how it went. `task.drop_planned` adds `release` and `below_rim_mm` where the part is set down below a box's rim, and `spot_mm` and `spot_by` (`camera` or `grid`) where it is laid at a spot of its own; `task.placed` adds `below_the_rim` where a drop below the rim was planned (false: the line into the box was refused before anything was sent, and the part was let go over the rim) |
 | `task.return_started`, `task.returned`, `task.return_failed` | the way back, with the motion's own note where it took a straight leg |
 | `task.part_finished` | the part, whether it was placed, and its seconds |
+| `task.unsorted` | the parts a sort's last look saw that no rule clearly claims, left where they lie (`WARN`): `count` and `labels`, said just before a sort that found nothing left ends |
 
 A task's `pick_result` adds `part` and `pick`, the hold and the stops, the grasp pose and the part's middle,
 `both_faces`, `pushes`, `fused_views`, `found_nothing`, `only_excluded`, `detector_failed`,
@@ -588,23 +645,56 @@ Teach events: `teach.free`, `teach.say`, `teach.outside`, `teach.inside`, `teach
 ## Commands
 
 `POST /v1/commands/parse {text, source: typed | spoken, language}` hands the whole sentence, German or English,
-to the VLM, which answers `CommandOut`: `understood`, `intent` (`task`, `stop`, `none`), the `object` and the
-`place` as English phrases with the operator's own words and the route the detector would take, `place_pose`
-and `return_to` (taught poses by **name**: a spoken label comes back as its name), `scope`, `count`, `notes`,
-the model's id, latency and attempts, and its raw answer. **Reading never starts anything**: no run, no prompt
-set, no cell touched. A sentence read as "stop" only points at the stop buttons.
+at most 1000 characters, to the VLM (a known sentence to a table, below), which answers `CommandOut`:
+`understood`, `intent` (`task`, `stop`, `none`), the `object` and the `place` as English phrases with the
+operator's own words and the route the detector would take, `which` (the one part the sentence singles out,
+`TaskIn.which`) and `source` (where the parts lie, `TaskIn.source`), each null where the sentence says none,
+`place_pose` and `return_to` (taught poses by **name**: a spoken label comes back as its name), `scope`, `count`,
+`notes`, `startable`, the model (`model_id`, latency, attempts, `loaded_now`, `remembered`), and its raw answer.
+The object's route is that of what the picks would ground, as `POST /v1/task` judges it: the which, else the
+object where the parts lie. **Reading never starts anything**: no run, no prompt set, no cell touched. A sentence
+read as "stop" only points at the stop buttons.
+
+**A sorting sentence reads as rules** (the owner, 2026-10-09: "Grüne Teile in die gelbe Kiste, rote in die blaue").
+`rules` holds one entry per kind of part, at most four, in the sentence's order: `{object, which, source, place,
+place_pose, notes}`, each phrase with its route as above, the first the reading's own fields. A task of one kind has
+one rule, a stop, a greeting or a sentence not read none. A sort starts as one `POST /v1/task`: the task's own fields
+from the first rule, `more_rules` from the rest, two of which may share one place.
+
+**Known sentences are read without the model** (`runtime.commands.known_sentences` in `config/app/runtime.yaml`,
+on as shipped and on the owner's cell). The cell's everyday sentences, "Alle grauen Würfel in die Gelbe Kiste.",
+"Leg den Becher auf Ablage links", "Hallo Willy", are answered by a closed grammar with the answer the model was
+measured to give for them, and the reader's own checks make the card of it: well under a millisecond where the cell's
+8B took 9.8 s ([`src/models/vlm/`](../src/models/vlm/README.md), `known.py`). They are read before the load rule, so
+also before "Laden", and load nothing; their `model_id` is `known-sentence`, with 0 attempts. Every other sentence
+goes to the model. **A sentence the loaded copy answered before is answered from memory**, checked as a new answer
+(`remembered: true`), as long as that copy stays loaded; a pose taught since makes it a new question.
+
+**Enter starts a task where the reading allows it** (the owner, 2026-10-08: Enter is the person's click).
+`startable` is true for an understood task with no note (no retry, every word found, every pose taught, no count), a
+part named and found in the sentence, and a place, where one is named, found there too. A sort is startable only where
+every rule is: no note on any rule, each rule's part named and found, and each its place or pose, found in the
+sentence where it is a place; Enter then starts the whole sort, never its first rule alone. Where the console's settings
+say Enter starts (the browser's own setting, the default), the cockpit then asks the cell, its ready bar and its
+facts afresh and posts `POST /v1/task` at once, the mode taken from the settings (`once` for a which, whatever
+they say), the settings' place only where the sentence names none; any doubt, a reading that is not
+startable, a cell that is not ready, or on a cell that detects with the VLM a model not loaded yet, opens the card
+with its first reason instead, and a refused start opens it with the refusal. The task route checks every gate either
+way, and a reading itself still starts nothing.
 
 **A greeting** ("Hallo Willy", "Hi Willy, wie geht's?", "Tschüss Willy", "Willy, wink mal!") comes back with
 `greeting` set to how the console answers it, the app config's `runtime.greeting.wave` (`config/app/runtime.yaml`):
 `direct`, the default (the owner, 2026-10-06), and the console starts the wave at once, `POST /v1/cell/wave`, with
 no click; `confirm`, and a dialog like Home's asks first; `off`, and Willy only greets back. `null` for every
-other sentence. The model reads the sentence as ever; a greeting is a sentence it read as no command that opens with
-a greeting or a farewell or asks to wave, or one that is nothing but a greeting, whatever the model made of it, bar a
-stop (`src.models.vlm.command.greets`). A command with a greeting in front stays a task.
+other sentence. The model reads the sentence as ever, bar one that is nothing but a greeting, a known sentence; a
+greeting is a sentence it read as no command that opens with a greeting or a farewell or asks to wave, or one that
+is nothing but a greeting, whatever the model made of it, bar a stop (`src.models.vlm.command.greets`). A command
+with a greeting in front stays a task.
 
 Refused: `409 run_active` first (during any run, a teach included), `409 vlm_not_loaded` (a cell whose detector
 is not the VLM, before "Laden"; or another checkpoint loaded: rebuild the cell), `501 vlm_unavailable` (also a
-model that fails while answering, and a reader refusal the catalog does not know), `501 vlm_model_missing`, and
+model that fails while answering, and a reader refusal the catalog does not know), `501 vlm_model_missing`,
+`422 text_too_long` (a sentence over 1000 characters; `detail` names the field and the limit) and
 `422 bad_request`. `GET /v1/commands/status`
 says `ready`, `idle`, `loading`, `missing`, `failed` or `not_configured`, with the cause and whether the copy is
 shared with detection; `POST /v1/commands/warmup` is "Laden", refused during a run.
@@ -632,8 +722,11 @@ primary where omitted), downscaled to `max_width` (32 to 4096) and JPEG-encoded 
 **Overlays are their own images.** A task keeps the grasp overlay rendered when the grasp was decided, before
 the arm moved: at every `pick.executing` and after each pick, and only where it is a new image.
 `GET /v1/runs/{run_id}/overlays/{n}` serves them as PNG, and `GET /v1/runs/{run_id}/target/overlay` the bin the
-camera found; refused `404 no_such_run`, `404 no_overlay`. The store holds 64 MB and lets the oldest go. The
-browser pins an overlay over the stage for 5 s and never draws it over the moving live picture.
+camera found; refused `404 no_such_run`, `404 no_overlay`. A sort keeps each place's bin apart:
+`GET /v1/runs/{run_id}/targets/{n}/overlay` serves the bin of its n-th place a camera finds, in the order its rules
+first name them, `0` the one `target/overlay` serves, and each target event's `target.overlay` names its place's URL.
+The store holds 64 MB and lets the oldest go. The browser pins an overlay over the stage for 5 s and never draws it
+over the moving live picture.
 
 ## Picks and their events
 
@@ -684,8 +777,9 @@ browser pins an overlay over the stage for 5 s and never draws it over the movin
 
 ## Speech
 
-Speech fills the prompt box and never starts anything: a person reads the card it opens and starts the task
-with Start, as for a typed command. `POST /v1/voice/transcribe` takes 16-bit PCM WAV, which is what the console
+Speech fills the prompt box and never starts anything: a person reads the text and sends it with Enter, as a
+typed command, which starts the task only where the reading is `startable` and opens the card otherwise
+(Commands). `POST /v1/voice/transcribe` takes 16-bit PCM WAV, which is what the console
 records in the browser. A voice check runs first, so a recording with no speech comes back as an
 empty proposal with its reason. The text stays in the spoken language, and the answer carries the
 whole transcript: language, where the language came from, duration, engine, weights, device and
@@ -745,12 +839,12 @@ reads the controller from the receive stream alone (`quick_robot_status`), never
 | [`lifecycle.py`](lifecycle.py) | build, preview, token, connect, disconnect, and the rollback |
 | [`codes.py`](codes.py) | every typed code and its one status: run kinds, stop codes and classes, events, refusals, lights, blockers, the jaws question, command notes |
 | [`runs.py`](runs.py) | a run on its own thread: the pick run, `start_kind` for the others, the countdown, stop, halt, the record, the 200-run window |
-| [`task_run.py`](task_run.py) | the bodies of a task, Home and the planner start; the hooks that put a task's events on its stream |
+| [`task_run.py`](task_run.py) | the bodies of a task, Home and the planner start; the hooks that put a task's events on its stream; the bins the console remembers, by phrase |
 | [`readiness.py`](readiness.py) | the ready bar, the cell's facts, and the gates every moving route keeps, in their order |
 | [`jaws.py`](jaws.py) | the hand as the console reads it, and the jaws question answered in the browser |
 | [`teach.py`](teach.py) | teaching one pose by hand from the browser, the heartbeat, and the poses read and chosen |
 | [`live.py`](live.py) | the live image: a peek per rig, downscaled and encoded, and each rig's frame age |
-| [`overlays.py`](overlays.py) | the bounded store of the overlays a task captured |
+| [`overlays.py`](overlays.py) | the bounded store of the overlays a task captured, each place's bin under its own key |
 | [`events.py`](events.py) | per-run sequence numbers, the bounded buffer, catch-up and the gap, and the cell's own stream |
 | [`history.py`](history.py) | reading the record log, the KPI roll-up, the CSV writers |
 | [`viewfinder.py`](viewfinder.py) | camera, synthetic or overlay, and the no-picture reasons |
@@ -786,6 +880,9 @@ otherwise (fixed run and question ids, a fixed clock).
 | The console's task on a CB3 controller: three cycles with 2 DO0 edges each, halt in the approach and in the carry, a protective stop, the jaws question in the browser, Restart home | measured against real controller software (URSim CB3, `scripts/ursim/probe_console_task.py`), with the CB3's serial read by a scratch shim that did what the driver now does; the shipped reading is pinned on a local dashboard double ([`tests/test_ur_cb3_serial.py`](../tests/test_ur_cb3_serial.py)) and not rerun on URSim yet ([the runbook](../docs/runbooks/console_at_the_cell.md#3-what-the-probes-prove)) |
 | Preflight, build, connect, telemetry, a pick, history and disconnect, the routes the console had before the task | measured against real controller software (URSim, UR3e, 2026-08-20) |
 | The cockpit, Setup and the audience window calling these routes in a browser | run on `console_dummy` (Playwright); not yet against URSim ([`frontend/README.md`](../frontend/README.md)) |
+| A sentence typed and sent with Enter starting a task with no card, and the card first where the settings say so | run on `console_dummy` (Playwright, `frontend/e2e/enter.e2e.ts`); the known sentences and the remembered answers pinned in `tests/test_api_commands.py` |
+| The task's new place, carry and end rules: below the rim, side by side, the measured hang, the carry over the rim, the look count and the check look, the bin remembered and checked by its rim | pinned by tests on the task's doubles and a ray-cast bench (`tests/test_a_part_is_set_down_below_a_box_rim.py`, `tests/test_an_until_empty_task_ends_without_a_long_search.py`, `tests/test_api_the_console_remembers_the_bin_its_last_task_kept.py` and their neighbours); not yet against URSim or the cell |
+| A sort through the console: the rules read and routed, every refusal rule by rule, each kind into its own bin, a bin found again after it moved, each place's overlay and remembered bin | pinned by tests on the scripted cell (`tests/test_api_a_sort_*.py`) and the task's doubles (`tests/test_a_sort_*.py`); the class list on the cell's detector not yet measured, nor run against URSim or the cell |
 | Any endpoint with a physical arm, gripper or camera frame | never touched hardware |
 
 On `console_dummy` the cell response's `vendor` and the status response's `simulated` flag say that

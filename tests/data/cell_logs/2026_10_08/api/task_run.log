@@ -1,0 +1,4 @@
+2026-10-08 07:38:47,443 - TaskRun - INFO - Task run run-1f9a82860d, part 1, pick 1: succeeded.
+2026-10-08 07:38:47,443 - TaskRun - INFO - Task run run-1f9a82860d ended part_still_held: the pick gripped the part and nothing models it: the planner carries no part (payload_model none), so every carry, the place and a put back would be planned as if the hand were empty; the task stops where the arm stands with the part in the jaws, and a person takes it
+2026-10-08 07:41:11,862 - TaskRun - INFO - Task run run-ca72c832aa, part 1, pick 1: succeeded.
+2026-10-08 07:41:11,865 - TaskRun - INFO - Task run run-ca72c832aa ended part_still_held: the pick gripped the part and nothing models it: the planner carries no part (payload_model none), so every carry, the place and a put back would be planned as if the hand were empty; the task stops where the arm stands with the part in the jaws, and a person takes it

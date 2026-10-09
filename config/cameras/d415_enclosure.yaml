@@ -8,6 +8,10 @@
 # about 6 mm on every side and a back of about 6 mm, with a front lip 2 mm in front of the glass:
 # size_mm: x 99.15 + 2 x 6 = 111.15; y 23.15 + 2 x 6 = 35.15; z 20.15 + 2 + 6 = 28.15, rounded up to 32 for the cable.
 # centre_mm: x and y as the camera's; z: front at 1.1 + 2 = 3.1, back at 3.1 - 32 = -28.9, centre -12.9.
+#
+# 2026-10-08, the owner on the cell: about 1 cm too narrow on the left and the right, and in an odd pose the camera
+# touched the arm. So x is 111.15 + 2 x 10 = 131.15, the centre unchanged; y and z as they were. Still an estimate:
+# measure it.
 camera:
   model: d415_enclosure
   source: >-
@@ -16,5 +20,5 @@ camera:
     walls of about 6 mm, a back of about 6 mm and room for the cable, with a 2 mm front lip
   optical_frame: color
   housing:
-    size_mm: [111.15, 35.15, 32.0]
+    size_mm: [131.15, 35.15, 32.0]
     centre_mm: [35.0, 0.0, -12.9]

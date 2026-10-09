@@ -13,8 +13,10 @@ motions reach it (:func:`route_of`):
 
 Before any command a verb also refuses a link that is not open, a pose not in BASE, and a camera world the arm's own
 motion would be refused for (``ReadsCameraWorld``), in that order and before the route. It then waits for the arm's
-own steady gate where its tree asks for one (``safety.dwell``). A decline reaches ``move`` and ``move_joints`` as the
-arm's own keyword, and ``home`` as a block around the arm's home verb, which takes no keyword.
+own steady gate where its tree asks for one (``safety.dwell``), unless the arm gates its own sends
+(``safety.dwell.gate_at`` ``send``, :func:`gates_its_own_sends`): such an arm judges the motion first, while it settles,
+and waits for steady right before it sends. A decline reaches ``move`` and ``move_joints`` as the arm's own keyword, and
+``home`` as a block around the arm's home verb, which takes no keyword.
 
 Every verb returns a frozen :class:`MotionReport`. A camera that could not vouch for the cell
 (``CameraWorldUnavailable``) and a driver fault (``RobotError``) end the verb as an outcome rather than a raise. A
@@ -39,7 +41,7 @@ from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Frame, Pose
@@ -78,6 +80,8 @@ __all__ = [
     "MotionVerb",
     "RouteReading",
     "decline_of",
+    "expecting_next",
+    "gates_its_own_sends",
     "home",
     "move",
     "move_joints",
@@ -105,7 +109,17 @@ _COMMANDS = {
 
 
 class MotionOutcome(StrEnum):
-    """How a motion verb ended."""
+    """How a motion verb (``Robot.move``, ``move_joints``, ``home``) ended.
+
+    Attributes:
+        EXECUTED: The arm ran the motion.
+        MOTION_REFUSED: The arm's own verb refused the motion, or its driver raised; the result says why.
+        CAMERA_WORLD_UNAVAILABLE: A camera could not vouch for the cell; nothing was commanded, and a caller stops
+            rather than trying again.
+        REFUSED: Refused before any command: a link that is not open, a pose not in BASE, a camera world the arm would
+            refuse, an arm whose motions do not go through cuRobo and the exact mesh guard, or an arm that did not come
+            to rest.
+    """
 
     #: The arm ran the motion.
     EXECUTED = "executed"
@@ -208,6 +222,35 @@ def steady_timeout_of(arm: object) -> float | None:
     return float(getattr(dwell, "steady_timeout_s", 5.0))
 
 
+def gates_its_own_sends(arm: object) -> bool:
+    """Whether ``arm`` waits for steady right before it sends a motion, after it judged it (the cuRobo UR with
+    ``safety.dwell.gate_at`` ``send``): its ``gates_its_own_sends`` read as ``is True``, so a double that answers every
+    attribute is not taken for one, and its verbs keep their own gate."""
+    return getattr(arm, "gates_its_own_sends", False) is True
+
+
+def expecting_next(arm: object, joints: "JointPositions | str | None") -> AbstractContextManager[Any]:
+    """The block in which the joint move to ``joints`` is the leg after the verbs running in it, on an arm that judges
+    such a move ahead (``URRobotArm.expecting_next``, ``robot.motion.judge_next_leg``); elsewhere, and for ``None``, a
+    block that changes nothing.
+
+    A task wraps its pick in it with the look it carries the part to, and its place with the pose it returns to: the
+    pick judges the carry while the jaws close, the place the return while they open, each in the world its junction
+    holds (``safety.planning_world.hold``), and the move runs as judged where nothing it was judged on changed.
+    ``"home"`` is the home the arm's home verb drives to (``home_joint_positions``), as a look of ``"home"`` is.
+    Declaring moves nothing and judges nothing.
+    """
+    declare = getattr(arm, "expecting_next", None)
+    if joints is None or not callable(declare) or getattr(arm, "judges_next_legs", False) is not True:
+        return nullcontext()
+    if isinstance(joints, str):
+        home = getattr(arm, "home_joint_positions", None) if joints == "home" else None
+        if home is None:
+            return nullcontext()
+        joints = JointPositions([float(v) for v in home])
+    return cast("AbstractContextManager[Any]", declare(joints))
+
+
 def decline_of(
     decline: Maybe[str], camera_world: Maybe[CameraWorldDecline] = UNSET,
 ) -> Maybe[CameraWorldDecline]:
@@ -234,7 +277,17 @@ def decline_of(
 
 @dataclass(frozen=True, slots=True)
 class MotionReport:
-    """What one motion verb asked of the arm, how the arm's motions reach it, and what the arm said."""
+    """What one motion verb asked of the arm, how the arm's motions reach it, and what the arm said.
+
+    Attributes:
+        verb (MotionVerb): ``move``, ``move_joints`` or ``home``.
+        outcome (MotionOutcome): How it ended.
+        route (RouteReading): How this arm's motions reach it, read before any command.
+        result (MotionResult): The arm's typed result, or the one the verb refused with: the status, the message, the
+            target and the camera world stamp.
+        line (LineReading | None): What the arm keeps of the straight line a ``move(linear=True)`` asked for; ``None``
+            for every other motion (default: None).
+    """
 
     verb: MotionVerb
     outcome: MotionOutcome
@@ -253,14 +306,17 @@ class MotionReport:
 
     @property
     def status(self) -> MotionStatus:
+        """The arm's status for the motion, ``result.status``."""
         return self.result.status
 
     @property
     def message(self) -> str:
+        """What the arm said about it, ``result.message``."""
         return self.result.message
 
     @property
     def camera_world(self) -> CameraWorldStamp:
+        """What camera world stood behind the motion, ``result.camera_world``."""
         return self.result.camera_world
 
     def __str__(self) -> str:
@@ -268,7 +324,11 @@ class MotionReport:
         return self.render()
 
     def render(self) -> str:
-        """Describe this to a person, as text, ASCII, no trailing newline."""
+        """The motion as a person reads it.
+
+        Returns:
+            str: ASCII, no trailing newline. ``print(report)`` shows the same.
+        """
         lines = [f"{self.verb.value}  {self.outcome.value.upper()}"]
         lines.extend(f"  {line}" for line in self.result.render().split("\n"))
         lines.append(f"  route  {self.route.render()}")
@@ -279,7 +339,11 @@ class MotionReport:
         return "\n".join(lines)
 
     def to_dict(self) -> dict[str, Any]:
-        """Plain data, ``json.dumps`` safe."""
+        """The motion as plain data.
+
+        Returns:
+            dict[str, Any]: ``json.dumps`` safe.
+        """
         return {
             "verb": self.verb.value,
             "outcome": self.outcome.value,
@@ -420,7 +484,8 @@ class _Motion:
         if refused is not None:
             return MotionReport(self.verb, MotionOutcome.REFUSED, route, refused, line)
         try:
-            timeout = steady_timeout_of(self.arm)
+            # An arm that gates its own sends (``gate_at`` ``send``) waits right before it sends, after its judgement.
+            timeout = None if gates_its_own_sends(self.arm) else steady_timeout_of(self.arm)
             if timeout is not None and not self.arm.wait_until_steady(timeout):
                 return MotionReport(self.verb, MotionOutcome.REFUSED, route, self._failed(
                     MotionStatus.TIMEOUT, f"the arm did not come to rest within {timeout:.2f} s before the motion "

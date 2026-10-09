@@ -9,6 +9,9 @@
  * A code this console does not know (a newer server, a typo in a test double) is never shown as a raw identifier
  * in place of a sentence and never as silence: `refusalMsg` falls back to "Abgelehnt (<code>)", and the screens put
  * the backend's own sentence under it in the tech view.
+ *
+ * Several messages in a row (a sort's rules, the targets a survey looks for) stay one message until they are said
+ * (`listMsg`, `quotedMsg`), so the run model and the card name them without knowing the reader's language.
  */
 
 import {
@@ -26,7 +29,7 @@ import {
   type StopClass,
   type StopCode,
 } from '../api/codes'
-import type { Msg } from './types'
+import type { Msg, ParamValue } from './types'
 
 /**
  * The outcomes a pick reports (`AutonomousGraspOutcome`, `src/robot/execution/autonomous_grasp/report.py`), plus
@@ -55,10 +58,12 @@ export type Outcome = (typeof OUTCOMES)[number]
 
 /**
  * The lines an event says in more than one way, by what its data carries: a task that knows how many parts it has,
- * a push, a found-nothing pick, the end of a run by its class and kind. Each is `event.<variant>`.
+ * a sort, a push, a found-nothing pick, a place found nowhere, the end of a run by its class and kind. Each is
+ * `event.<variant>`.
  */
 export const EVENT_VARIANTS = [
   'run_started.task',
+  'run_started.sort',
   'run_started.restart',
   'run_started.pick',
   'run_started.home',
@@ -83,6 +88,7 @@ export const EVENT_VARIANTS = [
   'run_finished.planner',
   'run_finished.problem',
   'pick.perceived.fixed',
+  'pick.perceived.followed',
   'pick.attempt_finished.push',
   'pick.attempt_finished.push_stopped',
   'pick.attempt_finished.push_refused',
@@ -94,15 +100,20 @@ export const EVENT_VARIANTS = [
   'pick_result.nothing',
   'task.part_started.of',
   'task.nothing_found.excluded',
+  'task.carry_started.over_the_rim',
   'task.target_lost.not_seen',
   'task.target_lost.moved_too_far',
   'task.target_lost.footprint_changed',
   'task.drop_planned.pose',
   'task.drop_planned.camera',
+  'task.drop_planned.below',
   'task.placed.no_sensor',
   'task.placed.line_out_refused',
+  'task.placed.over_the_rim',
   'task.part_finished.placed',
   'task.part_finished.not_placed',
+  'task.target_relocated.nowhere',
+  'task.unsorted.unnamed',
   'cell.jaws_question.open_now',
   'cell.jaws_ended.open',
   'cell.jaws_ended.refused',
@@ -181,10 +192,17 @@ export function isRefusalCode(code: unknown): code is RefusalCode {
 
 /**
  * What a refusal says, by its code. An unknown code is "Abgelehnt (<code>)": never the bare identifier, never
- * nothing. `http_404`-style codes (`ApiError` for a body that was not the envelope) count as unknown.
+ * nothing. `http_404`-style codes (`ApiError` for a body that was not the envelope) count as unknown. `detail`, the
+ * envelope's machine half, fills the words that name a number (`text_too_long`: "höchstens {max} Zeichen"); only
+ * its plain numbers and strings are taken.
  */
-export function refusalMsg(code: string): Msg {
-  return isRefusalCode(code) ? { key: `refusal.${code}` } : { key: 'common.refused', params: { code } }
+export function refusalMsg(code: string, detail?: Readonly<Record<string, unknown>>): Msg {
+  if (!isRefusalCode(code)) return { key: 'common.refused', params: { code } }
+  const params: Record<string, string | number> = {}
+  for (const [name, value] of Object.entries(detail ?? {})) {
+    if (typeof value === 'number' || typeof value === 'string') params[name] = value
+  }
+  return Object.keys(params).length > 0 ? { key: `refusal.${code}`, params } : { key: `refusal.${code}` }
 }
 
 /**
@@ -198,6 +216,22 @@ export function whereMsg(where: string | null | undefined): Msg | string {
   const standard = /^(?:standard |configurable )?(?:digital )?output (\d+)$/i.exec(text)
   if (standard) return { key: 'hand.output', params: { pin: standard[1] } }
   return text || '—'
+}
+
+/**
+ * Items in a row as one message, so a list of messages stays a message until it is said: `list.rules` joins a sort's
+ * rules (" · "), `list.words` words in a sentence (", "). Each item may be a message itself. One item is itself, none
+ * a dash.
+ */
+export function listMsg(items: readonly ParamValue[], join: 'list.rules' | 'list.words'): ParamValue {
+  if (items.length === 0) return null
+  if (items.length === 1) return items[0]
+  return { key: join, params: { first: items[0], rest: listMsg(items.slice(1), join) } }
+}
+
+/** Words quoted in the reader's language: „in die blaue“, “in die blaue”. */
+export function quotedMsg(text: string): Msg {
+  return { key: 'list.quoted', params: { text } }
 }
 
 export function isOutcome(outcome: unknown): outcome is Outcome {

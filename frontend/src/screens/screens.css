@@ -136,6 +136,7 @@
   .st-name { font-weight: 600; font-size: 0.875rem; }
   .st-hint { font-size: 0.8125rem; color: var(--fg-muted); }
   .st-test, .st-talk-actions, .st-refused { grid-column: 2 / -1; justify-self: start; }
+  .st-phrase { grid-column: 2 / -1; width: min(100%, 28rem); min-height: 2.75rem; }
   .st-key { font-size: 0.875rem; padding: 0.3rem 0.6rem; border: 1px solid var(--line-strong); border-radius: 0.3rem;
             background: var(--inset); }
   .st-refused { font-size: 0.8125rem; }
@@ -143,6 +144,6 @@
 
   @media (max-width: 760px) {
     .st-row { grid-template-columns: minmax(0, 1fr); }
-    .st-test, .st-talk-actions, .st-refused { grid-column: auto; }
+    .st-test, .st-talk-actions, .st-refused, .st-phrase { grid-column: auto; }
   }
 }

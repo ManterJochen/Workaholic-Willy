@@ -156,6 +156,9 @@ class Sam2Segmenter:
 
         raw_mask = self._extract_first_mask(post_masks)
         clean_mask = self._postprocess_mask(raw_mask)
+        # SAM2 rates each of its three masks with a predicted IoU; the first mask is the one kept. Kept on the result
+        # for whoever records it (the owner, 2026-10-09: the research recording); nothing here chooses by them.
+        predicted_iou = self._predicted_ious(outputs)
 
         ys, xs = np.where(clean_mask > 0)
         if len(xs) == 0 or len(ys) == 0:
@@ -187,6 +190,7 @@ class Sam2Segmenter:
                 "device": str(self.device),
                 "keep_largest_component": self.keep_largest_component,
                 "morph_kernel_size": self.morph_kernel_size,
+                "predicted_iou": predicted_iou,
             },
         )
 
@@ -200,6 +204,15 @@ class Sam2Segmenter:
             area,
         )
         return result
+
+    @staticmethod
+    def _predicted_ious(outputs: Any) -> tuple[float, ...]:
+        """SAM2's predicted IoU of each mask it proposed for the box, in the order of the masks (the first is the one
+        kept); empty where the output carries none."""
+        scores = getattr(outputs, "iou_scores", None)
+        if not torch.is_tensor(scores) or scores.numel() == 0:
+            return ()
+        return tuple(float(value) for value in scores.detach().float().cpu().reshape(-1).tolist())
 
     def _extract_first_mask(self, post_masks: Any) -> np.ndarray:
         """The first 2D mask from the SAM2 post-process output.

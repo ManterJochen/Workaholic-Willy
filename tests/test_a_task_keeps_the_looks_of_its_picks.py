@@ -38,7 +38,9 @@ class KeepPickViewsTests(unittest.TestCase):
             where = keep_pick_views(self._service(), self._report(), name="fallback")
 
         self.assertEqual("D:/views/pick-0123.npz", where)
-        kept.assert_called_once_with(("view",), target_cloud_base_mm="cloud", name="pick-0123")
+        # And which segmentation of each look the pick went for, which a file a camera recorded for research keeps
+        # (format 2, 2026-10-09); this judged look names none.
+        kept.assert_called_once_with(("view",), target_cloud_base_mm="cloud", name="pick-0123", targets=(None,))
 
     def test_a_pick_with_no_record_name_takes_the_one_given(self) -> None:
         from src.robot.execution.pick_run import keep_pick_views

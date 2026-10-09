@@ -43,6 +43,10 @@
   }
 
   .prompt-note { font-size: 0.8125rem; line-height: 1.4; }
+  /* Under the box: what Enter does on the left, the characters used on the right once the box is 80 % full. */
+  .prompt-foot { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.25rem 0.75rem; }
+  .prompt-mode a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+  .prompt-count { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
   /* A narrow window keeps the microphone's icon: its name is the button's label for a screen reader. */
   @media (max-width: 520px) { .prompt-mic-label { display: none; } .prompt-mic { padding: 0 0.7rem; } }
   .prompt-detail { color: var(--fg-muted); font-family: var(--font-mono); font-size: 0.75rem; }

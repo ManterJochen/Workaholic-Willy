@@ -18,6 +18,8 @@ from src.models._inference import (
 )
 from src.models.constants import DETECTOR_LOG_FILE, MODELS_LOG_DIR
 from src.models.detection.types import Detection
+from src.models.vlm.parsing import AMBIGUOUS_LABEL, claimed_once
+from src.models.vlm.qwen import classes_of
 from src.utility import (
     bgr_to_rgb,
     create_logger,
@@ -25,6 +27,19 @@ from src.utility import (
     get_device,
     move_inputs_to_device,
 )
+
+#: What separates two phrases of a GroundingDINO caption: its text encoder was trained on phrases each
+#: ended by a period ("a cat. a dog."), and its labels are read back phrase by phrase.
+PHRASE_SEPARATOR = " . "
+
+
+def grounding_caption(prompt: str) -> str:
+    """``prompt`` as GroundingDINO's caption: a class list (``"green part | red part"``, built by
+    ``src.models.vlm.qwen.class_list_prompt``) with its descriptions separated by the period,
+    ``"green part . red part"``, so each is a phrase of its own and a box's label is one of them; any
+    other prompt as it is, byte for byte."""
+    descriptions = classes_of(prompt)
+    return PHRASE_SEPARATOR.join(descriptions) if descriptions else prompt
 
 
 class GroundingDinoObjectDetector:
@@ -107,7 +122,8 @@ class GroundingDinoObjectDetector:
     def detect(self, image: np.ndarray, prompt: str) -> Detection:
         """Highest-scoring match for ``prompt`` in ``image``, a BGR array as OpenCV delivers it.
 
-        ``prompt`` is a natural-language description of the target object. Returns one
+        ``prompt`` is a natural-language description of the target object, or a class list,
+        captioned as :func:`grounding_caption` says. Returns one
         :class:`Detection` with box ``[x0, y0, x1, y1]`` in pixels, center, label and score, and
         raises ``ValueError`` when nothing clears the threshold; :meth:`detect_all` returns an
         empty list in that case instead.
@@ -124,7 +140,7 @@ class GroundingDinoObjectDetector:
 
         inputs = self.processor(
             images=pil_image,
-            text=prompt,
+            text=grounding_caption(prompt),
             return_tensors="pt",
         )
         inputs = move_inputs_to_device(dict(inputs), self.device)
@@ -188,12 +204,17 @@ class GroundingDinoObjectDetector:
         return detection
 
     @torch.inference_mode()
-    def detect_all(self, image: np.ndarray, prompt: str) -> list[Detection]:
-        """Every detection above threshold, where :meth:`detect` returns only the argmax.
+    def detect_all(self, image: np.ndarray, prompt: str, *, threshold: float | None = None) -> list[Detection]:
+        """Every detection above threshold, where :meth:`detect` returns only the argmax; ``threshold`` stands in for
+        the configured one for this call alone (``ObjectDetector.detect(threshold=)``).
 
         Each :class:`Detection` carries its own box in pixels, center, label and score, which is
         what clutter and multi-object selection need. Nothing above threshold is an empty list
-        rather than a raise, so a caller handles "no objects" without exception flow.
+        rather than a raise, so a caller handles "no objects" without exception flow. A class list
+        is captioned as one phrase per description (:func:`grounding_caption`), so each box is
+        labelled with the phrase it grounded, and fails closed as a VLM's answer to one does
+        (``src.models.vlm.parsing.claimed_once``): a box grounded to no phrase, and every box of an
+        object boxed under two descriptions, is ``ambiguous``, an obstacle and never a target.
         """
         if image is None or image.size == 0:
             raise ValueError("Input image is empty or None.")
@@ -206,7 +227,7 @@ class GroundingDinoObjectDetector:
         started = time.time()
         pil_image = Image.fromarray(bgr_to_rgb(image))
         w, h = pil_image.size
-        inputs = self.processor(images=pil_image, text=prompt, return_tensors="pt")
+        inputs = self.processor(images=pil_image, text=grounding_caption(prompt), return_tensors="pt")
         inputs = move_inputs_to_device(dict(inputs), self.device)
         if self.optim and self.optim.channels_last and self.device.type == "cuda":
             pv = inputs.get("pixel_values")
@@ -215,7 +236,7 @@ class GroundingDinoObjectDetector:
         with autocast_ctx(self.device, dtype=self._model_dtype):
             outputs = self.model(**inputs)
         results = self.processor.post_process_grounded_object_detection(
-            outputs, inputs["input_ids"], threshold=self.threshold
+            outputs, inputs["input_ids"], threshold=self.threshold if threshold is None else threshold
         )
         if not results or len(results[0]["scores"]) == 0:
             # Grounding nothing costs a full inference, so the empty case is timed and logged too.
@@ -225,6 +246,8 @@ class GroundingDinoObjectDetector:
         boxes = result["boxes"]
         labels = result.get("text_labels", result.get("labels"))
         scores = result["scores"]
+        # A class list's box grounded to no phrase is no description's: it may not be named by one.
+        unnamed = AMBIGUOUS_LABEL if classes_of(prompt) else "object"
         dets: list[Detection] = []
         for i in range(len(scores)):
             x0, y0, x1, y1 = [float(c) for c in boxes[i]]
@@ -235,8 +258,10 @@ class GroundingDinoObjectDetector:
             lbl = str(labels[i]).strip() if labels[i] is not None else ""
             dets.append(Detection(
                 box=box_px, x_center=(box_px[0] + box_px[2]) / 2, y_center=(box_px[1] + box_px[3]) / 2,
-                label=lbl or "object", score=float(s.item()) if hasattr(s, "item") else float(s),
+                label=lbl or unnamed, score=float(s.item()) if hasattr(s, "item") else float(s),
             ))
+        if classes_of(prompt):
+            dets = claimed_once(dets, prompt)
         self.logger.info(f"Inference completed in {time.time() - started:.3f}s, {len(dets)} detections")
         return dets
 

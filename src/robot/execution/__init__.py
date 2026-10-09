@@ -21,8 +21,10 @@ _LAZY: dict[str, tuple[str, str]] = {
     "PickRun": ("src.robot.execution.pick_run", "PickRun"),
     "PickRunReport": ("src.robot.execution.pick_run", "PickRunReport"),
     "Recording": ("src.robot.execution.pick_run", "Recording"),
-    # A task: pick, place, return, once or until nothing is left.
+    # A task: pick, place, return, once or until nothing is left; a sort, each kind to its rule's place.
+    "MAX_FURTHER_RULES": ("src.robot.execution.task", "MAX_FURTHER_RULES"),
     "PlaceAt": ("src.robot.execution.task", "PlaceAt"),
+    "SortRule": ("src.robot.execution.task", "SortRule"),
     "TaskEvent": ("src.robot.execution.task", "TaskEvent"),
     "TaskHooks": ("src.robot.execution.task", "TaskHooks"),
     "TaskOptions": ("src.robot.execution.task", "TaskOptions"),
@@ -148,7 +150,9 @@ __all__ = [
     "PickRun",
     "PickRunReport",
     "Recording",
+    "MAX_FURTHER_RULES",
     "PlaceAt",
+    "SortRule",
     "TaskEvent",
     "TaskHooks",
     "TaskOptions",

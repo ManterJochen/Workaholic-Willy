@@ -1,0 +1,12 @@
+2026-10-07 11:41:04,723 - CellSession - INFO - Cell released: nothing is built, nothing is connected.
+2026-10-07 11:41:19,872 - CellSession - INFO - Connect preview issued for arm=URRobotArm gripper=JawIOGripper: 1 motion warning(s), 0 blocker(s); config fingerprint 29c0c9ffd5f0d6dd, valid until 2026-10-07T09:46:19+00:00.
+2026-10-07 11:41:20,567 - CellSession - INFO - Connecting: arm=URRobotArm, then gripper=JawIOGripper. THIS MOVES; acknowledged by token.
+2026-10-07 11:41:28,906 - CellSession - ERROR - Connect FAILED (RuntimeError: ur_rtde: Failed to start control script, before timeout of 5 seconds); rolled back.
+2026-10-07 11:41:39,528 - CellSession - INFO - Connect preview issued for arm=URRobotArm gripper=JawIOGripper: 1 motion warning(s), 0 blocker(s); config fingerprint 29c0c9ffd5f0d6dd, valid until 2026-10-07T09:46:39+00:00.
+2026-10-07 11:41:40,543 - CellSession - INFO - Connecting: arm=URRobotArm, then gripper=JawIOGripper. THIS MOVES; acknowledged by token.
+2026-10-07 11:41:49,006 - CellSession - ERROR - Connect FAILED (RuntimeError: ur_rtde: Failed to start control script, before timeout of 5 seconds); rolled back.
+2026-10-07 11:41:55,033 - CellSession - INFO - Connect preview issued for arm=URRobotArm gripper=JawIOGripper: 1 motion warning(s), 0 blocker(s); config fingerprint 29c0c9ffd5f0d6dd, valid until 2026-10-07T09:46:55+00:00.
+2026-10-07 11:41:59,119 - CellSession - INFO - Connecting: arm=URRobotArm, then gripper=JawIOGripper. THIS MOVES; acknowledged by token.
+2026-10-07 11:42:00,520 - CellSession - INFO - Arm connected (URRobotArm).
+2026-10-07 11:42:02,819 - CellSession - INFO - Gripper connected (JawIOGripper).
+2026-10-07 11:42:02,819 - CellSession - INFO - Cell connected.

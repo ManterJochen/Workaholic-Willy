@@ -532,23 +532,26 @@ class WhatTheLibraryMeetsInsideTheRunTests(ConsoleCase):
 class ACameraPlaceTests(ConsoleCase):
     """A camera place on a scripted wrist cell: the survey, the kept bin and its overlay, the check before the drop."""
 
-    def _bin(self, moved_mm: float = 0.0) -> Any:
-        from tests._task_fakes import BIN_CENTRE, bin_object, bin_points
+    def _bin(self, moved_mm: float = 0.0, size: "tuple[float, float] | None" = None) -> Any:
+        from tests._task_fakes import BIN_CENTRE, BIN_SIZE, bin_object, bin_points
 
         def sees(_tcp: Any) -> Any:
-            return (bin_object(bin_points((BIN_CENTRE[0] + moved_mm, BIN_CENTRE[1]))),)
+            return (bin_object(bin_points((BIN_CENTRE[0] + moved_mm, BIN_CENTRE[1]), size or BIN_SIZE)),)
 
         return sees
 
-    def _wrist(self, picks: list[Scripted], *, moved_after_survey_mm: float = 0.0) -> Any:
+    def _wrist(self, picks: list[Scripted], *, moved_after_survey_mm: float = 0.0,
+               size_after_survey: "tuple[float, float] | None" = None) -> Any:
         from tests._console_task_fakes import LOOK_1, LOOK_2
 
         cell = self.scripted(picks, wrist=True, looks=(LOOK_1, LOOK_2))
-        moved = {"mm": 0.0}
-        locator = SightedLocator({"blue bin": lambda tcp: self._bin(moved["mm"])(tcp)}, arm=cell.arm, wrist=True)
+        moved: dict[str, Any] = {"mm": 0.0, "size": None}
+        locator = SightedLocator({"blue bin": lambda tcp: self._bin(moved["mm"], moved["size"])(tcp)}, arm=cell.arm,
+                                 wrist=True)
 
         def survey_done(*_args: Any) -> None:
             moved["mm"] = moved_after_survey_mm
+            moved["size"] = size_after_survey
 
         patcher = patch("src.robot.execution.place_target.locators_for_service", return_value=[locator])
         patcher.start()
@@ -580,8 +583,10 @@ class ACameraPlaceTests(ConsoleCase):
         self.assertEqual(20.0, body["plan"]["options"]["rim_air_mm"])
 
     def test_a_bin_that_moved_too_far_is_lost_the_part_goes_back_and_the_task_asks(self) -> None:
+        """A bin that moved too far is looked for again (the owner, 2026-10-09): here one of another size stands there,
+        so none of the bin's size is found anywhere, and the part goes back."""
         cell, survey_done = self._wrist([Scripted("part", looks=("look_1",), then=lambda: survey_done())],
-                                        moved_after_survey_mm=180.0)
+                                        moved_after_survey_mm=180.0, size_after_survey=(200.0, 120.0))
         run = self.task(object="red cube", place={"kind": "camera", "phrase": "blue bin"})
         body = self.finished(run["id"])
         self.assertEqual(("finished", "target_lost", "ask", 0, False),

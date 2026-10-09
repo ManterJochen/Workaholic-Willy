@@ -9,6 +9,9 @@
  * Looks that found nothing more are how "until empty" ends, not a part that failed: a "part" whose every pick saw
  * nothing matching (or only parts already placed) is said in one quiet line, "Nichts mehr gefunden (2 Blicke).", never
  * as a card "nicht abgelegt". Empty looks are never counted as grasps.
+ *
+ * In a sort (the owner, 2026-10-09) a finished part's card names the rule it went by ("grüne Teile → in die gelbe
+ * Kiste"), as its `task.rule` line said it; the part in hand says it among its step lines.
  */
 
 import { useT } from '../i18n'
@@ -61,6 +64,8 @@ export default function PartCard({ part, lines, current, step, tech }: PartCardP
   const grasps = part.picks.filter((p) => !empty(p)).length
 
   const tags: Array<{ text: string; tone?: 'warn' | 'ok' }> = []
+  const rule = current ? undefined : lines.findLast((line) => line.msg.key === 'event.task.rule')
+  if (rule) tags.push({ text: t.msg({ key: 'list.rule', params: { what: rule.msg.params?.what, where: rule.msg.params?.where } }) })
   if (pick) {
     const fused = pick.looksFused.length
     if (fused > 1) tags.push({ text: t('ck.part.fused', { n: fused }) })

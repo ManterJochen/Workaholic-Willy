@@ -1,8 +1,11 @@
 # `willy`: the library in one import
 
-`from willy import ...` gives you every public name of Workaholic-Willy: a cell's config tree, a
-robot and its verbs, a whole cell and its pick campaigns, cameras and calibration, grasps, speech,
-Isaac Sim, and offline data and training.
+`from willy import ...` gives you every name a program of yours calls: a cell's config tree, a robot
+and its verbs, a whole cell with its pick campaigns and tasks, cameras and calibration, object
+detection, speech, Isaac Sim, and offline data and training. What runs inside them stays in `src`:
+the safety gates inside every move of the robot, the grasp generator inside the cell's pick, the
+perception stack inside the cell and the `Locator`, and the config's machinery inside `load_tree`.
+Each is still importable from its own module.
 
 ```python
 from willy import Robot, load_tree
@@ -34,7 +37,6 @@ Every noun that describes a cell is built from a loaded config tree, `X.from_tre
 |---|---|---|
 | `load_tree` | Loads and validates a tree in one call, and returns a `LoadedTree` | `real_robot/01_load_your_cell.py` |
 | `LoadedTree` | A validated tree: `ok`, `.robot`, `explain(key)`, `decisions()`, `with_values({...})` | `real_robot/01_load_your_cell.py` |
-| `ConfigTree` | Where the YAML lives and which layers apply; `ConfigTree.from_directory(...).load()` | what `load_tree` calls |
 | `ConfigError` | The refusal of a tree that did not load, raised when something asks it for a robot | any `from_tree` |
 | `load_speech_section` | `models.stt` alone, so speech loads without a camera, a robot or a detector | `real_robot/14_speak_a_command.py` |
 
@@ -59,8 +61,6 @@ Every noun that describes a cell is built from a loaded config tree, `X.from_tre
 | `HandlingOutcome` | How a pick or a place ended; `NOTHING_HELD` means the fingers closed on nothing | `HandlingReport.outcome` |
 | `HoldEvidence` | What the hand measured after its last command: `HELD`, `EMPTY` or `UNMEASURED` | `real_robot/04_open_and_close_the_hand.py` |
 | `JointPositions` | An immutable joint configuration, in radians; `JointPositions.deg(...)` takes degrees, as the pendant shows them | `real_robot/12_pick_with_the_camera.py` |
-| `SafetyPreflight` | The ordered fail-closed guards; `SafetyPreflight.from_tree(tree)` builds a cell's own at a desk | `offline/safety/gate_the_whole_path.py` |
-| `create_arm` | The arm driver registered for a vendor, built and not connected | `offline/safety/gate_the_whole_path.py` |
 | `teach_poses` | Joint poses taught by guiding a connected arm by hand, for one camera: the rig of `camera=`, else `for_rig=` in `tree=` (the primary by default), refused for a camera of another rig; a name and Enter per pose; prints each `JointPositions.deg(...)` line to paste with the rig and its mounting in a comment and adds the pose to `logs/taught_poses.json` with both; `camera=` shows that camera's window with the guide; returns the poses (`name`, `joints`, `tcp`, `rig`, `mounting`, `line()`) | `real_robot/11_teach_poses_by_hand.py` |
 
 ### The whole cell and its pick service
@@ -80,7 +80,6 @@ Every noun that describes a cell is built from a loaded config tree, `X.from_tre
 | `Recording` | Where a campaign appends one attempt record per line: `Recording.to_file(path)` or `Recording.off()` | `real_robot/12_pick_with_the_camera.py` |
 | `RecordLog` | A record log read back into KPIs, with the audit that says whether they rest on anything | `simulation/05_measure_a_campaign.py` |
 | `GraspMotion` | What a caller may choose about how a pick moves; a field left unset keeps the service's own; `closing_axis="-y"` takes only the grasps heading within 30 degrees of that axis, each turned that way round | `real_robot/12_pick_with_the_camera.py` |
-| `PlannerStart` | One cell's planner, started and stopped at a desk with no controller | `cell.start_planner()` in `real_robot/02_check_the_cell_at_a_desk.py` |
 
 ### A task: pick, place, return
 
@@ -104,7 +103,7 @@ Every noun that describes a cell is built from a loaded config tree, `X.from_tre
 | `WristBodyRequired` | A cell that reads geometry cannot place, or was not told, the body of a camera its arm carries | `Robot.from_tree(tree, cameras=...)` |
 | `LockKeyRequired` | An arm that drives a controller is handed in and no lock key derives from it; pass `lock_key=` | `Robot.from_parts(...)` |
 | `CellBusy` | Another process already holds the cell; the message names the holder | `connected()` |
-| `NoRealGripper` | The tree names a hand this arm cannot drive, and a connect was asked for | `offline/config/which_gripper_gets_built.py` |
+| `NoRealGripper` | The tree names a hand this arm cannot drive, and a connect was asked for | `connected()` |
 | `CellNotBuilt` | A `Cell` step that needs the built cell ran before `build()` | `cell.connected()` |
 | `HandGuidingRefused` | Hand guiding cannot start or go on: the arm offers none (the refusal names its vendor) or is not connected, the payload was not confirmed, the file of taught poses holds something else, or nobody can answer at the console; raised before the arm is freed, or once it holds | `real_robot/11_teach_poses_by_hand.py` |
 
@@ -144,18 +143,6 @@ is refused without them, and looks with the arm held still.
 | `HandGesture` | What a reading may be: `THUMB_UP`, `THUMB_DOWN`, `OTHER`, `NONE`; the last two are not the same | `build_gesture_recognizer(...).observe(frame)` |
 | `build_palm_detector` | Where hands are in a colour frame, in pixels, with no gesture; `observe(frame_bgr)` | [`src/models/handdetection/`](../src/models/handdetection/README.md) |
 
-### Grasps, and the stacks a desk can evaluate without a robot
-
-| Name | What it is | Shown in |
-|---|---|---|
-| `Scene` | A segmented target cloud on a support surface in base millimetres; `grasps()` ranks jaw grasps, each the way round nearer the tree's `robot.natural_closing_axis`, and `grasps(closing_axis=...)` only those along an axis | `offline/grasping/grasps_for_a_cloud.py` |
-| `synthesize_suction_grasps` | Ranked suction candidates for one segmented object | `offline/grasping/jaw_or_suction.py` |
-| `build_calculator` | The grasp generator a tree's `robot.grasping.calculator` asks for, `geometric` or `deep` | `offline/grasping/select_grasp_generator.py` |
-| `preflight_calculator` | Checks that selector without building anything, and returns what it chose | `offline/grasping/select_grasp_generator.py` |
-| `PerceptionSpec` | The perception stack a tree builds, resolved before a weight loads; `resolve()`, `build()` | `offline/perception/resolve_perception_stack.py` |
-| `RuleBasedRouter` | Routes a prompt by its text alone, and loads no model | `offline/perception/route_hard_prompts.py` |
-| `MotionStack` | Which robot a cell is and which motion engines this machine holds for it | `offline/config/planner_or_ik.py` |
-
 ### Speech: push to talk, and a person confirms
 
 | Name | What it is | Shown in |
@@ -192,3 +179,6 @@ is refused without them, and looks with the arm held still.
 | `PublicCorpus` | A published grasp corpus, read into the scene files this training loop already eats | `offline/training/04_train_on_a_public_corpus.py` |
 | `DetectorTraining` | Trains the closed-set RT-DETR detector on your COCO or YOLO dataset; `probe()`, `train()`, then `write_report()` | `offline/training/06_train_a_detector_on_your_images.py` |
 | `DetectorPlanOverrides` | The detector training settings you choose explicitly; they outrank the recipe and the tier | `offline/training/06_train_a_detector_on_your_images.py` |
+| `ObjectDetector` | Every detection model a cell can run behind one call. `from_weights(path_or_id)` is the closed-set RT-DETR (a `DetectorTraining` out_dir, any RT-DETR folder or a Hugging Face id), asked for every class it knows at once; `from_config(tree, backend=)` builds what the tree's `models.pipeline` names, or the backend named: `closed_set`, `grounded_sam` (GroundingDINO), `vlm`, `router`. `detect(image, prompt=, classes=, threshold=, segment=)`: an open-vocabulary detector takes a prompt or classes, and `segment=True` adds each object's SAM2 mask, every box cut in one pass | `offline/perception/detect_with_a_prompt.py`, `offline/perception/detect_every_class.py` |
+| `Detections` | What one `detect` found, the highest score first: a frozen sequence of `DetectedObject` with `of(label)`, `counts`, `render()`, `draw(image)`, `write_drawing(image, path)`, and `to_dict()` with every mask run-length encoded; `backend` says which model answered and `prompt` what it read | `offline/perception/detect_every_class.py` |
+| `DetectedObject` | One object: `label`, `score`, `box`, `centre`, `mask` (the image's size, `True` on the object) and `mask_score` | `offline/perception/detect_every_class.py` |

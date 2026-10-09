@@ -116,7 +116,22 @@ class DetectorTrainingContext:
 
 @dataclass
 class DetectorTraining:
-    """Train a closed-set RT-DETR detector on a dataset. Construct with a factory, then call ``train()`` once."""
+    """Train the closed-set RT-DETR detector on your own labelled images, then use it through
+    ``ObjectDetector.from_weights(out_dir)``.
+
+        run = DetectorTraining.from_dataset(dataset="data/chess_pieces", out_dir="models/chess")
+        print(run.probe())          # what the dataset holds, per class and split; trains nothing
+        report = run.train()        # the best epoch in models/chess, the last in models/chess/last
+        print(report)
+        run.write_report(report)    # report.json beside the model
+
+    Build it with :meth:`from_dataset` (a recipe and a tier) or :meth:`from_plan`, then call :meth:`train` once.
+
+    Attributes:
+        plan (DetectorPlan): Every training setting, resolved.
+        context (DetectorTrainingContext): The dataset, the out dir, the format, the device and ``resume``.
+        recipe_notes (Mapping[str, Any]): What the recipe and the tier set, for a caller that logs it (default: {}).
+    """
 
     plan: DetectorPlan
     context: DetectorTrainingContext
@@ -129,7 +144,22 @@ class DetectorTraining:
     @classmethod
     def from_plan(cls, *, dataset: str | Path, plan: DetectorPlan | None = None, out_dir: str | Path | None = None,
                   format: str = "auto", device: str | None = None, resume: bool = False) -> "DetectorTraining":
-        """Raw handles, no recipe resolution."""
+        """A run from a plan you built yourself, with no recipe resolution.
+
+        Args:
+            dataset (str | Path): The dataset folder, COCO or YOLO as CVAT, Label Studio or Roboflow export them.
+            plan (DetectorPlan | None): Every setting; ``None`` is a default ``DetectorPlan()`` (default: None).
+            out_dir (str | Path | None): Where the model goes: the best epoch at the top, the last in ``out_dir/last``;
+                required before ``train()`` (default: None).
+            format (str): The dataset's format: ``"coco"``, ``"yolo"`` or ``"auto"``, which tells them apart by their
+                files (default: "auto").
+            device (str | None): ``"cuda"``, ``"cpu"`` or ``"mps"``; ``None`` is ``WILLY_DEVICE`` or the first of CUDA,
+                MPS and the CPU (default: None).
+            resume (bool): Go on from the last epoch in ``out_dir``, on the same dataset (default: False).
+
+        Returns:
+            DetectorTraining: The run; nothing is read or trained yet.
+        """
         folder = Path(dataset)
         if not folder.is_dir():
             raise FileNotFoundError(f"no dataset folder at {folder}")
@@ -142,10 +172,33 @@ class DetectorTraining:
                      overrides: DetectorPlanOverrides | None = None, base: DetectorPlan | None = None,
                      out_dir: str | Path | None = None, format: str = "auto", device: str | None = None,
                      resume: bool = False) -> "DetectorTraining":
-        """A dataset folder, a recipe and a tier, plus whatever you chose explicitly in ``overrides``.
+        """A run from a dataset folder, a recipe and a tier, plus what you chose explicitly.
 
-        Refuses an unknown recipe or tier with ``ValueError`` rather than falling back to the defaults, and a missing
-        dataset folder with ``FileNotFoundError``. Nothing is read or trained until ``probe()`` or ``train()``.
+        Args:
+            dataset (str | Path): The dataset folder, COCO or YOLO; one without a validation split gives
+                ``val_fraction`` of its images to one.
+            recipe (str | None): The frozen recipe, ``"v1"``: RT-DETR's own (default: "v1").
+            tier (str | None): ``"full"``, up to 50 epochs, stopped after 15 without a better validation mAP, the best
+                kept; or ``"smoke"``, 2 epochs on 64 images, which proves the chain and says nothing about quality
+                (default: "full").
+            overrides (DetectorPlanOverrides | None): The settings you choose explicitly; they outrank the recipe and
+                the tier (default: None).
+            base (DetectorPlan | None): The plan the recipe, the tier and the overrides are laid onto; ``None`` the
+                defaults (default: None).
+            out_dir (str | Path | None): Where the model goes: the best epoch at the top, the last in ``out_dir/last``;
+                required before ``train()`` (default: None).
+            format (str): The dataset's format: ``"coco"``, ``"yolo"`` or ``"auto"``, which tells them apart by their
+                files (default: "auto").
+            device (str | None): ``"cuda"``, ``"cpu"`` or ``"mps"``; ``None`` is ``WILLY_DEVICE`` or the first of CUDA,
+                MPS and the CPU (default: None).
+            resume (bool): Go on from the last epoch in ``out_dir``, on the same dataset (default: False).
+
+        Returns:
+            DetectorTraining: The run; nothing is read or trained until :meth:`probe` or :meth:`train`.
+
+        Raises:
+            ValueError: An unknown recipe or tier.
+            FileNotFoundError: The dataset folder is not there.
         """
         plan, notes = build_plan(recipe=recipe, tier=tier, overrides=overrides, base=base)
         built = cls.from_plan(dataset=dataset, plan=plan, out_dir=out_dir, format=format, device=device,
@@ -155,28 +208,51 @@ class DetectorTraining:
 
     @staticmethod
     def shapes_dataset(folder: str | Path, *, images: int = 48, seed: int = 0) -> Path:
-        """Write a small COCO dataset of three coloured shapes to ``folder`` and return it.
+        """Write a small COCO dataset of three coloured shapes, for proving the chain on a new machine before anything
+        is labelled; a model trained on it says nothing about real parts.
 
-        For proving the chain on a new machine before anything is labelled; a model trained on it says nothing about
-        real parts.
+        Args:
+            folder (str | Path): Where to write it.
+            images (int): How many images (default: 48).
+            seed (int): The seed the shapes are drawn from (default: 0).
+
+        Returns:
+            Path: The dataset folder, ready for :meth:`from_dataset`.
         """
         return write_shapes_dataset(folder, images=images, seed=seed)
 
     # ------------------------------------------------------------------ opt-in side channels
     def attach_progress_listener(self, listener: Callable[[Mapping[str, Any]], None] | None) -> None:
-        """Called once per finished epoch with that epoch's row, on the training thread. ``None`` detaches."""
+        """Be told as each epoch finishes, on the training thread.
+
+        Args:
+            listener (Callable[[Mapping[str, Any]], None] | None): Called with the epoch's row (its losses and
+                validation mAP); ``None`` detaches.
+        """
         self._on_epoch = listener
 
     # ------------------------------------------------------------------ before it costs anything
     def dataset(self) -> DetectionDataset:
-        """The dataset as the run will see it, read once and kept."""
+        """The dataset as the run will see it, read once and kept.
+
+        Returns:
+            DetectionDataset: Its classes, splits and images.
+
+        Raises:
+            FileNotFoundError: The folder holds neither a COCO nor a YOLO dataset.
+            ValueError: The dataset does not read.
+        """
         if self._dataset is None:
             self._dataset = load_dataset(self.context.dataset, format=self.context.format,
                                          val_fraction=self.plan.val_fraction)
         return self._dataset
 
     def describe(self) -> str:
-        """What this run will do, as operator text, before it costs anything. ASCII only."""
+        """What this run will do, before it costs anything.
+
+        Returns:
+            str: The plan and the dataset, as operator text, ASCII.
+        """
         plan = self.plan
         stop = plan.stop_augment_epoch()
         lines = [
@@ -204,15 +280,26 @@ class DetectorTraining:
         return NEWLINE.join(lines)
 
     def probe(self) -> DatasetProbe:
-        """What the dataset holds, per class and split, and what was left out of it. Trains nothing, no GPU."""
+        """What the dataset holds, per class and split, and what was left out of it. Trains nothing, no GPU.
+
+        Returns:
+            DatasetProbe: The classes, the counts per split, and the images and boxes left out with why; prints as
+                itself.
+        """
         return DatasetProbe.of(self.dataset())
 
     # ------------------------------------------------------------------ the one verb
     def train(self) -> DetectorTrainingReport:
-        """Train, keep the best epoch in ``out_dir`` and the last in ``out_dir/last``, and return what happened.
+        """Train, keep the best epoch in ``out_dir`` and the last in ``out_dir/last``.
 
-        Raises ``ValueError`` for a run that cannot start (no ``out_dir``, no training image, a resume against another
-        dataset, a base model that cannot be loaded). ``report.json`` is not written here; see ``write_report``.
+        Returns:
+            DetectorTrainingReport: What happened: every epoch's row, the best validation mAP and its epoch, and
+                ``model_dir`` (``None`` where no model was written); prints as itself. ``report.json`` is written by
+                :meth:`write_report`.
+
+        Raises:
+            ValueError: A run that cannot start: no ``out_dir``, no training image, a resume against another dataset, a
+                base model that cannot be loaded.
         """
         from src.models.detection.closed_set.training.trainer import train_detector  # noqa: PLC0415 (torch)
 
@@ -223,7 +310,15 @@ class DetectorTraining:
         return DetectorTrainingReport.from_trainer(raw, self.plan)
 
     def write_report(self, report: DetectorTrainingReport, path: str | Path | None = None) -> Path:
-        """Write ``report.json`` beside the model, and return where it went."""
+        """Write ``report.json`` beside the model.
+
+        Args:
+            report (DetectorTrainingReport): What :meth:`train` returned.
+            path (str | Path | None): Where to write it; ``None`` is ``out_dir/report.json`` (default: None).
+
+        Returns:
+            Path: Where it went.
+        """
         import json  # noqa: PLC0415
 
         if path is not None:

@@ -195,7 +195,7 @@ def _ur(world: LivePlannerWorld, client: _Client, events: list[str]) -> URRobotA
     # And the plan's end. This client hands back one trajectory whatever it is asked, which a real planner never
     # does, and what this file reads is not where a plan ends: the UR driver refuses a plan off its goal before
     # anything moves (Step 8f), and tests/test_the_planner_sees_the_cell_where_the_controller_has_it.py holds that half.
-    arm._plan_end_refusal = lambda goal, joints, pose: None  # type: ignore[method-assign]
+    arm._plan_end_refusal = lambda goal, last_joints, pose: None  # type: ignore[method-assign]
     guard = arm._preflight
     for name, label in (
         ("set_perceived_obstacles", "world"),

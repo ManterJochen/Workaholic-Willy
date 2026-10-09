@@ -574,7 +574,8 @@ generator the cell runs. Every calculator the cell builds goes through `build_ca
 fails closed: `deep` with no readable artifact raises rather than falling back, because a cell that
 asked for the learned generator and got the analytic one would report the analytic one's results under
 the learned one's name. **No trained weights ship in this repository**; you train on your own cell's
-data ([`src/robot/grasping/deep/README.md`](../../src/robot/grasping/deep/README.md)).
+data ([`src/robot/grasping/deep/README.md`](../../src/robot/grasping/deep/README.md)), and a cell
+builds from your weights only once their proof has passed, which nothing can issue yet (2026-10-09).
 
 The workflow is three steps, and the file edit is the last one:
 

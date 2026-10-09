@@ -575,6 +575,63 @@ describe('Settings', () => {
     expect(await screen.findByText(/„Enter“ geht nicht/)).toBeTruthy()
     expect(localStorage.getItem('willy.talkKey')).toBeNull()
   })
+
+  it('says how a task starts, as shipped: Enter at once, once, the default place, the card asking for a part', async () => {
+    // The owner, 2026-10-08: Enter starts at once, and the mode is set here beforehand.
+    renderWith(<Settings />)
+    const panel = (await screen.findByRole('heading', { name: 'Auftrag' })).closest('section') as HTMLElement
+    expect(within(within(panel).getByRole('group', { name: 'Start' })).getByRole('button', { name: 'Enter startet sofort' }).getAttribute('aria-pressed')).toBe('true')
+    expect(within(within(panel).getByRole('group', { name: 'Modus' })).getByRole('button', { name: 'Einmal' }).getAttribute('aria-pressed')).toBe('true')
+    expect((within(panel).getByRole('combobox', { name: 'Ablegen ohne Angabe' }) as HTMLSelectElement).value).toBe('default')
+    expect(within(within(panel).getByRole('group', { name: 'Kein Teil genannt' })).getByRole('button', { name: 'Karte fragt' }).getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('writes each choice of how a task starts for this browser', async () => {
+    renderWith(<Settings />)
+    const panel = (await screen.findByRole('heading', { name: 'Auftrag' })).closest('section') as HTMLElement
+    fireEvent.click(within(within(panel).getByRole('group', { name: 'Start' })).getByRole('button', { name: 'Erst die Karte' }))
+    expect(localStorage.getItem('willy.taskStart')).toBe('card')
+    fireEvent.click(within(within(panel).getByRole('group', { name: 'Modus' })).getByRole('button', { name: 'Bis leer' }))
+    expect(localStorage.getItem('willy.taskScope')).toBe('until_empty')
+    fireEvent.click(within(within(panel).getByRole('group', { name: 'Kein Teil genannt' })).getByRole('button', { name: 'Alles' }))
+    expect(localStorage.getItem('willy.taskAnything')).toBe('anything')
+  })
+
+  it('offers how each pick looks as one choice, when needed as shipped, and writes it for this browser', async () => {
+    // The owner, 2026-10-08 night: "Multi-View" and "Alle Posen" one choice.
+    renderWith(<Settings />)
+    const panel = (await screen.findByRole('heading', { name: 'Auftrag' })).closest('section') as HTMLElement
+    const looks = within(panel).getByRole('group', { name: 'Blicke' })
+    expect(within(looks).getAllByRole('button').map((button) => button.textContent)).toEqual(['Nur erster Blick', 'Bei Bedarf', 'Alle Posen'])
+    expect(within(looks).getByRole('button', { name: 'Bei Bedarf' }).getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(within(looks).getByRole('button', { name: 'Alle Posen' }))
+    expect(localStorage.getItem('willy.taskLooks')).toBe('every')
+    fireEvent.click(within(looks).getByRole('button', { name: 'Nur erster Blick' }))
+    expect(localStorage.getItem('willy.taskLooks')).toBe('first')
+  })
+
+  it('takes a target the camera finds as the place once it has a phrase, at most 200 characters', async () => {
+    renderWith(<Settings />)
+    fireEvent.change(await screen.findByRole('combobox', { name: 'Ablegen ohne Angabe' }), { target: { value: 'camera' } })
+    expect(localStorage.getItem('willy.taskPlace')).toBeNull()
+    const phrase = screen.getByRole('textbox', { name: 'Was die Kamera sucht' }) as HTMLInputElement
+    expect(phrase.maxLength).toBe(200)
+    fireEvent.change(phrase, { target: { value: 'yellow bin' } })
+    expect(localStorage.getItem('willy.taskPlace')).toBe('camera:yellow bin')
+  })
+
+  it('offers the taught poses as the place', async () => {
+    serveApi({
+      '/v1/config/writable': [],
+      '/v1/cell': { state: 'disconnected', vendor: 'ur', needs_person: '', payload_model: 'none', countdown_due: false, jaws_question: false },
+      '/v1/poses': { home: null, poses: [{ name: 'drop_left', label: 'Ablage links' }], default_place: 'drop_left' },
+    })
+    renderWith(<Settings />)
+    const place = await screen.findByRole('combobox', { name: 'Ablegen ohne Angabe' })
+    await within(place).findByRole('option', { name: 'Ablage links' })
+    fireEvent.change(place, { target: { value: 'pose:drop_left' } })
+    expect(localStorage.getItem('willy.taskPlace')).toBe('pose:drop_left')
+  })
 })
 
 // ── Preflight in German: the check names in the reader's words, the server's sentences as details ──────────────────

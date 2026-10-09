@@ -5,7 +5,7 @@ grounder (GroundingDINO then SAM2) or to the vision-language model. No model, no
 same prompt always gets the same route, the reason, and the words that decided it.
 
 ```python
-from willy import RuleBasedRouter
+from src.models.routing import RuleBasedRouter
 
 decision = RuleBasedRouter().route("greif den kaputten Wuerfel")
 print(decision.describe())    # vlm (non_english)
@@ -16,8 +16,7 @@ decision.to_dict()            # JSON-safe: the perception event and the attempt 
 
 The decision travels with the pick, so an operator who sees a slow one can find which word chose the
 expensive route. The console answers `GET /v1/diagnostics/route?prompt=...` the same way, loading
-nothing. [route_hard_prompts.py](../../../examples/offline/perception/route_hard_prompts.py) routes a
-list of prompts and shows the stack a config would build for them.
+nothing.
 
 ## Why a rule and not a cascade
 
@@ -48,6 +47,17 @@ The first property that matches wins, most specific first, and its name becomes 
 An empty prompt routes simple with the reason `empty_prompt`: routing is not validation, and sending a
 caller's bug to the expensive route would hide it. Umlauts and eszett fold to ASCII digraphs first, so
 "Wuerfel" and the umlaut spelling take the same route.
+
+**A class list is routed description by description** (the sorting package, 2026-10-09). A sort grounds
+every rule's kind of part, and a task every bin it looks for, in one call: `"green part | red part"`
+(`src.models.vlm.qwen.class_list_prompt`). Each description is routed on its own, and the list goes to the
+VLM where any one of them needs it, with that description's reason and signals, the first in the list's
+order. Where none does it routes simple, with the whole list's signals. Summed, `"green part | red part |
+blue part"` would read as one phrase binding three colours (`multi_attribute`) and `"small red cube | small
+green cube | small blue cube"` as one nine-word instruction (`too_long`), though GroundingDINO grounds
+each description as a phrase of its own (`"green part . red part . blue part"`). A prompt of one
+description routes as it always did. `rules.route` reads the descriptions with `classes_of`, imported when
+it routes, since `vlm.command` imports this package.
 
 ## Where it runs
 
@@ -92,4 +102,5 @@ judge from measured grounding accuracy, not from an opinion of which prompts loo
 ## Details
 
 - [`../vlm/`](../vlm/README.md), the expensive route; [`../README.md`](../README.md), the perception layer
-- Tests: `tests/test_prompt_router.py`, `tests/test_route_visibility.py`, `tests/test_api_perception_route.py`
+- Tests: `tests/test_prompt_router.py`, `tests/test_route_visibility.py`, `tests/test_api_perception_route.py`,
+  `tests/test_a_class_list_is_routed_by_each_of_its_descriptions.py`

@@ -1,0 +1,5 @@
+2026-10-07 11:43:27,875 - TwoStageBackend - INFO - perceived 1 object(s) from 1 detection(s) for prompt 'yellow bin' in 3428.1 ms
+2026-10-07 11:43:35,443 - TwoStageBackend - INFO - perceived 3 object(s) from 3 detection(s) for prompt 'grey cube' in 7197.0 ms
+2026-10-07 11:43:43,559 - TwoStageBackend - INFO - perceived 3 object(s) from 3 detection(s) for prompt 'each separate grey cube' in 7041.6 ms
+2026-10-07 11:46:01,468 - TwoStageBackend - INFO - perceived 1 object(s) from 1 detection(s) for prompt 'yellow bin' in 3189.0 ms
+2026-10-07 11:46:57,595 - TwoStageBackend - INFO - perceived 3 object(s) from 3 detection(s) for prompt 'each separate grey cube' in 8516.9 ms

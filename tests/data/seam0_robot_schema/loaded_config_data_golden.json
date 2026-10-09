@@ -181,7 +181,15 @@
               "temporal": true,
               "hole_filling": false,
               "hole_filling_mode": 1
-            }
+            },
+            "color": {
+              "auto_exposure": null,
+              "exposure": null,
+              "gain": null,
+              "auto_white_balance": null,
+              "white_balance": null
+            },
+            "record_for_research": false
           },
           "calibration_paths": {
             "base_dir": "<repo>/calibration/realsense_d435",
@@ -335,7 +343,11 @@
           "model_path": "<repo>/assets/models/hf/vlm/Qwen--Qwen3-VL-4B-Instruct",
           "local": true,
           "preload": false,
-          "on_unavailable": "refuse"
+          "on_unavailable": "refuse",
+          "stop_at_answer_end": true,
+          "prompt_lookup_tokens": 0,
+          "text_prompt_lookup_tokens": 0,
+          "decode_graphs": "auto"
         }
       },
       "closed_set": {
@@ -452,6 +464,9 @@
       "max_velocity": 1.0,
       "max_acceleration": 0.5
     },
+    "motion": {
+      "judge_next_leg": "off"
+    },
     "workspace_limits": {
       "x_min": -500.0,
       "x_max": 500.0,
@@ -520,6 +535,22 @@
     "natural_closing_axis": null,
     "named_poses": {},
     "default_place_pose": null,
+    "place": {
+      "release_in_a_box": "over_the_rim",
+      "below_the_rim_mm": 30.0,
+      "opening_margin_mm": 10.0,
+      "part_bottom": "declared_support",
+      "side_by_side": false,
+      "spacing_margin_mm": 20.0,
+      "grid": {
+        "rows": 3,
+        "columns": 3,
+        "spacing_mm": null
+      },
+      "carry": "via_the_look",
+      "rim_floor_margin_mm": 15.0,
+      "relocate": true
+    },
     "safe_pose": {
       "x": 0.0,
       "y": -300.0,
@@ -551,7 +582,9 @@
         "max_jump_rad": 1.0,
         "min_singular_value": 0.005,
         "max_condition_number": 250.0,
-        "limit_proximity_deg": 2.0
+        "limit_proximity_deg": 2.0,
+        "line_ik": "controller",
+        "singularity_fk": "controller"
       },
       "self_collision": {
         "enforce": true,
@@ -570,7 +603,8 @@
         "base_height_mm": 150.0,
         "tool_model": "capsule",
         "tool_finger_radius_mm": 16.0,
-        "tool_finger_span_mm": 150.0
+        "tool_finger_span_mm": 150.0,
+        "whole_path_judge": false
       },
       "payload": {
         "enforce": true,
@@ -596,11 +630,15 @@
       "planned_motion": {
         "line_clearance_mm": 3.0,
         "max_detour_deg": 45.0,
-        "mesh_first": true
+        "mesh_first": true,
+        "finetune_passes": 3,
+        "planning_spheres": ""
       },
       "dwell": {
         "require_steady_before_motion": true,
-        "steady_timeout_s": 5.0
+        "steady_timeout_s": 5.0,
+        "gate_at": "verb",
+        "steady_signal": "is_steady"
       },
       "planning_world": {
         "enabled": false,
@@ -613,6 +651,7 @@
         },
         "include_fixtures": true,
         "require_registration": true,
+        "register_in_place": false,
         "perceived": {
           "enabled": true,
           "max_age_ms": 500.0,
@@ -633,7 +672,12 @@
           "support_surfaces": true,
           "support_allowance_mm": 2.0
         },
-        "meshes": []
+        "meshes": [],
+        "hold": {
+          "standoff": false,
+          "carry": false,
+          "drop": false
+        }
       }
     },
     "grasping": {
@@ -643,6 +687,21 @@
       "isotropic_radial_closing": false,
       "scene_obstacles": true,
       "side_approaches": true,
+      "first_good_part": true,
+      "good_part_score": 0.75,
+      "fine_pass_waits": true,
+      "colour_check": "on",
+      "colour_check_clipped": "exclude",
+      "workers": 0,
+      "batched_builds": false,
+      "weak_look_trigger": false,
+      "hide_own_places": false,
+      "follow_parts": {
+        "enabled": false,
+        "refresh_every_picks": 0,
+        "max_shift_mm": 10.0,
+        "max_creep_mm": 20.0
+      },
       "record_log_path": null,
       "decision": {
         "enabled": false,
@@ -848,6 +907,7 @@
       "geometry": {
         "stage": "support_footprint",
         "inflate_mm": 0.0,
+        "footprint_rim_mm": 0.0,
         "grasp_depth_reference": "centre",
         "grasp_top_penetration_mm": 0.0,
         "grasp_top_quantile": 10.0,
@@ -900,6 +960,9 @@
     },
     "greeting": {
       "wave": "direct"
+    },
+    "commands": {
+      "known_sentences": true
     }
   }
 }

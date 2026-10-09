@@ -63,9 +63,14 @@ TIERS: Final[dict[str, dict[str, Any]]] = {
     # A customer whose own curve is still climbing at 36 should pass `--epochs` and run more;
     # `deep report` prints their verdict on their own data, which is the instrument this number
     # cannot replace.
+    #
+    # The model you judge, not one you deploy (2026-10-09): a cell grasps with a trained generator
+    # only once its proof has passed (`deep/promotion.py`), and the best full run so far did not
+    # beat "straight down" on objects it never saw. The text only; the setting is unchanged.
     "full": {"epochs": 36,
-             "why": "the model you deploy. Hours on a single GPU. Thirty-six because the reference "
-                    "arm was still improving at thirty, not because it is a round number"},
+             "why": "the model you judge: a cell grasps with it only once its proof has passed. Hours "
+                    "on a single GPU. Thirty-six because the reference arm was still improving at "
+                    "thirty, not because it is a round number"},
 
 }
 

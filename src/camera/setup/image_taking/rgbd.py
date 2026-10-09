@@ -26,8 +26,35 @@ import cv2 as cv
 import numpy as np
 
 from src.config.schema.camera import RGBDDeviceRigConfig
-from src.camera.setup.image_taking.frames import RGBDFrame
+from src.camera.setup.image_taking.frames import CameraFacts, ResearchCapture, RGBDFrame
 from src.camera.setup.quality import configure_camera_for_quality
+from src.utility.log_cfg import create_logger
+
+
+#: Where the RGB-D drivers' own lines go: ``logs/camera/rgbd.log`` and the console. Each driver logs as
+#: ``<this module>.<rig id>``, and its lines reach this module's logger and its file: what a RealSense opened, what its
+#: colour sensor holds, every warning it gives. Nothing in this repository configures the root logger, so before this
+#: sink a driver's INFO lines reached no file and its warnings only the console's window (read off the code,
+#: 2026-10-09, when the colour sensor's read-back was added and had to be read at the cell).
+CAMERA_LOG_DIR = "logs/camera"
+create_logger(__name__, "rgbd.log", log_dir=CAMERA_LOG_DIR)
+
+
+#: The colour sensor's options a rig's ``realsense.color`` block writes, by the block's key and librealsense's option
+#: name, in the order they are written: each auto mode before its manual value, because librealsense writes the
+#: exposure's default as auto exposure goes off, and switches an auto mode off itself when its value is written.
+_COLOR_OPTIONS: tuple[tuple[str, str], ...] = (
+    ("auto_exposure", "enable_auto_exposure"),
+    ("exposure", "exposure"),
+    ("gain", "gain"),
+    ("auto_white_balance", "enable_auto_white_balance"),
+    ("white_balance", "white_balance"),
+)
+#: What a colour frame's metadata says of how it was exposed, kept with every frame a camera records for research.
+_COLOR_METADATA: tuple[str, ...] = ("actual_exposure", "gain_level", "white_balance", "auto_exposure")
+#: The infrared streams a recording for research adds, by the name the recording keeps each under, with librealsense's
+#: index: infrared 1 is the left imager, the one the depth is measured in, and infrared 2 the right one.
+_INFRARED: tuple[tuple[str, int], ...] = (("ir_left", 1), ("ir_right", 2))
 
 
 #: Intel's minimum depth (Min-Z) of a D400 camera, in millimetres, by model and depth-stream width: a surface nearer
@@ -90,6 +117,58 @@ def _connected_cameras(rs: Any) -> list[dict[str, str | None]]:
         return []
     return [{key: _camera_info(rs, device, key) for key in ("name", "serial_number", "usb_type_descriptor")}
             for device in devices]
+
+
+def _options_of(holder: Any) -> dict[str, float]:
+    """Every option a librealsense sensor or processing block offers, by name, with the value it holds now.
+
+    Only ever a record, so an option that does not answer is left out, and a holder that cannot list its options gives
+    an empty map rather than an error.
+    """
+    try:
+        offered = list(holder.get_supported_options())
+    except Exception:  # noqa: BLE001 (a record never takes the stream down)
+        return {}
+    held: dict[str, float] = {}
+    for option in offered:
+        try:
+            held[str(getattr(option, "name", option))] = float(holder.get_option(option))
+        except Exception:  # noqa: BLE001 (an option that does not answer is left out of the record)
+            continue
+    return held
+
+
+def _extrinsics_mm(extrinsics: Any) -> np.ndarray:
+    """An SDK extrinsics as a 4x4 in millimetres that maps a point of the first stream's frame into the second's.
+
+    librealsense keeps the rotation column-major and the translation in metres: a point ``p`` maps to
+    ``R @ p + t`` with ``R`` the rotation read row by row and transposed (``rs2_transform_point_to_point``).
+    """
+    matrix = np.eye(4, dtype=np.float64)
+    matrix[:3, :3] = np.asarray(extrinsics.rotation, dtype=np.float64).reshape(3, 3).T
+    matrix[:3, 3] = np.asarray(extrinsics.translation, dtype=np.float64).reshape(3) * 1000.0
+    return matrix
+
+
+def _copied(frame: Any) -> np.ndarray | None:
+    """A frame's pixels as an array the device's buffer no longer backs, or None where there is no frame."""
+    if not frame:
+        return None
+    return np.array(np.asanyarray(frame.get_data()), copy=True)
+
+
+def _said_colour(key: str, value: float | None) -> str:
+    """One colour option as the open line says it: ``exposure 156 (15.6 ms)``, ``auto white balance on``."""
+    words = key.replace("_", " ")
+    if value is None:
+        return f"{words} ?"
+    if key.startswith("auto_"):
+        return f"{words} {'on' if value else 'off'}"
+    if key == "exposure":
+        return f"exposure {value:g} ({value / 10.0:.1f} ms)"
+    if key == "white_balance":
+        return f"white balance {value:g} K"
+    return f"{words} {value:g}"
 
 
 @runtime_checkable
@@ -252,6 +331,12 @@ class RealSenseRGBDStreamer:
     the history is dropped when :meth:`camera_moved` says the camera moved, and, on a camera the
     arm carries, when a pause between two grabs is longer than a burst of back-to-back grabs
     takes.
+
+    The colour sensor's exposure, gain and white balance are the rig's ``realsense.color`` block,
+    written as the stream opens and read back once the warm-up frames have run; every key null
+    writes nothing, and the open still says what the sensor holds. A rig that records for research
+    (``realsense.record_for_research``) streams both infrared images as well, and every frame then
+    carries them, the depth as the sensor sent it and the camera's facts (:class:`ResearchCapture`).
     """
 
     #: The shortest pause between two grabs, in seconds, that drops a carried camera's temporal
@@ -294,6 +379,17 @@ class RealSenseRGBDStreamer:
         self._device_name: str | None = None
         self._usb: str | None = None
         self._min_depth_mm: float | None = None
+        #: The sensor that streams colour, found as the stream opens; None where the device has none of its own.
+        self._color_sensor: Any | None = None
+        #: What the rig's ``realsense.color`` block wrote, by its key: the number written and the range the sensor
+        #: offered for it.
+        self._color_written: dict[str, tuple[float, Any]] = {}
+        #: What the colour sensor held once the warm-up frames had run, by the block's key; None where it did not say.
+        self._color_held: dict[str, float | None] = {}
+        #: The camera's facts while the rig records for research (``realsense.record_for_research``), else None.
+        self._facts: CameraFacts | None = None
+        #: Whether a frameset without an infrared image was said during this open, so it is said once.
+        self._research_gap_said = False
 
     # ------------------------------------------------------------------
     # SDK import seam
@@ -318,11 +414,13 @@ class RealSenseRGBDStreamer:
     # ------------------------------------------------------------------
 
     def open(self) -> None:
-        """Start the pipeline, configure the depth sensor and filters, then read intrinsics.
+        """Start the pipeline, configure the depth sensor, the colour sensor and the filters, then read intrinsics.
 
         A request the SDK cannot start is raised with the RealSense cameras it sees and the USB link
-        each is on. A depth sensor that did not take the configured ``depth_units_m`` refuses the open.
-        Either way the pipeline is not left running.
+        each is on. A depth sensor that did not take the configured ``depth_units_m`` refuses the open,
+        and so does a ``realsense.color`` block the colour sensor cannot hold. Either way the pipeline
+        is not left running. A rig that records for research asks for both infrared images beside
+        colour and depth, at the depth's resolution and frame rate, in Y8.
         """
         rs = self._import_rs()
 
@@ -335,6 +433,11 @@ class RealSenseRGBDStreamer:
         rs_config.enable_stream(
             rs.stream.depth, self.depth_res[0], self.depth_res[1], rs.format.z16, self.fps
         )
+        if self.rs_cfg.record_for_research:
+            for _, index in _INFRARED:
+                rs_config.enable_stream(
+                    rs.stream.infrared, index, self.depth_res[0], self.depth_res[1], rs.format.y8, self.fps
+                )
 
         pipeline = rs.pipeline()
         try:
@@ -358,6 +461,8 @@ class RealSenseRGBDStreamer:
         depth_sensor = device.first_depth_sensor()
         self._configure_depth_sensor(rs, depth_sensor)
         self._depth_scale_m = self._read_back_depth_scale(depth_sensor)
+        # Before the warm-up frames, so they run at the exposure the frames after them are taken with.
+        self._configure_color_sensor(rs, device)
 
         self._align = rs.align(rs.stream.color) if self.align_to_color else None
         self._filters = self._build_filters(rs)
@@ -371,7 +476,13 @@ class RealSenseRGBDStreamer:
         if self.rs_cfg.export_intrinsics and self._intrinsics is not None:
             self._export_intrinsics(self._intrinsics)
 
+        # Once the warm-up frames have run: on auto, what auto settled on.
+        self._color_held = self._read_back_color(rs)
+        self._facts = self._camera_facts(rs, profile, device, depth_sensor) if self.rs_cfg.record_for_research else None
+        self._research_gap_said = False
+
         self._say_what_opened(device, rs)
+        self._say_what_the_colour_holds()
 
     def release(self) -> None:
         if self._pipeline is not None:
@@ -384,6 +495,8 @@ class RealSenseRGBDStreamer:
         self._filters = []
         self._temporal_at = None
         self._last_grab_s = None
+        self._color_sensor = None
+        self._facts = None
 
     def is_opened(self) -> bool:
         return self._pipeline is not None
@@ -396,7 +509,10 @@ class RealSenseRGBDStreamer:
         """Grab a colour and depth pair, filtered and aligned as configured, as an RGBDFrame.
 
         On a camera the arm carries, a grab that follows the previous one by more than a burst
-        takes starts the temporal filter afresh (see the class docstring).
+        takes starts the temporal filter afresh (see the class docstring). On a rig that records for
+        research the frame also carries the infrared images and the depth of the frameset as the sensor
+        sent it, copied before any filter runs (:class:`ResearchCapture`); on every other rig it carries
+        none, and the frame is what it was.
         """
         if self._pipeline is None:
             raise RuntimeError("Device is not open. Call open() first.")
@@ -407,6 +523,7 @@ class RealSenseRGBDStreamer:
         self._last_grab_s = now
 
         frameset = self._pipeline.wait_for_frames()
+        research = None if self._facts is None else self._research_capture(frameset)
         # librealsense's recommended order: every filter on the depth as it left the sensor, and the
         # alignment to colour last. Spatial and temporal run between the two disparity transforms.
         for filt in self._filters:
@@ -422,7 +539,7 @@ class RealSenseRGBDStreamer:
         color = np.ascontiguousarray(np.asanyarray(color_frame.get_data()))
         depth_raw = np.asanyarray(depth_frame.get_data())
         depth_mm = self._match_color_size(self._to_millimetres(depth_raw), color)
-        return RGBDFrame(color=color, depth=depth_mm)
+        return RGBDFrame(color=color, depth=depth_mm, research=research)
 
     def camera_moved(self) -> None:
         """Say that the camera moved since its last grab, so the next frame holds only depth seen from where it is now.
@@ -465,6 +582,40 @@ class RealSenseRGBDStreamer:
     def _pause_s(self) -> float:
         return max(self._PAUSE_S, self._PAUSE_FRAMES / float(self.fps))
 
+    def _research_capture(self, frameset: Any) -> ResearchCapture:
+        """What a rig recording for research keeps of ``frameset`` as the sensor sent it: both infrared images and the
+        raw depth, copied, the colour frame's metadata and the camera's facts. A frameset missing an infrared image
+        keeps None in its place, said once per open: the recording is for research, and the frame is the pick's."""
+        assert self._facts is not None  # grab() asks only while the rig records for research
+        images = {name: _copied(frameset.get_infrared_frame(index)) for name, index in _INFRARED}
+        missing = [name for name, image in images.items() if image is None]
+        if missing and not self._research_gap_said:
+            self._research_gap_said = True
+            self.logger.warning(
+                "RealSense rig %r records for research, and a frameset came without %s: that frame is kept without "
+                "it (said once per open)", self.cfg.rig_id, " and ".join(missing))
+        return ResearchCapture(
+            camera=self._facts, ir_left=images["ir_left"], ir_right=images["ir_right"],
+            raw_depth=_copied(frameset.get_depth_frame()), color_metadata=self._color_metadata(frameset.get_color_frame()),
+        )
+
+    def _color_metadata(self, frame: Any) -> dict[str, float]:
+        """What a colour frame's metadata says of how it was exposed, the values the device reports; empty where it
+        reports none (on Windows a RealSense reports metadata once its driver is told to, which the RealSense Viewer
+        offers to do)."""
+        keys = getattr(self._import_rs(), "frame_metadata_value", None)
+        said: dict[str, float] = {}
+        if not frame or keys is None:
+            return said
+        for name in _COLOR_METADATA:
+            key = getattr(keys, name, None)
+            try:
+                if key is not None and frame.supports_frame_metadata(key):
+                    said[name] = float(frame.get_frame_metadata(key))
+            except Exception:  # noqa: BLE001 (metadata is a record, never a reason to lose the frame)
+                continue
+        return said
+
     # ------------------------------------------------------------------
     # Public accessors
     # ------------------------------------------------------------------
@@ -501,6 +652,13 @@ class RealSenseRGBDStreamer:
         """
         return self._min_depth_mm
 
+    @property
+    def color_held(self) -> dict[str, float | None]:
+        """What the colour sensor held once the warm-up frames had run, by the key of the rig's ``realsense.color``
+        block (after ``open()``): ``auto_exposure`` and ``auto_white_balance`` as 1 or 0, the exposure in 100
+        microseconds, the gain, the white balance in Kelvin. None for an option it does not offer or did not answer."""
+        return dict(self._color_held)
+
     # ------------------------------------------------------------------
     # Internal: what open() says
     # ------------------------------------------------------------------
@@ -513,11 +671,12 @@ class RealSenseRGBDStreamer:
         min_z = ("Min-Z unknown for this model" if self._min_depth_mm is None
                  else f"nothing nearer than about {self._min_depth_mm:.0f} mm is measured at this depth mode "
                       "(Intel's figure, not measured here)")
+        infrared = (f" + infrared 1 and 2 {dw}x{dh} Y8 (record_for_research)" if self._facts is not None else "")
         self.logger.info(
-            "RealSense opened: %s (serial %s, firmware %s, USB %s) | colour %dx%d + depth %dx%d @ %d fps | %s | "
+            "RealSense opened: %s (serial %s, firmware %s, USB %s) | colour %dx%d + depth %dx%d%s @ %d fps | %s | "
             "depth_scale=%.6g m/unit read back from the device | align=%s | filters=%s",
             name, serial or "?", firmware or "?", self._usb or "?", self.color_res[0], self.color_res[1],
-            dw, dh, self.fps, min_z, self._depth_scale_m, self.align_to_color,
+            dw, dh, infrared, self.fps, min_z, self._depth_scale_m, self.align_to_color,
             [type(f).__name__ for f in self._filters],
         )
         if _depth_camera_model(self._device_name) == "D415" and (dw, dh) == (1280, 720):
@@ -532,12 +691,56 @@ class RealSenseRGBDStreamer:
                 "%s is on a USB %s link. A D400 camera offers fewer modes and lower frame rates over USB 2 than "
                 "over USB 3; on an arm this is usually the cable or an extension along it.", name, self._usb)
 
+    def _say_what_the_colour_holds(self) -> None:
+        """One line of what the colour sensor holds once the warm-up frames have run and what the rig's
+        ``realsense.color`` block wrote, and a warning for each value written that the sensor holds otherwise: it took
+        the nearest value it offers, and the frames are taken with that one."""
+        name = self._device_name or "the RealSense"
+        if self._color_sensor is None:
+            self.logger.info(
+                "RealSense rig %r: %s has no colour sensor of its own to read (realsense.color is null, so nothing "
+                "was asked of one)", self.cfg.rig_id, name)
+            return
+        held = ", ".join(_said_colour(key, self._color_held.get(key)) for key, _ in _COLOR_OPTIONS)
+        written = ", ".join(_said_colour(key, number) for key, (number, _) in self._color_written.items())
+        self.logger.info(
+            "RealSense rig %r colour sensor holds: %s | %s", self.cfg.rig_id, held,
+            f"realsense.color wrote {written}" if written else
+            "realsense.color wrote nothing (every key null): the sensor keeps what it holds, auto as it powers up")
+        for key, (number, span) in self._color_written.items():
+            value = self._color_held.get(key)
+            if key.startswith("auto_"):
+                took = value is not None and bool(value) == bool(number)
+            else:
+                took = value is not None and abs(value - number) <= max(float(getattr(span, "step", 0.0) or 0.0), 1e-6)
+            if took:
+                continue
+            windows = (" On Windows librealsense sets the colour exposure in powers of two of a second (39, 78, 156, "
+                       "312, 625, in 100 microseconds): write the value it holds to have the config say it."
+                       if key == "exposure" else "")
+            self.logger.warning(
+                "RealSense rig %r: the colour sensor of %s holds %s after %s was written (realsense.color.%s); the "
+                "frames are taken with what it holds.%s", self.cfg.rig_id, name, _said_colour(key, value),
+                _said_colour(key, number), key, windows)
+
     def _start_refusal(self, rs: Any, exc: BaseException) -> str:
-        """Why the pipeline did not start, with every RealSense the SDK sees and the USB link each is on."""
+        """Why the pipeline did not start, with every RealSense the SDK sees and the USB link each is on.
+
+        On a rig that records for research the request held both infrared images too, and the refusal says so: a
+        camera without them at this mode, or a link that cannot carry four streams, cannot record for research.
+        """
         cw, ch = self.color_res
         dw, dh = self.depth_res
         asked = f"colour {cw}x{ch} and depth {dw}x{dh} at {self.fps} fps"
+        if self.rs_cfg.record_for_research:
+            asked = (f"colour {cw}x{ch}, depth {dw}x{dh} and both infrared images {dw}x{dh} Y8 at {self.fps} fps "
+                     "(record_for_research)")
         head = f"RealSense rig {self.cfg.rig_id!r} could not start {asked}: {exc}."
+        if self.rs_cfg.record_for_research:
+            head += (f" camera.cameras.rigs[{self.cfg.rig_id!r}].realsense.record_for_research asks for both infrared "
+                     "images beside colour and depth; a camera that does not stream them at this mode, or a link that "
+                     "cannot carry four streams, cannot record for research: switch record_for_research off to stream "
+                     "colour and depth alone.")
         seen = _connected_cameras(rs)
         if not seen:
             return f"{head} librealsense sees no RealSense camera: check the cable and run rs-enumerate-devices."
@@ -624,6 +827,147 @@ class RealSenseRGBDStreamer:
                 f"{scale:g}: it does not offer the option, or did not take this value. Remove depth_units_m to keep "
                 "the device's own units, or write a value it takes (rs-enumerate-devices -o lists its range).")
         return scale
+
+    def _configure_color_sensor(self, rs: Any, device: Any) -> None:
+        """Write the rig's ``realsense.color`` block to the sensor that streams colour (the owner, 2026-10-09).
+
+        The block's keys in their order, each auto mode before its manual value; a null key writes nothing, and a block
+        of nulls asks nothing of the sensor. Every value is checked against the range the sensor offers before the
+        first is written, so a refused block leaves the camera as it found it, which matters because the camera keeps
+        what is written until it is power-cycled. The sensor is the device's own colour sensor, never its depth sensor:
+        a camera whose colour comes off its depth imagers, a D405, has one sensor for both, and an exposure written
+        there would change the depth's. That camera, one with no colour sensor librealsense names, and one whose colour
+        sensor does not offer an option the block sets, or offers a range the value lies outside, refuse to open with
+        a sentence naming the option and the camera: a fixed value was asked for.
+        """
+        self._color_sensor = self._sensor_streaming_color(device)
+        self._color_written = {}
+        block = self.rs_cfg.color
+        wanted = [(key, name, getattr(block, key)) for key, name in _COLOR_OPTIONS if getattr(block, key) is not None]
+        if not wanted:
+            return
+        where = f"camera.cameras.rigs[{self.cfg.rig_id!r}].realsense.color"
+        camera = self._device_name or "the RealSense"
+        sensor = self._color_sensor
+        if sensor is None:
+            raise RuntimeError(
+                f"{where} sets {', '.join(key for key, _, _ in wanted)}, and {camera} has no colour sensor of its own "
+                "that librealsense names: its colour comes off the depth imagers, or it has none, and an exposure "
+                "written there would change the depth's. Leave every key of realsense.color null on this camera.")
+        writes: list[tuple[str, Any, float, Any]] = []
+        for key, name, value in wanted:
+            option = getattr(rs.option, name, None)
+            if option is None or not sensor.supports(option):
+                raise RuntimeError(
+                    f"{where}.{key} is {value}, and the colour sensor of {camera} does not offer {name}, so it cannot "
+                    f"hold the value asked for. Remove {key} to leave the sensor as it is (rs-enumerate-devices -o "
+                    "lists the options it offers).")
+            number = (1.0 if value else 0.0) if isinstance(value, bool) else float(value)
+            span = sensor.get_option_range(option)
+            if not float(span.min) <= number <= float(span.max):
+                raise RuntimeError(
+                    f"{where}.{key} is {number:g}, outside the {float(span.min):g} to {float(span.max):g} the colour "
+                    f"sensor of {camera} offers for {name}. Write a value in that range, or remove {key} to leave the "
+                    "sensor as it is.")
+            writes.append((key, option, number, span))
+        for key, option, number, span in writes:
+            sensor.set_option(option, number)
+            self._color_written[key] = (number, span)
+
+    @staticmethod
+    def _sensor_streaming_color(device: Any) -> Any | None:
+        """The device's own colour sensor, or None where librealsense names none or the one it names is the depth
+        sensor (a camera whose colour comes off its depth imagers)."""
+        try:
+            sensor = device.first_color_sensor()
+        except Exception:  # noqa: BLE001 (a device with no colour sensor: a block that asks one refuses on that)
+            return None
+        is_depth = getattr(sensor, "is_depth_sensor", None)
+        try:
+            if sensor is None or (callable(is_depth) and bool(is_depth())):
+                return None
+        except Exception:  # noqa: BLE001 (a sensor that cannot say what it is is not written to)
+            return None
+        return sensor
+
+    def _read_back_color(self, rs: Any) -> dict[str, float | None]:
+        """What the colour sensor holds now, by the key of the rig's ``realsense.color`` block; None for an option it
+        does not offer or does not answer. Only ever said and recorded, so a sensor that cannot be read gives None
+        rather than an error."""
+        held: dict[str, float | None] = {key: None for key, _ in _COLOR_OPTIONS}
+        sensor = self._color_sensor
+        if sensor is None:
+            return held
+        for key, name in _COLOR_OPTIONS:
+            option = getattr(rs.option, name, None)
+            try:
+                if option is not None and sensor.supports(option):
+                    held[key] = float(sensor.get_option(option))
+            except Exception:  # noqa: BLE001 (a read-back is a record, never a reason to lose the stream)
+                held[key] = None
+        return held
+
+    def _camera_facts(self, rs: Any, profile: Any, device: Any, depth_sensor: Any) -> CameraFacts:
+        """What the camera is while it records for research, read once as it opens (:class:`CameraFacts`).
+
+        A camera whose profile holds no infrared stream after all, though both were asked for, refuses to open: the
+        recording was asked for, and frames without the infrared images are not it.
+        """
+        where = f"camera.cameras.rigs[{self.cfg.rig_id!r}].realsense.record_for_research"
+        camera = self._device_name or "the RealSense"
+        asked = (("color", rs.stream.color, None), ("depth", rs.stream.depth, None),
+                 *((name, rs.stream.infrared, index) for name, index in _INFRARED))
+        said_as = {"color": "colour image", "depth": "depth", "ir_left": "left infrared image (infrared 1)",
+                   "ir_right": "right infrared image (infrared 2)"}
+        streams: dict[str, Any] = {}
+        for name, kind, index in asked:
+            try:
+                stream = profile.get_stream(kind) if index is None else profile.get_stream(kind, index)
+                streams[name] = stream.as_video_stream_profile()
+            except Exception as exc:  # noqa: BLE001 (the SDK's own words are kept in the refusal)
+                raise RuntimeError(
+                    f"{where} asks for both infrared images, and {camera} streams no {said_as[name]} at this "
+                    f"mode ({exc}): it cannot record for research. Switch record_for_research off to stream colour "
+                    "and depth alone.") from exc
+        intrinsics: dict[str, np.ndarray] = {}
+        distortion: dict[str, np.ndarray] = {}
+        modes: dict[str, Any] = {}
+        for name, stream in streams.items():
+            intr = stream.get_intrinsics()
+            intrinsics[name] = np.array(
+                [[intr.fx, 0.0, intr.ppx], [0.0, intr.fy, intr.ppy], [0.0, 0.0, 1.0]], dtype=np.float64)
+            distortion[name] = np.asarray(getattr(intr, "coeffs", None) or (), dtype=np.float64).reshape(-1)
+            model = getattr(intr, "model", None)
+            modes[name] = {"width": int(intr.width), "height": int(intr.height),
+                           "distortion_model": None if model is None else str(getattr(model, "name", model))}
+        modes["color"]["format"], modes["depth"]["format"] = "bgr8", "z16"
+        for name, _ in _INFRARED:
+            modes[name]["format"] = "y8"
+        extrinsics = {
+            "depth_to_color": _extrinsics_mm(streams["depth"].get_extrinsics_to(streams["color"])),
+            "ir_left_to_color": _extrinsics_mm(streams["ir_left"].get_extrinsics_to(streams["color"])),
+            "ir_left_to_ir_right": _extrinsics_mm(streams["ir_left"].get_extrinsics_to(streams["ir_right"])),
+        }
+        said = {
+            "rig_id": self.cfg.rig_id,
+            "device": {"name": self._device_name, "serial": _camera_info(rs, device, "serial_number"),
+                       "firmware": _camera_info(rs, device, "firmware_version"), "usb": self._usb},
+            "fps": self.fps,
+            "streams": modes,
+            "depth_units_m": self._depth_scale_m,
+            "visual_preset": self.rs_cfg.visual_preset,
+            "align_depth_to_color": bool(self.align_to_color),
+            "post_processing": self.rs_cfg.post_processing.model_dump(),
+            "filters": [{"name": type(filt).__name__, "options": _options_of(filt)} for filt in self._filters],
+            "depth_sensor": _options_of(depth_sensor),
+            "color_sensor": {
+                "asked": self.rs_cfg.color.model_dump(),
+                "held": dict(self._color_held),
+                "options": {} if self._color_sensor is None else _options_of(self._color_sensor),
+            },
+        }
+        return CameraFacts(said=said, depth_units_m=float(self._depth_scale_m or 0.0), intrinsics=intrinsics,
+                           distortion=distortion, extrinsics_mm=extrinsics)
 
     def _apply_visual_preset(self, rs: Any, sensor: Any, preset: str) -> None:
         """Select a depth visual preset by name, matched ignoring case, spaces and underscores.

@@ -128,6 +128,25 @@ describe('PromptInput', () => {
     expect(screen.queryByText(/transcribed from speech/)).toBeNull()
   })
 
+  it('stops typing at the reader\'s 1000 characters, and counts them from 800 on', () => {
+    // The owner, 2026-10-08: a long description is never refused at the door with "Die Anfrage ist ungültig.".
+    const { rerender } = render(
+      <PromptInput value={'x'.repeat(799)} onChange={() => undefined} canSubmit onSubmit={() => undefined} />,
+    )
+    expect((screen.getByRole('textbox') as HTMLInputElement).maxLength).toBe(1000)
+    expect(screen.queryByText(/of 1,000 characters/)).toBeNull()
+    rerender(<PromptInput value={'x'.repeat(800)} onChange={() => undefined} canSubmit onSubmit={() => undefined} />)
+    // The numbers in the reader's language: "1,000" here, "1.000" in German.
+    expect(screen.getByText('800 of 1,000 characters')).toBeTruthy()
+  })
+
+  it('says under the box what the screen says Enter does', () => {
+    render(
+      <PromptInput value="" onChange={() => undefined} canSubmit onSubmit={() => undefined} note="Enter starts at once · Once" />,
+    )
+    expect(screen.getByText('Enter starts at once · Once')).toBeTruthy()
+  })
+
   it('speaks German under the console\'s provider', () => {
     render(
       <I18nProvider lang="de">
@@ -347,6 +366,7 @@ describe('when the microphone IS available', () => {
     const title = screen.getByRole('button', { name: /speak/i }).getAttribute('title') ?? ''
     expect(title).toMatch(/Click to speak, click again to stop/)
     expect(title).toMatch(/Holding F9 records while held/)
-    expect(title).toMatch(/nothing moves until you press Start/)
+    // Enter may start the task where the settings say so (the owner, 2026-10-08): never before the person read it.
+    expect(title).toMatch(/nothing moves before you have read it and pressed Enter/)
   })
 })

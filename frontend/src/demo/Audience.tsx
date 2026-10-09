@@ -36,6 +36,7 @@ import { Icon, Logo } from '../icons'
 import { usePoll } from '../lib/useAsync'
 import {
   hasEnded,
+  isSort,
   lookNote,
   phaseMsg,
   plannedLooks,
@@ -259,7 +260,8 @@ export default function Audience() {
     ? t(pin.kind === 'target' ? 'aud.pin.target' : wrist ? 'aud.pin.wrist' : 'aud.pin.fixed', { time: t.fmt.time(pin.at) })
     : ''
   const running = Boolean(view.runId) && !hasEnded(view.phase) && view.phase !== 'idle'
-  const where = placeWords(view.plan)
+  // A sort's parts go to their rules' places: no one place stands for the run.
+  const where = isSort(view.plan) ? null : placeWords(view.plan)
   const look = lookNote(view, plannedLooks(view.plan, facts))
 
   const sub: string[] = []

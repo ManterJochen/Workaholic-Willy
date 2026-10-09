@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias
 
 from src.models.constants import MODELS_LOG_DIR, VLM_AVAILABILITY_LOG_FILE
-from src.models.perception_backend import PerceivedObject, failures_of, last_failure_of
+from src.models.perception_backend import PerceivedObject, SegmentedBoxes, failures_of, last_failure_of
 from src.utility.log_cfg import create_logger
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
@@ -147,19 +147,27 @@ class GuardedVlmBackend:
         """The latest counted failure, from the VLM route or the fallback, or ``""``."""
         return self._last_failure
 
-    def _through(self, backend: Any, image_bgr: Any, prompt: str) -> tuple[PerceivedObject, ...]:
-        """Perceive with ``backend``, keeping its failure sentence when its count rose."""
+    @property
+    def detects_on_a_copy(self) -> bool:
+        """Whether the VLM route's detector may read a copy of the image (``robot.grasping.hide_own_places``)."""
+        return getattr(self._vlm, "detects_on_a_copy", False) is True
+
+    def _through(self, backend: Any, image_bgr: Any, prompt: str, detect_on: Any = None) -> tuple[PerceivedObject, ...]:
+        """Perceive with ``backend``, keeping its failure sentence when its count rose; its detector reads ``detect_on``
+        where it takes a copy, the real image otherwise."""
         before = failures_of(backend)
         try:
+            if detect_on is not None and getattr(backend, "detects_on_a_copy", False) is True:
+                return tuple(backend.perceive(image_bgr, prompt, detect_on=detect_on))
             return tuple(backend.perceive(image_bgr, prompt))
         finally:
             if failures_of(backend) > before:
                 self._last_failure = last_failure_of(backend)
 
-    def perceive(self, image_bgr: Any, prompt: str) -> tuple[PerceivedObject, ...]:
+    def perceive(self, image_bgr: Any, prompt: str, *, detect_on: Any = None) -> tuple[PerceivedObject, ...]:
         if self._unavailable is None:
             try:
-                return self._through(self._vlm, image_bgr, prompt)
+                return self._through(self._vlm, image_bgr, prompt, detect_on)
             except VlmUnavailableError as exc:
                 self._unavailable = exc.cause or exc
             except (ImportError, OSError, RuntimeError) as exc:
@@ -186,7 +194,41 @@ class GuardedVlmBackend:
         if self._fallback is None:
             assert self._fallback_factory is not None  # guaranteed by __init__
             self._fallback = self._fallback_factory()
-        return self._through(self._fallback, image_bgr, prompt)
+        return self._through(self._fallback, image_bgr, prompt, detect_on)
+
+    def name_colour(self, image_bgr: Any, box: Any) -> str:
+        """One colour word for the object in ``box``, asked of the VLM while it is not degraded; ``""`` otherwise.
+
+        The fallback grounds phrases and names no colour, so a degraded backend answers nothing, and the camera source
+        refuses the part. A question that raised is counted by the VLM route (``TwoStageBackend.name_colour``), and its
+        sentence kept here as a perceive's is.
+        """
+        if self._unavailable is not None:
+            return ""
+        name = getattr(self._vlm, "name_colour", None)
+        if not callable(name):
+            return ""
+        before = failures_of(self._vlm)
+        try:
+            answer = name(image_bgr, box)
+        finally:
+            if failures_of(self._vlm) > before:
+                self._last_failure = last_failure_of(self._vlm)
+        return answer if isinstance(answer, str) else ""
+
+    def segment_boxes(self, image_bgr: Any, boxes: Any) -> SegmentedBoxes:
+        """Cut ``boxes`` with the VLM route's segmenter, never loading the VLM: its ``segment_boxes`` asks no detector.
+
+        A degraded backend cuts none, so the frame is grounded by the fallback, warned about as every degraded grounding
+        is: following the parts the VLM grounded is the VLM route's, and a fallback grounding is no grounding of record.
+        """
+        if self._unavailable is not None:
+            return SegmentedBoxes.refused(boxes, f"the VLM {self._model_id} is unavailable, so the frame is grounded "
+                                                 "by the fallback")
+        cut = getattr(self._vlm, "segment_boxes", None)
+        if not callable(cut):
+            return SegmentedBoxes.refused(boxes, "the VLM route cuts no boxes it is handed")
+        return cut(image_bgr, boxes)
 
 
 # --- the command reader's availability (owner decision Q8 A) ---------------------------------------------------

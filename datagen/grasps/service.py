@@ -118,7 +118,14 @@ class PhysicsReport:
 
 @dataclass
 class PhysicsSampling:
-    """A labelled dataset, and the simulator that grades grasps on it. Needs a running cell."""
+    """A labelled dataset, and the simulator that grades its grasps: does a grasp the geometry calls valid actually
+    hold? Needs a simulator.
+
+    Attributes:
+        dataset (Path): The labelled dataset's folder.
+        engine (PhysicsEngine): ``"isaac"`` or ``"mujoco"``.
+        headless (bool): Run the simulator without a window.
+    """
 
     dataset: Path
     engine: PhysicsEngine = "isaac"
@@ -128,32 +135,60 @@ class PhysicsSampling:
     def from_config(cls, config: "DatagenConfig", *, name: str,
                     out_root: str | Path | None = None, engine: PhysicsEngine = "isaac",
                     headless: bool = True) -> "PhysicsSampling":
+        """The physics sampling of a dataset a config describes.
+
+        Args:
+            config (DatagenConfig): The dataset's settings.
+            name (str): The dataset's name.
+            out_root (str | Path | None): Where datasets go; ``None`` the config's ``output.root`` (default: None).
+            engine (PhysicsEngine): ``"isaac"`` or ``"mujoco"`` (default: "isaac").
+            headless (bool): Run without a window (default: True).
+
+        Returns:
+            PhysicsSampling: The sampling; no simulator starts yet.
+        """
         root = Path(out_root) if out_root is not None else Path(config.output.root)
         return cls(dataset=root / name, engine=engine, headless=headless)
 
     @classmethod
     def from_dataset(cls, dataset: str | Path, *, engine: PhysicsEngine = "isaac",
                      headless: bool = True) -> "PhysicsSampling":
+        """The physics sampling of a dataset folder.
+
+        Args:
+            dataset (str | Path): The labelled dataset's folder.
+            engine (PhysicsEngine): ``"isaac"`` or ``"mujoco"`` (default: "isaac").
+            headless (bool): Run without a window (default: True).
+
+        Returns:
+            PhysicsSampling: The sampling; no simulator starts yet.
+        """
         return cls(dataset=Path(dataset), engine=engine, headless=headless)
 
     def describe(self) -> str:
-        """What would be graded and by what, before a simulator starts. ASCII, zero arguments."""
+        """What would be graded, and by which simulator, before one starts.
+
+        Returns:
+            str: ASCII, one line per fact.
+        """
         return _NEWLINE.join([f"physics sampling over {self.dataset}",
                               f"  referee        {self.engine}",
                               f"  display        {'headless' if self.headless else 'gui'}"])
 
     def sample(self, *, per_class: int = 40, proposals: str | Path | None = None,
                jaw: str | None = None) -> PhysicsReport:
-        """Does a grasp the geometry calls valid actually hold?
+        """Shake a sample of the labels: both the accepted and the rejected, since only the rejected can show that the
+        referee discriminates.
 
-        Both the accepted and the rejected are sampled, because only the second half can show that
-        the reference discriminates: a referee that holds everything it is handed has measured
-        nothing.
+        Args:
+            per_class (int): Trials per verdict class (default: 40).
+            proposals (str | Path | None): Grade a model's own proposals from this file instead, into a file of their
+                own, so they are never quoted as label verdicts (default: None).
+            jaw (str | None): Shake that jaw's labels in a MuJoCo cell that models it, into its own file; ``None`` the
+                default jaw (default: None).
 
-        `proposals` asks a different question and writes a different file. It grades a model's own
-        proposals, and mixing those rows with label verdicts would let one be quoted as the other.
-
-        ``jaw`` shakes that jaw's labels in a MuJoCo cell that models it, into its own file.
+        Returns:
+            PhysicsReport: Per trial whether the grasp held, and where the results were written.
         """
         from datagen.grasps.physics import (  # noqa: PLC0415
             run_physics_sample, trials_from_proposals,
@@ -167,10 +202,19 @@ class PhysicsSampling:
         return PhysicsReport(raw=raw, out_name=out_name)
 
     def compare(self, arms: Sequence[str], *, per_class: int = 20) -> PhysicsReport:
-        """Which of two or more generators actually holds more, on the same objects.
+        """Which of two or more generators holds more, on the same objects: the promotion gate. Every object drawn
+        contributes one trial to each arm, so the arms are the only thing that varies.
 
-        The promotion gate. Raises `ValueError` when fewer than two arms are named, and when no
-        object carried a candidate from every arm, because an empty pairing is not a tie.
+        Args:
+            arms (Sequence[str]): The candidate sets to compare, as the label rungs name them (two or more).
+            per_class (int): Objects drawn per stratum (default: 20).
+
+        Returns:
+            PhysicsReport: Per arm, how many held, on the paired objects.
+
+        Raises:
+            ValueError: Fewer than two arms, or no object carried a candidate from every arm: an empty pairing is not a
+                tie.
         """
         from datagen.grasps.physics import paired_trials, run_physics_sample  # noqa: PLC0415
 

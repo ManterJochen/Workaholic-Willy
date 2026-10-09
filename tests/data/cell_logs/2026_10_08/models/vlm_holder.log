@@ -1,0 +1,2 @@
+2026-10-08 07:27:46,176 - src.models.vlm.holder - INFO - holding VLM Qwen/Qwen3-VL-8B-Instruct from D:/cell/Workaholic_Willy/assets/models/hf/vlm/Qwen--Qwen3-VL-8B-Instruct (not loaded)
+2026-10-08 07:35:14,282 - src.models.vlm.holder - INFO - VLM Qwen/Qwen3-VL-8B-Instruct loaded on request in 144.1 s

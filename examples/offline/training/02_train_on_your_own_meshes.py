@@ -38,7 +38,7 @@ with tempfile.TemporaryDirectory() as work:
                                              out_dir=Path(work) / "model")
     print(training.describe())
     result = training.train()
-    # The held-out numbers of the last epoch and where the weights went; a cell loads those weights
-    # through robot.grasping.deep_generator.artifact_path.
+    # The held-out numbers of the last epoch and where the weights went. A cell grasps with those weights,
+    # named by robot.grasping.deep_generator.artifact_path, only once their proof has passed.
     print(result)
     print("report written to", training.write_report(result))

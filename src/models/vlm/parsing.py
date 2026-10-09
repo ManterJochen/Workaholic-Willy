@@ -32,6 +32,12 @@ repair would mean guessing:
 A grounding VLM emits no calibrated score. :data:`VLM_NOMINAL_SCORE` means "the model asserted
 this", not "the model is this sure", and the model's own output order is kept as its ranking.
 Nothing downstream should read it as a probability.
+
+An answer to a class list (``classes``, several descriptions grounded in one call, the sorting
+package of 2026-10-09) fails closed where a box is no one description's: a box with no label, and
+every box of a group that overlaps by :data:`AMBIGUOUS_IOU` or more under more than one
+description, is labelled :data:`AMBIGUOUS_LABEL`. Such a box stays an obstacle and is never a
+target, since no description is that word. An answer to one description is read as it always was.
 """
 
 from __future__ import annotations
@@ -39,6 +45,8 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections.abc import Sequence
+from dataclasses import replace
 from enum import StrEnum
 from typing import Any
 
@@ -53,9 +61,12 @@ from src.utility.log_cfg import create_logger
 _LOG = create_logger("VLMGroundingParser", log_file=VLM_PARSING_LOG_FILE, log_dir=MODELS_LOG_DIR)
 
 __all__ = [
+    "AMBIGUOUS_IOU",
+    "AMBIGUOUS_LABEL",
     "VLM_NOMINAL_SCORE",
     "CoordinateSpace",
     "GRID_SIZE",
+    "claimed_once",
     "parse_grounding_response",
     "extract_json_payload",
 ]
@@ -80,6 +91,18 @@ class CoordinateSpace(StrEnum):
 #: this parser was asserted by the model: dropping it on a threshold meant for GroundingDINO's
 #: logits would discard the route's entire output.
 VLM_NOMINAL_SCORE = 1.0
+
+#: The label a box of a class list is given where no one description clearly claims it: the model
+#: named it by none, or boxed one object under two descriptions. No description is this word (a class
+#: list refuses one that holds it, ``src.models.vlm.qwen.class_list_prompt``), so no rule takes such a
+#: box as its part: it stays an obstacle every grasp is planned around and is never a target. Sorting
+#: places no part by guess (the owner, 2026-10-09).
+AMBIGUOUS_LABEL = "ambiguous"
+
+#: How much two boxes of a class list overlap, as intersection over union, to be read as one object.
+#: Two parts side by side overlap far less, and one object boxed twice far more. A choice, not a
+#: measurement.
+AMBIGUOUS_IOU = 0.7
 
 #: ```json ... ``` or bare ``` ... ``` fences, which instruct-tuned models add unprompted.
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
@@ -191,6 +214,59 @@ def _label_from(item: dict[str, Any], fallback: str) -> str:
     return fallback
 
 
+def _iou(first: list[float], second: list[float]) -> float:
+    """Intersection over union of two ``[x0, y0, x1, y1]`` boxes, each at least a pixel wide and tall."""
+    width = min(first[2], second[2]) - max(first[0], second[0])
+    height = min(first[3], second[3]) - max(first[1], second[1])
+    if width <= 0.0 or height <= 0.0:
+        return 0.0
+    inter = width * height
+    union = ((first[2] - first[0]) * (first[3] - first[1]) + (second[2] - second[0]) * (second[3] - second[1])
+             - inter)
+    return inter / union if union > 0.0 else 0.0
+
+
+def claimed_once(detections: list[Detection], prompt: str) -> list[Detection]:
+    """The boxes of a class list (``prompt``), every box no one description clearly claims labelled
+    :data:`AMBIGUOUS_LABEL`, in their order, none dropped.
+
+    Boxes that overlap by :data:`AMBIGUOUS_IOU` or more, one with the next, are one object. Where such a group carries
+    more than one label (compared as words, case and spacing aside), two descriptions claim that object, and every box
+    of the group becomes ambiguous: neither rule may take the part, and the boxes stay where they are as obstacles. A
+    chain counts as one group, so no box of a doubly claimed object is left under one of the two names. One description
+    boxed twice keeps its label, as an answer to one description keeps it. :func:`parse_grounding_response` applies it
+    to a VLM's answer, and GroundingDINO to its own boxes of a class list (``detection.zero_shot.detector``).
+    """
+    count = len(detections)
+    group = list(range(count))
+
+    def root(index: int) -> int:
+        while group[index] != index:
+            group[index] = group[group[index]]
+            index = group[index]
+        return index
+
+    for first in range(count):
+        for second in range(first + 1, count):
+            if _iou(detections[first].box, detections[second].box) >= AMBIGUOUS_IOU:
+                group[root(second)] = root(first)
+    said: dict[int, set[str]] = {}
+    for index, detection in enumerate(detections):
+        said.setdefault(root(index), set()).add(" ".join(detection.label.casefold().split()))
+    claimed = [len(said[root(index)]) > 1 for index in range(count)]
+    if not any(claimed):
+        return detections
+    # Warning level: each of these is a part the model saw and no rule may take.
+    _LOG.warning(
+        "class list %r: %d box(es) overlap (IoU >= %.2f) under more than one description, every one now %r, an "
+        "obstacle and never a target: %s", prompt, sum(claimed), AMBIGUOUS_IOU, AMBIGUOUS_LABEL,
+        "; ".join(f"{detection.label!r} at {[round(value) for value in detection.box]}"
+                  for detection, doubly in zip(detections, claimed, strict=True) if doubly),
+    )
+    return [replace(detection, label=AMBIGUOUS_LABEL) if doubly else detection
+            for detection, doubly in zip(detections, claimed, strict=True)]
+
+
 def parse_grounding_response(
     text: str,
     *,
@@ -198,6 +274,7 @@ def parse_grounding_response(
     image_height: int,
     fallback_label: str,
     space: CoordinateSpace = CoordinateSpace.GRID_1000,
+    classes: Sequence[str] = (),
 ) -> list[Detection]:
     """Validated detections from a grounding answer. Never raises; ``[]`` when nothing survives.
 
@@ -208,6 +285,13 @@ def parse_grounding_response(
     ``fallback_label`` is used when the model names no label, normally the caller's prompt, so
     downstream label matching has something to match on rather than an empty string, which
     :class:`Detection` rejects outright.
+
+    ``classes`` are the descriptions of a class list the answer was asked for
+    (``src.models.vlm.qwen.classes_of``), ``()`` for one description. With them the answer fails
+    closed: a box with no label is :data:`AMBIGUOUS_LABEL` rather than the prompt, which names every
+    description at once, and so is each box of an object boxed under more than one description
+    (:data:`AMBIGUOUS_IOU`). A label the list does not hold is kept as the model wrote it: it names
+    no description, and the camera source maps it onto none.
     """
     payload = extract_json_payload(text)
     if payload is None:
@@ -223,6 +307,9 @@ def parse_grounding_response(
     # ones, while leaving the case of a few boxes lost out of many visible.
     dropped_no_box = 0
     dropped_degenerate = 0
+    # The prompt of a class list names every description at once: a box of it the model named by none is no one's.
+    unnamed = AMBIGUOUS_LABEL if classes else fallback_label
+    nameless = 0
     for item in _as_items(payload):
         values = _box_from(item)
         if values is None:
@@ -254,13 +341,22 @@ def parse_grounding_response(
             # space deliberately does not rescale. Either way there is no box to send a gripper to.
             dropped_degenerate += 1
             continue
+        label = _label_from(item, "")
+        if not label:
+            nameless += 1
         detections.append(Detection(
             box=[x0, y0, x1, y1],
             x_center=(x0 + x1) / 2.0,
             y_center=(y0 + y1) / 2.0,
-            label=_label_from(item, fallback_label),
+            label=label or unnamed,
             score=VLM_NOMINAL_SCORE,
         ))
+
+    if classes:
+        if nameless:
+            _LOG.warning("class list %r: %d box(es) named by no description, each %r, an obstacle and never a target",
+                         fallback_label, nameless, AMBIGUOUS_LABEL)
+        detections = claimed_once(detections, fallback_label)
 
     if dropped_no_box or dropped_degenerate:
         # Warning level because each of these was a box the model asserted and this parser refused.

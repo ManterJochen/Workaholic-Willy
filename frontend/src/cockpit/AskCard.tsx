@@ -8,6 +8,10 @@
  * it is off while the cell is not ready. "Anderes Ziel" opens the Understood card with the task as it ran, to change;
  * "Beenden" closes the card. Nothing on it moves by itself. A refused option is said right above the options, and
  * brought into view.
+ *
+ * A sort (the owner, 2026-10-09) asks the same way where one of its bins was found nowhere, and says which: "Nochmal
+ * suchen" sorts again with every rule, and "Anderes Ziel" opens the card with every rule as it ran. It offers no
+ * "Standard-Ablage nehmen": which rule's parts would go there is no question a button can answer.
  */
 
 import type { ApiError, PosesOut, TaskIn, TaskPlanOut } from '../api/client'
@@ -15,7 +19,7 @@ import { ErrorBanner } from '../components/ui'
 import { useT } from '../i18n'
 import { stopMsg, stopSayMsg } from '../i18n/codes'
 import { Icon } from '../icons'
-import type { AskCardView } from '../model/runModel'
+import { isSort, type AskCardView } from '../model/runModel'
 import { taskOfPlan } from './draft'
 import { useBroughtIntoView } from './hooks'
 import { COCKPIT } from './i18n'
@@ -44,14 +48,18 @@ export default function AskCard({ ask, plan, poses, motion, countdown, canStart,
   const t = useT(COCKPIT)
   const refused = useBroughtIntoView<HTMLDivElement>(error)
   const title = t.msg(stopMsg(ask.stopCode))
-  const camera = CAMERA_ASKS.has(ask.stopCode) && plan?.place.kind === 'camera'
-  const defaultPlace = poses?.default_place ?? null
+  const sort = isSort(plan)
+  const places = plan ? [plan.place, ...(plan.more_rules ?? []).map((rule) => rule.place)] : []
+  const camera = CAMERA_ASKS.has(ask.stopCode) && places.some((place) => place?.kind === 'camera')
+  const defaultPlace = sort ? null : (poses?.default_place ?? null)
   /** An option that moves, labelled as Start is: the first motion, then the countdown and the camera's fallback. */
   const go = (option: string, task: TaskIn) => (
     <button type="button" className="primary big ck-go" disabled={!canStart || busy} onClick={() => start(task)}>
       <span className="ck-go-title">{t('ck.ask.option', { option, motion })}</span>
       {countdown && <small>{t('ck.start.countdown')}</small>}
-      {task.place.kind === 'camera' && <small>{t('ck.start.camera')}</small>}
+      {[task.place, ...(task.more_rules ?? []).map((rule) => rule.place)].some((place) => place.kind === 'camera') && (
+        <small>{t('ck.start.camera')}</small>
+      )}
     </button>
   )
 
@@ -63,6 +71,7 @@ export default function AskCard({ ask, plan, poses, motion, countdown, canStart,
         {ask.part !== null && <span className="ck-card-meta">{t('ck.run.part', { part: ask.part })}</span>}
       </header>
       <p className="ck-say">{t.msg(stopSayMsg(ask.stopCode))}</p>
+      {ask.nowhere && <p className="ck-quiet">{t.msg({ key: 'event.task.target_relocated.nowhere', params: { target: ask.nowhere } })}</p>}
       {ask.why && WHY.has(ask.why) && <p className="ck-quiet">{t.msg({ key: `event.task.target_lost.${ask.why}` })}</p>}
       <h4 className="ck-card-sub">{t('ck.ask.question')}</h4>
       {/* What the server refused, right above the options, and brought into view. */}

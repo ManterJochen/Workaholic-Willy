@@ -75,7 +75,16 @@ def trained_groups(corpus_root: Path | str) -> set[str]:
 
 def held_out_assets(corpus_root: Path | str, *, sources: Iterable[str] = ("gso", "ycb"),
                     max_extent_mm: float = 180.0) -> HeldOutReport:
-    """The placeable assets whose fold group the corpus never covered."""
+    """The placeable assets a corpus never trained on: the denominator a held-out claim needs.
+
+    Args:
+        corpus_root (Path | str): The corpus folder.
+        sources (Iterable[str]): The mesh collections to count from (default: ("gso", "ycb")).
+        max_extent_mm (float): Leave out assets larger than this, millimetres, as the scenes do (default: 180.0).
+
+    Returns:
+        HeldOutReport: The assets the corpus's fold groups never covered, per collection.
+    """
     from src.robot.grasping.deep.corpus.index import asset_group  # noqa: PLC0415
 
     from datagen.assets.library import MeshLibrary  # noqa: PLC0415

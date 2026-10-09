@@ -30,7 +30,8 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.models.detection.types import Detection
     from src.models.segmentation.types import SegmentationResult
 
-__all__ = ["PerceivedObject", "PerceptionBackend", "TwoStageBackend", "failures_of", "last_failure_of"]
+__all__ = ["PerceivedObject", "PerceptionBackend", "SegmentedBoxes", "TwoStageBackend", "failures_of",
+           "last_failure_of"]
 
 #: How much of an exception's text a failure keeps: enough to name the cause, short enough for an event field.
 _FAILURE_TEXT_LIMIT = 300
@@ -65,6 +66,24 @@ class PerceivedObject:
 
     detection: "Detection"
     segmentation: "SegmentationResult"
+
+
+@dataclass(frozen=True, slots=True)
+class SegmentedBoxes:
+    """What cutting given boxes came to (``segment_boxes``): per box, in the boxes' order, the object the segmenter cut
+    for it, ``None`` where it could not; and one sentence per box that failed, ``()`` where none did.
+
+    A failure is returned, never counted in ``failures``: the caller grounds the frame with the detector instead
+    (``src/robot/perception/kept_scene.py``), and a perceive that then fails is counted as every perceive is.
+    """
+
+    objects: "tuple[PerceivedObject | None, ...]" = ()
+    failed: tuple[str, ...] = ()
+
+    @classmethod
+    def refused(cls, boxes: Any, why: str) -> "SegmentedBoxes":
+        """No box cut, for the one reason ``why``."""
+        return cls(objects=(None,) * len(tuple(boxes)), failed=(why,))
 
 
 @runtime_checkable
@@ -135,10 +154,14 @@ class TwoStageBackend:
             self._failures += 1
             self._last_failure = what[:_FAILURE_TEXT_LIMIT]
 
-    def perceive(self, image_bgr: Any, prompt: str) -> tuple[PerceivedObject, ...]:
+    #: The detector may read a copy of the image (the task's own places painted out, ``robot.grasping.
+    #: hide_own_places``) while the segmenter reads the real one: :meth:`perceive` takes ``detect_on``.
+    detects_on_a_copy = True
+
+    def perceive(self, image_bgr: Any, prompt: str, *, detect_on: Any = None) -> tuple[PerceivedObject, ...]:
         started = time.perf_counter()
         try:
-            detections = self.detector.detect_all(image_bgr, prompt)
+            detections = self.detector.detect_all(image_bgr if detect_on is None else detect_on, prompt)
         except Exception as exc:  # noqa: BLE001 (a model error emits no object (honest no_valid_grasp))
             # The failure returns `()` and never raises, so this line is the only record of the
             # exception; hence a full traceback rather than a one-line message.
@@ -182,3 +205,55 @@ class TwoStageBackend:
             len(objects), n_detections, prompt, elapsed_ms,
         )
         return tuple(objects)
+
+    def name_colour(self, image_bgr: Any, box: Any) -> str:
+        """One colour word for the object in ``box`` of ``image_bgr``, asked of the detector where it can answer (a
+        VLM's ``name_colour``); ``""`` where it cannot.
+
+        What a camera source asks where a part's pixels leave its colour unsure (``src.robot.perception.colour_check``).
+        A question that raises is a model that failed: counted in :attr:`failures` as a perceive that raised is, and
+        answered ``""``, which the source reads as no answer and refuses the part. So a task that then sees nothing ends
+        ``detector_failed``, never "nothing left".
+        """
+        name = getattr(self.detector, "name_colour", None)
+        if not callable(name):
+            return ""
+        try:
+            answer = name(image_bgr, box)
+        except Exception as exc:  # noqa: BLE001 (a model error answers nothing, counted)
+            self.logger.exception("the detector failed to name the colour of the object in %s, answering nothing", box)
+            self._count_failure(f"the detector raised {type(exc).__name__} naming a colour: {exc}")
+            return ""
+        return answer if isinstance(answer, str) else ""
+
+    def segment_boxes(self, image_bgr: Any, boxes: Any) -> SegmentedBoxes:
+        """Cut each of ``boxes`` (``((x0, y0, x1, y1), label)`` pairs, image pixels) with the segmenter alone: no
+        detector is asked, so a VLM detector is never loaded for it.
+
+        What a camera source following the parts a task kept asks (``src/robot/perception/kept_scene.py``): each box is a
+        detection of score 1.0 under its label, cut as ``perceive`` cuts a detector's. A box the segmenter raises on, or
+        that is no box, is said in :attr:`SegmentedBoxes.failed` and never counted in :attr:`failures`: the source
+        grounds the frame with the detector instead, and that perceive counts its own failures as ever.
+        """
+        from src.models.detection.types import Detection  # noqa: PLC0415 (numpy alone; kept off the import path)
+
+        started = time.perf_counter()
+        boxes = tuple(boxes)
+        objects: list[PerceivedObject | None] = []
+        failed: list[str] = []
+        for index, (box, label) in enumerate(boxes):
+            try:
+                x0, y0, x1, y1 = (float(value) for value in box)
+                detection = Detection(box=[x0, y0, x1, y1], x_center=(x0 + x1) / 2.0, y_center=(y0 + y1) / 2.0,
+                                      label=str(label), score=1.0)
+                segmentation = self.segmenter.segment_detection(image_bgr, detection)
+            except Exception as exc:  # noqa: BLE001 (a box that cannot be cut is said; the frame is grounded instead)
+                failed.append(f"box {index} ({label!r}): {type(exc).__name__}: {exc}"[:_FAILURE_TEXT_LIMIT])
+                objects.append(None)
+                continue
+            objects.append(PerceivedObject(detection=detection, segmentation=segmentation))
+        self.logger.info(
+            "cut %d of %d box(es) with no detector asked in %.1f ms%s", len(boxes) - len(failed), len(boxes),
+            (time.perf_counter() - started) * 1000.0, f" (failed: {'; '.join(failed)})" if failed else "",
+        )
+        return SegmentedBoxes(objects=tuple(objects), failed=tuple(failed))
