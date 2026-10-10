@@ -274,7 +274,9 @@ def import_from_directory(
 ) -> list[MeshEntry]:
     """Copy your own meshes into the library under the licence you declare, recording a SHA for each.
 
-        import_from_directory("custom", "D:/parts/stl", license="own", attribution="ACME GmbH")
+    ```python
+    import_from_directory("custom", "D:/parts/stl", license="own", attribution="ACME GmbH")
+    ```
 
     Args:
         source (str): The collection to copy into, such as ``"custom"``.

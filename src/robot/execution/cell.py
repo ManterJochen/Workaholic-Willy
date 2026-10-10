@@ -60,12 +60,14 @@ class Cell:
     """The whole cell a configuration describes: cameras, perception, the grasp stack, the arm and the hand, and the
     four steps that act on it.
 
-        cell = Cell.from_tree(load_tree(), prompt="a red cube")
-        print(cell.preflight())                  # 1. decidable at a desk, no hardware
-        cell.build()                             # 2. drivers, perception, grasp stack
-        print(cell.safety())                     # 3. what this arm will refuse, before it moves
-        with cell.connected():                   # 4. lock, arm, then hand
-            print(cell.service.pick())
+    ```python
+    cell = Cell.from_tree(load_tree(), prompt="a red cube")
+    print(cell.preflight())                  # 1. decidable at a desk, no hardware
+    cell.build()                             # 2. drivers, perception, grasp stack
+    print(cell.safety())                     # 3. what this arm will refuse, before it moves
+    with cell.connected():                   # 4. lock, arm, then hand
+        print(cell.service.pick())
+    ```
 
     Each step is useful alone: :meth:`preflight` needs no hardware, :meth:`safety` a build but no motion, and
     :meth:`connected` is the only one that touches a cell.
@@ -128,14 +130,16 @@ class Cell:
     ) -> "Cell":
         """The cell a loaded tree describes: both halves, and the directory, from one load.
 
-            cell = Cell.from_tree(load_tree("ur5e,hande"), prompt="a red cube")
+        ```python
+        cell = Cell.from_tree(load_tree("ur5e,hande"), prompt="a red cube")
+        ```
 
         Args:
             tree (LoadedTree): What ``load_tree()`` returned.
             prompt (Maybe[str]): What the picks look for, such as ``"a red cube"``; unset lets the build supply its own
                 (default: UNSET).
-            motion (Maybe[GraspMotion]): How the picks move (:class:`GraspMotion`); unset is the cell's own (default:
-                UNSET).
+            motion (Maybe[GraspMotion]): How the picks move (:class:`GraspMotion`); unset is the cell's own
+                (default: UNSET).
             mode (Maybe[GraspMode | str]): The grasp mode the service is built in: ``"easy"``, ``"auto"`` or
                 ``"dense_clutter"``; unset is ``grasping.default_mode`` (default: UNSET).
 
@@ -171,8 +175,8 @@ class Cell:
             robot_config (RobotConfig): The robot section, ``tree.robot``.
             prompt (Maybe[str]): What the picks look for, such as ``"a red cube"``; unset lets the build supply its own
                 (default: UNSET).
-            motion (Maybe[GraspMotion]): How the picks move (:class:`GraspMotion`); unset is the cell's own (default:
-                UNSET).
+            motion (Maybe[GraspMotion]): How the picks move (:class:`GraspMotion`); unset is the cell's own
+                (default: UNSET).
             mode (Maybe[GraspMode | str]): The grasp mode the service is built in: ``"easy"``, ``"auto"`` or
                 ``"dense_clutter"``; unset is ``grasping.default_mode`` (default: UNSET).
             app_config (Maybe[AppConfig]): The tree the section came from; pass it where you have it, so the camera half
@@ -304,8 +308,8 @@ class Cell:
         once.
 
         Args:
-            announce (Callable[[ConnectStage], None] | None): Called with each stage as the connect reaches it (default:
-                None).
+            announce (Callable[[ConnectStage], None] | None): Called with each stage as the connect reaches it
+                (default: None).
 
         Returns:
             ConnectedCell: The context manager; inside it :attr:`service` picks and :attr:`robot` moves.
@@ -343,10 +347,12 @@ class Cell:
     def robot(self) -> "Robot":
         """This cell's built arm and hand as a :class:`Robot`, for the verbs a pick does not run. Requires a build.
 
-            cell.build()
-            with cell.connected():
-                print(cell.robot.home().render())
-                print(cell.robot.move(pose).render())
+        ```python
+        cell.build()
+        with cell.connected():
+            print(cell.robot.home().render())
+            print(cell.robot.move(pose).render())
+        ```
 
         The same handles the pick service drives, so inside ``with cell.connected():`` every verb goes
         through this arm's planner, its guard and the camera world the build wired onto it; nothing is
@@ -365,9 +371,11 @@ class Cell:
         """The camera owners this cell's build opened, each once: the primary first (the camera every grasp is
         synthesised in), then the fused ones, then those the live planner world opened for itself. Requires a build.
 
-            cell.build()
-            with LiveView(cell.cameras) as view:   # a window per camera of the cell
-                ...
+        ```python
+        cell.build()
+        with LiveView(cell.cameras) as view:   # a window per camera of the cell
+            ...
+        ```
 
         Read-only: nothing is opened, closed or read here, and the owners stay the build's, given back when the cell
         comes down (``connected()``'s way out). A rehearsal opens no camera and names none.

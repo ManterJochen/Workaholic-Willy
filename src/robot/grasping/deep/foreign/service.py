@@ -153,9 +153,11 @@ class PublicCorpus:
     """A published grasp corpus, read into the scene files this training loop already eats: for a user with no simulator
     and no cell.
 
-        corpus = PublicCorpus.from_source(out_dir="corpora/grasp_anything", gripper="robotiq_hande")
-        print(corpus.describe())          # the source, its licence, what is on disk
-        print(corpus.fetch(limit=200))
+    ```python
+    corpus = PublicCorpus.from_source(out_dir="corpora/grasp_anything", gripper="robotiq_hande")
+    print(corpus.describe())          # the source, its licence, what is on disk
+    print(corpus.fetch(limit=200))
+    ```
 
     Attributes:
         key (str): The corpus, such as ``"grasp_anything_6d"``.

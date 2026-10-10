@@ -17,7 +17,10 @@ with robot.connected():
 ```
 
 Install the repository once with `pip install -e . --no-deps` from its root, and this runs from any
-directory. The programs that use each name are in [`examples/`](../examples/README.md).
+directory. A project of your own installs it the same way into its environment, for instance
+`pip install -e external/Workaholic-Willy --no-deps` with Willy checked out under `external/`, and
+imports `willy` with no `sys.path` line; a `src` package of its own is found beside Willy's. The
+programs that use each name are in [`examples/`](../examples/README.md).
 
 ## Choosing the tree
 
@@ -174,11 +177,11 @@ is refused without them, and looks with the arm held still.
 | `available_sources` | Every public mesh collection, its size, its licence and whether that was checked per model | `offline/datagen/06_fetch_public_parts.py` |
 | `verify_dataset` | Checks a written dataset against itself, by path; `DatasetBuild.verify()` is the same check | `offline/datagen/08_verify_a_dataset.py` |
 | `held_out_assets` | Which placeable assets a corpus never trained on, the denominator a held-out claim needs | `offline/training/03_prove_it_never_saw_the_test_parts.py` |
-| `GeneratorTraining` | Fits a grasp generator from a recipe or a plan; `probe()`, `train()`, then `write_report()` | `offline/training/02_train_on_your_own_meshes.py` |
-| `PlanOverrides` | The training settings you choose explicitly; they outrank the recipe and the tier | `offline/training/01_recipe_and_tier.py` |
+| `GeneratorTraining` | Fits a grasp generator from a recipe or a plan, `epochs=` and `batch=` as arguments; `probe()`, `train()`, then `write_report()` | `offline/training/02_train_on_your_own_meshes.py` |
+| `PlanOverrides` | Every other training setting you choose explicitly; they outrank the recipe and the tier | `offline/training/01_recipe_and_tier.py` |
 | `PublicCorpus` | A published grasp corpus, read into the scene files this training loop already eats | `offline/training/04_train_on_a_public_corpus.py` |
-| `DetectorTraining` | Trains the closed-set RT-DETR detector on your COCO or YOLO dataset; `probe()`, `train()`, then `write_report()` | `offline/training/06_train_a_detector_on_your_images.py` |
-| `DetectorPlanOverrides` | The detector training settings you choose explicitly; they outrank the recipe and the tier | `offline/training/06_train_a_detector_on_your_images.py` |
+| `DetectorTraining` | Trains the closed-set RT-DETR detector on your COCO or YOLO dataset, `epochs=`, `batch=`, `image_size=` and `classes=` (some of its classes only) as arguments; `probe()`, `train()` with a bar over every epoch and `curves.png` drawn after each, then `write_report()`: `report.json` and `report.html` | `offline/training/06_train_a_detector_on_your_images.py` |
+| `DetectorPlanOverrides` | Every other detector training setting you choose explicitly, the learning rate among them; they outrank the recipe and the tier | `offline/training/06_train_a_detector_on_your_images.py` |
 | `ObjectDetector` | Every detection model a cell can run behind one call. `from_weights(path_or_id)` is the closed-set RT-DETR (a `DetectorTraining` out_dir, any RT-DETR folder or a Hugging Face id), asked for every class it knows at once; `from_config(tree, backend=)` builds what the tree's `models.pipeline` names, or the backend named: `closed_set`, `grounded_sam` (GroundingDINO), `vlm`, `router`. `detect(image, prompt=, classes=, threshold=, segment=)`: an open-vocabulary detector takes a prompt or classes, and `segment=True` adds each object's SAM2 mask, every box cut in one pass | `offline/perception/detect_with_a_prompt.py`, `offline/perception/detect_every_class.py` |
 | `Detections` | What one `detect` found, the highest score first: a frozen sequence of `DetectedObject` with `of(label)`, `counts`, `render()`, `draw(image)`, `write_drawing(image, path)`, and `to_dict()` with every mask run-length encoded; `backend` says which model answered and `prompt` what it read | `offline/perception/detect_every_class.py` |
 | `DetectedObject` | One object: `label`, `score`, `box`, `centre`, `mask` (the image's size, `True` on the object) and `mask_score` | `offline/perception/detect_every_class.py` |

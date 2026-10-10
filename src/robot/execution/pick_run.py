@@ -402,8 +402,8 @@ class PickRunReport:
         recording (Recording): Where its records went.
         teardown (TeardownReport | None): How the cell came down; ``None`` where the campaign did not own the connect
             (``from_service``) (default: None).
-        last (Any): The last report the service produced, for ``layers_that_ran()``; ``None`` if nothing ran (default:
-            None).
+        last (Any): The last report the service produced, for ``layers_that_ran()``; ``None`` if nothing ran
+            (default: None).
         error (str): A refusal that stopped the campaign before or during the picks; empty otherwise (default: "").
     """
 
@@ -561,10 +561,12 @@ def _checked_prompt(prompt: "Maybe[str]") -> "Maybe[str]":
 class PickRun:
     """N picks against one cell, under one connect.
 
-        cell = Cell.from_tree(load_tree(), prompt="a red cube")
-        report = PickRun.from_cell(cell, runs=10, recording=Recording.off()).execute()
-        print(report)
-        raise SystemExit(report.exit_code)
+    ```python
+    cell = Cell.from_tree(load_tree(), prompt="a red cube")
+    report = PickRun.from_cell(cell, runs=10, recording=Recording.off()).execute()
+    print(report)
+    raise SystemExit(report.exit_code)
+    ```
 
     Build it with :meth:`from_cell` (the campaign owns the connect) or :meth:`from_service` (you do), then
     :meth:`execute`. Exactly one of ``cell`` and ``service`` is set.

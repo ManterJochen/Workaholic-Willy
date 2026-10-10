@@ -100,8 +100,10 @@ def closing_axis_heading_deg(closing_axis: str, x_mm: float, y_mm: float) -> flo
 class Pose:
     """A rigid 6-DoF pose tagged with its coordinate frame, in millimetres with an XYZW quaternion.
 
-        above = Pose.tool_down(450.0, 100.0, 300.0)                 # BASE, tool +Z straight down
-        look = Pose.aimed_at(400.0, 0.0, 500.0, target_mm=(450.0, 100.0, 0.0))
+    ```python
+    above = Pose.tool_down(450.0, 100.0, 300.0)                 # BASE, tool +Z straight down
+    look = Pose.aimed_at(400.0, 0.0, 500.0, target_mm=(450.0, 100.0, 0.0))
+    ```
 
     Construction coerces the position to ``float64``, checks it for shape (3,) and finiteness, normalises the quaternion
     into canonical sign form (``w >= 0``), and makes both arrays read-only; equality and hashing compare the arrays
@@ -157,10 +159,10 @@ class Pose:
             y_mm (float): y in ``frame``, millimetres.
             z_mm (float): z in ``frame``, millimetres.
             yaw_deg (float): A further turn of the closing axis about the frame's +Z, degrees (default: 0.0).
-            closing_axis (str): Which axis the tool's +X lines up with before the yaw, one of :data:`CLOSING_AXES`:
-                ``"x"``, ``"-x"``, ``"y"``, ``"-y"``, ``"radial"``, ``"-radial"``, ``"tangential"``, ``"-tangential"``.
-                ``radial`` and ``tangential`` follow the base round, which keeps wrist 3 where it is on a cell that
-                moves round its base (default: "x").
+            closing_axis (str): Which axis the tool's +X lines up with before the yaw, one of
+                :data:`CLOSING_AXES`: ``"x"``, ``"-x"``, ``"y"``, ``"-y"``, ``"radial"``, ``"-radial"``,
+                ``"tangential"``, ``"-tangential"``. ``radial`` and ``tangential`` follow the base round, which keeps
+                wrist 3 where it is on a cell that moves round its base (default: "x").
             frame (Frame): The frame the pose is in (default: Frame.BASE).
             label (str | None): A name for logs and reports, such as ``"above the bin"`` (default: None).
 

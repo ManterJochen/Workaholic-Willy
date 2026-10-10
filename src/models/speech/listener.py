@@ -126,10 +126,12 @@ def _checked_bound(bound: float | None) -> float | None:
 class Listener:
     """A voice stream cut into utterances, each transcribed: say something, get the words.
 
-        speech = load_speech_section()
-        engine = shared_speech().for_config(config=speech).engine
-        with Listener.from_config(config=speech, engine=engine) as listener:
-            utterance = listener.listen(timeout_s=10.0)
+    ```python
+    speech = load_speech_section()
+    engine = shared_speech().for_config(config=speech).engine
+    with Listener.from_config(config=speech, engine=engine) as listener:
+        utterance = listener.listen(timeout_s=10.0)
+    ```
 
     Build it with :meth:`from_config` or :meth:`from_parts`; the verb is :meth:`listen`, and ``start()``/``stop()`` (or
     ``with``) open and close the source.
@@ -175,8 +177,8 @@ class Listener:
 
         Args:
             config (SpeechToTextConfig): The speech section, ``load_speech_section()``.
-            engine (SpeechEngine): The transcriber, the one the process holds:
-                ``shared_speech().for_config(config=config).engine``.
+            engine (SpeechEngine): The transcriber, the one the process
+                holds: ``shared_speech().for_config(config=config).engine``.
             source (Maybe[AudioSource]): Where audio comes from; unset is the cell PC's microphone, and
                 ``PushToTalkSource.from_config(config=config)`` the same behind the talk switch (default: UNSET).
             detector (Maybe[VoiceActivityDetector]): The voice detector; unset is Silero from

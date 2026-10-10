@@ -81,11 +81,13 @@ class Robot:
     Build it with :meth:`from_tree` (the usual way), :meth:`from_config` or :meth:`from_parts`, then connect it in a
     ``with`` block and call its verbs; every verb returns a report that prints as itself.
 
-        robot = Robot.from_tree(load_tree("console_dummy"))
-        with robot.connected():                    # lock, arm, then hand
-            print(robot.home())
-            print(robot.move(robot.tool_down(450.0, 100.0, 300.0)))
-            print(robot.grasp(40.0))
+    ```python
+    robot = Robot.from_tree(load_tree("console_dummy"))
+    with robot.connected():                    # lock, arm, then hand
+        print(robot.home())
+        print(robot.move(robot.tool_down(450.0, 100.0, 300.0)))
+        print(robot.grasp(40.0))
+    ```
 
     Attributes:
         arm (RobotArm): The arm driver, built and not connected.
@@ -423,8 +425,10 @@ class Robot:
         """A BASE pose with the tool pointing straight down, its jaws closing the way this cell's hand and camera
         naturally stand. Commands nothing.
 
-            above = robot.tool_down(450.0, 100.0, 300.0)              # along robot.natural_closing_axis
-            part = robot.tool_down(450.0, 100.0, 120.0, yaw_deg=90.0)  # a quarter turn further about the vertical
+        ```python
+        above = robot.tool_down(450.0, 100.0, 300.0)              # along robot.natural_closing_axis
+        part = robot.tool_down(450.0, 100.0, 120.0, yaw_deg=90.0)  # a quarter turn further about the vertical
+        ```
 
         Args:
             x_mm (float): The tool's x in the robot's base frame, in millimetres.
@@ -583,9 +587,11 @@ class Robot:
     ) -> "_handling.HandlingReport":
         """Place the held part at a pose: a planned move to the standoff, a line in, release, a line out.
 
-            set_down = located.set_down(0, grasp=best.pose(), part_bottom_mm=scene.part_bottom_mm)
-            if set_down.pose is not None:
-                robot.place(set_down.pose, keep_out=located.keep_out(0))
+        ```python
+        set_down = located.set_down(0, grasp=best.pose(), part_bottom_mm=scene.part_bottom_mm)
+        if set_down.pose is not None:
+            robot.place(set_down.pose, keep_out=located.keep_out(0))
+        ```
 
         Args:
             pose (Pose): Where the tool releases, in ``Frame.BASE``, the approach along its +Z.
@@ -618,9 +624,11 @@ class Robot:
     def without_camera_world(self, reason: str) -> AbstractContextManager[CameraWorldDecline]:
         """Decline the camera world for every motion of this robot's arm inside a ``with`` block.
 
-            with robot.without_camera_world("bench check, no cameras mounted"):
-                robot.move(pose)
-                robot.home()
+        ```python
+        with robot.without_camera_world("bench check, no cameras mounted"):
+            robot.move(pose)
+            robot.home()
+        ```
 
         Args:
             reason (str): Why these motions need no camera world; it goes into every report and log line.

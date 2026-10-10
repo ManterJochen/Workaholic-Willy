@@ -18,8 +18,9 @@ from src.models.detection.closed_set.training.recipes import DEFAULT_BASE_MODEL,
 __all__ = ["DEFAULT_SEED", "DetectorPlan", "DetectorPlanOverrides", "MULTISCALE_SIZES", "build_plan"]
 
 DEFAULT_SEED = 20260716
-#: RT-DETR's multi-scale training sizes in pixels; 640 three times, as its own list weights it.
-MULTISCALE_SIZES = (480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800)
+#: RT-DETR's multi-scale training sizes in pixels at 640, as its own list weights it, 640 three times;
+#: ``DetectorPlan.multiscale_sizes`` scales them to the plan's image size.
+MULTISCALE_SIZES =(480, 512, 544, 576, 608, 640, 640, 640, 672, 704, 736, 768, 800)
 _AMP = ("auto", "bf16", "fp16", "off")
 
 
@@ -65,6 +66,11 @@ class DetectorPlan:
         tail = self.no_aug_epochs if self.no_aug_epochs is not None else max(1, round(self.epochs / 10))
         return max(0, self.epochs - tail) if self.epochs > 1 else self.epochs
 
+    def multiscale_sizes(self) -> tuple[int, ...]:
+        """The multi-scale sizes for this plan's ``image_size``: RT-DETR's list for 640 px scaled to it, each a
+        multiple of 32; 480 to 800 px at 640, 768 to 1280 px at 1024."""
+        return tuple(max(32, round(size * self.image_size / 640 / 32) * 32) for size in MULTISCALE_SIZES)
+
     def validated(self) -> "DetectorPlan":
         """This plan, or a ``ValueError`` naming the first setting a run cannot proceed with."""
         checks = [
@@ -102,13 +108,15 @@ class DetectorPlanOverrides:
     """The detector training settings you choose explicitly; they outrank the recipe and the tier. Every field you leave
     out stays ``UNSET``, which the recipe or the tier fills.
 
-        overrides = DetectorPlanOverrides(epochs=80, batch=4, image_size=800)
+    ```python
+    overrides = DetectorPlanOverrides(epochs=80, batch=4, image_size=800)
+    ```
 
     Attributes:
         base_model (str): The checkpoint fine-tuned from, a Hugging Face id or a folder; the plan's default is
             ``"PekingU/rtdetr_r50vd"`` (default: UNSET).
-        image_size (int): The training image size in pixels, a multiple of 32 and at least 64; default 640 (default:
-            UNSET).
+        image_size (int): The training image size in pixels, a multiple of 32 and at least 64; default 640
+            (default: UNSET).
         epochs (int): The most epochs, at least 1; default 50 (default: UNSET).
         batch (int): Images per batch; default 8 (default: UNSET).
         accumulate (int): Optimiser steps every this many batches, an effective batch of ``batch * accumulate``; default

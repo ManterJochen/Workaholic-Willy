@@ -9,7 +9,8 @@ keeps the best epoch by validation mAP in ``--output-dir``, which ``RtDetrObject
     python -m src.models.detection.closed_set.train eval    --model-dir assets/models/rtdetr/v1 --data-dir data/detect/v1
 
 ``--tier smoke`` proves the chain in minutes; ``--tier full`` (the default) is the model to deploy. A flag you pass
-wins over the tier. Exit codes: ``0`` ok, ``2`` bad arguments or no dataset, ``3`` training failed. ``inspect`` runs
+wins over the tier; ``--classes`` trains some of the dataset's classes only, the objects of the others left in the
+images as background. Exit codes: ``0`` ok, ``2`` bad arguments or no dataset, ``3`` training failed. ``inspect`` runs
 without the training stack, and so does a ``train`` that has no dataset to train on.
 """
 
@@ -17,12 +18,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from src.contracts.options import UNSET, chosen
 from src.models.constants import MODELS_LOG_DIR, RTDETR_TRAIN_LOG_FILE
@@ -172,23 +171,13 @@ def _overrides(args: argparse.Namespace) -> DetectorPlanOverrides:
     return DetectorPlanOverrides(**{key: value for key, value in values.items() if chosen(value)})
 
 
-def _guarded_workers(run: Any) -> int | None:
-    """Loader workers for the command line on Windows, where the library chooses none (this module is guarded)."""
-    if sys.platform != "win32" or run.plan.workers is not None:
-        return run.plan.workers
-    import torch  # noqa: PLC0415
-
-    big = len(run.dataset().train) >= 200
-    return max(0, min(4, (os.cpu_count() or 2) // 2)) if big and torch.cuda.is_available() else 0
-
-
 def _cmd_train(args: argparse.Namespace) -> int:
     from src.models.detection.closed_set.training.api import DetectorTraining  # noqa: PLC0415
 
     try:
         run = DetectorTraining.from_dataset(dataset=args.data_dir, recipe=args.recipe, tier=args.tier,
                                             overrides=_overrides(args), out_dir=args.output_dir, format=args.format,
-                                            device=args.device, resume=args.resume)
+                                            device=args.device, resume=args.resume, classes=args.classes)
         run.dataset()
     except FileNotFoundError as exc:
         _LOG.error("train refused: %s", exc)
@@ -198,9 +187,6 @@ def _cmd_train(args: argparse.Namespace) -> int:
         _LOG.error("train refused: %s", exc)
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    import dataclasses  # noqa: PLC0415
-
-    run.plan = dataclasses.replace(run.plan, workers=_guarded_workers(run))
     print(run.describe())
     print(run.probe())
     try:
@@ -233,7 +219,7 @@ def _cmd_inspect(args: argparse.Namespace) -> int:
 
     try:
         probe = DatasetProbe.of(load_dataset(args.data_dir, format=args.format, val_fraction=args.val_fraction,
-                                             require_boxes=False))
+                                             require_boxes=False, classes=args.classes))
     except (FileNotFoundError, ValueError) as exc:
         _LOG.error("inspect refused: %s", exc)
         print(f"error: {exc}", file=sys.stderr)
@@ -255,8 +241,13 @@ def main(argv: Iterable[str] | None = None) -> int:
         p.add_argument("--val-fraction", type=float, default=UNSET,
                        help="the validation share cut from a dataset without its own validation split (0.15)")
 
+    def classes_arg(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--classes", nargs="+", default=None, metavar="NAME",
+                       help="only these classes, by name (quote a name with a space); the others stay background")
+
     tr = sub.add_parser("train", help="Train; keep the best epoch, the last one, results.csv, manifest and report.")
     dataset_args(tr)
+    classes_arg(tr)
     tr.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="where the model and its files go")
     tr.add_argument("--recipe", default="v1", choices=sorted(RECIPES))
     tr.add_argument("--tier", default="full", choices=sorted(TIERS))
@@ -282,6 +273,7 @@ def main(argv: Iterable[str] | None = None) -> int:
 
     ins = sub.add_parser("inspect", help="What a dataset holds, per class and split (no training stack).")
     dataset_args(ins)
+    classes_arg(ins)
     ins.add_argument("--split", default="train", help=argparse.SUPPRESS)  # kept for old invocations; both splits print
     ins.add_argument("--json", action="store_true", help="print JSON instead of the table")
     ins.set_defaults(func=_cmd_inspect)

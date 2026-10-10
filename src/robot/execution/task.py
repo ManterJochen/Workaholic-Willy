@@ -364,8 +364,10 @@ class TaskRefused(ValueError):
 class PlaceAt:
     """Where a task puts each part: a taught pose, or a target the camera finds; exactly one of the two.
 
-        PlaceAt(pose="Ablage links")                 # a taught pose, by its name in the task's poses
-        PlaceAt(camera="blue bin", air_mm=20.0)      # a bin the camera finds
+    ```python
+    PlaceAt(pose="Ablage links")                 # a taught pose, by its name in the task's poses
+    PlaceAt(camera="blue bin", air_mm=20.0)      # a bin the camera finds
+    ```
 
     Attributes:
         pose (str | None): The name of a taught pose in the task's ``poses``: where the part's bottom is let go
@@ -493,8 +495,8 @@ class TaskOptions:
     """The Advanced drawer's switches, for one task: never the cell's.
 
     Attributes:
-        multi_view (bool): The looks as configured; ``False`` is the first look only and no generated view (default:
-            True).
+        multi_view (bool): The looks as configured; ``False`` is the first look only and no generated view
+            (default: True).
         both_faces (bool): Grip only once both jaw contact faces of the grasp were seen (default: False).
         closing_axis (str | None): Grip only grasps closing along this axis, a name ``Pose.tool_down`` takes (``"-y"``);
             ``None`` any (default: None).
@@ -514,9 +516,9 @@ class TaskOptions:
             (default: None). A task that names an object sets every blocker aside.
         check_look (bool): Where the part placed was the last target its pick's first look counted, the next pick looks
             from that first look alone, and seeing nothing there ends an "until empty" task (default: True).
-        carry (Literal["via_the_look", "over_the_rim"] | None): How a part is carried to a bin a wrist camera found:
-            ``via_the_look`` to the look it was found from, looked at again there; ``over_the_rim`` straight over;
-            ``None`` the cell's ``robot.place.carry`` (default: None).
+        carry (Literal["via_the_look", "over_the_rim"] | None): How a part is carried to a bin a wrist camera
+            found: ``via_the_look`` to the look it was found from, looked at again there; ``over_the_rim`` straight
+            over; ``None`` the cell's ``robot.place.carry`` (default: None).
         every_look (bool): "Alle Posen": each pick visits every look, however safe an earlier grasp is (default: False).
 
     Raises:
@@ -550,8 +552,10 @@ class TaskOptions:
 class TaskPlan:
     """One task: what to pick, where to put it, where to go after, and how long.
 
-        plan = TaskPlan(object="gray cube", place=PlaceAt(camera="yellow bin"), scope="until_empty")
-        report = run_task(cell.service, plan, hooks=my_hooks, poses={})
+    ```python
+    plan = TaskPlan(object="gray cube", place=PlaceAt(camera="yellow bin"), scope="until_empty")
+    report = run_task(cell.service, plan, hooks=my_hooks, poses={})
+    ```
 
     Attributes:
         object (str): What to pick, the English phrase the detector grounds; ``""`` anything.
@@ -834,10 +838,12 @@ def run_task(service: Any, plan: TaskPlan, *, hooks: TaskHooks, poses: "Mapping[
     """Run a task on a connected cell: pick a part, set it down, return, and look again, once or until nothing is left.
     The operator console's Start runs exactly this.
 
-        with cell.connected():
-            report = run_task(cell.service, TaskPlan(object="gray cube", place=PlaceAt(camera="yellow bin")),
-                              hooks=my_hooks, poses={})
-        print(report)
+    ```python
+    with cell.connected():
+        report = run_task(cell.service, TaskPlan(object="gray cube", place=PlaceAt(camera="yellow bin")),
+                          hooks=my_hooks, poses={})
+    print(report)
+    ```
 
     Args:
         service (Any): The connected pick service, ``cell.service``.

@@ -80,9 +80,11 @@ class Confirmer(Protocol):
 class Confirmation:
     """Whether a person let proposed words become a prompt, and which words: speech never acts on its own.
 
-        confirmation = Confirmation.from_proposal(proposal=proposal, confirmer=TerminalConfirmer.from_parts())
-        if confirmation.confirmed is not None:
-            cell.service.set_prompt(confirmation.confirmed)
+    ```python
+    confirmation = Confirmation.from_proposal(proposal=proposal, confirmer=TerminalConfirmer.from_parts())
+    if confirmation.confirmed is not None:
+        cell.service.set_prompt(confirmation.confirmed)
+    ```
 
     Attributes:
         proposed (str): The words speech proposed; ``""`` when it proposed none.
@@ -259,8 +261,8 @@ class TerminalConfirmer:
         """A confirmer at this process's terminal.
 
         Args:
-            stdin (Maybe[TextIO | None]): Where the answer is read; unset is the process's own, taken now (default:
-                UNSET).
+            stdin (Maybe[TextIO | None]): Where the answer is read; unset is the process's own, taken now
+                (default: UNSET).
             stdout (Maybe[TextIO | None]): Where the question is written; unset is the process's own (default: UNSET).
 
         Returns:

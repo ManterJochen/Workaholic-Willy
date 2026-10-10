@@ -232,9 +232,11 @@ class JawDiagnosis:
 class MeshPreparation:
     """Your mesh collections, fetched, normalised, screened for graspability, decomposed and diagnosed.
 
-        prep = MeshPreparation.from_sources(["custom"])
-        print(prep.describe())
-        print(prep.screen("screen.json"))          # which meshes a jaw can grasp at all
+    ```python
+    prep = MeshPreparation.from_sources(["custom"])
+    print(prep.describe())
+    print(prep.screen("screen.json"))          # which meshes a jaw can grasp at all
+    ```
 
     The ``custom`` collection, your own meshes, is excluded from the default sweep: nobody else can re-fetch it, so a
     bulk operation never touches it unless it is named.

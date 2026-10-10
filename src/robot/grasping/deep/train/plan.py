@@ -57,7 +57,9 @@ class PlanOverrides:
     """The generator training settings you choose explicitly; they outrank the recipe and the tier. Every field you
     leave out stays ``UNSET``, which the recipe or the tier fills; the defaults named are the plan's own.
 
-        overrides = PlanOverrides(epochs=24, folds=5, run_folds=5, refit=True)
+    ```python
+    overrides = PlanOverrides(epochs=24, folds=5, run_folds=5, refit=True)
+    ```
 
     Attributes:
         epochs (int): Epochs per fold; default 12 (default: UNSET).
@@ -90,8 +92,8 @@ class PlanOverrides:
             ``"affine"`` (default: UNSET).
         part_roles (bool): An affordance output, one role per grasp (empty, body, handle, grip, neck, head); default
             False (default: UNSET).
-        generative (bool): A denoising head trained on every label instead of the slot head; default False (default:
-            UNSET).
+        generative (bool): A denoising head trained on every label instead of the slot head; default False
+            (default: UNSET).
         crop_mm (float): A ball of points around each seed, in its own frame, of this radius in millimetres (40 to 120);
             0 is off; default 0 (default: UNSET).
         crop_neighbours (int): Points kept per crop; default 32 (default: UNSET).

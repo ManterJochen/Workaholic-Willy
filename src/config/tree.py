@@ -175,11 +175,13 @@ class LoadedTree:
     """A validated config tree, and the three facts it was validated under: the directory, the profile chain and the
     values given in memory. What ``load_tree()`` returns.
 
-        tree = load_tree("console_dummy")
-        print(tree)                                   # the verdict in one line
-        print(tree.robot.gripper.model)               # a validated section
-        print(tree.explain("robot.gripper.model"))    # its value and the file that decided it
-        bench = tree.with_values({"robot.grasping.colour_check": "log"})   # a change in memory, validated
+    ```python
+    tree = load_tree("console_dummy")
+    print(tree)                                   # the verdict in one line
+    print(tree.robot.gripper.model)               # a validated section
+    print(tree.explain("robot.gripper.model"))    # its value and the file that decided it
+    bench = tree.with_values({"robot.grasping.colour_check": "log"})   # a change in memory, validated
+    ```
 
     A tree that does not load is still returned, with ``ok`` false and its refusal; any ``from_tree`` on it raises
     ``ConfigError``.
@@ -593,9 +595,11 @@ def load_tree(
 ) -> LoadedTree:
     """Load and validate a cell's config tree in one call.
 
-        tree = load_tree()                    # the cell WILLY_PROFILE names
-        tree = load_tree("console_dummy")     # the desk profile
-        tree = load_tree(None, root="D:/cells/line3")
+    ```python
+    tree = load_tree()                    # the cell WILLY_PROFILE names
+    tree = load_tree("console_dummy")     # the desk profile
+    tree = load_tree(None, root="D:/cells/line3")
+    ```
 
     Args:
         profile (Maybe[str | None]): The profile chain, comma separated (``"ur5e,hande"``), the ``*.<profile>.yaml``

@@ -194,16 +194,16 @@ class PiecesTests(unittest.TestCase):
         self.assertAlmostEqual(1 - d, float(ema.module.weight), places=6)
         self.assertFalse(ema.module.weight.requires_grad)
 
-    def test_loader_workers_are_never_chosen_on_windows(self) -> None:
+    def test_loader_workers_are_chosen_on_windows_as_anywhere(self) -> None:
+        """They start without running the training script again (``loading.WorkerBatches``), so Windows, where a
+        spawned worker used to, needs no exception any more (the owner, 2026-10-10)."""
         cuda = torch.device("cuda")
-        with mock.patch.object(trainer.sys, "platform", "win32"):
-            self.assertEqual(0, trainer._workers(TINY, 5000, cuda))
-            self.assertEqual(3, trainer._workers(DetectorPlan(workers=3), 5000, cuda))
-        with mock.patch.object(trainer.sys, "platform", "linux"), mock.patch.object(trainer.os, "cpu_count",
-                                                                                     return_value=16):
-            self.assertEqual(4, trainer._workers(TINY, 5000, cuda))
-            self.assertEqual(0, trainer._workers(TINY, 50, cuda))
-            self.assertEqual(0, trainer._workers(TINY, 5000, torch.device("cpu")))
+        for platform in ("win32", "linux"):
+            with mock.patch.object(trainer.sys, "platform", platform),                     mock.patch.object(trainer.os, "cpu_count", return_value=16):
+                self.assertEqual(4, trainer._workers(TINY, 5000, cuda))
+                self.assertEqual(3, trainer._workers(DetectorPlan(workers=3), 5000, cuda))
+                self.assertEqual(0, trainer._workers(TINY, 50, cuda))
+                self.assertEqual(0, trainer._workers(TINY, 5000, torch.device("cpu")))
 
 
 class TrainingFaceTests(unittest.TestCase):

@@ -567,9 +567,11 @@ class Located:
     def scene(self, target: int, robot_config: "RobotConfig") -> Scene:
         """Object ``target`` as the :class:`Scene` its grasps are planned on, every other object an obstacle.
 
-            best = located.scene(0, tree.robot).grasps().best
-            if best is not None:
-                robot.pick(best.pose(), best.grip_width_mm, keep_out=located.keep_out(0))
+        ```python
+        best = located.scene(0, tree.robot).grasps().best
+        if best is not None:
+            robot.pick(best.pose(), best.grip_width_mm, keep_out=located.keep_out(0))
+        ```
 
         Args:
             target (int): The index into :attr:`objects`; 0 is a look around's part.
@@ -651,9 +653,11 @@ class Located:
                  air_mm: float = SET_DOWN_AIR_MM) -> SetDown:
         """Where the tool sets the part it grasped down on object ``target``: :meth:`SetDown.onto`.
 
-            set_down = onto.set_down(0, grasp=best.pose(), part_bottom_mm=scene.part_bottom_mm)
-            if set_down.pose is not None:
-                robot.place(set_down.pose, keep_out=onto.keep_out(0))
+        ```python
+        set_down = onto.set_down(0, grasp=best.pose(), part_bottom_mm=scene.part_bottom_mm)
+        if set_down.pose is not None:
+            robot.place(set_down.pose, keep_out=onto.keep_out(0))
+        ```
 
         Args:
             target (int): The index into :attr:`objects` of what the part goes on.
@@ -896,8 +900,8 @@ class Locator:
                 ``perceived.fresh_frame_attempts`` (default: UNSET).
             tool_frame (Maybe[Any]): The cell's ``robot.gripper.tool_frame``; a wrist camera's calibration must have
                 been solved against it. Required on the wrist, ignored for a fixed camera (default: UNSET).
-            view (Any): A ``LiveView``: the camera gets a window there, and every ``Located`` is pinned on it (default:
-                None).
+            view (Any): A ``LiveView``: the camera gets a window there, and every ``Located`` is pinned on it
+                (default: None).
 
         Returns:
             Locator: The locator; the view gets the camera once every refusal passed.
@@ -949,8 +953,8 @@ class Locator:
             camera (Any): An open camera owner (:class:`Camera`).
             tool_pose (Maybe[Callable[[], Pose]]): The arm's ``get_tcp_pose``, read at each shutter to place a wrist
                 camera's frame; required for a camera on the wrist, ignored for a fixed one (default: UNSET).
-            view (Any): A ``LiveView``: the camera gets a window there, and every ``Located`` is pinned on it (default:
-                None).
+            view (Any): A ``LiveView``: the camera gets a window there, and every ``Located`` is pinned on it
+                (default: None).
 
         Returns:
             Locator: The locator; the detector and the segmenter loaded.
@@ -968,16 +972,18 @@ class Locator:
         """A locator for one camera of the cell a loaded tree describes, with the perception stack its models section
         builds.
 
-            with Camera.from_tree(tree) as camera:
-                locator = Locator.from_tree(tree, camera=camera, tool_pose=robot.arm.get_tcp_pose)
+        ```python
+        with Camera.from_tree(tree) as camera:
+            locator = Locator.from_tree(tree, camera=camera, tool_pose=robot.arm.get_tcp_pose)
+        ```
 
         Args:
             tree (Any): A loaded tree, ``load_tree()``.
             camera (Any): An open camera owner (:class:`Camera`).
             tool_pose (Maybe[Callable[[], Pose]]): The arm's ``get_tcp_pose``, read at each shutter to place a wrist
                 camera's frame; required for a camera on the wrist, ignored for a fixed one (default: UNSET).
-            view (Any): A ``LiveView``: the camera gets a window there, and every ``Located`` is pinned on it (default:
-                None).
+            view (Any): A ``LiveView``: the camera gets a window there, and every ``Located`` is pinned on it
+                (default: None).
 
         Returns:
             Locator: The locator; the detector and the segmenter loaded.

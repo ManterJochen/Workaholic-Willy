@@ -3,25 +3,28 @@ model and its report.
 
     from willy import DetectorTraining
 
-    run = DetectorTraining.from_dataset(dataset="D:/data/my_parts", tier="full", out_dir="models/rtdetr/my_parts")
+    run = DetectorTraining.from_dataset(dataset="D:/data/my_parts", out_dir="models/rtdetr/my_parts", epochs=80)
     print(run.describe())        # what will run, before it costs anything
     print(run.probe())           # what the dataset holds, and what was left out of it
     report = run.train()         # the best epoch lands in out_dir
     print(report)
-    run.write_report(report)     # report.json beside the model
+    run.write_report(report)     # report.json, curves.png and report.html beside the model
 
 The shape mirrors ``GeneratorTraining``: keyword-only factories, one verb, a frozen typed report, and side effects as
-separate methods. The dataset is a COCO or YOLO folder (``datasets.py``); the plan is recipe ``v1`` at a tier, with
-anything chosen in :class:`DetectorPlanOverrides` winning (``plan.py``). The model in ``out_dir`` loads in
-``RtDetrObjectDetector`` and through ``models.detector: "rtdetr"`` with ``models.rtdetr.model_path``.
+separate methods. The dataset is a COCO or YOLO folder (``datasets.py``), all of its classes or those ``classes=``
+names; the plan is recipe ``v1`` at a tier, with ``epochs=``, ``batch=``, ``image_size=`` and anything else chosen in
+:class:`DetectorPlanOverrides` winning (``plan.py``). The model in ``out_dir`` loads in ``RtDetrObjectDetector`` and
+through ``models.detector: "rtdetr"`` with ``models.rtdetr.model_path``.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from src.contracts.options import merged_overrides
 from src.models.detection.closed_set.training.datasets import (
     DetectionDataset,
     dataset_stats,
@@ -112,6 +115,8 @@ class DetectorTrainingContext:
     format: str = "auto"
     device: str | None = None
     resume: bool = False
+    #: The classes to train, by name; ``None`` is every class of the dataset.
+    classes: tuple[str, ...] | None = None
 
 
 @dataclass
@@ -119,11 +124,16 @@ class DetectorTraining:
     """Train the closed-set RT-DETR detector on your own labelled images, then use it through
     ``ObjectDetector.from_weights(out_dir)``.
 
-        run = DetectorTraining.from_dataset(dataset="data/chess_pieces", out_dir="models/chess")
-        print(run.probe())          # what the dataset holds, per class and split; trains nothing
-        report = run.train()        # the best epoch in models/chess, the last in models/chess/last
-        print(report)
-        run.write_report(report)    # report.json beside the model
+    ```python
+    run = DetectorTraining.from_dataset(dataset="data/chess_pieces", out_dir="models/chess", epochs=80)
+    print(run.probe())          # what the dataset holds, per class and split; trains nothing
+    report = run.train()        # the best epoch in models/chess, the last in models/chess/last
+    print(report)
+    run.write_report(report)    # report.json, curves.png and report.html beside the model
+    ```
+
+    While it trains, a terminal shows a bar over each epoch's batches and the validation, and a line per epoch with
+    the best mAP so far and the time left; ``curves.png`` in ``out_dir`` is drawn again after every epoch.
 
     Build it with :meth:`from_dataset` (a recipe and a tier) or :meth:`from_plan`, then call :meth:`train` once.
 
@@ -143,7 +153,8 @@ class DetectorTraining:
     # ------------------------------------------------------------------ construction
     @classmethod
     def from_plan(cls, *, dataset: str | Path, plan: DetectorPlan | None = None, out_dir: str | Path | None = None,
-                  format: str = "auto", device: str | None = None, resume: bool = False) -> "DetectorTraining":
+                  format: str = "auto", device: str | None = None, resume: bool = False,
+                  classes: Sequence[str] | None = None) -> "DetectorTraining":
         """A run from a plan you built yourself, with no recipe resolution.
 
         Args:
@@ -156,23 +167,33 @@ class DetectorTraining:
             device (str | None): ``"cuda"``, ``"cpu"`` or ``"mps"``; ``None`` is ``WILLY_DEVICE`` or the first of CUDA,
                 MPS and the CPU (default: None).
             resume (bool): Go on from the last epoch in ``out_dir``, on the same dataset (default: False).
+            classes (Sequence[str] | None): The classes to train, by name, in the dataset's order; the objects of the
+                others stay in the images as background. ``None`` is every class (default: None).
 
         Returns:
-            DetectorTraining: The run; nothing is read or trained yet.
+            DetectorTraining: The run; nothing is read or trained yet. A class name the dataset does not have is
+                refused when it is read, by :meth:`probe` or :meth:`train`.
         """
         folder = Path(dataset)
         if not folder.is_dir():
             raise FileNotFoundError(f"no dataset folder at {folder}")
+        chosen = None if classes is None else tuple([classes] if isinstance(classes, str) else classes)
         return cls(plan=(plan or DetectorPlan()).validated(),
                    context=DetectorTrainingContext(dataset=folder, out_dir=Path(out_dir) if out_dir else None,
-                                                   format=format, device=device, resume=resume))
+                                                   format=format, device=device, resume=resume, classes=chosen))
 
     @classmethod
     def from_dataset(cls, *, dataset: str | Path, recipe: str | None = "v1", tier: str | None = "full",
-                     overrides: DetectorPlanOverrides | None = None, base: DetectorPlan | None = None,
-                     out_dir: str | Path | None = None, format: str = "auto", device: str | None = None,
-                     resume: bool = False) -> "DetectorTraining":
+                     epochs: int | None = None, batch: int | None = None, image_size: int | None = None,
+                     classes: Sequence[str] | None = None, overrides: DetectorPlanOverrides | None = None,
+                     base: DetectorPlan | None = None, out_dir: str | Path | None = None, format: str = "auto",
+                     device: str | None = None, resume: bool = False) -> "DetectorTraining":
         """A run from a dataset folder, a recipe and a tier, plus what you chose explicitly.
+
+        ```python
+        DetectorTraining.from_dataset(dataset="data", out_dir="models/chess", epochs=80, batch=8,
+                                      image_size=640, classes=["white pawn", "black pawn"])
+        ```
 
         Args:
             dataset (str | Path): The dataset folder, COCO or YOLO; one without a validation split gives
@@ -181,8 +202,18 @@ class DetectorTraining:
             tier (str | None): ``"full"``, up to 50 epochs, stopped after 15 without a better validation mAP, the best
                 kept; or ``"smoke"``, 2 epochs on 64 images, which proves the chain and says nothing about quality
                 (default: "full").
-            overrides (DetectorPlanOverrides | None): The settings you choose explicitly; they outrank the recipe and
-                the tier (default: None).
+            epochs (int | None): The most epochs; the run still stops after ``patience`` epochs without a better
+                validation mAP. ``None`` is the tier's (default: None).
+            batch (int | None): Images per batch; fewer where the GPU runs out of memory. ``None`` is 8
+                (default: None).
+            image_size (int | None): The training size in pixels, a multiple of 32, and the multi-scale sizes scaled
+                with it; larger for small parts far from the camera, at a quadratic cost. ``None`` is the recipe's, 640
+                (default: None).
+            classes (Sequence[str] | None): The classes to train, by name, in the dataset's order; the objects of the
+                others stay in the images as background. ``None`` is every class (default: None).
+            overrides (DetectorPlanOverrides | None): Every other setting you choose explicitly, the learning rate
+                among them; they outrank the recipe and the tier. A setting given here and as an argument is refused
+                (default: None).
             base (DetectorPlan | None): The plan the recipe, the tier and the overrides are laid onto; ``None`` the
                 defaults (default: None).
             out_dir (str | Path | None): Where the model goes: the best epoch at the top, the last in ``out_dir/last``;
@@ -197,12 +228,14 @@ class DetectorTraining:
             DetectorTraining: The run; nothing is read or trained until :meth:`probe` or :meth:`train`.
 
         Raises:
-            ValueError: An unknown recipe or tier.
+            ValueError: An unknown recipe or tier, a setting no run can take, or one given twice.
             FileNotFoundError: The dataset folder is not there.
         """
+        overrides = merged_overrides(overrides, DetectorPlanOverrides, epochs=epochs, batch=batch,
+                                     image_size=image_size)
         plan, notes = build_plan(recipe=recipe, tier=tier, overrides=overrides, base=base)
         built = cls.from_plan(dataset=dataset, plan=plan, out_dir=out_dir, format=format, device=device,
-                              resume=resume)
+                              resume=resume, classes=classes)
         built.recipe_notes = notes
         return built
 
@@ -244,7 +277,7 @@ class DetectorTraining:
         """
         if self._dataset is None:
             self._dataset = load_dataset(self.context.dataset, format=self.context.format,
-                                         val_fraction=self.plan.val_fraction)
+                                         val_fraction=self.plan.val_fraction, classes=self.context.classes)
         return self._dataset
 
     def describe(self) -> str:
@@ -255,9 +288,12 @@ class DetectorTraining:
         """
         plan = self.plan
         stop = plan.stop_augment_epoch()
+        chosen = self.context.classes
         lines = [
             f"  dataset    {self.context.dataset} ({self.context.format})",
-            f"  model      {plan.base_model} at {plan.image_size} px, the head rebuilt for the dataset's classes",
+            f"  model      {plan.base_model} at {plan.image_size} px, the head rebuilt for "
+            + (f"{len(chosen)} chosen class(es): {', '.join(chosen)}; the other objects stay background"
+               if chosen is not None else "the dataset's classes"),
             f"  schedule   up to {plan.epochs} epoch(s), batch {plan.batch}"
             + (f" x {plan.accumulate}" if plan.accumulate > 1 else "")
             + f", lr {plan.learning_rate:g} (backbone x{plan.backbone_lr_scale:g}), warm-up then cosine",
@@ -266,7 +302,8 @@ class DetectorTraining:
             + ("; averaged weights (EMA)" if plan.ema else ""),
             "  augment    " + (", ".join(part for part in (
                 "colour, zoom-out, IoU crop" if plan.augment else "", "flip" if plan.augment else "",
-                "multi-scale 480-800 px" if plan.multiscale else "") if part)
+                f"multi-scale {min(plan.multiscale_sizes())}-{max(plan.multiscale_sizes())} px"
+                if plan.multiscale else "") if part)
                 or "none") + (f", off from epoch {stop + 1}" if (plan.augment or plan.multiscale)
                               and stop < plan.epochs else ""),
             f"  out        {self.context.out_dir or 'NOT SET: train() refuses without out_dir'}"
@@ -310,16 +347,20 @@ class DetectorTraining:
         return DetectorTrainingReport.from_trainer(raw, self.plan)
 
     def write_report(self, report: DetectorTrainingReport, path: str | Path | None = None) -> Path:
-        """Write ``report.json`` beside the model.
+        """Write ``report.json`` beside the model, and beside it ``report.html``: the curves, AP per class and every
+        epoch, one page that opens in any browser. ``curves.png`` is drawn once more from every epoch.
 
         Args:
             report (DetectorTrainingReport): What :meth:`train` returned.
-            path (str | Path | None): Where to write it; ``None`` is ``out_dir/report.json`` (default: None).
+            path (str | Path | None): Where to write ``report.json``; ``None`` is ``out_dir/report.json``; the page
+                goes into the same folder (default: None).
 
         Returns:
-            Path: Where it went.
+            Path: Where ``report.json`` went.
         """
         import json  # noqa: PLC0415
+
+        from src.models.detection.closed_set.training.report import write_curves, write_html  # noqa: PLC0415
 
         if path is not None:
             target = Path(path)
@@ -329,4 +370,13 @@ class DetectorTraining:
             raise ValueError("no out_dir was given, so there is nowhere to write report.json; pass an explicit path")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(report.as_dict(), indent=2, sort_keys=True, default=str), encoding="utf-8")
+        curves = Path(str(report.artifact.get("curves") or target.parent / "curves.png"))
+        name = Path(str(report.artifact.get("model_dir") or target.parent)).name
+        if report.epochs:
+            try:
+                write_curves([row.raw for row in report.epochs], curves, classes=tuple(report.raw.get("classes", ())),
+                             best_epoch=report.best_epoch, title=name)
+            except Exception:  # noqa: BLE001 (the page still carries its tables)
+                pass
+        write_html(report, target.with_name("report.html"), curves=curves if curves.is_file() else None, title=name)
         return target

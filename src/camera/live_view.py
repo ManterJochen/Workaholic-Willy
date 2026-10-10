@@ -400,8 +400,10 @@ class LiveView(WindowThread):
         """One window per camera, live at a few frames a second, all drawn by one thread. Display only: it reads each
         camera through ``Camera.peek()``, so what the robot measures is unchanged.
 
-            with LiveView(cell.cameras) as view:
-                ...
+        ```python
+        with LiveView(cell.cameras) as view:
+            ...
+        ```
 
         Args:
             cameras (Iterable[Any]): The camera owners to watch, each with ``rig_id`` and ``peek()`` (default: ()).

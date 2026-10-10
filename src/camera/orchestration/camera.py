@@ -211,8 +211,10 @@ class Camera:
     Build it with :meth:`from_tree` (the usual way), :meth:`from_config` or :meth:`from_rig`; building touches no
     device. A ``with`` block opens and releases it:
 
-        with Camera.from_tree(load_tree()) as camera:
-            frame = camera.grab()          # colour (BGR uint8) and depth (uint16 millimetres)
+    ```python
+    with Camera.from_tree(load_tree()) as camera:
+        frame = camera.grab()          # colour (BGR uint8) and depth (uint16 millimetres)
+    ```
 
     :meth:`open` claims the device in the process registry, so two owners never share one, and :meth:`release` gives
     both back and never raises. Every grab and every lens read goes through the rig's lock.

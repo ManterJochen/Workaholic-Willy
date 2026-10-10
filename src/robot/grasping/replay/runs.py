@@ -173,7 +173,9 @@ class KpiRollup:
 class RecordLog:
     """A log of attempt records, from a cell, a simulation run or a replay pack, rolled up into KPIs.
 
-        print(RecordLog.from_jsonl("picks.jsonl").kpis())
+    ```python
+    print(RecordLog.from_jsonl("picks.jsonl").kpis())
+    ```
 
     Attributes:
         path (Path | None): The JSONL file; ``None`` for records in memory.

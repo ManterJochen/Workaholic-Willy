@@ -212,8 +212,8 @@ class Detections(Sequence[DetectedObject]):
         threshold (float | None): The score every object cleared; ``None`` where the model gives no score (a VLM).
         image_hw (tuple[int, int]): The image's height and width in pixels.
         segmented (bool): Whether a mask was asked for each object (default: False).
-        backend (str): Which model answered, one of :data:`BACKENDS`; a router's call names the route it took (default:
-            "closed_set").
+        backend (str): Which model answered, one of :data:`BACKENDS`; a router's call names the route it took
+            (default: "closed_set").
         prompt (str | None): The text the model read: the prompt, or the class list (``"red cube | blue bin"``);
             ``None`` for a closed-set detector, which reads none (default: None).
 

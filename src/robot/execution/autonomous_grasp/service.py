@@ -488,8 +488,8 @@ class AutonomousGraspService:
             arm (RobotArm): The arm driver the picks move.
             calculator (GraspCalculator): The grasp generator, as ``build_calculator`` builds it.
             perception (PerceptionSource): Where frames come from and what grounds them: the cell's camera source.
-            mode (GraspMode | str | None): The locked behaviour profile every pick applies unless a call overrides it:
-                ``"easy"``, ``"auto"`` or ``"dense_clutter"``; ``None`` is ``auto`` (default: None).
+            mode (GraspMode | str | None): The locked behaviour profile every pick applies unless a call overrides
+                it: ``"easy"``, ``"auto"`` or ``"dense_clutter"``; ``None`` is ``auto`` (default: None).
             gripper (Gripper | None): The hand on it; ``None`` for an arm-only cell (default: None).
             max_attempts (int): How many attempts one pick may make (default: 5).
             standoff_mm (float): How far back along the approach a pick's planned move stops before its line in,
@@ -501,8 +501,8 @@ class AutonomousGraspService:
                 drives from it, with every guard (default: UNSET).
             frame_resolver (FrameResolver | None): Places each frame in BASE; given one, the calculator gets a per-frame
                 camera-to-base transform and a camera-frame grasp is refused before motion (default: None).
-            decision_policy (DecisionPolicy | None): The decision layer's policy, where the cell runs one (default:
-                None).
+            decision_policy (DecisionPolicy | None): The decision layer's policy, where the cell runs one
+                (default: None).
             decision_engine (DecisionEngine | None): The decision layer's engine (default: None).
             record_log_path (str | Path | None): Append one attempt record per pick to this JSONL file; ``None`` logs
                 nothing (default: None).
@@ -644,10 +644,10 @@ class AutonomousGraspService:
                 ``grasping`` block: autonomous grasping is opted into, never a schema default.
             calculator (GraspCalculator): The grasp generator, as ``build_calculator`` builds it.
             perception (PerceptionSource): Where frames come from and what grounds them: the cell's camera source.
-            mode (GraspMode | str | None): The locked behaviour profile every pick applies unless a call overrides it:
-                ``"easy"``, ``"auto"`` or ``"dense_clutter"``; ``None`` is ``auto`` (default: None).
-            max_attempts (Maybe[int]): How many attempts one pick may make; unset is ``grasping.max_attempts`` (default:
-                UNSET).
+            mode (GraspMode | str | None): The locked behaviour profile every pick applies unless a call overrides
+                it: ``"easy"``, ``"auto"`` or ``"dense_clutter"``; ``None`` is ``auto`` (default: None).
+            max_attempts (Maybe[int]): How many attempts one pick may make; unset is ``grasping.max_attempts``
+                (default: UNSET).
             standoff_mm (float): How far back along the approach a pick's planned move stops before its line in,
                 millimetres (default: 80.0).
             retreat_mm (float): How far a pick lifts after it closed, millimetres (default: 100.0).
@@ -657,8 +657,8 @@ class AutonomousGraspService:
                 drives from it, with every guard (default: UNSET).
             frame_resolver (FrameResolver | None): Places each frame in BASE; given one, the calculator gets a per-frame
                 camera-to-base transform and a camera-frame grasp is refused before motion (default: None).
-            decision_policy (DecisionPolicy | None): The decision layer's policy, where the cell runs one (default:
-                None).
+            decision_policy (DecisionPolicy | None): The decision layer's policy, where the cell runs one
+                (default: None).
             decision_engine (DecisionEngine | None): The decision layer's engine (default: None).
             arm (RobotArm | None): A live arm handle config cannot describe (the Isaac arm); ``None`` builds the one the
                 section names (default: None).
@@ -666,10 +666,10 @@ class AutonomousGraspService:
             multi_camera_perception (MultiCameraPerceptionSource | None): Every camera's source, for a cell with several
                 (default: None).
             primary_camera_id (str | None): The rig id of the camera grasps are synthesised in (default: None).
-            camera_calculators (dict[str, Any] | None): A grasp calculator per rig id, for several cameras (default:
-                None).
-            camera (Maybe[CameraConfig]): The cell's camera section, read for the push inputs and the looks (default:
-                UNSET).
+            camera_calculators (dict[str, Any] | None): A grasp calculator per rig id, for several cameras
+                (default: None).
+            camera (Maybe[CameraConfig]): The cell's camera section, read for the push inputs and the looks
+                (default: UNSET).
 
         Returns:
             AutonomousGraspService: The service; ``effective_config`` the section's snapshot, so the config-driven
@@ -902,8 +902,8 @@ class AutonomousGraspService:
             both_faces (bool): Grip only once both jaw contact faces of the chosen grasp were seen (the switch for
                 safety-critical processes); a part no view showed both of ends ``NO_VALID_GRASP``. For this pick alone
                 (default: False).
-            multi_view (bool): ``False`` is "Multi-View aus": the first look only, and no generated view (default:
-                True).
+            multi_view (bool): ``False`` is "Multi-View aus": the first look only, and no generated view
+                (default: True).
             follow (KeptScene | None): The parts a task's last pick kept: the first look finds them again with SAM2 on
                 their boxes and no detector where nothing changed, and is grounded as before where anything did
                 (default: None).
@@ -1294,8 +1294,8 @@ class AutonomousGraspService:
         and whatever waits is written before the process ends.
 
         Args:
-            on (bool): ``True`` writes in the background, ``False`` before :meth:`pick` returns, as before (default:
-                True).
+            on (bool): ``True`` writes in the background, ``False`` before :meth:`pick` returns, as before
+                (default: True).
         """
         self._records_in_the_background = bool(on)
 

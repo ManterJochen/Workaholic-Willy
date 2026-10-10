@@ -203,8 +203,8 @@ class HandReport:
         reported_width_mm (float | None): The width the hand reported, millimetres; ``None`` where it reports none
             (default: None).
         width_measured (bool): Whether the reported width is a measurement (default: False).
-        hold (HoldEvidence): What the hand measured about a hold: ``HELD``, ``EMPTY`` or ``UNMEASURED`` (default:
-            UNMEASURED).
+        hold (HoldEvidence): What the hand measured about a hold: ``HELD``, ``EMPTY`` or ``UNMEASURED``
+            (default: UNMEASURED).
         payload (PayloadState): What the verb did to the carried part model: ``ATTACHED``, ``FILTER_ONLY``,
             ``NOT_MODELLED``, ``DETACHED``, ``DETACH_FAILED`` or ``UNCHANGED`` (default: UNCHANGED).
         payload_reason (str): Why the part is not modelled, where it is not (default: "").
@@ -647,10 +647,10 @@ class HandlingReport:
         poses (tuple[Pose, ...]): Every pose a motion of the verb went to, in order (default: ()).
         statuses (tuple[MotionStatus, ...]): Each motion's status, in the same order (default: ()).
         camera_worlds (tuple[CameraWorldStamp, ...]): What camera world stood behind each motion (default: ()).
-        line (LineReading | None): What the arm keeps of the line motions; ``None`` where there was none (default:
-            None).
-        keep_out_held (bool): Whether the ``keep_out`` was held out of the arm's world through the motions (default:
-            False).
+        line (LineReading | None): What the arm keeps of the line motions; ``None`` where there was none
+            (default: None).
+        keep_out_held (bool): Whether the ``keep_out`` was held out of the arm's world through the motions
+            (default: False).
         hand (HandReport | None): The hand verb's report; ``None`` where the hand was not reached (default: None).
         message (str): Why it ended where it did not succeed (default: "").
         another_candidate_may_follow (bool): Whether a program may try another candidate after this pick: true only when

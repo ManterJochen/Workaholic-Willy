@@ -271,11 +271,13 @@ class _Turn(StrEnum):
 class PushToTalkSource:
     """The microphone, serving audio only while a talk switch is held: what a push-to-talk turn is.
 
-        button = TalkButton.from_parts()
-        with PushToTalkSource.from_config(config=load_speech_section(), switch=button) as microphone:
-            button.press()               # a key, a foot switch, or the console's talk route
-            ...                          # the person speaks; button.release() ends the turn
-            turn = microphone.record(timeout_s=1.0)
+    ```python
+    button = TalkButton.from_parts()
+    with PushToTalkSource.from_config(config=load_speech_section(), switch=button) as microphone:
+        button.press()               # a key, a foot switch, or the console's talk route
+        ...                          # the person speaks; button.release() ends the turn
+        turn = microphone.record(timeout_s=1.0)
+    ```
 
     Build it with :meth:`from_config` or :meth:`from_parts`; ``start()``/``stop()`` (or ``with``) open and close the
     microphone, and the verb is :meth:`record`. One thread reads it.
@@ -310,8 +312,8 @@ class PushToTalkSource:
             config (SpeechToTextConfig): The speech section, ``load_speech_section()``.
             switch (Maybe[TalkSwitch]): The switch; unset is ``shared_talk_button()``, the one the console's talk route
                 presses (default: UNSET).
-            device (Maybe[int | str]): The input device, by index or name; unset is the host's default input (default:
-                UNSET).
+            device (Maybe[int | str]): The input device, by index or name; unset is the host's default input
+                (default: UNSET).
 
         Returns:
             PushToTalkSource: The source; open it with ``with``, which raises ``MicrophoneUnavailable`` where the

@@ -143,15 +143,19 @@ python -m src.models.detection.closed_set.train eval --model-dir assets/models/r
   gradients clipped at 0.1, an average of the weights (EMA), colour, zoom-out, IoU-crop, flip and multi-scale
   until the last tenth of the epochs, COCO mAP@0.5:0.95 after every epoch, and a stop after 15 epochs without a
   better one. `--tier smoke` proves the chain in a minute; `--tier full` (50 epochs at most) is the model to deploy.
+  `--classes "white pawn" "black pawn"` trains some of the dataset's classes only, the objects of the others left
+  in the images as background; `inspect --classes` shows what that leaves.
 - **What `--output-dir` holds:** the best epoch (wire it in with `models.detector: "rtdetr"`,
   `models.rtdetr.model_path: "${WILLY_PROJECT_ROOT}/assets/models/rtdetr/v1"` and `models.rtdetr.local: true`; a
   relative path in the tree is read against the config folder, [`src/config/paths.py`](../config/paths.py)),
-  `last/`, `checkpoint_last.pt` for `--resume`, `results.csv`, `manifest.json` and `report.json`.
-- **Speed, measured** on the development RTX 5080 with every augmentation on: about **16 training images per
-  second** at 640 px and 4.2 GB.
+  `last/`, `checkpoint_last.pt` for `--resume`, `results.csv`, `curves.png` (drawn again after every epoch),
+  `manifest.json`, `report.json` and `report.html`, the whole run on one page.
+- **Speed, measured** on the development RTX 5080 with every augmentation on, on 400 chess-piece photos of up to
+  12 megapixels (2026-10-10): about **20 training images per second**. An image is read at most 1333 px on its long
+  side at 640, its boxes scaled with it, and four loader processes read beside the step.
 - Exit codes: `0` ok, `2` bad arguments or no dataset, `3` training failed. `inspect` runs without the training
-  stack. On Windows the command line starts loader workers itself; a script of your own that wants them passes
-  `workers=` and guards its training with `if __name__ == "__main__":`.
+  stack. Loader processes start on Windows as anywhere, without running the training script again, so a script of
+  your own needs no `if __name__ == "__main__":` guard.
 
 ## Files
 

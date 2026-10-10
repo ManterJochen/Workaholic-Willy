@@ -22,8 +22,9 @@ with tempfile.TemporaryDirectory() as work:
         print(f"recipe {recipe or '-':3s} tier {tier or '-':6s} {plan.epochs:3d} epochs, {plan.run_folds} "
               f"of {plan.folds} folds, refit {plan.refit}, train units {plan.train_units}")
 
-    # An explicit value outranks both: this run trains longer than the tier and keeps the refit off.
-    training = GeneratorTraining.from_recipe(corpus=corpus, recipe="v1", tier="full",
-                                             overrides=PlanOverrides(epochs=48, refit=False))
+    # An explicit value outranks both: this run trains longer than the tier and keeps the refit off. The epochs and
+    # the batch are arguments; every other setting goes into PlanOverrides.
+    training = GeneratorTraining.from_recipe(corpus=corpus, recipe="v1", tier="full", epochs=48,
+                                             overrides=PlanOverrides(refit=False))
     print(training.describe())
     print("chosen by the caller over the recipe and tier:", training.recipe_notes["overridden"])

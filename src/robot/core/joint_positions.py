@@ -38,8 +38,10 @@ def _validate_joint_array(values: np.ndarray) -> np.ndarray:
 class JointPositions:
     """An immutable joint configuration, in radians, base to wrist.
 
-        LOOK = JointPositions.deg(-90.0, -110.0, -100.0, -60.0, 90.0, 0.0)   # as the pendant shows them
-        robot.move_joints(LOOK)
+    ```python
+    LOOK = JointPositions.deg(-90.0, -110.0, -100.0, -60.0, 90.0, 0.0)   # as the pendant shows them
+    robot.move_joints(LOOK)
+    ```
 
     Construct from any 1-D iterable of floats; the array is copied, cast to ``float64``, validated and write-locked.
 

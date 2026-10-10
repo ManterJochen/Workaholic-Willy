@@ -15,7 +15,8 @@ Two formats, because they are what labelling tools export:
 Both end in a :class:`DetectionDataset`: the classes in a fixed order, the train and validation images with their
 boxes in pixels, how the validation images were chosen, and a fingerprint of the annotations. A dataset without its
 own validation split gives ``val_fraction`` of its images to one, chosen by a hash of each image's path, so the same
-images land in validation every time. Nothing here imports torch.
+images land in validation every time. ``classes=`` keeps only the classes it names, the objects of the others left in
+the images as background, and the same images still land in validation. Nothing here imports torch.
 """
 
 from __future__ import annotations
@@ -104,12 +105,16 @@ class DetectionDataset:
 # Entry point
 # --------------------------------------------------------------------------------------------------
 def load_dataset(root: str | Path, *, format: str = "auto", val_fraction: float = DEFAULT_VAL_FRACTION,
-                 split_seed: int = DEFAULT_SPLIT_SEED, require_boxes: bool = True) -> DetectionDataset:
+                 split_seed: int = DEFAULT_SPLIT_SEED, require_boxes: bool = True,
+                 classes: Sequence[str] | None = None) -> DetectionDataset:
     """Read a COCO or YOLO dataset folder.
 
-    ``format`` is ``"auto"``, ``"coco"`` or ``"yolo"``. Raises ``FileNotFoundError`` when the folder holds neither
-    format, and ``ValueError`` for an annotation file that cannot be read or, with ``require_boxes``, a dataset with no
-    box at all (``inspect`` passes False, to show what was left out instead).
+    ``format`` is ``"auto"``, ``"coco"`` or ``"yolo"``. ``classes`` names the classes to keep, by name, as
+    Ultralytics' ``classes=`` does: they stay in the dataset's order, the boxes of every other class are left out,
+    and the objects under them stay in the images as background. Raises ``FileNotFoundError`` when the folder holds
+    neither format, and ``ValueError`` for an annotation file that cannot be read, a class name the dataset does not
+    have or, with ``require_boxes``, a dataset with no box at all (``inspect`` passes False, to show what was left out
+    instead).
     """
     folder = Path(root)
     if not folder.is_dir():
@@ -120,21 +125,66 @@ def load_dataset(root: str | Path, *, format: str = "auto", val_fraction: float 
         raise ValueError(f"val_fraction must be at least 0 and below 1, not {val_fraction}")
     chosen = format if format != "auto" else _detect_format(folder)
     if chosen == "coco":
-        classes, train, val, skipped, sources = _read_coco(folder)
+        classes_read, train, val, skipped, sources = _read_coco(folder)
     else:
-        classes, train, val, skipped, sources = _read_yolo(folder)
+        classes_read, train, val, skipped, sources = _read_yolo(folder)
+    if classes is None:
+        kept_classes = list(classes_read)
+    else:
+        kept_classes, train, val = _keep_classes(folder, classes_read, classes, train, val, skipped)
     if require_boxes and not any(image.boxes for image in (*train, *val)):
-        raise ValueError(f"the dataset at {folder} holds no box: nothing to train on"
+        raise ValueError(f"the dataset at {folder} holds no box"
+                         + (f" of the class(es) chosen ({', '.join(kept_classes)})" if classes is not None else "")
+                         + ": nothing to train on"
                          + (f" ({len(skipped)} item(s) left out, the first: {skipped[0]})" if skipped else ""))
     val_source = "declared" if val else "none"
     if not val and val_fraction > 0.0:
         kept, held = split_off(train, val_fraction, split_seed)
         train, val = list(kept), list(held)
         val_source = "split" if val else "none"
-    fingerprint = _fingerprint(chosen, classes, sources, (*train, *val))
-    return DetectionDataset(root=folder, format=chosen, classes=tuple(classes), train=tuple(train), val=tuple(val),
-                            val_source=val_source, val_fraction=val_fraction if val_source == "split" else 0.0,
-                            split_seed=split_seed, skipped=tuple(skipped), fingerprint=fingerprint)
+    fingerprint = _fingerprint(chosen, kept_classes, sources, (*train, *val))
+    return DetectionDataset(root=folder, format=chosen, classes=tuple(kept_classes), train=tuple(train),
+                            val=tuple(val), val_source=val_source,
+                            val_fraction=val_fraction if val_source == "split" else 0.0, split_seed=split_seed,
+                            skipped=tuple(skipped), fingerprint=fingerprint)
+
+
+def _keep_classes(folder: Path, every: Sequence[str], wanted: Sequence[str], train: Sequence[LabelledImage],
+                  val: Sequence[LabelledImage],
+                  skipped: list[str]) -> tuple[list[str], list[LabelledImage], list[LabelledImage]]:
+    """The classes named in ``wanted``, in the dataset's order, and every image with only their boxes, renumbered.
+
+    An image left without a box stays, as a background image. One line in ``skipped`` says what was left out.
+    """
+    names = list(dict.fromkeys(str(name) for name in ([wanted] if isinstance(wanted, str) else wanted)))
+    if not names:
+        raise ValueError("classes= names no class; leave it out to train every class of the dataset")
+    unknown = [name for name in names if name not in every]
+    if unknown:
+        raise ValueError(f"the dataset at {folder} has no class {', '.join(repr(name) for name in unknown)}; its "
+                         f"classes are {', '.join(repr(name) for name in every)}")
+    renumbered = {old: new for new, old in enumerate(i for i, name in enumerate(every) if name in names)}
+    left_out: Counter[int] = Counter()
+
+    def keep(images: Sequence[LabelledImage]) -> list[LabelledImage]:
+        out = []
+        for image in images:
+            boxes = []
+            for box in image.boxes:
+                if box.label in renumbered:
+                    boxes.append(LabelledBox(renumbered[box.label], box.xyxy))
+                else:
+                    left_out[box.label] += 1
+            out.append(LabelledImage(path=image.path, width=image.width, height=image.height, boxes=tuple(boxes),
+                                     key=image.key))
+        return out
+
+    kept_train, kept_val = keep(train), keep(val)
+    others = [name for i, name in enumerate(every) if i not in renumbered]
+    if others:
+        skipped.append(f"{sum(left_out.values())} box(es) of the {len(others)} class(es) not chosen "
+                       f"({', '.join(others)}): their objects stay in the images, as background")
+    return [every[i] for i in renumbered], kept_train, kept_val
 
 
 def split_off(images: Sequence[LabelledImage], fraction: float,

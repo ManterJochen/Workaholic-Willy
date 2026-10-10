@@ -381,8 +381,10 @@ def teach_poses(
 ) -> tuple[TaughtPose, ...]:
     """Teach joint poses by guiding a connected arm by hand, for one camera, until the person finishes.
 
-        with robot.connected():
-            poses = teach_poses(robot, tree=tree, camera=camera)    # Enter captures, a name per pose
+    ```python
+    with robot.connected():
+        poses = teach_poses(robot, tree=tree, camera=camera)    # Enter captures, a name per pose
+    ```
 
     Each pose is screened as it is taught, printed as a ``JointPositions.deg(...)`` line to paste (with its rig and
     mounting), and added to ``store``. Leaving the session holds the arm on every way out.

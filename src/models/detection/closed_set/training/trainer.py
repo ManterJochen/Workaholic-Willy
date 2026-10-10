@@ -12,12 +12,19 @@ A run, in order:
 - after every epoch, COCO mAP@0.5:0.95 on the validation split. A better epoch is exported at once, the last epoch is
   kept for resuming, and the run stops after ``patience`` epochs without a better mAP.
 
+Every image is read at most ``loading.working_side`` px on its long side, its boxes scaled with it. On a GPU loader
+processes read them beside the step, on Windows too, where they start without running the training script again
+(``loading.WorkerBatches``); where there are none, threads do (``loading.ThreadedBatches``). A person watching the terminal sees a bar over each epoch's batches and over the
+validation, and a line per epoch with the best so far and the time left; ``curves.png`` is drawn again after every
+epoch.
+
 What lands in ``out_dir``:
 
     config.json, model.safetensors, preprocessor_config.json   the best epoch: what RtDetrObjectDetector and a cell load
     last/                                                       the last epoch, the same three files
     checkpoint_last.pt                                          everything ``resume`` needs
     results.csv                                                 one row per epoch
+    curves.png                                                  the losses, the mAPs, the learning rate, AP per class
     manifest.json                                               dataset fingerprint, classes, plan, metrics, versions
 
 The dataset class and the collate function live at module level, so data-loader workers can be spawned on Windows.
@@ -46,9 +53,17 @@ from torch.utils.data import DataLoader, Dataset
 from src.models.constants import MODELS_LOG_DIR, RTDETR_TRAIN_LOG_FILE
 from src.models.detection.closed_set.training.augment import augment_sample
 from src.models.detection.closed_set.training.datasets import DetectionDataset, LabelledImage
+from src.models.detection.closed_set.training.loading import (
+    ThreadedBatches,
+    WorkerBatches,
+    decode_threads,
+    read_image,
+    working_side,
+)
 from src.models.detection.closed_set.training.metrics import DetectionScores, evaluate_detections
-from src.models.detection.closed_set.training.plan import MULTISCALE_SIZES, DetectorPlan
+from src.models.detection.closed_set.training.plan import DetectorPlan
 from src.utility.log_cfg import create_logger
+from src.utility.progress import progress_bar
 
 __all__ = ["MANIFEST_SCHEMA", "ModelEMA", "evaluate_checkpoint", "train_detector"]
 
@@ -57,6 +72,7 @@ _LOG = create_logger("RtDetrTrain", log_file=RTDETR_TRAIN_LOG_FILE, log_dir=MODE
 MANIFEST_SCHEMA = "willy.rtdetr.train_manifest/2"
 CHECKPOINT = "checkpoint_last.pt"
 RESULTS = "results.csv"
+CURVES = "curves.png"
 #: Detections kept per image for the mAP, and the score below which a query is not a detection at all.
 _EVAL_MAX_DETS = 100
 _EVAL_MIN_SCORE = 0.001
@@ -64,30 +80,48 @@ _EVAL_MIN_SCORE = 0.001
 _MAX_BAD_STEPS = 10
 
 ModelFactory = Callable[[DetectorPlan, Mapping[int, str]], tuple[Any, Any]]
+#: What a training or validation loop iterates: batches, ``len()`` of them per epoch.
+Batches = DataLoader | ThreadedBatches | WorkerBatches
 
 
 # --------------------------------------------------------------------------------------------------
 # Data
 # --------------------------------------------------------------------------------------------------
 class DetectionSamples(Dataset):
-    """Images and boxes turned into what RT-DETR trains on: pixel values and normalised ``cxcywh`` labels."""
+    """Images and boxes turned into what RT-DETR trains on: pixel values and normalised ``cxcywh`` labels.
 
-    def __init__(self, images: Sequence[LabelledImage], processor: Any, *, augment: bool) -> None:
+    Each image is read at most ``max_side`` px on its long side (``loading.read_image``), its boxes scaled with it.
+    ``decode`` reads and ``prepare`` augments and encodes, so the reading can run in threads apart from everything that
+    draws a random number (``loading.ThreadedBatches``); ``__getitem__`` is the two, one after the other.
+    """
+
+    def __init__(self, images: Sequence[LabelledImage], processor: Any, *, augment: bool,
+                 max_side: int = working_side(640)) -> None:
         self.images = tuple(images)
         self.processor = processor
         self.augment = augment
         self.strong = augment
+        self.max_side = int(max_side)
 
     def __len__(self) -> int:
         return len(self.images)
 
     def __getitem__(self, index: int) -> dict[str, Any]:
-        from PIL import Image  # noqa: PLC0415
+        return self.prepare(index, self.decode(index))
 
+    def decode(self, index: int) -> tuple[Any, tuple[int, int]]:
+        """The image of sample ``index``, read shrunk, and the size of its file."""
+        return read_image(self.images[index].path, max_side=self.max_side)
+
+    def prepare(self, index: int, decoded: tuple[Any, tuple[int, int]]) -> dict[str, Any]:
+        """Sample ``index`` from its decoded image: the boxes scaled to it, augmented, encoded."""
+        image, (file_width, file_height) = decoded
         entry = self.images[index]
-        with Image.open(entry.path) as raw:
-            image = raw.convert("RGB")
-        boxes = [list(box.xyxy) for box in entry.boxes]
+        sx, sy = image.width / float(file_width), image.height / float(file_height)
+        if sx == 1.0 and sy == 1.0:
+            boxes = [list(box.xyxy) for box in entry.boxes]
+        else:
+            boxes = [[x1 * sx, y1 * sy, x2 * sx, y2 * sy] for x1, y1, x2, y2 in (box.xyxy for box in entry.boxes)]
         labels = [box.label for box in entry.boxes]
         if self.augment:
             image, boxes, labels = augment_sample(image, boxes, labels, strong=self.strong)
@@ -110,25 +144,40 @@ def _seed_worker(_worker: int) -> None:
     random.seed(seed)
 
 
-def _loader(samples: DetectionSamples, plan: DetectorPlan, *, shuffle: bool, workers: int, seed: int) -> DataLoader:
+def _loader(samples: DetectionSamples, plan: DetectorPlan, *, shuffle: bool, workers: int, seed: int,
+            device: torch.device | None = None) -> Batches:
     """A loader whose workers live as long as it does: one per phase (strong, then plain) and one for validation.
 
     Workers copy the dataset when they start, so the strong/plain switch takes a new loader; keeping each one alive
-    otherwise saves the seconds a spawned worker spends importing torch, every epoch.
+    otherwise saves the seconds a spawned worker spends importing torch, every epoch. They start with ``__main__``
+    hidden (``WorkerBatches``), so a training script without a ``__main__`` guard is not run again in each of them.
+    On a GPU without worker processes the images are read in threads (``ThreadedBatches``): the same batches in the
+    same order. On a CPU the training step has no time to give, and the loader reads in the step's own thread.
     """
+    if _threaded(workers, device):
+        return ThreadedBatches(samples, batch=plan.batch, shuffle=shuffle, seed=seed, threads=decode_threads(),
+                               collate=collate, pin=device is not None and device.type == "cuda")
     generator = torch.Generator()
     generator.manual_seed(seed)
-    return DataLoader(samples, batch_size=plan.batch, shuffle=shuffle, num_workers=workers, collate_fn=collate,
-                      worker_init_fn=_seed_worker, generator=generator, pin_memory=torch.cuda.is_available(),
-                      persistent_workers=workers > 0)
+    loader = DataLoader(samples, batch_size=plan.batch, shuffle=shuffle, num_workers=workers, collate_fn=collate,
+                        worker_init_fn=_seed_worker, generator=generator, pin_memory=torch.cuda.is_available(),
+                        persistent_workers=workers > 0)
+    return WorkerBatches(loader) if workers > 0 else loader
+
+
+def _threaded(workers: int, device: torch.device | None) -> bool:
+    """Whether the images are read in threads: on a GPU, where no loader process reads them."""
+    return workers == 0 and device is not None and device.type in ("cuda", "mps")
 
 
 def _workers(plan: DetectorPlan, images: int, device: torch.device) -> int:
-    """Loader processes. Never chosen on Windows: a spawned worker re-runs a script that has no ``__main__`` guard, so
-    there it takes an explicit ``workers`` (the command line, which is guarded, passes one)."""
+    """Loader processes: up to four on a GPU, on Windows as anywhere, since they start without running the training
+    script again (``WorkerBatches``). Four kept the owner's RTX 5080 busy (28.9 images/s against 20.7 read by threads,
+    2026-10-10); none on a CPU, whose training step has no time to give, or for under 200 images, too few to pay for
+    their start."""
     if plan.workers is not None:
         return plan.workers
-    if device.type != "cuda" or images < 200 or sys.platform == "win32":
+    if device.type != "cuda" or images < 200:
         return 0
     return max(0, min(4, (os.cpu_count() or 2) // 2))
 
@@ -159,16 +208,40 @@ def pretrained_factory(plan: DetectorPlan, id2label: Mapping[int, str]) -> tuple
     source, local = resolve_base_model(plan.base_model)
     kwargs = {"local_files_only": True} if local else {}
     try:
-        processor = AutoImageProcessor.from_pretrained(
-            source, do_resize=True, size={"height": plan.image_size, "width": plan.image_size}, **kwargs)
-        model = AutoModelForObjectDetection.from_pretrained(
-            source, id2label=dict(id2label), label2id={v: k for k, v in id2label.items()}, num_labels=len(id2label),
-            ignore_mismatched_sizes=True, **kwargs)
+        with _QuietHub():
+            processor = AutoImageProcessor.from_pretrained(
+                source, do_resize=True, size={"height": plan.image_size, "width": plan.image_size}, **kwargs)
+            # The classes come as id2label alone: num_labels beside it is checked against the base's 80 COCO classes
+            # before id2label replaces them, and warns.
+            model = AutoModelForObjectDetection.from_pretrained(
+                source, id2label=dict(id2label), label2id={v: k for k, v in id2label.items()},
+                ignore_mismatched_sizes=True, **kwargs)
     except (OSError, ValueError) as exc:
         raise ValueError(
             f"the base model {plan.base_model!r} could not be loaded ({exc}). Fetch it once with "
             f"`python scripts/model_weights/fetch.py rtdetr`, or pass base_model=<a local checkpoint folder>") from exc
+    _LOG.info("base model %s: its COCO class head replaced by a new one for the %d class(es) of the dataset, the rest "
+              "of the network keeps its trained weights", plan.base_model, len(id2label))
     return model, processor
+
+
+class _QuietHub:
+    """Transformers and the Hub at errors only while the base model loads: their load report lists the class head
+    rebuilt for the dataset's classes as a weight MISMATCH, which is the rebuild meant, and an unauthenticated download
+    warns on every run. A download's own progress bar stays."""
+
+    def __enter__(self) -> "_QuietHub":
+        from huggingface_hub.utils import logging as hub_logging  # noqa: PLC0415
+        from transformers.utils import logging as hf_logging  # noqa: PLC0415
+
+        self._levels = [(hf_logging, hf_logging.get_verbosity()), (hub_logging, hub_logging.get_verbosity())]
+        for module, _level in self._levels:
+            module.set_verbosity_error()
+        return self
+
+    def __exit__(self, *_exc: Any) -> None:
+        for module, level in self._levels:
+            module.set_verbosity(level)
 
 
 def param_groups(model: torch.nn.Module, plan: DetectorPlan) -> list[dict[str, Any]]:
@@ -261,27 +334,31 @@ def _to_device(labels: Sequence[Mapping[str, torch.Tensor]], device: torch.devic
 # Evaluation
 # --------------------------------------------------------------------------------------------------
 @torch.no_grad()
-def _evaluate(model: torch.nn.Module, processor: Any, loader: DataLoader, images: Sequence[LabelledImage],
-              classes: Sequence[str], device: torch.device, dtype: torch.dtype | None) -> tuple[DetectionScores, float]:
-    """mAP and the mean loss on the validation images, with the model as it stands (in practice the average)."""
+def _evaluate(model: torch.nn.Module, processor: Any, loader: Batches,
+              images: Sequence[LabelledImage], classes: Sequence[str], device: torch.device, dtype: torch.dtype | None,
+              *, desc: str = "validation") -> tuple[DetectionScores, float]:
+    """mAP and the mean loss on the validation images, with the model as it stands (in practice the average). Each
+    image's detections come back in its own pixels, whatever size it was read at."""
     model.eval()
     predictions: dict[int, list[tuple[int, float, tuple[float, float, float, float]]]] = {}
     losses: list[float] = []
-    for batch in loader:
-        pixels = batch["pixel_values"].to(device, non_blocking=True)
-        with torch.autocast(device.type, dtype=dtype or torch.float32, enabled=dtype is not None):
-            outputs = model(pixel_values=pixels, labels=_to_device(batch["labels"], device))
-        if outputs.loss is not None and torch.isfinite(outputs.loss):
-            losses.append(float(outputs.loss))
-        outputs.logits = outputs.logits.float()
-        outputs.pred_boxes = outputs.pred_boxes.float()
-        sizes = [(images[i].height, images[i].width) for i in batch["index"]]
-        results = processor.post_process_object_detection(outputs, threshold=_EVAL_MIN_SCORE, target_sizes=sizes)
-        for i, result in zip(batch["index"], results):
-            order = torch.argsort(result["scores"], descending=True)[:_EVAL_MAX_DETS * max(1, len(classes))]
-            predictions[i] = [(int(result["labels"][j]), float(result["scores"][j]),
-                               tuple(float(v) for v in result["boxes"][j].tolist()))  # type: ignore[misc]
-                              for j in order.tolist()]
+    with progress_bar(len(loader), desc=desc, unit="batch") as bar:
+        for batch in loader:
+            pixels = batch["pixel_values"].to(device, non_blocking=True)
+            with torch.autocast(device.type, dtype=dtype or torch.float32, enabled=dtype is not None):
+                outputs = model(pixel_values=pixels, labels=_to_device(batch["labels"], device))
+            if outputs.loss is not None and torch.isfinite(outputs.loss):
+                losses.append(float(outputs.loss))
+            outputs.logits = outputs.logits.float()
+            outputs.pred_boxes = outputs.pred_boxes.float()
+            sizes = [(images[i].height, images[i].width) for i in batch["index"]]
+            results = processor.post_process_object_detection(outputs, threshold=_EVAL_MIN_SCORE, target_sizes=sizes)
+            for i, result in zip(batch["index"], results):
+                order = torch.argsort(result["scores"], descending=True)[:_EVAL_MAX_DETS * max(1, len(classes))]
+                predictions[i] = [(int(result["labels"][j]), float(result["scores"][j]),
+                                   tuple(float(v) for v in result["boxes"][j].tolist()))  # type: ignore[misc]
+                                  for j in order.tolist()]
+            bar.update(1)
     ground_truth = [[(box.label, box.xyxy) for box in image.boxes] for image in images]
     scores = evaluate_detections(ground_truth, [predictions.get(i, []) for i in range(len(images))], classes,
                                  max_dets=_EVAL_MAX_DETS)
@@ -316,8 +393,9 @@ def train_detector(dataset: DetectionDataset, plan: DetectorPlan, *, out_dir: st
               "amp %s, device %s", plan.base_model, dataset.root, len(train_images), len(dataset.val),
               len(dataset.classes), plan.epochs, plan.batch, dtype or "off", dev)
 
-    train_samples = DetectionSamples(train_images, processor, augment=plan.augment)
-    val_samples = DetectionSamples(dataset.val, processor, augment=False)
+    side = working_side(plan.image_size)
+    train_samples = DetectionSamples(train_images, processor, augment=plan.augment, max_side=side)
+    val_samples = DetectionSamples(dataset.val, processor, augment=False, max_side=side)
     workers = _workers(plan, len(train_images), dev)
     steps_per_epoch = max(1, math.ceil(math.ceil(len(train_images) / plan.batch) / plan.accumulate))
     total_steps = steps_per_epoch * plan.epochs
@@ -362,8 +440,13 @@ def train_detector(dataset: DetectionDataset, plan: DetectorPlan, *, out_dir: st
     diverged = stopped_early = False
     images_seen = 0
     train_seconds = 0.0
-    loader: DataLoader | None = None
-    val_loader = _loader(val_samples, plan, shuffle=False, workers=workers, seed=plan.seed) if dataset.val else None
+    loader: Batches | None = None
+    scales = plan.multiscale_sizes()
+    val_loader = (_loader(val_samples, plan, shuffle=False, workers=workers, seed=plan.seed, device=dev)
+                  if dataset.val else None)
+    _LOG.info("images read at most %d px on their long side%s", side,
+              f", in {decode_threads()} thread(s) ahead of each step" if _threaded(workers, dev)
+              else (f", by {workers} loader process(es)" if workers else ""))
     if dev.type == "cuda":
         torch.cuda.reset_peak_memory_stats(dev)
     for epoch in range(start_epoch, plan.epochs):
@@ -371,43 +454,50 @@ def train_detector(dataset: DetectionDataset, plan: DetectorPlan, *, out_dir: st
         strong = epoch < stop_augment
         if loader is None or train_samples.strong != (plan.augment and strong):
             train_samples.strong = plan.augment and strong
-            loader = _loader(train_samples, plan, shuffle=True, workers=workers, seed=plan.seed + 1000 * (epoch + 1))
+            loader = _loader(train_samples, plan, shuffle=True, workers=workers, seed=plan.seed + 1000 * (epoch + 1),
+                             device=dev)
         model.train()
         loss_sum, loss_count = 0.0, 0
         optimizer.zero_grad(set_to_none=True)
         batches = len(loader)
-        for step, batch in enumerate(loader):
-            pixels = batch["pixel_values"].to(dev, non_blocking=True)
-            if plan.multiscale and strong:
-                size = scale_rng.choice(MULTISCALE_SIZES)
-                if size != pixels.shape[-1]:
-                    pixels = torch.nn.functional.interpolate(pixels, size=(size, size), mode="bilinear",
-                                                             align_corners=False)
-            with torch.autocast(dev.type, dtype=dtype or torch.float32, enabled=dtype is not None):
-                outputs = model(pixel_values=pixels, labels=_to_device(batch["labels"], dev))
-            loss = outputs.loss
-            if not torch.isfinite(loss):
-                bad_steps += 1
-                optimizer.zero_grad(set_to_none=True)
-                if bad_steps > _MAX_BAD_STEPS:
-                    diverged = True
-                    break
-                continue
-            bad_steps = 0
-            scaler.scale(loss / plan.accumulate).backward()
-            loss_sum += float(loss.detach())
-            loss_count += 1
-            images_seen += pixels.shape[0]
-            if (step + 1) % plan.accumulate == 0 or step + 1 == batches:
-                scaler.unscale_(optimizer)
-                if plan.clip_grad_norm > 0.0:
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), plan.clip_grad_norm)
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad(set_to_none=True)
-                scheduler.step()
-                if ema is not None:
-                    ema.update(model)
+        with progress_bar(batches, desc=f"epoch {epoch + 1}/{plan.epochs}", unit="batch") as bar:
+            for step, batch in enumerate(loader):
+                pixels = batch["pixel_values"].to(dev, non_blocking=True)
+                if plan.multiscale and strong:
+                    size = scale_rng.choice(scales)
+                    if size != pixels.shape[-1]:
+                        pixels = torch.nn.functional.interpolate(pixels, size=(size, size), mode="bilinear",
+                                                                 align_corners=False)
+                with torch.autocast(dev.type, dtype=dtype or torch.float32, enabled=dtype is not None):
+                    outputs = model(pixel_values=pixels, labels=_to_device(batch["labels"], dev))
+                loss = outputs.loss
+                if not torch.isfinite(loss):
+                    bad_steps += 1
+                    optimizer.zero_grad(set_to_none=True)
+                    if bad_steps > _MAX_BAD_STEPS:
+                        diverged = True
+                        break
+                    bar.update(1)
+                    continue
+                bad_steps = 0
+                scaler.scale(loss / plan.accumulate).backward()
+                loss_sum += float(loss.detach())
+                loss_count += 1
+                images_seen += pixels.shape[0]
+                bar.update(1)
+                if step % 10 == 0 or step + 1 == batches:
+                    speed = (step + 1) * plan.batch / max(1e-9, time.perf_counter() - epoch_started)
+                    bar.set_postfix_str(f"loss {loss_sum / loss_count:.3f}  {speed:.1f} img/s")
+                if (step + 1) % plan.accumulate == 0 or step + 1 == batches:
+                    scaler.unscale_(optimizer)
+                    if plan.clip_grad_norm > 0.0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), plan.clip_grad_norm)
+                    scaler.step(optimizer)
+                    scaler.update()
+                    optimizer.zero_grad(set_to_none=True)
+                    scheduler.step()
+                    if ema is not None:
+                        ema.update(model)
         train_seconds += time.perf_counter() - epoch_started
         if diverged:
             _LOG.error("epoch %d: the loss stayed non-finite for %d step(s) in a row; the run is stopped",
@@ -416,7 +506,8 @@ def train_detector(dataset: DetectionDataset, plan: DetectorPlan, *, out_dir: st
         judged = ema.module if ema is not None else model
         train_loss = loss_sum / max(1, loss_count)
         if val_loader is not None:
-            scores, val_loss = _evaluate(judged, processor, val_loader, dataset.val, dataset.classes, dev, dtype)
+            scores, val_loss = _evaluate(judged, processor, val_loader, dataset.val, dataset.classes, dev, dtype,
+                                         desc=f"validation {epoch + 1}/{plan.epochs}")
         else:
             scores, val_loss = None, float("nan")
         # The validation mAP decides; without one (no validation image, or no box in them) the training loss does.
@@ -445,9 +536,16 @@ def train_detector(dataset: DetectionDataset, plan: DetectorPlan, *, out_dir: st
         _append_results(out / RESULTS, row, dataset.classes, header=epoch == 0 or not (out / RESULTS).is_file())
         _save_checkpoint(checkpoint_path, epoch + 1, model, ema, optimizer, scheduler, scaler, best_fitness,
                          best_epoch, best_scores, rows, dataset, plan, scale_rng)
-        _LOG.info("epoch %d/%d: train loss %.4f, val loss %.4f, mAP %.4f (50: %.4f)%s, %.1f s", epoch + 1,
-                  plan.epochs, row["train_loss"], val_loss, row["map"], row["map50"], " best" if improved else "",
-                  row["seconds"])
+        _refresh_curves(out, rows, dataset.classes, best_epoch)
+        session = rows[resumed_from:]
+        left = plan.epochs - (epoch + 1)
+        eta = sum(float(r["seconds"]) for r in session) / max(1, len(session)) * left
+        best_map = best_scores.get("map") if isinstance(best_scores, dict) else None
+        _LOG.info("epoch %d/%d: train loss %.4f, val loss %.4f, mAP %.4f (50: %.4f)%s, %.1f s; best mAP %s (epoch %d)%s",
+                  epoch + 1, plan.epochs, row["train_loss"], val_loss, row["map"], row["map50"],
+                  ", a new best" if improved else "", row["seconds"],
+                  f"{best_map:.4f}" if isinstance(best_map, float) and not math.isnan(best_map) else "-", best_epoch,
+                  f"; at most {_duration(eta)} left" if left else "")
         if on_epoch is not None:
             on_epoch(dict(row))
         if plan.patience and dataset.val and epoch + 1 - best_epoch >= plan.patience:
@@ -508,6 +606,31 @@ def evaluate_checkpoint(model_dir: str | Path, dataset: DetectionDataset, *, bat
 # --------------------------------------------------------------------------------------------------
 # Files
 # --------------------------------------------------------------------------------------------------
+def _duration(seconds: float) -> str:
+    """``seconds`` as an operator reads a wait: ``42 s``, ``7 min``, ``3 h 05 min``."""
+    seconds = max(0.0, float(seconds))
+    if seconds < 90:
+        return f"{seconds:.0f} s"
+    if seconds < 5400:
+        return f"{seconds / 60:.0f} min"
+    hours, minutes = divmod(int(round(seconds / 60)), 60)
+    return f"{hours} h {minutes:02d} min"
+
+
+def _refresh_curves(out: Path, rows: Sequence[Mapping[str, Any]], classes: Sequence[str], best_epoch: int) -> None:
+    """Draw ``curves.png`` again from the epochs so far, so a run can be watched rather than waited on.
+
+    Never raises: this runs inside the training loop, and a missing plotting backend or a file a viewer holds open on
+    Windows must not cost a run its hours for a picture.
+    """
+    try:
+        from src.models.detection.closed_set.training.report import write_curves  # noqa: PLC0415
+
+        write_curves(rows, out / CURVES, classes=classes, best_epoch=best_epoch, title=out.name)
+    except Exception:  # noqa: BLE001 (a picture must never end a training run)
+        _LOG.debug("could not draw %s", out / CURVES, exc_info=True)
+
+
 def _export(model: Any, processor: Any, folder: Path) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(str(folder))
@@ -516,7 +639,7 @@ def _export(model: Any, processor: Any, folder: Path) -> None:
 
 def _artifact(out: Path, *, written: bool) -> dict[str, Any]:
     return {"written": written, "model_dir": str(out), "last_dir": str(out / "last"),
-            "checkpoint": str(out / CHECKPOINT), "results_csv": str(out / RESULTS),
+            "checkpoint": str(out / CHECKPOINT), "results_csv": str(out / RESULTS), "curves": str(out / CURVES),
             "manifest": str(out / "manifest.json")}
 
 

@@ -158,21 +158,21 @@ class AutonomousGraspReport:
         shadow_success_telemetry (ShadowSuccessTelemetry | None): The learned success model in shadow, where it ran
             (default: None).
         ranking_blend_telemetry (RankingBlendTelemetry | None): The ranking blend, where it ran (default: None).
-        uncertainty_rerank_telemetry (UncertaintyRerankTelemetry | None): The uncertainty rerank, where it ran (default:
-            None).
+        uncertainty_rerank_telemetry (UncertaintyRerankTelemetry | None): The uncertainty rerank, where it ran
+            (default: None).
         shadow_router_telemetry (ShadowRouterTelemetry | None): The shadow router, where it ran (default: None).
         recovery_actions (tuple[Mapping[str, Any], ...]): Each recovery step that ran, in order (default: ()).
         fault (Exception | None): A fault of the cell that ended the pick, raised nowhere (default: None).
-        looks (tuple[str, ...]): The looks the pick perceived from, in order; empty for a pick handed no look (default:
-            ()).
+        looks (tuple[str, ...]): The looks the pick perceived from, in order; empty for a pick handed no look
+            (default: ()).
         looks_fused (tuple[str, ...]): The looks fused into the cloud its grasp was ranked on, the ranking look first
             (default: ()).
-        jaw_faces_seen (tuple[bool, bool] | None): Whether each jaw contact face of the chosen grasp was seen (default:
-            None).
+        jaw_faces_seen (tuple[bool, bool] | None): Whether each jaw contact face of the chosen grasp was seen
+            (default: None).
         hand_eye_gap_mm (float | None): How far apart two looks measured the part, millimetres (default: None).
         both_faces (bool): Whether this pick asked for both jaw faces (default: False).
-        generated_view_deg (float | None): How far the one generated view turned about the part, degrees (default:
-            None).
+        generated_view_deg (float | None): How far the one generated view turned about the part, degrees
+            (default: None).
     """
 
     outcome: AutonomousGraspOutcome

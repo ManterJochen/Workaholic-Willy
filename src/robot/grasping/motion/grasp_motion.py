@@ -45,8 +45,10 @@ def _closing_axis_kept(value: object) -> "str | Pose | ClosingAxis | tuple[float
 class GraspMotion:
     """What a caller may choose about how a pick moves. A field left ``UNSET`` keeps the service's own.
 
-        motion = GraspMotion(closing_axis="-y", close_squeeze_mm=2.0)
-        cell = Cell.from_tree(load_tree(), motion=motion)
+    ```python
+    motion = GraspMotion(closing_axis="-y", close_squeeze_mm=2.0)
+    cell = Cell.from_tree(load_tree(), motion=motion)
+    ```
 
     Attributes:
         standoff_mm (Maybe[float]): The distance above the grasp the approach starts from, along the reverse approach,

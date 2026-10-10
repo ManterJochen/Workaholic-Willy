@@ -173,11 +173,13 @@ class DatasetBuild:
     """Describe a cell's dataset, then generate it: scenes, images and depth, grasp labels, and the point-cloud corpus a
     grasp generator trains on.
 
-        build = DatasetBuild.from_file(name="my_parts", scenes=200, seed=0, engine="mujoco")
-        print(build.describe())        # what it will do, before it costs anything
-        print(build.cost())            # hours and gigabytes
-        report = build.run("corpora/my_parts")
-        print(report)
+    ```python
+    build = DatasetBuild.from_file(name="my_parts", scenes=200, seed=0, engine="mujoco")
+    print(build.describe())        # what it will do, before it costs anything
+    print(build.cost())            # hours and gigabytes
+    report = build.run("corpora/my_parts")
+    print(report)
+    ```
 
     Build it with :meth:`from_file` (the usual way) or :meth:`from_config`, then call a verb: :meth:`run` does render,
     label and clouds in one go and stops at the first step that fails.

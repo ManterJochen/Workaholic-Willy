@@ -279,8 +279,8 @@ def load_speech_section(
 
     Args:
         data_dir (str | Path | None): The config directory; ``None`` is the repository's (default: None).
-        profile (Maybe[str | None]): The profile chain; unset is ``WILLY_PROFILE``'s, ``None`` the base tree (default:
-            UNSET).
+        profile (Maybe[str | None]): The profile chain; unset is ``WILLY_PROFILE``'s, ``None`` the base tree
+            (default: UNSET).
 
     Returns:
         SpeechToTextConfig: The speech section: the Whisper and voice-gate models and the microphone keys.

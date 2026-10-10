@@ -114,6 +114,20 @@ class CliTests(unittest.TestCase):
         self.assertEqual(0, rc)
         self.assertEqual(["box", "rhino"], json.loads(out.getvalue())["classes"])
 
+    def test_inspect_keeps_the_classes_named_and_refuses_one_it_does_not_have(self) -> None:
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory() as d:
+            _write_split(Path(d) / "train", _coco_doc())
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = main(["inspect", "--data-dir", d, "--json", "--classes", "rhino"])
+            refused = main(["inspect", "--data-dir", d, "--classes", "zebra"])
+        self.assertEqual(0, rc)
+        self.assertEqual(["rhino"], json.loads(out.getvalue())["classes"])
+        self.assertEqual(2, refused)
+
     def test_eval_without_a_model_folder_exit_2(self) -> None:
         with tempfile.TemporaryDirectory() as d:
             _write_split(Path(d), _coco_doc())

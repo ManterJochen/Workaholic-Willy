@@ -177,8 +177,10 @@ class SweepOptions:
     """What a caller may choose about one calibration sweep. A field left ``UNSET`` takes the tree's value or the code
     default.
 
-        options = SweepOptions(freedrive=True, samples=15, preview="auto")       # guide the arm by hand
-        options = SweepOptions(fixed_poses="stations.json", adjust=True)          # your stations, fine-tuned
+    ```python
+    options = SweepOptions(freedrive=True, samples=15, preview="auto")       # guide the arm by hand
+    options = SweepOptions(fixed_poses="stations.json", adjust=True)          # your stations, fine-tuned
+    ```
 
     The stations come one of two ways, and a sweep that names neither is refused at ``check()``: ``fixed_poses``, your
     own, run in the order given; or ``freedrive``, a person guiding the arm to each pose, with nothing moving by itself.
@@ -201,11 +203,11 @@ class SweepOptions:
         target (Maybe[Any]): The whole target instead of one marker: ``"aruco:ID:SIZE_MM[:DICT]"``,
             ``"charuco:XxY:SQUARE_MM:MARKER_MM[:DICT][:legacy]"``, a YAML or JSON file, a mapping, or a target config;
             not with the three single-marker options (default: UNSET).
-        preview (Maybe[bool | Literal["auto"]]): A window beside the sweep with the camera's view and each judged frame:
-            ``True`` wherever a window can show, ``"auto"`` only at a terminal, ``False`` none; ``WILLY_NO_PREVIEW``
-            keeps it off (default: UNSET).
-        freedrive (Maybe[bool]): A person guides the arm to each pose; Enter captures once it stands still (default:
-            UNSET).
+        preview (Maybe[bool | Literal["auto"]]): A window beside the sweep with the camera's view and each judged
+            frame: ``True`` wherever a window can show, ``"auto"`` only at a terminal, ``False`` none;
+            ``WILLY_NO_PREVIEW`` keeps it off (default: UNSET).
+        freedrive (Maybe[bool]): A person guides the arm to each pose; Enter captures once it stands still
+            (default: UNSET).
         adjust (Maybe[bool]): With ``fixed_poses``: free the arm at each station for fine-tuning by hand, capture on
             Enter, hands off and a countdown before the next move (default: UNSET).
         samples (Maybe[int]): How many samples a run guided by hand collects; unset is
@@ -627,10 +629,12 @@ class _Parts:
 class HandEyeCalibration:
     """One camera of a cell, calibrated against its robot: :meth:`check` at a desk, :meth:`run` at the cell.
 
-        calibration = HandEyeCalibration.from_tree(load_tree(), rig_id="EIH_Cam", mode="eye_in_hand",
-                                                   options=SweepOptions(freedrive=True))
-        print(calibration.check())          # what the sweep will use; moves nothing
-        print(calibration.run())            # the sweep, then the artifact
+    ```python
+    calibration = HandEyeCalibration.from_tree(load_tree(), rig_id="EIH_Cam", mode="eye_in_hand",
+                                               options=SweepOptions(freedrive=True))
+    print(calibration.check())          # what the sweep will use; moves nothing
+    print(calibration.run())            # the sweep, then the artifact
+    ```
 
     Build it with :meth:`from_tree`, :meth:`from_config` or :meth:`from_parts`; building touches nothing, and every
     setting is resolved there, so ``check()`` prints the values the sweep will use.
@@ -645,8 +649,8 @@ class HandEyeCalibration:
         dict_name (str): The ArUco dictionary.
         out_dir (str): Where the artifact and the stations file go.
         sections (_Sections): The robot and camera sections the sweep reads.
-        target (Any): A target named in full (a board), validated at ``check()``; ``None`` for one marker (default:
-            None).
+        target (Any): A target named in full (a board), validated at ``check()``; ``None`` for one marker
+            (default: None).
         target_from (str): Where ``target`` came from, ``"options"`` or ``"tree"``; empty without one (default: "").
         overrides (tuple[str, ...]): The single-marker options a caller set (default: ()).
         unmodelled_wrist_body (str | None): Why the sweep may run without a wrist body it cannot place (default: None).
@@ -662,8 +666,8 @@ class HandEyeCalibration:
         camera (Maybe[Camera]): A camera owner the caller built; unset builds the rig's at ``run()`` (default: UNSET).
         announce (Callable[[ConnectStage], None] | None): Narration of the connect (default: None).
         on_event (RobotCalibrationEventListener | None): Progress of the sweep, one event per pose (default: None).
-        on_built (Callable[[CalibrationBuild], None] | None): Called with the build report before any motion (default:
-            None).
+        on_built (Callable[[CalibrationBuild], None] | None): Called with the build report before any motion
+            (default: None).
     """
 
     rig_id: str
@@ -731,8 +735,8 @@ class HandEyeCalibration:
             rig_id (str): The rig to calibrate, as ``camera.cameras.rigs`` names it.
             mode (MountingMode | str): ``"eye_to_hand"`` (a fixed camera) or ``"eye_in_hand"`` (on the wrist). No
                 default: a wrist camera swept eye to hand would write a CAMERA to BASE file for a camera that moves.
-            options (Maybe[SweepOptions]): What you choose about the sweep; unset takes the tree's values (default:
-                UNSET).
+            options (Maybe[SweepOptions]): What you choose about the sweep; unset takes the tree's values
+                (default: UNSET).
             announce (Callable[[ConnectStage], None] | None): Narration of the connect, forwarded to
                 ``Robot.connected()`` (default: None).
             on_event (RobotCalibrationEventListener | None): Progress of the sweep, one event per pose;
@@ -773,8 +777,8 @@ class HandEyeCalibration:
             rig_id (str): The rig to calibrate, as ``camera.cameras.rigs`` names it.
             mode (MountingMode | str): ``"eye_to_hand"`` (a fixed camera) or ``"eye_in_hand"`` (on the wrist). No
                 default: a wrist camera swept eye to hand would write a CAMERA to BASE file for a camera that moves.
-            options (Maybe[SweepOptions]): What you choose about the sweep; unset takes the tree's values (default:
-                UNSET).
+            options (Maybe[SweepOptions]): What you choose about the sweep; unset takes the tree's values
+                (default: UNSET).
             data_dir (str | Path | None): The directory it was loaded from, where a wrist camera's body is looked up;
                 ``None`` is the repository's tree (default: None).
             announce (Callable[[ConnectStage], None] | None): Narration of the connect, forwarded to
@@ -1471,7 +1475,9 @@ def render_sweep_event(event_type: str, data: Mapping[str, Any]) -> str:
 def print_sweep_progress(event_type: str, data: Mapping[str, Any]) -> None:
     """A sweep's ``on_event``: one indented line per event, flushed at once.
 
-        HandEyeCalibration.from_tree(tree, rig_id="overhead", mode="eye_to_hand", on_event=print_sweep_progress)
+    ```python
+    HandEyeCalibration.from_tree(tree, rig_id="overhead", mode="eye_to_hand", on_event=print_sweep_progress)
+    ```
 
     Args:
         event_type (str): The event's type, such as a pose reached or counted.

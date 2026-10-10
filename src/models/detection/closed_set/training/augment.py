@@ -7,8 +7,9 @@ The strong part, switched off for the last epochs (RT-DETR's ``stop_epoch`` poli
 - ``RandomIoUCrop`` (p 0.8): a crop that keeps the boxes it overlaps enough, so parts are also seen large and cut.
 
 Always: ``RandomHorizontalFlip`` (p 0.5), and ``SanitizeBoundingBoxes`` (1 px), so no box leaves the image or
-degenerates. An image without a box skips the crop, which needs one. Multi-scale (480 to 800 px) is applied per batch by
-the trainer. The random draws come from torch's generator, which the trainer seeds per epoch and per loader worker.
+degenerates. An image without a box skips the crop, which needs one. Multi-scale (480 to 800 px at 640, scaled with the
+image size) is applied per batch by the trainer. The random draws come from torch's generator, which the trainer seeds
+per epoch and per loader worker.
 """
 
 from __future__ import annotations

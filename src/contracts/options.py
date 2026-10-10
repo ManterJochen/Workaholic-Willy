@@ -34,9 +34,13 @@ same test written once.
 
 from __future__ import annotations
 
-from typing import Final, TypeGuard, TypeVar, Union
+import dataclasses
+from typing import TYPE_CHECKING, Any, Callable, Final, TypeGuard, TypeVar, Union
 
-__all__ = ["UNSET", "Maybe", "chosen", "resolve"]
+if TYPE_CHECKING:
+    from _typeshed import DataclassInstance
+
+__all__ = ["UNSET", "Maybe", "chosen", "merged_overrides", "resolve"]
 
 
 class _Unset:
@@ -124,3 +128,34 @@ def resolve(name: str, *layers: "Maybe[_T]") -> _T:
         f"nothing supplied a value for {name!r}: every layer was UNSET. The last layer passed to "
         f"resolve() is the code default and must always be a real value."
     )
+
+
+_O = TypeVar("_O", bound="DataclassInstance")
+
+
+def merged_overrides(overrides: _O | None, empty: Callable[[], _O], **arguments: Any) -> _O | None:
+    """An overrides bundle with the settings a factory also takes as plain keywords laid into it.
+
+    ``DetectorTraining.from_dataset(..., epochs=80)`` and ``overrides=DetectorPlanOverrides(epochs=80)`` are one
+    choice written two ways; this turns the first into the second, so the recipe, the tier and the plan see one
+    bundle. A setting given both ways is refused rather than one of them silently winning.
+
+    Args:
+        overrides (_O | None): The bundle the caller passed, or ``None``.
+        empty (Callable[[], _O]): Builds a bundle with nothing chosen, for a caller who passed none.
+        **arguments (Any): The keywords by field name; ``None`` is "not given".
+
+    Returns:
+        _O | None: The bundle with every given keyword in it; ``overrides`` unchanged where none was given.
+
+    Raises:
+        ValueError: A setting given as a keyword and in ``overrides`` as well.
+    """
+    given = {name: value for name, value in arguments.items() if value is not None}
+    if not given:
+        return overrides
+    bundle = overrides if overrides is not None else empty()
+    twice = sorted(name for name in given if chosen(getattr(bundle, name)))
+    if twice:
+        raise ValueError(f"{', '.join(twice)} given twice, as an argument and in overrides; give each setting once")
+    return dataclasses.replace(bundle, **given)

@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
+from src.contracts.options import merged_overrides
 from src.robot.grasping.deep.corpus.discovery import scene_files
 from src.robot.grasping.deep.train.plan import PlanOverrides, build_plan
 from src.robot.grasping.deep.train.report import TrainingRunReport
@@ -140,12 +141,14 @@ def _corpus_paths(corpus: Sequence[str | Path] | str | Path) -> tuple[Path, ...]
 class GeneratorTraining:
     """Train a learned grasp generator (the set generator) on a point-cloud corpus.
 
-        run = GeneratorTraining.from_recipe(corpus="corpora/my_parts", recipe="v1", tier="smoke",
-                                            out_dir="models/my_parts")
-        print(run.describe())       # what it will do, before it costs anything
-        print(run.probe())          # the floor and the ceiling of this corpus; trains nothing
-        report = run.train()
-        run.write_report(report)
+    ```python
+    run = GeneratorTraining.from_recipe(corpus="corpora/my_parts", recipe="v1", tier="smoke",
+                                        out_dir="models/my_parts")
+    print(run.describe())       # what it will do, before it costs anything
+    print(run.probe())          # the floor and the ceiling of this corpus; trains nothing
+    report = run.train()
+    run.write_report(report)
+    ```
 
     A trained artifact drives a cell only once its proof has passed (``deep/promotion.py``); until then it can be
     inspected and evaluated (``deep propose``, the ladder's deep rung).
@@ -184,9 +187,9 @@ class GeneratorTraining:
                 required before ``train()`` (default: None).
             device (str | None): ``"cuda"``, ``"cpu"`` or ``"mps"``; ``None`` is ``WILLY_DEVICE`` or the first of CUDA,
                 MPS and the CPU (default: None).
-            init_from (str | Path | None): Start from the weights in this checkpoint instead of from random:
-                fine-tuning, a new run with its own optimiser and split, not a resume. A checkpoint that does not fit is
-                refused (default: None).
+            init_from (str | Path | None): Start from the weights in this checkpoint instead of from
+                random: fine-tuning, a new run with its own optimiser and split, not a resume. A checkpoint that does
+                not fit is refused (default: None).
             freeze_backbone (bool): Train only the heads and hold the encoder still: the cheap fine-tuning for a small
                 new corpus, since 99 % of the parameters are in the backbone (default: False).
             resume (bool): Continue an interrupted run in ``out_dir``; any change to the corpus or the plan is refused
@@ -220,6 +223,8 @@ class GeneratorTraining:
     def from_recipe(cls, *, corpus: Sequence[str | Path] | str | Path,
                     recipe: str | None = None,
                     tier: str | None = None,
+                    epochs: int | None = None,
+                    batch: int | None = None,
                     overrides: PlanOverrides | None = None,
                     base: "SetTrainingPlan | None" = None,
                     out_dir: str | Path | None = None,
@@ -237,16 +242,19 @@ class GeneratorTraining:
             recipe (str | None): The frozen recipe, such as ``"v1"``; ``None`` is the plan's defaults (default: None).
             tier (str | None): ``"smoke"`` (two epochs on few units: proves the chain, says nothing about grasp
                 quality), ``"full"``, ...; ``None`` the recipe's own (default: None).
-            overrides (PlanOverrides | None): The settings you choose explicitly; they outrank the recipe and the tier
-                (default: None).
+            epochs (int | None): Epochs per fold; ``None`` is the recipe's or the tier's (default: None).
+            batch (int | None): Samples per batch; the points per sample, not the parameters, are the memory ceiling.
+                ``None`` is the recipe's or the tier's (default: None).
+            overrides (PlanOverrides | None): Every other setting you choose explicitly; they outrank the recipe and
+                the tier. A setting given here and as an argument is refused (default: None).
             base (SetTrainingPlan | None): The plan everything is laid onto; ``None`` the defaults (default: None).
             out_dir (str | Path | None): Where the run writes ``epochs.json``, the fold checkpoints and the artifact;
                 required before ``train()`` (default: None).
             device (str | None): ``"cuda"``, ``"cpu"`` or ``"mps"``; ``None`` is ``WILLY_DEVICE`` or the first of CUDA,
                 MPS and the CPU (default: None).
-            init_from (str | Path | None): Start from the weights in this checkpoint instead of from random:
-                fine-tuning, a new run with its own optimiser and split, not a resume. A checkpoint that does not fit is
-                refused (default: None).
+            init_from (str | Path | None): Start from the weights in this checkpoint instead of from
+                random: fine-tuning, a new run with its own optimiser and split, not a resume. A checkpoint that does
+                not fit is refused (default: None).
             freeze_backbone (bool): Train only the heads and hold the encoder still: the cheap fine-tuning for a small
                 new corpus, since 99 % of the parameters are in the backbone (default: False).
             resume (bool): Continue an interrupted run in ``out_dir``; any change to the corpus or the plan is refused
@@ -263,8 +271,10 @@ class GeneratorTraining:
 
         Raises:
             ValueError: An unknown recipe or tier: refused rather than falling back to the defaults, so a ``v2`` typed
-                before it exists never runs ``v1`` under its name.
+                before it exists never runs ``v1`` under its name. A setting given twice, as an argument and in
+                ``overrides``.
         """
+        overrides = merged_overrides(overrides, PlanOverrides, epochs=epochs, batch=batch)
         plan, notes = build_plan(recipe=recipe, tier=tier, overrides=overrides, base=base)
         built = cls.from_plan(
             corpus=corpus, plan=plan, out_dir=out_dir, device=device, init_from=init_from,

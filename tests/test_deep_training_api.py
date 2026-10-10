@@ -41,6 +41,20 @@ def _scene_dir(count: int = 3) -> Path:
     return root
 
 
+class TheSettingsAPersonSetsTests(unittest.TestCase):
+    """``epochs=`` and ``batch=`` are arguments, as they are of ``DetectorTraining.from_dataset``; the rest stays in
+    ``PlanOverrides`` (the owner, 2026-10-10)."""
+
+    def test_epochs_and_batch_are_arguments_and_the_rest_stays_in_overrides(self) -> None:
+        run = GeneratorTraining.from_recipe(corpus=_scene_dir(1), recipe="v1", tier="smoke", epochs=5, batch=2,
+                                            overrides=PlanOverrides(refit=False))
+        self.assertEqual((5, 2, False), (run.plan.epochs, run.plan.batch, run.plan.refit))
+
+    def test_a_setting_given_twice_is_refused_rather_than_one_of_them_winning(self) -> None:
+        with self.assertRaisesRegex(ValueError, "epochs given twice"):
+            GeneratorTraining.from_recipe(corpus=_scene_dir(1), epochs=5, overrides=PlanOverrides(epochs=8))
+
+
 class TheRecipeMergeNeedsNoArgvTests(unittest.TestCase):
     """⛔⛔ THE HARDEST BLOCKER, AND THE REASON `UNSET` EXISTS.
 

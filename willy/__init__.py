@@ -1,11 +1,13 @@
 """Workaholic-Willy as a library: the public nouns under one name.
 
-    from willy import Robot, load_tree
+```python
+from willy import Robot, load_tree
 
-    robot = Robot.from_tree(load_tree())          # the cell WILLY_PROFILE names
-    with robot.connected():
-        print(robot.home())
-        print(robot.move(robot.tool_down(450.0, 100.0, 300.0)))
+robot = Robot.from_tree(load_tree())          # the cell WILLY_PROFILE names
+with robot.connected():
+    print(robot.home())
+    print(robot.move(robot.tool_down(450.0, 100.0, 300.0)))
+```
 
 Every name here is the library's own object, imported on first use: importing ``willy`` loads nothing, and a name
 resolves to exactly what its home module defines. The home modules stay where they are and keep their own imports.
