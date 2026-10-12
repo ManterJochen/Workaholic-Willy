@@ -2808,6 +2808,11 @@
           "title": "Max Attempts",
           "type": "integer"
         },
+        "name_neighbours": {
+          "default": true,
+          "title": "Name Neighbours",
+          "type": "boolean"
+        },
         "occlusion": {
           "$ref": "#/$defs/GraspingOcclusionConfig"
         },

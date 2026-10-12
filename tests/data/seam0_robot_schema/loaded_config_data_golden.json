@@ -693,6 +693,7 @@
       "fine_pass_waits": true,
       "colour_check": "on",
       "colour_check_clipped": "exclude",
+      "name_neighbours": true,
       "workers": 0,
       "batched_builds": false,
       "weak_look_trigger": false,

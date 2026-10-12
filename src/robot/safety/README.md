@@ -92,6 +92,16 @@ is carried and the hand reads empty and open, the band admission sets exactly th
 this guard decides them, judging every refused sample again at `perceived_min_distance_mm`, never less than
 5 mm (a load refuses less).
 
+**Where it stands the hand.** The links stand on the model's nominal DH table; the flange, and with it the hand, its
+fingers and a wrist camera, stands where the arm's controller puts it, where the arm says
+(`core.arm_capabilities.KnowsItsFlange`, `_ur_kinematics.arm_link_transforms_mm`; the owner, 2026-10-12). A
+controller calibrated at the factory puts the flange millimetres from the table's (6.0 to 6.3 mm and 0.6 degrees on
+the owner's UR10), and the camera's boxes stand in its world, placed by the TCP it reports. The UR driver says it on
+its controller's own rows once they put the flange where the controller says it stands at connect, within 0.1 mm and
+0.01 degrees (`URRobotArm.controller_flanges_mm`); every other arm, and a UR whose rows cannot be read or are not the
+ones it computes on, has its flange on the table, as before. One configuration judged alone is placed bit for bit as
+in a path judged whole.
+
 **The camera's boxes, turned, at their own distance.** A declared fixture is an axis-aligned box. A box a
 camera saw carries the turned box the planner holds (`AxisAlignedBox.turned`), and the exact backend judges
 that one, turned about base Z; the capsule proxy judges its enclosure. The guard asks the arm and the

@@ -207,6 +207,8 @@ from src.robot.grasping.telemetry.latency_tracker import LatencyStage
 from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
 from src.robot.grasping.generation._support_footprint_stage import FINE_SEARCH_DEFERRED, FINE_SEARCH_KEY
 from src.robot.grasping.generation.calculator import GraspCalculator
+from src.robot.grasping.generation.parts_beside import LABEL as PART_BESIDE_LABEL
+from src.robot.grasping.generation.parts_beside import parts_beside
 from src.robot.grasping.types.perception import (
     PerceptionFrame,
     PerceptionSource,
@@ -1285,8 +1287,9 @@ def _named_points_base(
     frame: "PerceptionFrame", segmentations: "tuple[Any, ...]", target_index: "int | None",
     camera_to_base_mm: "np.ndarray | None",
 ) -> "tuple[tuple[str, np.ndarray], ...]":
-    """Every segmentation but the target, its label and its surface in BASE thinned to a :data:`_NAMED_VOXEL_MM` voxel;
-    none where the frame cannot be placed."""
+    """Every segmentation but the target, its label and its surface in BASE thinned to a :data:`_NAMED_VOXEL_MM` voxel,
+    and every part beside the named ones read off the depth (``PerceptionFrame.parts_beside``) under
+    ``parts_beside.LABEL``; none where the frame cannot be placed."""
     if camera_to_base_mm is None or not segmentations:
         return ()
     from src.robot.grasping.multiview.scene_geometry import to_base_mm
@@ -1303,6 +1306,11 @@ def _named_points_base(
             continue
         _, first = np.unique(np.floor(base / _NAMED_VOXEL_MM).astype(np.int64), axis=0, return_index=True)
         named.append((str(getattr(seg, "label", "") or f"object_{index}"), base[np.sort(first)]))
+    for mask in getattr(frame, "parts_beside", ()) or ():
+        base = to_base_mm(np.asarray(mask).astype(bool), depth, frame.intrinsics, camera_to_base_mm)
+        if base.shape[0]:
+            _, first = np.unique(np.floor(base / _NAMED_VOXEL_MM).astype(np.int64), axis=0, return_index=True)
+            named.append((PART_BESIDE_LABEL, base[np.sort(first)]))
     return tuple(named)
 
 
@@ -1635,6 +1643,10 @@ class BinPickingOrchestrator:
     #: its parts from pick to pick, so the switch reaches the run the built cell runs. ``UNSET``, the default, where no
     #: build set it (an orchestrator built by hand): the task then reads its tree, as before.
     follow_parts: Any = UNSET
+    #: Whether a frame carries the parts beside the ones its detector named, read off its depth
+    #: (``robot.grasping.name_neighbours``, :meth:`_with_the_parts_beside`), set at the build
+    #: (``builders.apply_orchestrator_overlays``). ``False``, the default: no part beside is read, as before.
+    name_neighbours: bool = False
     #: Whether a wrist pick handed looks drives every one of them (the console's "alle Posen", the owner, 2026-10-08
     #: night): the looking does not stop at the first look whose grasp is safe enough, and the pick goes on with the
     #: judgement of the last look, fused over every look; the one generated view still follows only where that is not
@@ -2544,19 +2556,48 @@ class BinPickingOrchestrator:
         memory = kept if kept is not None else self._looks_kept
         hidden = self._hidden()
         if memory is None:
-            frame = self.perception.acquire(**hidden)
+            frame = self._with_the_parts_beside(self.perception.acquire(**hidden))
             return frame, getattr(self.perception, "last_route", None)
         if getattr(self.perception, "follows_parts", False) is not True:
             if not self._follow_unsupported_said:
                 _LOG.warning("the parts kept are not followed: the camera source (%s) follows no parts, so the "
                              "detector grounds every frame", type(self.perception).__name__)
                 self._follow_unsupported_said = True
-            frame = self.perception.acquire(**hidden)
+            frame = self._with_the_parts_beside(self.perception.acquire(**hidden))
             return frame, ("grounded", "not followed: the camera source follows no parts")
         following: Any = self.perception  # a source that says it follows parts takes a follow on acquire
-        frame = following.acquire(follow=self._following(memory, label, later=later), **hidden)
+        frame = self._with_the_parts_beside(
+            following.acquire(follow=self._following(memory, label, later=later), **hidden))
         route = getattr(self.perception, "last_route", None)
         return frame, route if isinstance(route, tuple) and len(route) == 2 else None
+
+    def _with_the_parts_beside(self, frame: PerceptionFrame) -> PerceptionFrame:
+        """``frame`` with the parts beside the ones its detector named, read off its depth on the supports the arm's
+        live world finds under them (``robot.grasping.name_neighbours``, ``generation.parts_beside``), every one outside
+        the regions the task keeps out, its bins and its drops (``PerceptionFrame.parts_beside``). The calculator's
+        neighbours and the planner world's named parts read them, so the fingers may brush them as every named part's
+        (the owner, 2026-10-12). ``frame`` as it came where the switch is off, nothing is named or no CAMERA to BASE
+        places the frame."""
+        if not self.name_neighbours or not frame.segmentations or self.frame_resolver is None:
+            return frame
+        transform = self.frame_resolver.camera_to_base_for_frame(frame, arm=self.arm)
+        if transform is None:
+            return frame
+        surface = getattr(frame, "surface_depth_map", None)
+        depth = np.asarray(surface if surface is not None else frame.depth_map, dtype=np.float64)
+        named = [np.asarray(mask) for mask in (getattr(seg, "mask", None) for seg in frame.segmentations)
+                 if mask is not None]
+        found, left = parts_beside(depth, np.asarray(frame.intrinsics, dtype=np.float64),
+                                   np.asarray(transform.to_matrix(), dtype=np.float64), named,
+                                   support_model=self._support_model_of_frame(frame, transform),
+                                   bench_mm=self._bench_top_mm())
+        zones = self.exclusion_zones
+        kept = [part for part in found if zones is None or not self._kept_out_by_a_region(zones, part.centre_mm)]
+        if len(kept) < len(found):
+            left["in a region the task keeps out"] = len(found) - len(kept)
+        _LOG.info("%d part(s) beside the %d named, read off the depth%s", len(kept), len(named),
+                  "; pieces left out: " + ", ".join(f"{n} {why}" for why, n in sorted(left.items())) if left else "")
+        return replace(frame, parts_beside=tuple(part.mask for part in kept))
 
     def _hidden(self) -> dict[str, Any]:
         """What a camera source's acquire is handed to paint the regions this pick's task keeps out over the copy of its
@@ -3382,7 +3423,7 @@ class BinPickingOrchestrator:
                 fused_target = self._fused_target(looked.judged)
             else:
                 # The regions the task keeps out painted over the detector's copy of the frame, where the cell says so.
-                frame = self.perception.acquire(**self._hidden())
+                frame = self._with_the_parts_beside(self.perception.acquire(**self._hidden()))
                 # Read after acquire, so it describes the frame that was just grounded rather than the
                 # previous one. Duck-typed and optional: a source with no routed backend returns None and
                 # the event is exactly the one this loop has always emitted.
@@ -6458,7 +6499,8 @@ class BinPickingOrchestrator:
         # another camera's pixels: handing it to the dense sampler would place clutter by index into
         # an image it does not belong to. A promoted object's neighbours are a separate question and
         # this change does not answer it.
-        other_masks = [getattr(seg, "mask", None) for seg in frame.segmentations]
+        other_masks = [getattr(seg, "mask", None) for seg in frame.segmentations] + list(
+            getattr(frame, "parts_beside", ()) or ())
         ctx = _FrameContext(frame=frame, camera_to_base=camera_to_base, external_scene_cam=external_scene_cam,
                             fused_scene=fused_scene, support_model=support_model, wall_cam=wall_cam,
                             other_masks=tuple(other_masks))

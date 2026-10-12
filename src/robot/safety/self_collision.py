@@ -55,7 +55,7 @@ from ._capsule import (
     capsule_box_distance_mm,
     capsule_capsule_distance_mm,
 )
-from ._ur_kinematics import ur_link_origins_mm, ur_link_transforms_mm, ur_link_transforms_mm_many
+from ._ur_kinematics import arm_link_transforms_mm, arm_link_transforms_mm_many, ur_link_origins_mm
 from .decision import SafetyDecision, SafetyReason
 from .guard import SafetyContext
 
@@ -559,7 +559,7 @@ class SelfCollisionGuard:
         yaw = float(self._config.kinematics_base_yaw_deg)
 
         def distance(joints: "Sequence[float]", part_a: str, part_b: str) -> "float | None":
-            transforms = ur_link_transforms_mm(model, np.asarray([float(v) for v in joints], dtype=np.float64))
+            transforms = arm_link_transforms_mm(model, np.asarray([float(v) for v in joints], dtype=np.float64), arm)
             if transforms is None:
                 return None
             return float(backend.distance_mm(transforms, yaw, part_a, part_b))  # type: ignore[attr-defined]
@@ -567,7 +567,7 @@ class SelfCollisionGuard:
         lowest_of = getattr(backend, "lowest_mm", None)
 
         def lowest(joints: "Sequence[float]") -> "float | None":
-            transforms = ur_link_transforms_mm(model, np.asarray([float(v) for v in joints], dtype=np.float64))
+            transforms = arm_link_transforms_mm(model, np.asarray([float(v) for v in joints], dtype=np.float64), arm)
             if transforms is None or lowest_of is None:
                 return None
             return float(lowest_of(transforms, yaw))
@@ -581,7 +581,7 @@ class SelfCollisionGuard:
         within = float(self._min_distance_mm)
 
         def base(joints: "Sequence[float]") -> "tuple[str, float] | None":
-            transforms = ur_link_transforms_mm(model, np.asarray([float(v) for v in joints], dtype=np.float64))
+            transforms = arm_link_transforms_mm(model, np.asarray([float(v) for v in joints], dtype=np.float64), arm)
             if transforms is None or shape is None or near_of is None:
                 return None
             part, gap = near_of(transforms, yaw, radius_mm=shape.radius_mm, top_mm=shape.top_mm, within_mm=within)
@@ -594,13 +594,13 @@ class SelfCollisionGuard:
         near_base_from_of = getattr(backend, "first_near_base", None)
 
         def lows(configs: "Sequence[Sequence[float]]") -> "np.ndarray | None":
-            transforms = ur_link_transforms_mm_many(model, np.asarray(configs, dtype=np.float64))
+            transforms = arm_link_transforms_mm_many(model, np.asarray(configs, dtype=np.float64), arm)
             if transforms is None or lowest_many_of is None:
                 return None
             return np.asarray(lowest_many_of(transforms, yaw), dtype=np.float64)
 
         def near_base_from(configs: "Sequence[Sequence[float]]", within_mm: float) -> "int | None":
-            transforms = ur_link_transforms_mm_many(model, np.asarray(configs, dtype=np.float64))
+            transforms = arm_link_transforms_mm_many(model, np.asarray(configs, dtype=np.float64), arm)
             if transforms is None or shape is None or near_base_from_of is None:
                 return None
             return int(near_base_from_of(transforms, yaw, radius_mm=shape.radius_mm, top_mm=shape.top_mm,
@@ -622,7 +622,7 @@ class SelfCollisionGuard:
         ``None`` wherever :meth:`evaluate` would not run the exact mesh backend on these configurations, the capsule
         proxy, no arm, no model, no engine or no bundle, a configuration the DH chain cannot place: then the path gate
         judges every sample one at a time (``SafetyPreflight.gate_joint_path``). Otherwise every part is placed at every
-        sample in one pass (``ur_link_transforms_mm_many``, bit for bit the chain :meth:`evaluate` places one sample
+        sample in one pass (``arm_link_transforms_mm_many``, bit for bit the chain :meth:`evaluate` places one sample
         with), and the backend is asked with what :meth:`evaluate` hands it: the arm against itself and the declared
         fixtures at ``min_distance_mm``, the boxes a camera saw at ``perceived_min_distance_mm``
         (``MeshSelfCollisionBackend.first_suspect``, which says how a sample is passed).
@@ -636,7 +636,7 @@ class SelfCollisionGuard:
         judge = getattr(backend, "first_suspect", None)
         if not callable(judge):
             return None
-        transforms = ur_link_transforms_mm_many(model, configs)
+        transforms = arm_link_transforms_mm_many(model, configs, arm)
         if transforms is None:
             return None
         return int(judge(
@@ -655,7 +655,10 @@ class SelfCollisionGuard:
         backend = self._exact_mesh_backend(model)
         if backend is None:
             return None  # no engine or no mesh bundle, so fall back to capsules
-        transforms = ur_link_transforms_mm(model, ctx.target_joints.values)
+        # Every link by the model's nominal table, and the flange, with the hand, its fingers and a wrist camera on it,
+        # where the arm's controller puts it, where the arm says (KnowsItsFlange, the owner, 2026-10-12): the camera's
+        # boxes stand in the controller's world, so the hand is judged where it stands among them.
+        transforms = arm_link_transforms_mm(model, ctx.target_joints.values, ctx.arm)
         if transforms is None:
             return None
         # broadphase=True culls a pair whose bounding spheres cannot be within the margin

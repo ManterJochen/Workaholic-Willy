@@ -1436,6 +1436,17 @@ robot:
     # [one of: keep | exclude]
     colour_check_clipped: exclude
 
+    # The parts beside the ones the detector named are named too, read off the depth (the owner, 2026-10-12: "alle Teile
+    # benennen", then "Klassisch aus Tiefe"). A prompt grounds the kind of part it names, and every other part beside it
+    # was a box nobody named, which the fingers keep the guard's distance and the margin from: on the owner's crate a
+    # gray cube 30 mm from a green one had no grasp the guard admitted. On, every frame of a pick is read for what stands
+    # on the supports the camera world finds (about 0.1 s a frame, no model): a piece seen whole, apart from anything
+    # larger, within 120 mm of a named part and of a part's size and shape is a part beside, and its boxes the fingers
+    # may brush as every named part's (2026-10-05). Walls, bins, the robot, the mat and a part touching a wall stay boxes
+    # nobody named. The switch is the owner's for the first cell test and goes once that test is through.
+    # [default: true]
+    name_neighbours: true
+
     # How many worker processes search a part's grasps beside the cell's own (src/robot/grasping/workers.py). One
     # boxed-in cube took 24 of a look's 30 s on the owner's cell (2026-10-08), every grasp the support-footprint stage
     # tried built one after another in one process. Its units then run on worker processes started once, when the cell

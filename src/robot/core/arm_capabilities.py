@@ -5,7 +5,7 @@ with a contract-locked member set. The extras a controller can offer (digital an
 analog I/O, live force and torque, live robot and safety status, what a straight line
 keeps, a model of the carried part, a move home that says why it was refused, the
 configuration a pose goes to, a joint move on its straight joint line and nothing else, a line judged as if the
-jaws held a part) are declared here as
+jaws held a part, where the controller puts its flange) are declared here as
 separate ``runtime_checkable`` Protocols,
 mirroring :class:`~src.robot.core.gripper.ObjectDetectingGripper`. Hand guiding follows the same
 pattern from its own module, :mod:`~src.robot.core.freedrive`: an arm a person may move by
@@ -35,6 +35,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from contextlib import AbstractContextManager
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+import numpy as np
 
 from src.contracts import UNSET
 from src.geometry import Frame
@@ -66,6 +68,7 @@ __all__ = [
     "JudgesGraspsAhead",
     "JudgesLinesAhead",
     "KeepsLines",
+    "KnowsItsFlange",
     "LineMotion",
     "LineReading",
     "PayloadModel",
@@ -79,6 +82,7 @@ __all__ = [
     "Wrench",
     "brakes_in_motion_of",
     "chose_no_carried_part",
+    "controller_flanges_of",
     "end_pulse",
     "halt_state_of",
     "halted_refusal",
@@ -699,6 +703,48 @@ class JudgesLinesAhead(Protocol):
         """Why the move to ``approach`` or one of ``lines`` after it would be refused, judged now from where the arm
         stands; ``""`` where every judgement passes, and where this arm cannot judge them ahead. Nothing moves."""
         ...
+
+
+@runtime_checkable
+class KnowsItsFlange(Protocol):
+    """Capability extension: the arm says where its controller puts the flange at any joints, on the controller's own
+    kinematics.
+
+    A controller calibrated at the factory computes its poses on kinematics of its own, and puts its flange millimetres
+    from where the arm's nominal table puts it at the same joints: 6.0 to 6.3 mm and 0.6 degrees on the owner's UR10 CB3
+    (2026-10-08). A camera on the arm is placed by the pose the controller reports, so the world it sees is the
+    controller's. The exact guard places what hangs from the flange, the hand, its fingers and a wrist camera, where this
+    says, and the links by the nominal table (the owner, 2026-10-12: everything at the flange), so a hand is judged where
+    it stands in the world the camera saw. A UR reads its controller's rows from its primary interface; an arm whose
+    controller hands out its model, or a description calibrated against it, can say the same. It is not a member of
+    :class:`~src.robot.core.RobotArm`, for the reason :class:`HomesTyped` gives. An arm that does not implement it, or
+    cannot say now, has its flange placed by the nominal table, as before.
+    """
+
+    def controller_flanges_mm(self, joints_rad: "np.ndarray") -> "np.ndarray | None":
+        """The flange at every row of ``joints_rad``, ``(N, dof)`` radians, as the controller computes it: ``(N, 4, 4)``,
+        the rotation unitless and the translation in millimetres, in the controller's base frame, each row answered alone
+        as it is answered among others; ``None`` where this arm cannot say now."""
+        ...
+
+
+def controller_flanges_of(arm: object, joints_rad: "np.ndarray") -> "np.ndarray | None":
+    """Where ``arm``'s controller puts its flange at every row of ``joints_rad`` (:class:`KnowsItsFlange`), or ``None``
+    for an arm that does not say or cannot now.
+
+    Strict: only ``(N, 4, 4)`` finite numbers for the ``N`` rows asked count, so a double that answers every attribute
+    says nothing here, and neither does an answer that raises.
+    """
+    if not isinstance(arm, KnowsItsFlange):
+        return None
+    rows = np.asarray(joints_rad, dtype=np.float64)
+    try:
+        flanges = np.asarray(arm.controller_flanges_mm(rows), dtype=np.float64)
+    except Exception:  # noqa: BLE001 (an arm that cannot say has its flange placed by the nominal table)
+        return None
+    if rows.ndim != 2 or flanges.shape != (rows.shape[0], 4, 4) or not bool(np.isfinite(flanges).all()):
+        return None
+    return flanges
 
 
 def line_motion_of(arm: object) -> LineReading | None:

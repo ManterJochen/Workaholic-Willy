@@ -75,6 +75,11 @@ class PerceptionFrame:
     #: `None` for every camera whose rig does not record for research, and for every producer that
     #: is not a camera. Nothing on the grasp path reads it: it is carried to the views and no further.
     research: "ResearchCapture | None" = None
+    #: The parts beside the ones the detector named, each a mask of this frame, read off its depth by the pick
+    #: (``robot.grasping.name_neighbours``, ``generation.parts_beside``, the owner, 2026-10-12). No segmentation: no
+    #: label gate, no sort and no memory of the parts sees them, only the calculator's neighbours and the planner
+    #: world's named parts, whose boxes the fingers may brush (2026-10-05). Empty where none was read.
+    parts_beside: tuple[np.ndarray, ...] = ()
 
 
 @runtime_checkable

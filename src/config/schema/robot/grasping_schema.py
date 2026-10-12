@@ -1939,6 +1939,19 @@ class RobotGraspingConfig(StrictModel):
     #: before. No red part stood in those views, so a red part's verdict is not measured yet. ``keep``: counted as every
     #: other pixel, as before. A pixel clipped in all three channels, glare on a white part, is counted either way.
     colour_check_clipped: Literal["keep", "exclude"] = Field(default="exclude")
+    #: The parts beside the ones the detector named are named too, read off the depth (the owner, 2026-10-12: "alle
+    #: Teile benennen", then "Klassisch aus Tiefe").
+    #:
+    #: A prompt grounds the kind of part it names, and every other part beside it was a box nobody named, which the
+    #: fingers keep the guard's distance and the margin from: on the owner's crate a gray cube 30 mm from a green one had
+    #: no grasp the guard admitted. Asking Qwen for every object boxed the mat or the group on half the cell's frames and
+    #: cost about 0.6 s a part. On, every frame of a pick is read for what stands on the supports the camera world finds
+    #: (``generation.parts_beside``, about 0.1 s a frame, no model): a piece seen whole, apart from anything larger,
+    #: within 120 mm of a named part and of a part's size and shape is a part beside, outside the regions the task keeps
+    #: out, and the calculator and the camera world name its boxes, which the fingers may brush as every named part's
+    #: (2026-10-05). Walls, bins, the robot, the mat and a part touching a wall stay boxes nobody named. On by default;
+    #: the switch is the owner's for the first cell test and goes once that test is through.
+    name_neighbours: bool = Field(default=True)
     #: How many worker processes search a part's grasps beside the cell's own (``src/robot/grasping/workers.py``).
     #:
     #: One boxed-in cube took 24 of a look's 30 s on the owner's cell (2026-10-08), every grasp the support-footprint

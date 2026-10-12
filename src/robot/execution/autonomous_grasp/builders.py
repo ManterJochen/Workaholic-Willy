@@ -821,6 +821,8 @@ def apply_orchestrator_overlays(
     # cell carries the block and the task reads it there, so the switch reaches the run this cell runs.
     follow = getattr(grasping_cfg, "follow_parts", None)
     runtime.orchestrator.follow_parts = follow if getattr(follow, "enabled", False) is True else None
+    # The parts beside the named ones read off the depth (``name_neighbours``, the owner, 2026-10-12).
+    runtime.orchestrator.name_neighbours = bool(getattr(grasping_cfg, "name_neighbours", False))
 
     # The learned grasp ranker, in shadow. Loaded eagerly and fail-safe, exactly as the
     # success-probability model below is: a missing artifact, a spec that disagrees with the model's

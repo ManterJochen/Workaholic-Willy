@@ -56,7 +56,7 @@ from src.robot.safety import (
     line_samples,
 )
 from src.robot.safety._ur_ik import NearestGoal, URBranch, nearest_goals, nearest_turn, ur_branch, ur_flange_ik
-from src.robot.safety._ur_kinematics import ur_link_transforms_mm, ur_series_twin
+from src.robot.safety._ur_kinematics import URDhChain, ur_link_transforms_mm, ur_series_twin
 from src.robot.safety.path_samples import (
     LINE_MAX_CHORD_OFF_MM,
     LINE_MAX_JOINT_STEP_RAD,
@@ -595,6 +595,9 @@ class URRobotArm(RobotArm):
         #: The flange to TCP the controller applied when this arm last connected, derived by the tool
         #: frame check on a ``polyscope`` cell; None before a connect and after a disconnect.
         self._observed_tool_frame: "np.ndarray | None" = None
+        #: The controller's own rows, vouched for at the last connect (:meth:`_vouched_flange_chain`): where
+        #: :meth:`controller_flanges_mm` says the controller puts the flange. None before a connect and after a disconnect.
+        self._flange_chain: "URDhChain | None" = None
         #: The cell as the cameras see it, asked immediately before every plan. Handed in by
         #: whatever composes the cell rather than built here: a driver may not reach up into
         #: perception, and this one only ever asks. `None` is the unchanged path, where the
@@ -841,6 +844,7 @@ class URRobotArm(RobotArm):
         d_t, d_r = compare_tool_frames(observed, expected)
         self._refuse_if_the_series_twin_fits_better(joints, controller_tcp, expected, d_t)
         self._observed_tool_frame = None
+        self._flange_chain = None
         if d_t > tf.verify_tolerance_mm or d_r > 5.0:
             # No disconnect here, because connect() rolls the connection back for any
             # failure of this check.
@@ -868,6 +872,75 @@ class URRobotArm(RobotArm):
             "tool frame verified: source=%s, controller matches within %.2f mm / %.2f deg",
             tf.source, d_t, d_r,
         )
+        self._flange_chain = self._vouched_flange_chain(joints, controller_tcp)
+
+    #: How near, millimetres and degrees, the controller's rows have to put the flange to where the controller says it
+    #: stands, at the joints it stands at, for the guard to place the flange by them. The controller computes its poses on
+    #: those rows, so they answer it to a micrometre; rows that are not the ones it computes on part from it by
+    #: millimetres (URSim's calibration of the line IK test: 3.2 mm).
+    _FLANGE_VOUCHED_MM = 0.1
+    _FLANGE_VOUCHED_DEG = 0.01
+
+    def _vouched_flange_chain(self, joints: "Sequence[float]", controller_tcp_mm: np.ndarray) -> "URDhChain | None":
+        """The controller's own rows (``URConnection.controller_kinematics``) where they put the flange where the
+        controller says it stands, its pose at ``joints`` (``controller_tcp_mm``, read while the arm stood) less its
+        active TCP (``URConnection.active_tcp_offset``), within :data:`_FLANGE_VOUCHED_MM` and
+        :data:`_FLANGE_VOUCHED_DEG`: the chain :meth:`controller_flanges_mm` answers by until the next connect.
+
+        ``None``, and the exact guard places the flange by the nominal table as before, where the rows or the active TCP
+        cannot be read, or the rows put the flange anywhere else. Said once a connect, either way, with how far the
+        controller's flange stands from the nominal table's.
+        """
+        from src.robot.safety._ur_ik import ur_pose_matrix_m
+
+        from .connection import ControllerKinematics
+        from .tool_frame import compare_tool_frames
+
+        model = str(self._capabilities.model)
+        nominal = (f"the exact guard places the flange, and the hand, its fingers and a wrist camera on it, by the nominal "
+                   f"{model} table")
+        read_rows = getattr(self._conn, "controller_kinematics", None)
+        read_tcp = getattr(self._conn, "active_tcp_offset", None)
+        try:
+            kinematics = read_rows() if callable(read_rows) else None
+            tcp = read_tcp() if callable(read_tcp) else None
+        except (RobotConnectionError, RuntimeError, OSError) as exc:
+            self.logger.warning("%s: the controller's kinematics could not be read (%s)", nominal, exc)
+            return None
+        if not isinstance(kinematics, ControllerKinematics) or not isinstance(tcp, list) or len(tcp) != 6:
+            self.logger.warning("%s: the controller's rows or its active TCP could not be read", nominal)
+            return None
+        here = np.asarray([[float(v) for v in joints]], dtype=np.float64)
+        try:
+            chain = URDhChain(theta_rad=kinematics.theta_rad, a_m=kinematics.a_m, d_m=kinematics.d_m,
+                              alpha_rad=kinematics.alpha_rad)
+            offset = ur_pose_matrix_m(tcp)
+            offset[:3, 3] *= 1000.0
+            theirs = np.asarray(controller_tcp_mm, dtype=np.float64) @ np.linalg.inv(offset)
+            ours = chain.flanges_mm(here)[0]
+        except (ValueError, np.linalg.LinAlgError) as exc:
+            self.logger.warning("%s: the controller's rows read as no chain (%s)", nominal, exc)
+            return None
+        apart_mm, apart_deg = compare_tool_frames(ours, theirs)
+        if apart_mm > self._FLANGE_VOUCHED_MM or apart_deg > self._FLANGE_VOUCHED_DEG:
+            self.logger.warning("%s: the controller's rows put the flange %.3f mm and %.4f deg from where the controller "
+                                "says it stands, so they are not the ones it computes on", nominal, apart_mm, apart_deg)
+            return None
+        table = ur_link_transforms_mm(model, here[0])
+        if table is not None:
+            off_mm, off_deg = compare_tool_frames(ours, np.asarray(table[-1], dtype=np.float64))
+            self.logger.info("the exact guard places the flange, and the hand, its fingers and a wrist camera on it, "
+                             "where the controller's own kinematics put it (read from port %d): at the joints the arm "
+                             "stands at, %.2f mm and %.3f deg from the nominal %s table", kinematics.port, off_mm,
+                             off_deg, model)
+        return chain
+
+    def controller_flanges_mm(self, joints_rad: np.ndarray) -> "np.ndarray | None":
+        """Where the controller puts the flange at every row of ``joints_rad`` (``KnowsItsFlange``): on its own rows,
+        vouched for at the last connect (:meth:`_vouched_flange_chain`). ``None`` before a connect, after a disconnect and
+        where they were not vouched for: the exact guard then places the flange by the nominal table."""
+        chain = self._flange_chain
+        return None if chain is None else chain.flanges_mm(joints_rad)
 
     @property
     def active_tool_frame(self) -> "np.ndarray | None":
@@ -1111,6 +1184,7 @@ class URRobotArm(RobotArm):
         with self._planner_lock:
             self._retire_planner()
         self._observed_tool_frame = None
+        self._flange_chain = None
         self._conn.disconnect()
 
     def _retire_planner(self) -> None:

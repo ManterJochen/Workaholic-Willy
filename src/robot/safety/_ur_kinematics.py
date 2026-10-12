@@ -30,6 +30,8 @@ __all__ = [
     "URDhChain",
     "URDhRow",
     "UR_DH_TABLES_M",
+    "arm_link_transforms_mm",
+    "arm_link_transforms_mm_many",
     "ur_link_origins_mm",
     "ur_link_transforms_mm",
     "ur_link_transforms_mm_many",
@@ -294,6 +296,36 @@ def ur_link_transforms_mm_many(model: str, joints_rad: np.ndarray) -> np.ndarray
     return out
 
 
+def arm_link_transforms_mm(model: str, joints_rad: np.ndarray, arm: object = None) -> list[np.ndarray] | None:
+    """:func:`ur_link_transforms_mm` as the exact guard places ``arm``: every link by ``model``'s nominal table, and the
+    flange where ``arm``'s controller puts it (:class:`~src.robot.core.arm_capabilities.KnowsItsFlange`), so what hangs
+    from it, the hand, its fingers and a wrist camera, stands where the controller drives it (the owner, 2026-10-12). The
+    nominal flange where ``arm`` does not say; ``None`` where :func:`ur_link_transforms_mm` answers ``None``.
+    """
+    from src.robot.core.arm_capabilities import controller_flanges_of  # noqa: PLC0415 (the core imports the safety)
+
+    q = np.asarray(joints_rad, dtype=np.float64)
+    transforms = ur_link_transforms_mm(model, q)
+    if transforms is not None:
+        flange = controller_flanges_of(arm, q.reshape(1, -1))
+        if flange is not None:
+            transforms[-1] = flange[0]
+    return transforms
+
+
+def arm_link_transforms_mm_many(model: str, joints_rad: np.ndarray, arm: object = None) -> np.ndarray | None:
+    """:func:`ur_link_transforms_mm_many` as :func:`arm_link_transforms_mm` places ``arm``: every row's flange where its
+    controller puts it, bit for bit the flange :func:`arm_link_transforms_mm` places that row with."""
+    from src.robot.core.arm_capabilities import controller_flanges_of  # noqa: PLC0415 (the core imports the safety)
+
+    transforms = ur_link_transforms_mm_many(model, joints_rad)
+    if transforms is not None:
+        flanges = controller_flanges_of(arm, np.asarray(joints_rad, dtype=np.float64))
+        if flanges is not None:
+            transforms[:, -1] = flanges
+    return transforms
+
+
 @dataclass(frozen=True, slots=True)
 class URDhChain:
     """A UR's six DH rows as one controller holds them, each joint's theta offset included; lengths in metres.
@@ -358,3 +390,29 @@ class URDhChain:
     def flange_m(self, joints_rad: "np.ndarray | list[float] | tuple[float, ...]") -> np.ndarray:
         """Where this chain puts the flange (tool0) at ``joints_rad``, a 4x4 in metres in the base frame."""
         return self.frames_m(joints_rad)[-1]
+
+    def flanges_mm(self, joints_rad: np.ndarray) -> np.ndarray:
+        """Where this chain puts the flange at every row of ``joints_rad``, ``(N, 6)``, at once: ``(N, 4, 4)``, the rotation
+        unitless and the translation in mm, as :func:`ur_link_transforms_mm_many` hands out its last frame.
+
+        The product :func:`ur_link_transforms_mm_many` forms, each joint turned by its row's ``theta_rad`` as well, so the
+        nominal chain answers that function's flange; every row is formed alone, the same whatever else is asked with it.
+        """
+        rows = np.asarray(joints_rad, dtype=np.float64)
+        if rows.ndim != 2 or rows.shape[1] != 6:
+            raise ValueError(f"UR configurations are rows of six joint values, got the shape {rows.shape}")
+        turned = rows + np.asarray(self.theta_rad, dtype=np.float64)
+        count = rows.shape[0]
+        T = np.broadcast_to(np.eye(4, dtype=np.float64), (count, 4, 4)).copy()
+        for joint in range(6):
+            ct, st = np.cos(turned[:, joint]), np.sin(turned[:, joint])
+            ca, sa = float(np.cos(self.alpha_rad[joint])), float(np.sin(self.alpha_rad[joint]))
+            a, d = self.a_m[joint], self.d_m[joint]
+            A = np.zeros((count, 4, 4), dtype=np.float64)
+            A[:, 0, 0], A[:, 0, 1], A[:, 0, 2], A[:, 0, 3] = ct, -st * ca, st * sa, a * ct
+            A[:, 1, 0], A[:, 1, 1], A[:, 1, 2], A[:, 1, 3] = st, ct * ca, -ct * sa, a * st
+            A[:, 2, 1], A[:, 2, 2], A[:, 2, 3] = sa, ca, d
+            A[:, 3, 3] = 1.0
+            T = T @ A
+        T[:, :3, 3] *= 1000.0  # metres -> mm in the translation column only
+        return T

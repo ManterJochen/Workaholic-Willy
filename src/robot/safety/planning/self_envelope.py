@@ -46,7 +46,7 @@ import yaml
 
 from src.contracts import chosen
 
-from .._ur_kinematics import ur_link_transforms_mm
+from .._ur_kinematics import arm_link_transforms_mm
 from .environment import collision_mesh_bundle, hand_mesh_bundle
 from .perceived import DeclaredBody, LinkCapsule, SelfEnvelope
 
@@ -351,9 +351,10 @@ def carried_part_box(
     return _point(dims), _point(approach * (_tip_mm(spheres, _approach(hand)) + float(length_mm) / 2.0))
 
 
-def yawed_link_transforms_mm(model: str, joints: Any, yaw_deg: float) -> list[np.ndarray] | None:
-    """Every frame of ``model``'s chain at ``joints``, turned about the base by ``yaw_deg`` as the guard turns it."""
-    transforms = ur_link_transforms_mm(model, np.asarray(joints, dtype=np.float64))
+def yawed_link_transforms_mm(model: str, joints: Any, yaw_deg: float, *, arm: object = None) -> list[np.ndarray] | None:
+    """Every frame of ``model``'s chain at ``joints`` as the guard places ``arm`` (``arm_link_transforms_mm``: the flange
+    where its controller puts it, where it says), turned about the base by ``yaw_deg`` as the guard turns it."""
+    transforms = arm_link_transforms_mm(model, np.asarray(joints, dtype=np.float64), arm)
     if transforms is None:
         return None
     c, s = math.cos(math.radians(yaw_deg)), math.sin(math.radians(yaw_deg))
@@ -376,7 +377,7 @@ def self_envelope(
     if kinematics is None:
         return None
     model, yaw_deg = kinematics
-    frames = yawed_link_transforms_mm(model, joints, yaw_deg)
+    frames = yawed_link_transforms_mm(model, joints, yaw_deg, arm=arm)
     capsules = arm_capsules(model)
     hand = preflight.planner_hand(arm)
     if frames is None or capsules is None or not chosen(hand):

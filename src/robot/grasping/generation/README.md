@@ -202,6 +202,13 @@ counts by obstacle set: a neighbour the camera saw is `ALL_COLLIDED`, the suppor
 (`SIDE_APPROACH_SCORE_WEIGHTS`), vertical on a tie, and a tilt of 15 deg or more only through space a depth ray saw
 (`corridor_seen`). Both off is the calculator of before, byte for byte.
 
+A finger may come to the measured surface of a part a prompt named (the owner, 2026-10-05: "Finger dürfen
+streifen"), and where the cell names the parts beside it too (`robot.grasping.name_neighbours`, the owner,
+2026-10-12) the pick reads them off the depth (`parts_beside.py`): what stands over the supports, outside the named
+masks, seen whole, apart from anything larger, within 120 mm of a named part and of a part's size and shape. Their
+masks reach the calculator with the named parts' (`PerceptionFrame.parts_beside`), so their points make soft boxes
+too, and the camera world names its boxes by the same points.
+
 ## What it does not do
 
 The deformable seam is inert. No caller passes `deformable_strategy=`, so the gate is skipped, and
@@ -224,6 +231,7 @@ path never pretends otherwise.
 | [_candidate_generator.py](_candidate_generator.py) | the silhouette, geometry-first and dense candidate generators |
 | [support_footprint.py](support_footprint.py) | the support-footprint stage; a candidate's `pose()` is the base pose `Robot.pick` takes; its refusal counts by cause (`REFUSAL_CAUSES`) and the side approaches; a search's plan, units and ranking (`plan_support_footprint`, `run_units`, `rank_found`), which any process may run |
 | [scene_obstacles.py](scene_obstacles.py) | what the camera saw beside the part as obstacles, the support taken out, and `why_no_grasp`; the seen test of a frame (`SeenInTheFrame`), which a worker process can be handed |
+| [parts_beside.py](parts_beside.py) | `parts_beside`, `why_no_part_beside`, `LABEL`: the parts beside the named ones, read off the depth on the supports (`robot.grasping.name_neighbours`) |
 | [footprint_rim.py](footprint_rim.py) | `footprint_rim`, `rim_px`, `FootprintRim`, `FOOTPRINT_RIM_MAX_SHARE`: a mask less its rim, for the support-footprint stage's input alone (`robot.grasping.geometry.footprint_rim_mm`) |
 | [footprint_hull.py](footprint_hull.py) | `hull_points`, `unread_pixels`, `HULL_LIFT_MM`: the mask pixels the stage does not read, placed in the part's visual hull, for its input alone |
 | [_support_footprint_stage.py](_support_footprint_stage.py) | the adapter that brings that stage's base-frame candidates into the camera frame |
