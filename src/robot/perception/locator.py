@@ -635,7 +635,7 @@ class Located:
         model = _support_model(frame, robot_config, points)
         support = float(scene.support_height_mm)
         if model is not None and points.shape[0]:
-            under = model.height_under(np.asarray(points, dtype=np.float64)[:, :2])
+            under = model.height_under(np.asarray(points, dtype=np.float64).reshape(-1, 3))
             if under is not None and float(under) > support:
                 support = float(under)
         seen = scene_obstacle_points(frame.depth_mm, mask, frame.intrinsics, frame.camera_to_base, rules=rules,
@@ -833,6 +833,11 @@ class _DepthOnly:
                 f"camera {self._camera!r} answered with a stereo pair, which carries no depth of its own, so nothing "
                 "it sees can be placed in BASE: locate with an RGB-D rig")
         return frame
+
+    def kept(self, frame: Any) -> Any:
+        """The frame kept to measure with, as the handle keeps it (``Camera.kept``); the frame itself without one."""
+        keep = getattr(self._handle, "kept", None)
+        return keep(frame) if callable(keep) else frame
 
     def get_intrinsics(self) -> Any:
         return self._handle.get_intrinsics()

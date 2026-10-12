@@ -88,6 +88,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only: self_envelope imports this m
 __all__ = [
     "DECLARED_SURFACE_MM",
     "MAX_DECLARED_BAND_MM",
+    "SELF_FILTER_MIN_MM",
     "DeclaredBody",
     "DepthView",
     "DropReason",
@@ -107,6 +108,7 @@ __all__ = [
     "build_voxel_field",
     "has_depth",
     "seen_part_boxes",
+    "self_filter_padding",
     "target_keep_out_box",
     "voxel_grid_extent",
 ]
@@ -145,6 +147,13 @@ DECLARED_SURFACE_MM = 5.0
 #: 0.85 m (review of 2026-09-30): past the padding, a box of it is refused where the arm stands, and nothing in the
 #: refusal said it might be the arm. Nothing is dropped or kept by it.
 _ROBOT_GAP_MM = 15.0
+
+#: The least the self filter takes around the robot's links, millimetres, whatever the boxes are grown by
+#: (``margin_mm``). The filter was padded by the box margin, and the cell's boxes are grown by 6 mm since 2026-10-08:
+#: the base and the shoulder, seen 6 to 20 mm off where the model stands, stood as boxes the shoulder stood in, and
+#: home, a carry over the rim and a place were refused with a part in the jaws (the owner's logs, 2026-10-08 and
+#: 2026-10-12). A camera placed a degree off sees a link 15 mm off at 0.85 m (review of 2026-09-30).
+SELF_FILTER_MIN_MM = 15.0
 
 #: How much nearer than a point the robot's own body has to be seen along a camera's ray before the point counts as
 #: hidden by it, and how much further the cell's surface has to be seen before the point counts as seen free, as a
@@ -777,19 +786,60 @@ class SelfBody:
             inside |= near
         return inside
 
-    def on_itself(self, points_mm: np.ndarray, *, within_mm: float, from_frame: int = 0) -> np.ndarray:
+    def cut_by(self, centre_mm: Sequence[float], dims_mm: Sequence[float], yaw_rad: float) -> bool:
+        """Whether a box, turned by ``yaw_rad`` about BASE Z, holds a point of a link's own surface: the box cuts the
+        robot where this body stands. Only links that carry their surface are asked (the base and the arm's links); a
+        box that holds none of their points does not cut them.
+
+        Args:
+            centre_mm (Sequence[float]): The box's centre in BASE, millimetres.
+            dims_mm (Sequence[float]): Its full sizes along its turned axes, millimetres.
+            yaw_rad (float): Its turn about BASE Z, radians.
+
+        Returns:
+            bool: True where a point of a link's surface lies inside it.
+        """
+        if not self.surfaces:
+            return False
+        centre = np.asarray(centre_mm, dtype=np.float64)
+        half = np.asarray(dims_mm, dtype=np.float64) / 2.0
+        cos, sin = math.cos(float(yaw_rad)), math.sin(float(yaw_rad))
+        reach = float(np.linalg.norm(half))
+        for index, refined in enumerate(self.surfaces):
+            if refined is None:
+                continue
+            start, end = self.segments_mm[index]
+            axis = end - start
+            length_squared = float(axis @ axis)
+            travel = (float(np.clip(((centre - start) @ axis) / length_squared, 0.0, 1.0)) if length_squared > 0.0
+                      else 0.0)
+            if float(np.linalg.norm(centre - (start + travel * axis))) > float(self.radii_mm[index]) + reach:
+                continue
+            to_link, surface = refined
+            from_link = np.linalg.inv(to_link)
+            relative = np.asarray(surface.surface_mm) @ from_link[:3, :3].T + from_link[:3, 3] - centre
+            along = cos * relative[:, 0] + sin * relative[:, 1]
+            across = -sin * relative[:, 0] + cos * relative[:, 1]
+            if bool(np.any((np.abs(along) <= half[0]) & (np.abs(across) <= half[1])
+                           & (np.abs(relative[:, 2]) <= half[2]))):
+                return True
+        return False
+
+    def on_itself(self, points_mm: np.ndarray, *, within_mm: float, from_frame: int = 0,
+                  also_frames: Sequence[int] = ()) -> np.ndarray:
         """Which of ``points_mm`` lie on the robot's own body, without the padding: within ``within_mm`` of a link's
         surface where its capsule carries one, inside the capsule as fitted (its radius less the padding) where not, a
         hand's or a camera's sphere. ``(N,)`` boolean. A column sampled more finely than twice ``within_mm`` meets every
         link it passes through, the surface being closed. ``from_frame`` asks only the capsules carried from that frame
-        of the chain on (all of them where the body knows no frames)."""
+        of the chain on, and those on ``also_frames`` (all of them where the body knows no frames)."""
         points = np.asarray(points_mm, dtype=np.float64).reshape(-1, 3)
         on = np.zeros(points.shape[0], dtype=bool)
         if points.shape[0] == 0:
             return on
         padding = float(self.surface_padding_mm) if self.surfaces else 0.0
+        also = {int(frame) for frame in also_frames}
         for index, ((start, end), radius) in enumerate(zip(self.segments_mm, self.radii_mm)):
-            if self.frames and int(self.frames[index]) < int(from_frame):
+            if self.frames and int(self.frames[index]) < int(from_frame) and int(self.frames[index]) not in also:
                 continue
             axis = end - start
             length_squared = float(axis @ axis)
@@ -1500,7 +1550,7 @@ def build_perceived_boxes(
     # How far each point lies from the robot's own links, where it lies close: a box of nothing else may be the robot,
     # seen off where its model stands, which a refusal then says (``PerceivedBox.robot_gap_mm``).
     gaps = (
-        self_body.surface_gap_mm(points, within_mm=float(tuning.margin_mm) + _ROBOT_GAP_MM)
+        self_body.surface_gap_mm(points, within_mm=self_filter_padding(tuning.margin_mm) + _ROBOT_GAP_MM)
         if self_body is not None else np.full(points.shape[0], np.inf)
     )
 
@@ -1510,10 +1560,20 @@ def build_perceived_boxes(
     named_labels = [label for label, _ in named_trees]
     on_named = _on_named_parts(named_trees, points)
     candidates: list[PerceivedBox] = []
+    robot_itself = 0
     for chosen_points, part_yaw, columns in mapped:
         for column in columns:
             held = chosen_points[column.members]
             centre, dims = column.placed(part_yaw)
+            if (self_body is not None and held.size and bool(np.isfinite(gaps[held]).all())
+                    and self_body.cut_by(*_without_the_margin(centre, dims, float(tuning.margin_mm)), part_yaw)):
+                # Every point of it near the robot's links, and what they span, the margin left off, through one of
+                # them: the robot itself, seen off where its model stands. No object stands where the robot does (the
+                # owner, 2026-10-12). A fill of what the robot hid, which holds no point, is never the robot: under the
+                # base, the shoulder and the hand it is kept clear of them (``_STANDING_FRAMES``), and under the arm it
+                # stands for a rim the arm hides.
+                robot_itself += 1
+                continue
             label = (_dominant_label(lookups, kept_pixels[held], kept_view[held])
                      or _named_by_points(named_labels, on_named[held]))
             candidates.append(
@@ -1532,6 +1592,8 @@ def build_perceived_boxes(
                 )
             )
 
+    if robot_itself:
+        dropped_clusters[DropReason.SELF] = dropped_clusters.get(DropReason.SELF, 0) + robot_itself
     candidates.sort(key=lambda box: box.distance_mm)
     survivors = candidates[:budget]
     if len(candidates) > len(survivors):
@@ -2213,18 +2275,58 @@ def _stands_on_a_solid(points: np.ndarray, free_pixels: np.ndarray, model: Suppo
 
 
 #: The first frame of the chain whose capsules a fill keeps clear of (``height_map._under_the_robot``): wrist 1 on, with
-#: the hand, its camera and a carried part on the flange. What stands under the base, the shoulder and the arm keeps
-#: its fill: a rim the shoulder housing hides was the reason to fill (review of 2026-09-30).
+#: the hand, its camera and a carried part on the flange. What stands under the arm keeps its fill: a rim the shoulder
+#: housing hides was the reason to fill (review of 2026-09-30), and an upper arm or a forearm a fill was lowered under
+#: may come down onto it later.
 _MOVING_FROM_FRAME = 4
+#: The frames whose links a fill keeps clear of as well: the base (0) and the shoulder housing on it (1), which never
+#: move up or down, so a fill kept a margin under them stays under them. A rim the housing hides keeps its height under
+#: the housing (``height_map._under_the_robot`` lowers only what would reach into it): on the cell (2026-10-08 and
+#: 2026-10-12) the fills beside the base reached into the base and the shoulder, and the shoulder stood in them.
+_STANDING_FRAMES = (0, 1)
 #: How near a link's surface a sample lies and is on the link, millimetres: more than half the column's sample step.
 _ON_THE_LINK_MM = 3.0
 
 
+def self_filter_padding(margin_mm: float) -> float:
+    """How far around the robot's links a point the camera saw is still the robot, millimetres: the box margin, never
+    under :data:`SELF_FILTER_MIN_MM`.
+
+    Args:
+        margin_mm (float): What the boxes are grown by (``WorldBuildTuning.margin_mm``).
+
+    Returns:
+        float: The padding the self filter's body is built with (``SelfBody.from_frames``).
+    """
+    return max(float(margin_mm), SELF_FILTER_MIN_MM)
+
+
+#: The least a column's own extent is taken as when it is asked whether it cuts a link (:func:`_without_the_margin`),
+#: millimetres: twice the 4 mm a link's surface is laid at (``self_envelope._SURFACE_SPACING_MM``), so no surface passes
+#: between its points.
+_CUT_LEAST_MM = 8.0
+
+
+def _without_the_margin(centre_mm: Sequence[float], dims_mm: Sequence[float],
+                        margin_mm: float) -> "tuple[tuple[float, float, float], tuple[float, float, float]]":
+    """A column box less the margin it was grown by (``height_map.height_map_columns``): its sides and its top drawn
+    back to what its points span, its bottom where it stood, :data:`_CUT_LEAST_MM` at least each way, so a column of one
+    point still meets a link's surface laid every 4 mm."""
+    margin = float(margin_mm)
+    width = max(_CUT_LEAST_MM, float(dims_mm[0]) - 2.0 * margin)
+    depth = max(_CUT_LEAST_MM, float(dims_mm[1]) - 2.0 * margin)
+    height = max(_CUT_LEAST_MM, float(dims_mm[2]) - margin)
+    bottom = float(centre_mm[2]) - float(dims_mm[2]) / 2.0
+    return (float(centre_mm[0]), float(centre_mm[1]), bottom + height / 2.0), (width, depth, height)
+
+
 def _the_moving_robot(body: SelfBody) -> "Callable[[np.ndarray], np.ndarray]":
-    """Which BASE points lie on the robot's own body from the wrist on, as it stands now: the hand down in a bin, which
-    a fill must not run through (``height_map._under_the_robot``)."""
+    """Which BASE points lie on the robot's own body from the wrist on, and on its base and shoulder housing, as it
+    stands now: the hand down in a bin, and the shoulder over a rim beside the base, which a fill must not run through
+    (``height_map._under_the_robot``)."""
     def on(points_mm: np.ndarray) -> np.ndarray:
-        return body.on_itself(points_mm, within_mm=_ON_THE_LINK_MM, from_frame=_MOVING_FROM_FRAME)
+        return body.on_itself(points_mm, within_mm=_ON_THE_LINK_MM, from_frame=_MOVING_FROM_FRAME,
+                              also_frames=_STANDING_FRAMES)
     return on
 
 

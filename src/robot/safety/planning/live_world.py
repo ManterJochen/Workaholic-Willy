@@ -79,6 +79,7 @@ from src.robot.safety.planning.perceived import (
     WorldBuildTuning,
     build_perceived_boxes,
     has_depth,
+    self_filter_padding,
     target_keep_out_box,
 )
 from src.robot.safety.planning.world import merge_planner_worlds, planner_cuboid
@@ -839,7 +840,7 @@ class LivePlannerWorld:
                     tuning=self.tuning,
                     self_body=SelfBody.from_frames(
                         self_envelope.frames_mm, self_envelope.capsules,
-                        padding_mm=float(self.tuning.margin_mm),
+                        padding_mm=self_filter_padding(self.tuning.margin_mm),
                     ),
                     near_point_mm=near_point_mm,
                     keep_out=keep_out,
@@ -1143,7 +1144,8 @@ class LivePlannerWorld:
                 name=held.name,
                 timestamp=held.frame.timestamp,
                 self_body=SelfBody.from_frames(
-                    held.envelope.frames_mm, held.envelope.capsules, padding_mm=float(self.tuning.margin_mm),
+                    held.envelope.frames_mm, held.envelope.capsules,
+                    padding_mm=self_filter_padding(self.tuning.margin_mm),
                 ),
                 **_placement_error(held.camera, held.frame),
             )

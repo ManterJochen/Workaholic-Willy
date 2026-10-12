@@ -99,12 +99,12 @@ from src.models.constants import MODELS_LOG_DIR, VLM_GROUNDER_LOG_FILE
 from src.models.detection.types import Detection
 from src.utility.log_cfg import create_logger
 
-from .parsing import AMBIGUOUS_LABEL, CoordinateSpace, parse_grounding_response
+from .parsing import AMBIGUOUS_LABEL, REPEAT_IOU, CoordinateSpace, box_iou, parse_grounding_response
 
 __all__ = [
     "CLASS_LIST_SEPARATOR", "DECODE_GRAPHS", "GROUNDING_CLASS_LIST_INSTRUCTION", "GROUNDING_INSTRUCTION",
-    "GROUNDING_MAX_NEW_TOKENS", "Qwen3VLGrounder", "answer_array_closed", "answer_object_closed", "class_list_prompt",
-    "classes_of", "grounding_instruction",
+    "GROUNDING_MAX_NEW_TOKENS", "Qwen3VLGrounder", "REPEATED_BOXES_TO_STOP", "answer_array_closed", "answer_loops",
+    "answer_object_closed", "class_list_prompt", "classes_of", "grounding_instruction",
 ]
 
 #: A file sink: nothing in this repo configures the root logger, so a bare ``getLogger`` would
@@ -119,6 +119,15 @@ _LOG = create_logger(__name__, log_file=VLM_GROUNDER_LOG_FILE, log_dir=MODELS_LO
 #: tokenizer, 2026-10-06). 2048 holds about 40; greedy decoding stops at the answer's end, so a short answer costs
 #: no more than before.
 GROUNDING_MAX_NEW_TOKENS = 2048
+
+#: How many boxes in a row, each the same object as a box written before it (``parsing.REPEAT_IOU``), end a grounding
+#: answer: the model has begun to loop. On the cell (2026-10-12) Qwen wrote 3 or 4 boxes of the crate and then the same
+#: two boxes in turn until the 2048 tokens ran out, 52 boxes in 12 to 28 s, in 10 of 157 answers. A part written
+#: twice in a long list happens; three in a row has not, outside a loop.
+REPEATED_BOXES_TO_STOP = 3
+#: One ``bbox_2d`` array of a grounding answer as written, its four numbers.
+_BBOX_2D = re.compile(r'"bbox_2d"\s*:\s*\[\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*,'
+                      r'\s*(-?\d+(?:\.\d+)?)\s*\]')
 
 #: The instruction wrapped around every operator prompt.
 #:
@@ -259,6 +268,33 @@ def answer_array_closed(text: str) -> bool:
         elif char == "}":
             braces -= 1
     return False
+
+
+def answer_loops(text: str) -> bool:
+    """Whether a grounding answer has begun to loop, so it may end here: its last :data:`REPEATED_BOXES_TO_STOP` boxes
+    each the same object as a box written before it (``parsing.REPEAT_IOU``). The parser reads the whole boxes before
+    the cut and drops the repeats among them, so the answer reads as the boxes it had written before the loop.
+
+    Args:
+        text (str): The answer as written so far.
+
+    Returns:
+        bool: True once the newest boxes only repeat earlier ones.
+    """
+    boxes = [[float(value) for value in match.groups()] for match in _BBOX_2D.finditer(text)]
+    run = 0
+    for index in range(len(boxes) - 1, 0, -1):
+        if not any(box_iou(boxes[index], earlier) >= REPEAT_IOU for earlier in boxes[:index]):
+            return False
+        run += 1
+        if run >= REPEATED_BOXES_TO_STOP:
+            return True
+    return False
+
+
+def _closed_or_looping(text: str) -> bool:
+    """Whether a grounding answer may end here: its array closed (:func:`answer_array_closed`), or it loops."""
+    return answer_array_closed(text) or answer_loops(text)
 
 
 def answer_object_closed(text: str) -> bool:
@@ -1114,7 +1150,9 @@ class Qwen3VLGrounder:
                 return_dict=True, return_tensors="pt",
             ).to(model.device)
             prompt_length = int(inputs["input_ids"].shape[1])
-            stops = [_EndOfAnswer(processor, torch, prompt_length)] if stop_at_end else []
+            # A loop always ends the answer; its closing array only where ``stop_at_answer_end`` says so.
+            stops = [_EndOfAnswer(processor, torch, prompt_length,
+                                  closed=_closed_or_looping if stop_at_end else answer_loops)]
 
             with torch.inference_mode():
                 generated = self._greedy(
@@ -1331,6 +1369,9 @@ class Qwen3VLGrounder:
         # Timed around generate and parse together, because that span is what a caller waits for.
         started = time.perf_counter()
         answer, tokens = self._generate(image_rgb, prompt)
+        if answer_loops(answer):
+            _LOG.warning("VLM %s began to loop on %r: the same object written again %d times in a row, so the answer "
+                         "ends there after %d token(s)", self.model_id, prompt, REPEATED_BOXES_TO_STOP, tokens)
         detections = parse_grounding_response(
             answer, image_width=width, image_height=height, fallback_label=prompt,
             space=self.coordinate_space, classes=classes_of(prompt),

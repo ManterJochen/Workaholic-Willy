@@ -50,7 +50,9 @@ class FlatSupport:
     y_mm: "tuple[float, float]" = (-1000.0, 1000.0)
 
     def _covers(self, xy: Any) -> np.ndarray:
-        points = np.asarray(xy, dtype=np.float64).reshape(-1, 2)
+        # x and y alone, or a part's own points with their heights, as ``SupportModel.height_under`` takes them.
+        given = np.asarray(xy, dtype=np.float64)
+        points = given[:, :2] if given.ndim == 2 and given.shape[1] == 3 else given.reshape(-1, 2)
         return ((points[:, 0] >= self.x_mm[0]) & (points[:, 0] <= self.x_mm[1]) & (points[:, 1] >= self.y_mm[0])
                 & (points[:, 1] <= self.y_mm[1]))
 

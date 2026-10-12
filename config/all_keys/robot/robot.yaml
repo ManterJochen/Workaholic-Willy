@@ -1284,8 +1284,10 @@ robot:
         min_points: 12
 
         # Grown on every side of every perceived box, in mm. A box that is exactly the measured hull is
-        # a box the planner will graze, and depth noise at an edge is one-sided. The same padding is
-        # added around the robot's own body when the cameras' view of it is taken back out.
+        # a box the planner will graze, and depth noise at an edge is one-sided. The robot's own body is
+        # taken back out of the cameras' view by at least 15 mm about every link, by this where wider
+        # (the owner's cell grows its boxes by 6 mm, and its base and shoulder, seen 6 to 20 mm off,
+        # stood as boxes: 2026-10-08 and 2026-10-12).
         # [default: 15.0]
         margin_mm: 8.0
 

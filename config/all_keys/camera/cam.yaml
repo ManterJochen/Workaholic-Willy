@@ -457,6 +457,18 @@ cameras:
           # [default: 1]
           hole_filling_mode: 1
 
+          # Takes out the depth pixels that mix a part's top with the floor behind it, found with the colour
+          # image (src/camera/setup/image_taking/mixed_pixels.py): a D400 reads the step at a part's edge as a
+          # ramp 15 to 25 pixels wide, which the camera world took for a skirt about every part, the box of a
+          # neighbour reaching back to the part's face (the owner's cell, 2026-10-12). A pixel goes only where
+          # it lies between a flat top no longer than a part and the flat floor behind it and the colour camera
+          # sees the floor there; a wall, a flank, a mat and a part the colour of its floor keep every pixel,
+          # and nothing gains a depth. Runs on the frame a caller keeps, after the alignment to colour, so only
+          # with `align_depth_to_color`; about 50 ms a frame. The switch is the owner's for the first cell test
+          # (2026-10-12) and goes once that test is through.
+          # [default: true]
+          mixed_pixels: true
+
         # The colour sensor's exposure, gain and white balance, written when the stream opens (the owner,
         # 2026-10-09). Every key null, as shipped, is today's full auto: nothing is written, and the camera
         # keeps what it holds. On full auto a D415 on the wrist brightens or darkens the same parts by 1 to

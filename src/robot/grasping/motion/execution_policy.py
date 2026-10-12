@@ -705,6 +705,25 @@ class GraspExecutionPolicy:
             return f"the grasp could not be judged ahead ({type(exc).__name__}: {exc})"
         return str(said or "")
 
+    def line_refusal_held(self, grasp: GraspPoint) -> str:
+        """Why the line down to ``grasp`` would be refused in the world the arm's last refresh built, with no new frame
+        (``line_down_refusal`` of the UR arm): ``""`` where it would run, and on an arm that does not judge it so, a
+        camera-frame grasp or an arm that keeps no line. The pick asks it of a next grasp before the whole judgement
+        (:meth:`refusal_ahead`). Nothing moves and nothing is commanded."""
+        judge = getattr(self.arm, "line_down_refusal", None)
+        if not callable(judge) or grasp.frame is not GraspFrame.BASE:
+            return ""
+        reading = line_motion_of(self.arm)
+        if reading is None or reading.motion is LineMotion.NOT_KEPT:
+            return ""
+        approach = self._build_waypoints(grasp)[:-self.retreat_steps]
+        try:
+            return str(judge(standoff=approach[0], grasp=approach[-1]) or "")
+        except CameraWorldUnavailable:
+            raise
+        except Exception:  # noqa: BLE001 (no early answer: the whole judgement follows and says why)
+            return ""
+
     def standoff_of(self, grasp: GraspPoint) -> Pose:
         """The standoff over ``grasp``, in the grasp's frame: the first pose :meth:`execute` commands, ``standoff_mm``
         back along the approach, turned as the grasp closes (the twist of ``align_closing_to_base_x`` included). Nothing

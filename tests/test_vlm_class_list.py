@@ -262,8 +262,9 @@ class TheAnswerFailsClosedTests(unittest.TestCase):
         self.assertEqual([AMBIGUOUS_LABEL] * 3, [label for label, _ in _boxes(answer, classes=self.CLASSES)])
 
     def test_one_description_boxed_twice_keeps_it(self) -> None:
+        """And the second box, the same object written again, goes (2026-10-12)."""
         answer = _answer(([100, 100, 200, 200], "green part"), ([102, 100, 200, 200], "Green  Part"))
-        self.assertEqual(["green part", "Green  Part"], [label for label, _ in _boxes(answer, classes=self.CLASSES)])
+        self.assertEqual(["green part"], [label for label, _ in _boxes(answer, classes=self.CLASSES)])
 
     def test_a_box_named_by_none_is_ambiguous(self) -> None:
         answer = _answer(([100, 100, 200, 200], None), ([400, 100, 500, 200], "red part"))

@@ -38,6 +38,10 @@ package of 2026-10-09) fails closed where a box is no one description's: a box w
 every box of a group that overlaps by :data:`AMBIGUOUS_IOU` or more under more than one
 description, is labelled :data:`AMBIGUOUS_LABEL`. Such a box stays an obstacle and is never a
 target, since no description is that word. An answer to one description is read as it always was.
+
+A box that repeats one written before it under the same description (:data:`REPEAT_IOU`) is the same
+object written again and is dropped: a model that loops writes it again and again, and on the cell
+(2026-10-12) Qwen answered 52 boxes of 4 objects for "each separate gray cube in the blue bin".
 """
 
 from __future__ import annotations
@@ -63,9 +67,11 @@ _LOG = create_logger("VLMGroundingParser", log_file=VLM_PARSING_LOG_FILE, log_di
 __all__ = [
     "AMBIGUOUS_IOU",
     "AMBIGUOUS_LABEL",
+    "REPEAT_IOU",
     "VLM_NOMINAL_SCORE",
     "CoordinateSpace",
     "GRID_SIZE",
+    "box_iou",
     "claimed_once",
     "parse_grounding_response",
     "extract_json_payload",
@@ -103,6 +109,11 @@ AMBIGUOUS_LABEL = "ambiguous"
 #: Two parts side by side overlap far less, and one object boxed twice far more. A choice, not a
 #: measurement.
 AMBIGUOUS_IOU = 0.7
+
+#: How much a box overlaps one written before it under the same description, as intersection over union, to be that
+#: object written again. Two parts side by side, even pressed together in a crate, overlap far less; the loop the cell
+#: met wrote two boxes of one cube in turn, 0.87 apart (2026-10-12). A choice, not a measurement.
+REPEAT_IOU = 0.8
 
 #: ```json ... ``` or bare ``` ... ``` fences, which instruct-tuned models add unprompted.
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
@@ -214,8 +225,16 @@ def _label_from(item: dict[str, Any], fallback: str) -> str:
     return fallback
 
 
-def _iou(first: list[float], second: list[float]) -> float:
-    """Intersection over union of two ``[x0, y0, x1, y1]`` boxes, each at least a pixel wide and tall."""
+def box_iou(first: Sequence[float], second: Sequence[float]) -> float:
+    """Intersection over union of two ``[x0, y0, x1, y1]`` boxes; 0 for boxes that do not overlap or have no area.
+
+    Args:
+        first (Sequence[float]): One box, ``[x0, y0, x1, y1]``.
+        second (Sequence[float]): The other, in the same space.
+
+    Returns:
+        float: The shared area over the area the two cover together, from 0 to 1.
+    """
     width = min(first[2], second[2]) - max(first[0], second[0])
     height = min(first[3], second[3]) - max(first[1], second[1])
     if width <= 0.0 or height <= 0.0:
@@ -224,6 +243,20 @@ def _iou(first: list[float], second: list[float]) -> float:
     union = ((first[2] - first[0]) * (first[3] - first[1]) + (second[2] - second[0]) * (second[3] - second[1])
              - inter)
     return inter / union if union > 0.0 else 0.0
+
+
+def _without_repeats(detections: list[Detection]) -> tuple[list[Detection], int]:
+    """The boxes in their order, every one dropped that repeats a box kept before it under the same description
+    (:data:`REPEAT_IOU`, descriptions compared as words), and how many were dropped. An :data:`AMBIGUOUS_LABEL` box is
+    an obstacle no rule takes, and every one is kept, as :func:`claimed_once` keeps them."""
+    kept: list[Detection] = []
+    for detection in detections:
+        words = " ".join(detection.label.casefold().split())
+        if detection.label != AMBIGUOUS_LABEL and any(" ".join(other.label.casefold().split()) == words and box_iou(detection.box, other.box) >= REPEAT_IOU
+               for other in kept):
+            continue
+        kept.append(detection)
+    return kept, len(detections) - len(kept)
 
 
 def claimed_once(detections: list[Detection], prompt: str) -> list[Detection]:
@@ -248,7 +281,7 @@ def claimed_once(detections: list[Detection], prompt: str) -> list[Detection]:
 
     for first in range(count):
         for second in range(first + 1, count):
-            if _iou(detections[first].box, detections[second].box) >= AMBIGUOUS_IOU:
+            if box_iou(detections[first].box, detections[second].box) >= AMBIGUOUS_IOU:
                 group[root(second)] = root(first)
     said: dict[int, set[str]] = {}
     for index, detection in enumerate(detections):
@@ -357,6 +390,13 @@ def parse_grounding_response(
             _LOG.warning("class list %r: %d box(es) named by no description, each %r, an obstacle and never a target",
                          fallback_label, nameless, AMBIGUOUS_LABEL)
         detections = claimed_once(detections, fallback_label)
+
+    # After the class list is read: a box that repeats another still makes their object ambiguous first.
+    detections, repeated = _without_repeats(detections)
+    if repeated:
+        # Warning level: the model looped, and each of these would otherwise have been a part of its own.
+        _LOG.warning("%d box(es) of %r repeat an earlier box under the same description (IoU >= %.2f) and are "
+                     "dropped: the model wrote the same object again", repeated, fallback_label, REPEAT_IOU)
 
     if dropped_no_box or dropped_degenerate:
         # Warning level because each of these was a box the model asserted and this parser refused.

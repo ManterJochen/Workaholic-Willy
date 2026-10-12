@@ -39,12 +39,14 @@ if TYPE_CHECKING:  # pragma: no cover (typing only: perceived imports this modul
 __all__ = [
     "DETECTION_STRIDE",
     "MAX_SUPPORT_TILT_DEG",
+    "UNDER_A_PART_MM",
     "BenchReading",
     "SupportModel",
     "SupportSolid",
     "SupportSurface",
     "detection_step",
     "find_supports",
+    "support_ceiling_mm",
 ]
 
 #: The most a support may tilt from level, degrees. One bound for the camera world and the push
@@ -85,6 +87,27 @@ _BENCH_DEPTH_MM = 50.0
 _BENCH_CHECK_EXTRA_MM = 10.0
 #: The bench check says so where at least this many of its cells read lower than the allowance under the plane.
 BENCH_LOW_LEAST_CELLS = 16
+#: How far over the middle of a part's heights a support may read and still be what the part stands on, millimetres:
+#: the band a surface's own pixels spread over (``plane_clearance_mm``). A part stands on what lies under it, so a
+#: surface read higher than half of its points is one beside it that its cloud reaches over: the bottom of a crate turned
+#: over beside the part, 185 mm up, onto which a side look's mask had run, and every grasp of the part was refused as
+#: standing under its support (the owner's cell, 2026-10-12 10:14).
+UNDER_A_PART_MM = 5.0
+
+
+def support_ceiling_mm(points_mm: Any) -> float | None:
+    """The highest a support under a part may read, BASE z millimetres: the median of the part's heights and
+    :data:`UNDER_A_PART_MM`.
+
+    Args:
+        points_mm (Any): The part's own points, ``(N, 3)`` BASE millimetres.
+
+    Returns:
+        float | None: The ceiling, or ``None`` where no point has a finite height.
+    """
+    heights = np.asarray(points_mm, dtype=np.float64).reshape(-1, 3)[:, 2]
+    heights = heights[np.isfinite(heights)]
+    return float(np.median(heights)) + UNDER_A_PART_MM if heights.size else None
 
 
 def detection_step(pixel_stride: int) -> int:
@@ -387,16 +410,32 @@ class SupportModel:
                 best[higher] = reading[higher]
         return planes if np.isfinite(best).any() else None
 
-    def height_under(self, foot_xy: Any) -> float | None:
+    def height_under(self, foot: Any) -> float | None:
         """The highest local reading of a support under a part's foot, millimetres; ``None`` where none lies under it.
 
-        What the calculator takes as the support under a part, beside the part's own foot (the higher wins)."""
-        points = np.asarray(foot_xy, dtype=np.float64).reshape(-1, 2)
+        What the calculator takes as the support under a part, beside the part's own foot (the higher wins). Handed the
+        part's own points, ``(N, 3)``, it takes no reading over :func:`support_ceiling_mm` of them: a surface higher
+        than half of the part is beside it, never under it. Handed ``(N, 2)`` BASE x and y, every reading counts.
+
+        Args:
+            foot (Any): The part's points, ``(N, 3)`` BASE millimetres, or their x and y alone, ``(N, 2)``.
+
+        Returns:
+            float | None: The highest reading under them, or ``None`` where no support lies under any.
+        """
+        given = np.asarray(foot, dtype=np.float64)
+        whole = given.ndim == 2 and given.shape[1] == 3
+        points = given[:, :2] if whole else given.reshape(-1, 2)
+        ceiling = support_ceiling_mm(given) if whole else None
         best: float | None = None
         for solid, covered in self._covering(points):
             if covered.any():
-                high = float(solid.reading_at(points[covered]).max())
-                best = high if best is None else max(best, high)
+                readings = solid.reading_at(points[covered])
+                if ceiling is not None:
+                    readings = readings[readings <= ceiling]
+                if readings.size:
+                    high = float(readings.max())
+                    best = high if best is None else max(best, high)
         return best
 
     def surface_under(self, foot_xy: Any) -> SupportSurface | None:

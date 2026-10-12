@@ -229,6 +229,47 @@ class RobotHomeNamesTheGateTests(unittest.TestCase):
         self.assertIn("RuntimeError: controller dropped", report.message)
         arm._conn.moveJ.assert_not_called()
 
+    def test_a_home_after_the_control_program_ended_runs_on_a_fresh_one(self) -> None:
+        """The cell, 2026-10-12: after a stop on the pendant every home read no FK and was refused until the cell was
+        taken down. A home a person asks for now starts a fresh control program and reads the FK again."""
+        arm = _arm()
+        arm._conn.fk.side_effect = [RuntimeError("getForwardKinematics() function did not succeed!"), list(_INSIDE)]
+        arm._conn.is_protective_stopped.return_value = False
+        arm._conn.is_emergency_stopped.return_value = False
+        arm._conn.is_program_running.return_value = False
+
+        report = _home(arm)
+
+        self.assertTrue(report.ok, report.render())
+        arm._conn.restart_control_script.assert_called_once_with()
+        arm._conn.moveJ.assert_called()
+
+    def test_a_home_in_a_protective_stop_says_to_clear_it_and_restarts_nothing(self) -> None:
+        arm = _arm()
+        arm._conn.fk.side_effect = RuntimeError("getForwardKinematics() function did not succeed!")
+        arm._conn.is_protective_stopped.return_value = True
+        arm._conn.is_emergency_stopped.return_value = False
+        arm._conn.is_program_running.return_value = False
+
+        report = _home(arm)
+
+        self.assertIs(MotionStatus.CONTROLLER_REJECTED, report.status, report.render())
+        self.assertIn("protective stop: clear it at the pendant", report.message)
+        arm._conn.restart_control_script.assert_not_called()
+        arm._conn.moveJ.assert_not_called()
+
+    def test_a_program_that_still_runs_is_not_restarted(self) -> None:
+        arm = _arm()
+        arm._conn.fk.side_effect = RuntimeError("controller dropped")
+        arm._conn.is_protective_stopped.return_value = False
+        arm._conn.is_emergency_stopped.return_value = False
+        arm._conn.is_program_running.return_value = True
+
+        report = _home(arm)
+
+        self.assertIs(MotionStatus.CONTROLLER_REJECTED, report.status, report.render())
+        arm._conn.restart_control_script.assert_not_called()
+
     def test_a_joint_read_that_raises_is_a_connection_error_not_a_raise(self) -> None:
         """``URConnection.get_joint_positions`` raises ``RuntimeError``, which is not a robot error the facade catches."""
         arm = _arm()

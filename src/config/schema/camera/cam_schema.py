@@ -156,6 +156,12 @@ class RealSensePostProcessingConfig(StrictModel):
     temporal: bool = True
     hole_filling: bool = False
     hole_filling_mode: int = Field(default=1, ge=0, le=2)
+    #: Takes out the depth pixels that mix a part's top with the floor behind it, found with the colour image
+    #: (``src/camera/setup/image_taking/mixed_pixels.py``): a D400 reads the step at a part's edge as a ramp 15 to 25
+    #: pixels wide, which the camera world took for a skirt about every part (the owner's cell, 2026-10-12). Runs on the
+    #: frame a caller keeps, after the alignment to colour, so only where ``align_depth_to_color`` is on. On by default;
+    #: the switch is the owner's for the first cell test (2026-10-12) and goes once that test is through.
+    mixed_pixels: bool = True
 
 
 class RealSenseColorConfig(StrictModel):

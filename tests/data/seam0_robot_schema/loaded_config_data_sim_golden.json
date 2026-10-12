@@ -180,7 +180,8 @@
               "spatial": true,
               "temporal": true,
               "hole_filling": false,
-              "hole_filling_mode": 1
+              "hole_filling_mode": 1,
+              "mixed_pixels": true
             },
             "color": {
               "auto_exposure": null,

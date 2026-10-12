@@ -624,8 +624,10 @@ class PerceivedWorldConfig(StrictModel):
     min_points: int = Field(default=12, ge=1, le=100_000)
 
     #: Grown on every side of every box, millimetres. A box that is exactly the measured hull is a
-    #: box the planner will graze, and depth noise at an edge is one-sided. The same padding is added
-    #: around the robot's own body when the cameras' view of it is taken back out.
+    #: box the planner will graze, and depth noise at an edge is one-sided. The robot's own body is
+    #: taken back out of the cameras' view by at least 15 mm about every link, by this where wider
+    #: (``perceived.self_filter_padding``): the owner's cell grows its boxes by 6 mm, and its base and
+    #: shoulder, seen 6 to 20 mm off, stood as boxes (2026-10-08 and 2026-10-12).
     margin_mm: float = Field(default=8.0, ge=0.0, le=500.0)
 
     #: The fingers may come to a detected neighbour part (the owner, 2026-10-05: "Finger dürfen streifen").

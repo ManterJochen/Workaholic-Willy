@@ -2207,7 +2207,7 @@ class GraspCalculator:
             else:
                 foot = np.zeros((0, 3))
             if foot.shape[0]:
-                value = support_model.height_under(foot[:, :2])
+                value = support_model.height_under(foot)
                 under = None if value is None else float(value)
         if under is not None and (plane is None or under > plane):
             telemetry["scene_support_mm"] = round(under, 2)

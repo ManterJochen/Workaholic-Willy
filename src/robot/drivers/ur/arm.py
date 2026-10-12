@@ -1414,6 +1414,12 @@ class URRobotArm(RobotArm):
         home whose grasp centre lies a tool length outside. An FK that cannot be read refuses,
         because an unchecked home is what this gate stops. An arm that is not connected has no
         FK to ask; the path judge and the drive refuse it after this.
+
+        An FK that cannot be read because the control program on the controller ended, while the controller is in no
+        stop (a stop on the pendant, a protective stop a person cleared), is read again on a fresh program
+        (:meth:`_fk_on_a_fresh_program`): the home is a person's command, and a fresh program moves nothing. On the
+        cell (2026-10-12) every home after such a stop was refused until the cell was taken down and connected again.
+        A controller still in a protective or emergency stop is named, with what clears it.
         """
         if self._preflight is not None:
             rejected = self._preflight.gate_joint_target(joints, arm=self)
@@ -1430,7 +1436,11 @@ class URRobotArm(RobotArm):
         if not self._conn.is_connected:
             return None
         try:
-            reported = URPose.from_ur_list(self._conn.fk(joints.tolist()), label="home")
+            try:
+                flange = self._conn.fk(joints.tolist())
+            except Exception as exc:  # noqa: BLE001 (read again on a fresh program, or refused below)
+                flange = self._fk_on_a_fresh_program(joints, exc)
+            reported = URPose.from_ur_list(flange, label="home")
             home_pose = self._coerce_urpose(self._pose_from_controller(reported, label="home"))
             inside = self._guard.is_inside_workspace(home_pose)
         except Exception as exc:  # noqa: BLE001 (FK unavailable must not silently wave the move through)
@@ -1449,6 +1459,48 @@ class URRobotArm(RobotArm):
             MotionStatus.WORKSPACE_REJECTED, MotionCommand.MOVE_HOME, target_joints=joints,
             message=self._home_outside_the_box(home_pose),
         )
+
+    def _fk_on_a_fresh_program(self, joints: JointPositions, failed: BaseException) -> list[float]:
+        """The controller's FK of ``joints`` read again where the control program had ended (:meth:`_home_refusal`).
+
+        Where the controller stands in a protective or emergency stop, or its program still runs, or its state cannot
+        be read, nothing is restarted and an error says so; a fresh program is started only where the program ended
+        with the controller in no stop (``URConnection.restart_control_script``, about 2 s), and the FK read once more.
+
+        Args:
+            joints (JointPositions): The home configuration.
+            failed (BaseException): What the first read raised.
+
+        Returns:
+            list[float]: The FK the controller answered on the fresh program.
+
+        Raises:
+            RuntimeError: Nothing restarted, or the fresh program did not answer either; it names what was found.
+        """
+        conn = self._conn
+        try:
+            protective = conn.is_protective_stopped()
+            emergency = conn.is_emergency_stopped()
+            running = conn.is_program_running()
+        except Exception as exc:  # noqa: BLE001 (the state could not be read: nothing is restarted)
+            raise RuntimeError(f"{failed}; the controller's state could not be read ({exc})") from failed
+        if not all(isinstance(value, bool) for value in (protective, emergency, running)):
+            raise RuntimeError(str(failed)) from failed
+        if protective or emergency:
+            which = "a protective stop" if protective else "an emergency stop"
+            raise RuntimeError(f"{failed}; the controller is in {which}: clear it at the pendant, then ask for home "
+                               "again") from failed
+        if running:
+            raise RuntimeError(str(failed)) from failed
+        self.logger.warning("move_home: the control program on the controller had ended (a stop on the pendant, or a "
+                            "stop that was cleared); a fresh one is started for this home a person asked for, and "
+                            "nothing moves before every gate has run")
+        try:
+            conn.restart_control_script()
+            return conn.fk(joints.tolist())
+        except Exception as exc:  # noqa: BLE001 (refused by the caller, with both causes)
+            raise RuntimeError(f"{failed}; a fresh control program did not answer either ({type(exc).__name__}: "
+                               f"{exc})") from exc
 
     def _home_outside_the_box(self, home_pose: URPose) -> str:
         """Why a home grasp centre outside ``workspace_limits`` is refused: the box, and what it bounds."""
@@ -3810,6 +3862,40 @@ class URRobotArm(RobotArm):
         # Set last: the line and the lift judged again refresh the world, and a refresh forgets what was judged ahead.
         self._ahead_kept_its_branch = None if said or route.branch_change else _pose_key(standoff)
         return said
+
+    def line_down_refusal(self, *, standoff: Pose, grasp: Pose) -> str:
+        """Why the line down from ``standoff`` to ``grasp`` would be refused in the world the last refresh built, with no
+        new frame, judged from the configuration the route to the standoff ends on (:meth:`nearest_configuration`);
+        ``""`` where it would run, where nothing is judged ahead (as :meth:`grasp_refusal_ahead`) and where no
+        configuration reaches the standoff. Nothing moves.
+
+        A pick asks it of the next grasp of a look once the grasp before it was refused before anything was sent (the
+        owner, 2026-10-12: the guard's boxes decide what the next grasp is spared): its line down is judged against the
+        boxes that refused the one before, in milliseconds, before the world is built again for the whole grasp. On the
+        cell's crate (2026-10-12 13:45) nine grasps were refused one after the other by the same box, each after a world
+        of its own. Only a refusal at a part on the flange is said, every configuration's (:func:`_on_the_flange`); any
+        other is the whole judgement's to make.
+
+        Args:
+            standoff (Pose): Where the line starts, in ``Frame.BASE``.
+            grasp (Pose): Where it ends, in ``Frame.BASE``.
+
+        Returns:
+            str: The refusal, or ``""``.
+        """
+        if self._motion_planner != "curobo" or self._preflight is None or not self._conn.is_connected:
+            return ""
+        if standoff.frame is not Frame.BASE or grasp.frame is not Frame.BASE:
+            return ""
+        try:
+            near = [float(v) for v in self.nearest_configuration(standoff).values]
+        except Exception:  # noqa: BLE001 (no early answer: the whole judgement says why)
+            return ""
+        with self.held_world("the next grasp's line down, judged in the world the grasp before it was refused in"):
+            line = self._judge_linear_move(grasp, command=MotionCommand.MOVE_TO, commanded=False, start=(standoff, near))
+        if line is not None and _on_the_flange(line):
+            return f"the line down to the grasp would be refused ({line.status.value}: {line.message})"
+        return ""
 
     def _keep_the_route_ahead(self, planner: object, route: _Route, standoff: Pose, *, velocity: float) -> None:
         """Keep ``route``, judged last of a grasp judged ahead, for the move to ``standoff`` (:meth:`_drive_curobo`):

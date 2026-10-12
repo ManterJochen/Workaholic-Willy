@@ -26,10 +26,13 @@ Five cases a frame, built the way the cell builds its world (``camera_world_wiri
 * ``E`` two views: the frame held by the pick at its look, and the same camera's frame with the hand down at the target,
   each without the robot where it stood.
 
-``worlds_golden.json.gz`` is what the build of commit f771b9c, before any of the speed-ups, made of every case. Floats
-are held to 1e-9 mm (of a rotation, 1e-9), every count, name and label exactly. A change that is MEANT to change the
-world writes it again with ``python -m tests.test_a_faster_camera_world_builds_the_same_world --write-golden`` and says
-why in its commit; a speed-up never does.
+``worlds_golden.json.gz`` is what the build of commit f771b9c, before any of the speed-ups, made of every case, written
+again on 2026-10-12 where the self filter took 15 mm about the robot's links in place of the 8 mm margin: ``D`` and ``E``
+lost 32 to 42 points a view about the hand, and nothing else moved (the cell's phantom boxes beside the base, the
+owner's logs of 2026-10-08 and 2026-10-12). Floats are held to 1e-9 mm (of a rotation, 1e-9), every count, name and
+label exactly. A change that is MEANT to change the world writes it again with
+``python -m tests.test_a_faster_camera_world_builds_the_same_world --write-golden`` and says why in its commit; a
+speed-up never does.
 
 Beside the golden, each step that was made faster against the way it was done before, on clouds of every shape: the
 clustering against the walk over the cells it replaced, the voxel thinning's first keys against ``np.unique``, and the

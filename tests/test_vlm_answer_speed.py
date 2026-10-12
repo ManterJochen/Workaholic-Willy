@@ -31,7 +31,7 @@ from pydantic import ValidationError
 from src.config.schema.models.models_schema import PipelineConfig, VlmConfig
 from src.models.vlm import Qwen3VLGrounder, parse_grounding_response, shared_vlm
 from src.models.vlm.command import extract_command_object
-from src.models.vlm.qwen import _AnswerLookup, _EndOfAnswer, answer_array_closed, answer_object_closed
+from src.models.vlm.qwen import _AnswerLookup, _EndOfAnswer, answer_array_closed, answer_loops, answer_object_closed
 
 #: Answers Qwen3-VL-4B wrote on the cell's wrist frames (2026-10-08), and the code-fenced shape the cell's 8B writes.
 THREE_CUBES = ('[{"bbox_2d": [165, 400, 233, 502], "label": "each separate gray cube"}, '
@@ -355,9 +355,11 @@ class TheGroundersDecodingTests(unittest.TestCase):
         self.assertEqual([type(c).__name__ for c in call["stopping_criteria"]][-1], "_EndOfAnswer")
 
     def test_switched_off_the_answer_runs_to_the_model_s_own_end(self) -> None:
+        """Unless it loops: the loop's stop stays on (the cell, 2026-10-12)."""
         model = _Model()
         _look(_grounder(model, stop_at_answer_end=False))
-        self.assertNotIn("stopping_criteria", model.calls[0])
+        [stop] = model.calls[0]["stopping_criteria"]
+        self.assertIs(answer_loops, stop._closed)
 
     def test_the_lookup_hands_assisted_decoding_this_copy_s_candidates(self) -> None:
         model = _Model()

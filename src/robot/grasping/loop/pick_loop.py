@@ -1964,7 +1964,7 @@ class BinPickingOrchestrator:
                 return None
         if foot is None or not foot.shape[0]:
             return None
-        value = support_model.height_under(foot[:, :2])
+        value = support_model.height_under(foot)
         return None if value is None else float(value)
 
     def _support_model_of_frame(self, frame: PerceptionFrame, camera_to_base: "Transform | None") -> Any:
@@ -4916,7 +4916,7 @@ class BinPickingOrchestrator:
         """What the support reads under ``points``: the model's highest local reading under their foot, else the bench
         (the live world's declared plane, else ``grasping.support``'s height); ``None`` where nothing says."""
         if model is not None:
-            under = model.height_under(np.asarray(points, dtype=np.float64)[:, :2])
+            under = model.height_under(np.asarray(points, dtype=np.float64).reshape(-1, 3))
             if under is not None:
                 return float(under)
         return self._bench_top_mm()
@@ -7190,7 +7190,10 @@ class BinPickingOrchestrator:
         send kept the open hand's jaw region out of ``target_box``, the box the arm's live world keeps out for the part
         (:meth:`_held_target_box`); where the pick cannot tell, the hand counts as having entered it. Anything else ends
         the tries: a grasp executed, a close, a gripper fault, a carried lift the arm would refuse, a motion that was sent
-        and failed, a camera-frame refusal. A camera world that cannot vouch for the cell raises, as on every motion.
+        and failed, a camera-frame refusal. A camera world that cannot vouch for the cell raises, as on every motion. A
+        next grasp after one refused judged ahead, nothing sent, has its line down judged first in the world that one was
+        refused in, with no new frame (the policy's ``line_refusal_held``, the owner's 2026-10-12): refused there at a
+        part on the flange, it is not judged again, and the next grasp follows.
 
         Before each next grasp a stop asked for, and the controller, end the tries; a wrist pick (``looked``) whose try
         sent a motion is driven back to where it stood before the first on a judged move (:meth:`_back_to_the_look`),
@@ -7238,6 +7241,9 @@ class BinPickingOrchestrator:
         tries: list[dict[str, Any]] = []
         refused_all = True
         sent_last = False
+        # Whether the try before was refused judged ahead, nothing sent: the next grasp's line down is judged first in
+        # the world that try was refused in (``line_refusal_held``).
+        refused_ahead_last = False
         report: PolicyReport | None = None
         number = 0
         while True:
@@ -7262,6 +7268,23 @@ class BinPickingOrchestrator:
             _LOG.info("try %d of %d: %s (rank %d of the look's grasps)", number, len(queue),
                       "the grasp the look ranked first" if number == 1 else "the next grasp of the same look" if keeps
                       or not keeps_branches else "a grasp of the same look that waited for its change of branch", rank)
+            if refused_ahead_last:
+                # The grasp before was refused before anything was sent: this one's line down is judged first against the
+                # boxes that refused it, in the world its judgement built, with no new frame (the owner, 2026-10-12: the
+                # guard's boxes decide what the next grasp is spared). On the cell's crate nine grasps were refused one
+                # after the other by one box, each after a world of its own. A line refused there at a part on the
+                # flange is refused from every configuration, so the grasp does not wait for a change of branch either.
+                held = getattr(self.policy, "line_refusal_held", None)
+                spared = str(held(candidate) or "") if callable(held) else ""
+                if spared:
+                    report = PolicyReport(outcome=PolicyOutcome.MOTION_FAILED, motion_message=f"judged ahead: {spared}")
+                    tries.append(dict(zip(_TRY_KEYS, (rank, report.outcome.value, None, report.motion_message, False,
+                                                      False))))
+                    sent_last = False
+                    _LOG.warning("try %d of %d (rank %d) judged in the world the grasp before it was refused in, nothing "
+                                 "moved and no new frame: %s%s", number, len(queue), rank, spared,
+                                 "; the next grasp of the same look follows" if number < len(queue) or waiting else "")
+                    continue
             # Judged from where the arm stands before it leaves for the grasp (the owner's rule for a blocker's grasps,
             # 2026-10-03, and every grasp since URSim found a lift the joint window refused once the hand stood at the
             # part): the move to the standoff, the line down and the lift as if carrying. A refusal there moves nothing,
@@ -7277,6 +7300,7 @@ class BinPickingOrchestrator:
                 tries.append(dict(zip(_TRY_KEYS, (rank, report.outcome.value, None, report.motion_message, False,
                                                   False))))
                 sent_last = False
+                refused_ahead_last = True
                 if waits:
                     waiting.append(candidate)
                 _LOG.warning("try %d of %d (rank %d) judged from where the arm stands, nothing moved: %s%s", number,
@@ -7286,6 +7310,7 @@ class BinPickingOrchestrator:
                 continue
             assert executed is not None  # judged ahead and passed, or not judged ahead
             report = executed
+            refused_ahead_last = False
             sent, reached, refused = self._what_the_try_did(report, target_box)
             status = getattr(report.motion_status, "value", None)
             tries.append(dict(zip(_TRY_KEYS, (rank, report.outcome.value, status, report.motion_message or None,

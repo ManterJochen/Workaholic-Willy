@@ -7,10 +7,12 @@ the base. Now the base is a cylinder on the base frame, 95.05 mm about the axis 
 its surface laid like the links': a point is the base only within the padding, ``perceived.margin_mm`` (15 mm), of that
 surface. The guard's own parts are unchanged (the owner, 2026-09-30).
 
-What the filter cannot do is said here too. The logged boxes stood 54-55 mm high over the base, 16-17 mm over its top,
-past the padding: if what the camera saw there stood that high, it stays an obstacle, and the box of it still meets the
-shoulder. The source points were not recorded, so RC3 is closed only for a reading within the padding; Monday records
-the views and one photo of the base.
+The logged boxes stood 54-55 mm high over the base, 16-17 mm over its top, past the padding, and RC3 was left open for
+such a reading until the cell's views told. They did (2026-10-08 and 2026-10-12): the boxes at the base the shoulder
+stood in had every point within 18 to 20 mm of the robot's links, and the shoulder 7 to 15 mm deep in them. Such a
+reading is the robot: a box whose points all lie near the robot's links, and whose own extent holds a link's surface,
+is dropped as the robot itself (``perceived.SelfBody.cut_by``, the owner, 2026-10-12). What stands beside the base past
+the padding stays an obstacle, as before.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from src.robot.safety.planning.environment import project_root
 from src.robot.safety.planning.live_world import _guard_boxes
 from src.robot.safety.planning.perceived import (
     DepthView,
+    DropReason,
     PerceivedWorld,
     SelfBody,
     SelfEnvelope,
@@ -232,8 +235,9 @@ class TheLoggedBoxesAtTheBaseTests(unittest.TestCase):
                     self.assertEqual(_near_the_base(after), [])
                     self.assertEqual(_shoulder_refusal(after, joints), "")
 
-    def test_the_logged_boxes_read_as_high_as_logged_stay_and_the_shoulder_still_meets_them(self) -> None:
-        """RC3 stays open for such a reading: the filter takes what lies within 15 mm of the base and nothing more."""
+    def test_the_logged_boxes_read_as_high_as_logged_are_the_robot_and_the_shoulder_meets_none(self) -> None:
+        """The filter takes what lies within 15 mm of the base and nothing more; what the logged readings leave past it
+        is the robot itself, and goes (RC3 closed with the cell's views, 2026-10-12)."""
         capsule = base_capsule("ur10")
         assert capsule is not None
         base_alone = SelfBody.from_frames([np.eye(4)], (capsule,), padding_mm=_PADDING_MM)
@@ -252,8 +256,9 @@ class TheLoggedBoxesAtTheBaseTests(unittest.TestCase):
                     self.assertTrue(bool(np.any(above & ~taken)))
                     for joints in (_R6_PLACE_DEG, _R7_START_DEG):
                         after = _world(camera, depth, joints, base=True)
-                        self.assertIn("shoulder|fixture:seen_", _shoulder_refusal(after, joints),
-                                      "the logged reading is past the padding and its box still meets the shoulder")
+                        self.assertEqual("", _shoulder_refusal(after, joints),
+                                         "the logged reading is the robot itself and no box of it meets the shoulder")
+                        self.assertGreaterEqual(after.dropped_clusters.get(DropReason.SELF, 0), 1)
 
 
 class TheBandsEdgeKeepsWhatStandsBesideTheBaseTests(unittest.TestCase):

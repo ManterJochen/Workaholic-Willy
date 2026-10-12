@@ -77,14 +77,14 @@ REMOVED_KEYS: Final[dict[str, str]] = {
         "an empty gap between the flange and the hand."
     ),
     "robot.safety.planning_world.perceived.self_radius_mm": (
-        "the self filter takes a point for an arm link only within perceived.margin_mm of that "
-        "link's own surface, laid over the committed arm bundle, and for the hand by its sphere map "
-        "grown by perceived.margin_mm. Set the padding there and delete this key."
+        "the self filter takes a point for an arm link only within perceived.margin_mm, and at least "
+        "15 mm, of that link's own surface, laid over the committed arm bundle, and for the hand by its "
+        "sphere map grown by as much. Set the padding there and delete this key."
     ),
     "robot.safety.planning_world.perceived.tool_radius_mm": (
         "the hand in the self filter is its sphere map and a carried part a capsule sized from "
-        "planning_world.payload, padded by perceived.margin_mm. Set the padding there and delete "
-        "this key."
+        "planning_world.payload, padded by perceived.margin_mm, and at least 15 mm. Set the padding "
+        "there and delete this key."
     ),
     "robot.grasping.fusion.extrinsics_artifact_path": (
         "a camera's calibration is declared on its rig, camera.cameras.rigs[<id>].extrinsics, with "

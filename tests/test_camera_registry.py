@@ -74,10 +74,11 @@ class TheShippedCamerasTests(unittest.TestCase):
     def test_the_d435i_is_the_d435_housing(self) -> None:
         self.assertEqual(load_camera("realsense_d435i").housing, load_camera("realsense_d435").housing)
 
-    def test_the_enclosure_holds_the_d415_and_says_it_is_an_estimate(self) -> None:
+    def test_the_enclosure_holds_the_d415_and_is_the_owner_s_measurement(self) -> None:
         enclosure, bare = load_camera("d415_enclosure"), load_camera("realsense_d415")
-        self.assertIn("estimate", enclosure.source)
-        self.assertIn("not measured", enclosure.source)
+        # The owner measured the printed holder on 2026-10-12: 135 x 45 x 30 mm.
+        self.assertIn("measured on 2026-10-12", enclosure.source)
+        self.assertEqual((135.0, 45.0, 30.0), tuple(enclosure.housing.size_mm))
         for axis in range(3):
             with self.subTest(axis=axis):
                 low = enclosure.housing.centre_mm[axis] - enclosure.housing.size_mm[axis] / 2.0

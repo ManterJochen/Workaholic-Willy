@@ -146,6 +146,11 @@ class RigDepthSource:
             frame = self._handle.grab()
             after = None if reader is None else reader()
             intrinsics = self._handle.get_intrinsics()
+            # The frame kept, its mixed pixels out where the rig takes them out (``Camera.kept``), once the pose after
+            # the grab was read: the search takes about 50 ms, which the pose bracket must not hold.
+            keep = getattr(self._handle, "kept", None)
+            if callable(keep):
+                frame = keep(frame)
         except Exception:  # noqa: BLE001 (a camera that cannot answer is a refusal, not a crash)
             return None
 

@@ -446,8 +446,12 @@ class RealSenseVisionPerceptionSource:
         for _ in range(self._warmup_grabs):
             self._streamer.grab()  # discard: let auto-exposure / white-balance settle on real hardware
 
-        # After the warm-ups, the real grab, with the tool pose read around it on a wrist camera.
+        # After the warm-ups, the real grab, with the tool pose read around it on a wrist camera; then the frame kept, its
+        # mixed pixels out where the rig takes them out (``Camera.kept``), as the camera world keeps its frames.
         rgbd, tool_pose, captured_at_s = self._grab()
+        keep = getattr(self._streamer, "kept", None)
+        if callable(keep):
+            rgbd = keep(rgbd)
         bgr = np.ascontiguousarray(np.asarray(rgbd.color))          # detector/segmenter take OpenCV BGR
         depth_mm = np.asarray(rgbd.depth, dtype=np.float64)         # uint16 mm as float; 0 == hole
         # A copy, not the same array, and that is the point of keeping both fields. Their

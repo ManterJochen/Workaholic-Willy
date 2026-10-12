@@ -477,6 +477,36 @@ class Camera:
             read = getattr(self._streamer, "get_intrinsics", None)
             return read() if callable(read) else None
 
+    def kept(self, frame: AnyFrame) -> AnyFrame:
+        """The frame a caller keeps to measure with, from one :meth:`grab` handed out: an RGB-D frame of a rig that
+        takes its mixed pixels out (``realsense.post_processing.mixed_pixels``, depth aligned to colour) with them read
+        as measured nothing (``mixed_pixels.without_mixed_pixels``); any other frame as it was.
+
+        A caller that throws frames away, the warm-ups, does not ask: the search costs about 50 ms a frame.
+
+        Args:
+            frame (AnyFrame): A frame :meth:`grab` handed out.
+
+        Returns:
+            AnyFrame: The frame to measure with; the same object where nothing was taken out.
+        """
+        from src.camera.setup.image_taking.frames import RGBDFrame  # noqa: PLC0415 (the frame types, at call time)
+        from src.camera.setup.image_taking.mixed_pixels import without_mixed_pixels  # noqa: PLC0415
+
+        post = getattr(getattr(self._rig, "realsense", None), "post_processing", None)
+        if not bool(getattr(post, "mixed_pixels", False)) or not bool(getattr(self._rig, "align_depth_to_color", False)):
+            return frame
+        if not isinstance(frame, RGBDFrame) or frame.depth.size == 0:
+            return frame
+        matrix = self.get_intrinsics()
+        if matrix is None:
+            return frame
+        depth, taken = without_mixed_pixels(frame.depth, frame.color, float(np.asarray(matrix)[0, 0]))
+        if taken == 0:
+            return frame
+        logger.debug("camera %r: %d mixed pixel(s) read as measured nothing", self.rig_id, taken)
+        return dataclasses.replace(frame, depth=depth)
+
     def get_distortion(self) -> np.ndarray | None:
         """The lens distortion coefficients the device reports.
 
