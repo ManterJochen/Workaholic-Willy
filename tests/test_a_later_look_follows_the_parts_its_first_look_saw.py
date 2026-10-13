@@ -86,7 +86,10 @@ class _LeakingSegmenter(_Segmenter):
         return type(seg)(mask=wide, label=seg.label)
 
 
-def _pick(*, follow_looks: bool, segmenter: type = _Segmenter) -> "tuple[Any, list[Any], list[Any], _Seeing]":
+def _pick(
+    *, follow_looks: bool, segmenter: type = _Segmenter, grounder: type = _Grounder,
+    prompt: str = "each separate grey cube", kind: str = "",
+) -> "tuple[Any, list[Any], list[Any], _Seeing]":
     from src.robot.execution.autonomous_grasp import AutonomousGraspService, GraspMode
     from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy
     from src.robot.grasping.motion.frame_resolver import EyeInHandFrameResolver
@@ -102,9 +105,9 @@ def _pick(*, follow_looks: bool, segmenter: type = _Segmenter) -> "tuple[Any, li
     io.closed = False
     del log[:]
     calculator = _Seeing(mat)
-    source = RealSenseVisionPerceptionSource(streamer=mat, detector=_Grounder(mat, log), segmenter=segmenter(mat),
-                                             prompt="each separate grey cube", object_labels=("grey cube",),
-                                             warmup_grabs=0)
+    source = RealSenseVisionPerceptionSource(streamer=mat, detector=grounder(mat, log), segmenter=segmenter(mat),
+                                             prompt=prompt, object_labels=("grey cube",), warmup_grabs=0)
+    source.set_prompt(prompt, object_labels=("grey cube",), kind=kind)
     policy = GraspExecutionPolicy(arm=arm, gripper=jaws, pre_open_width_mm=49.99,  # type: ignore[arg-type]
                                   require_steady_before_motion=True)
     resolver = EyeInHandFrameResolver(t_cam_to_tool=Transform.from_matrix(_MOUNT, from_frame=Frame.CAMERA,

@@ -67,8 +67,12 @@ def _git_state() -> tuple[str, bool]:
         commit = subprocess.run(
             ["git", "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10, check=True,
         ).stdout.strip()
+        # No optional locks: a plain status writes the refreshed index under .git/index.lock, and one the timeout
+        # kills under a loaded box leaves that lock behind, which refused the owner's next commit three times on
+        # 2026-10-12 (the suite in twenty processes). A status read for a stamp has nothing to write.
         status = subprocess.run(
-            ["git", "status", "--porcelain"], capture_output=True, text=True, timeout=10, check=True,
+            ["git", "--no-optional-locks", "status", "--porcelain"], capture_output=True, text=True, timeout=10,
+            check=True,
         ).stdout.strip()
         return commit, bool(status)
     except Exception as exc:  # noqa: BLE001 (no git, no repo, or a timeout: report unknown, never crash a run)

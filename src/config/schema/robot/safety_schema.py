@@ -14,10 +14,12 @@ from .._base import ConfigPath, StrictModel
 #: 2026-09-30). A measurement, not a bound.
 _SEEN_BOX_VOXEL_MM = 10.0
 
-#: The least distance the exact guard keeps from a box a camera saw, millimetres (the owner, 2026-10-01). Wherever only
-#: those boxes refuse the planner's world, the planner is asked again with them set aside and the exact guard alone
-#: decides them, so a config asking less is refused at load (``SelfCollisionSafetyConfig.perceived_min_distance_mm``).
-_SEEN_BOX_LEAST_MM = 3.0
+#: The least distance the exact guard keeps from a box a camera saw, millimetres (the owner: 5 on 2026-10-01, 3 on
+#: 2026-10-05, 1 on 2026-10-12). Wherever only those boxes refuse the planner's world, the planner is asked again with
+#: them set aside and the exact guard alone decides them, so a config asking less is refused at load
+#: (``SelfCollisionSafetyConfig.perceived_min_distance_mm``). The box itself stands ``perceived.margin_mm`` past the
+#: points it holds, and no pixel the camera measured lay less than 4.07 mm inside its box (:data:`_SEEN_BOX_VOXEL_MM`).
+_SEEN_BOX_LEAST_MM = 1.0
 
 #: The least ``self_collision.min_distance_mm`` while a fixture is declared and the planning world includes it,
 #: millimetres: the camera world's band round a declared body (``perceived.DECLARED_SURFACE_MM``, 5) plus the 5 mm the
@@ -205,22 +207,25 @@ class SelfCollisionSafetyConfig(StrictModel):
     fixtures: list[FixtureBoxConfig] = Field(default_factory=list)
     #: The distance the exact mesh guard keeps from a box a camera saw, in mm. Such a box holds the
     #: camera world's thinned cloud, one point per 10 mm camera voxel, grown by
-    #: ``planning_world.perceived.margin_mm`` (15), so 5 keeps the arm 20 mm from every point of that
-    #: cloud; a declared fixture is measured and keeps ``min_distance_mm``, and so does the arm against
-    #: itself. This distance plus the margin has to reach ``min_distance_mm``, the step every path is
-    #: sampled at, or the arm could reach a point of the cloud between two samples that both passed: a
-    #: load refuses a config where it does not.
+    #: ``planning_world.perceived.margin_mm`` (8, the owner's cell 6), so 2 keeps the arm 10 mm (8) from
+    #: every point of that cloud; a declared fixture is measured and keeps ``min_distance_mm``, and so does
+    #: the arm against itself. This distance plus the margin has to reach ``min_distance_mm``, the step
+    #: every path is sampled at, or the arm could reach a point of the cloud between two samples that both
+    #: passed: a load refuses a config where it does not.
     #:
-    #: A pixel the thinning dropped can lie nearer a box face than the margin. Over 3,400 noise-free
-    #: synthetic scenes at the shipped tuning the nearest lay 4.07 mm inside its box, at least 9 mm from
-    #: a sample this guard passes (review of 2026-09-30). A measurement, not a bound: the voxel's
-    #: diagonal, 17.3 mm, is longer than the margin. At a 20 mm voxel a measured pixel lay 5.6 mm
-    #: outside every box, so while this is below ``min_distance_mm`` a load also refuses a
+    #: A pixel the thinning dropped can lie nearer a box face than the margin: over 3,400 noise-free
+    #: synthetic scenes, down to 10.9 mm past the points kept, at an oblique face or an edge (4.07 mm
+    #: inside a box grown by 15, review of 2026-09-30). A measurement, not a bound: the voxel's diagonal,
+    #: 17.3 mm, is longer than any margin. A flat face the box is square to loses nothing, since every
+    #: pixel of it stands where its kept points stand. At a 20 mm voxel a measured pixel lay 5.6 mm outside
+    #: every box, so while this is below ``min_distance_mm`` a load also refuses a
     #: ``planning_world.perceived.voxel_size_mm`` coarser than 10.
     #:
-    #: At least 5, refused below at load (the owner, 2026-10-01): wherever only these boxes refuse the
-    #: planner's world, the planner is asked again with them set aside, and this guard alone decides them.
-    perceived_min_distance_mm: float = Field(default=3.0, ge=_SEEN_BOX_LEAST_MM, le=500.0)
+    #: 2 by default (the owner's 1 to 2 mm, 2026-10-12: over the replay bank's 116 recorded picks, 75 had a
+    #: grasp the guard admits at 2 and at 1, 71 at 3, none fewer); at least 1, refused below at load:
+    #: wherever only these boxes refuse the planner's world, the planner is asked again with them set
+    #: aside, and this guard alone decides them.
+    perceived_min_distance_mm: float = Field(default=2.0, ge=_SEEN_BOX_LEAST_MM, le=500.0)
     mesh_dir: ConfigPath | None = Field(default=None)
 
     # Which bundled arm kinematics (DH) table supplies the per-link arm-vs-arm capsules. Under the
@@ -285,8 +290,9 @@ class SelfCollisionSafetyConfig(StrictModel):
 
     @field_validator("perceived_min_distance_mm", mode="before")
     @classmethod
-    def _keep_at_least_5_mm_from_what_a_camera_saw(cls, value: Any) -> Any:
-        """Refuse a number below 5 mm with a sentence naming the key; anything else goes on to the field's own checks."""
+    def _keep_the_least_distance_from_what_a_camera_saw(cls, value: Any) -> Any:
+        """Refuse a number below :data:`_SEEN_BOX_LEAST_MM` with a sentence naming the key; anything else goes on to
+        the field's own checks."""
         if isinstance(value, bool):
             return value
         try:
@@ -298,7 +304,7 @@ class SelfCollisionSafetyConfig(StrictModel):
                 f"robot.safety.self_collision.perceived_min_distance_mm ({number:g}) is below {_SEEN_BOX_LEAST_MM:g} mm. "
                 "Wherever only the boxes a camera saw refuse the planner's world, the planner is asked again with them "
                 "set aside, and the exact guard alone decides them at this distance, so it keeps at least "
-                f"{_SEEN_BOX_LEAST_MM:g} mm from them (the owner, 2026-10-01). Set it to {_SEEN_BOX_LEAST_MM:g} or more."
+                f"{_SEEN_BOX_LEAST_MM:g} mm from them (the owner, 2026-10-12). Set it to {_SEEN_BOX_LEAST_MM:g} or more."
             )
         return value
 

@@ -77,7 +77,7 @@ geometry reach the planner:
 The field is a signed distance in metres, negative inside an obstacle. The guards read boxes only, so a
 declared mesh is known to the planner alone. The path guard hears the same refresh and gets the same
 perceived boxes, **turned as cuRobo holds them**, and judges them at
-`self_collision.perceived_min_distance_mm` (5 mm), each already grown by `perceived.margin_mm`; the arm and
+`self_collision.perceived_min_distance_mm` (2 mm), each already grown by `perceived.margin_mm`; the arm and
 a declared fixture keep `min_distance_mm` (10). The capsule fallback cannot turn a box and judges its
 axis-aligned enclosure, the safe side. So the guard and the planner judge the same cell, and a move planned
 on a vouched world is stamped `PLANNED` with its cameras and the capture time of its oldest image. A pick's

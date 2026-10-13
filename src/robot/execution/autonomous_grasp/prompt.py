@@ -24,6 +24,11 @@ them (``target_labels``, with ``target_label`` ``None``):
 
 The camera source maps each box's words onto the kind it names, so a box no rule clearly claims (the
 detector's ``ambiguous``, a word no rule names) is no target and stays a neighbour.
+
+A phrase that singles one part out of its kind (a task's ``which``, "the gray cube closest to the blue
+object") names the kind beside it (``kind``, "each separate gray cube"): the relation is resolved once,
+by the look that grounds the phrase, and a later frame that does not find the part again by its kept
+surface grounds the kind and takes the part where it stood (``src/robot/perception/kept_scene.py``).
 """
 
 from __future__ import annotations
@@ -45,6 +50,8 @@ class PickPrompt:
             through (default: ()).
         target_labels (tuple[str, ...]): Any of these labels makes a target (a sort); ``target_label`` is ``None``
             beside them (default: ()).
+        kind (str): Where ``phrase`` singles one part out of its kind, the phrase for every part of that kind, which
+            a frame that does not find the part again by its kept surface grounds (default: "", none).
     """
 
     #: What every camera that grounds a phrase grounds. Empty for a cell whose perception grounds no
@@ -57,6 +64,11 @@ class PickPrompt:
     #: The labels a segmentation may carry to be a pick target, any of them (a sort, the owner 2026-10-09), each
     #: compared exactly; ``target_label`` is ``None`` beside them. Empty: ``target_label`` alone decides, as before.
     target_labels: tuple[str, ...] = ()
+    #: Where :attr:`phrase` singles one part out of its kind (a task's ``which``), the phrase for every part of that
+    #: kind ("each separate gray cube on the black mat"): a frame whose follow of the part kept is refused grounds the
+    #: kind and takes the part where it stood, so the relation is resolved once (the owner, 2026-10-12). Empty: the
+    #: phrase alone, as before.
+    kind: str = ""
 
     @classmethod
     def from_text(cls, text: str) -> "PickPrompt":

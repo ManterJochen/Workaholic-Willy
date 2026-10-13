@@ -44,6 +44,13 @@ must stay within the part's footprint and :data:`LEAK_MM` (the extent guard), co
 the projected top, stand at its top and keep its colour, else the look is grounded. The parts have not moved within a
 pick: the camera has.
 
+A part a phrase singled out of its kind (a task's ``which``, "the gray cube closest to the blue object") is resolved
+once, by the look that grounded the phrase, and followed in 3D after it (the owner, 2026-10-12: from the later looks the
+relation, grounded again, named another cube or none). A follow refused on a frame it placed in BASE carries that frame,
+and the camera source grounds the part's kind on it instead of the phrase (``PickPrompt.kind``):
+:meth:`Following.where_they_stood` keeps as each part the segmentation of its label most of whose surface stands within
+:data:`LEAK_MM` of the part's footprint, and every other part of the kind is a neighbour, never a target.
+
 Numbers (CPU, the cell's recorded frames of 2026-10-07/08, ``speedmap4/reuse``): the parts left on the mat read their
 depth back from pick to pick at a median 0.9 to 2.0 mm, 92 to 99.6 % within 8 mm, colour dE 0.0 to 2.9; a taken part's
 spot 0 % within, dE 43 to 46; the whole scene checked both ways at every third pixel found no changed cluster in 7
@@ -68,7 +75,7 @@ import numpy as np
 
 from src.robot.constants import create_robot_logger
 
-__all__ = ["Accepted", "Following", "KeptPart", "KeptScene"]
+__all__ = ["TAKEN_STILL_STANDS", "Accepted", "Following", "KeptPart", "KeptScene"]
 
 #: The memory's own lines, to the robot log and ``kept_scene.log``: every part it followed or did not, with its numbers.
 _LOG: logging.Logger = create_robot_logger(__name__, "kept_scene.log")
@@ -110,11 +117,17 @@ AREA_RATIO = (0.6, 1.5)
 #: may: measured 0 % past 15 mm.
 LEAK_MM = 15.0
 LEAK_SHARE = 0.02
+#: The share of a segmentation's surface within :data:`LEAK_MM` of a kept part's footprint that stands it where the part
+#: stood, on a frame grounded for the kind of the parts a phrase singled out (:meth:`Following.where_they_stood`).
+PLACE_SHARE = 0.5
 #: How far a followed mask's top (its 90th percentile) may stand from the kept part's, millimetres: measured +0.2, +2.2.
 TOP_MM = 6.0
 TOP_PERCENTILE = 90.0
 #: The gripped part is the kept part whose surface's middle stands nearest its cloud's, within this, in BASE xy.
 NEAREST_TAKEN_MM = 15.0
+#: What a followed look says where the spot a pick took its part from still reads a part over the support: the words a
+#: task reads to count that part not placed (``task``, a hand with no sensor that closed on nothing).
+TAKEN_STILL_STANDS = "something stands where it stood"
 #: A kept part's surface is thinned to this voxel, millimetres: about 1000 points a cube.
 VOXEL_MM = 2.0
 #: Fewer surface points than this say where a few pixels are, not where a part is: none is kept, or followed.
@@ -174,6 +187,60 @@ class Following:
     #: to compare with, the projected top's pixels instead (``expected_px``).
     later: bool = False
     expected_px: tuple[int, ...] = ()
+
+    @property
+    def placed(self) -> bool:
+        """Whether this follow holds its parts and its frame placed in BASE, refused or not: what
+        :meth:`where_they_stood` reads."""
+        return (self.kept is not None and self.depth_mm is not None and self.intrinsics is not None
+                and self.camera_to_base is not None)
+
+    def where_they_stood(self, segmentations: Sequence[Any]) -> "tuple[list[Any], str]":
+        """``segmentations`` of this follow's frame, grounded for the kind of the parts kept where a phrase singled
+        them out of it (``PickPrompt.kind``): each kept part keeps the segmentation of its label most of whose surface
+        stands within :data:`LEAK_MM` of the part's footprint, :data:`PLACE_SHARE` of it at least, and every other
+        segmentation of a kept label goes by a label no object carries ("grey cube, not the one singled out"), a
+        neighbour and never a target. A part found nowhere leaves the frame without it: the relation is not resolved
+        again from another look. With what it came to, said."""
+        kept = self.kept
+        if kept is None or self.depth_mm is None or self.intrinsics is None or self.camera_to_base is None:
+            raise ValueError("a follow that holds no frame placed in BASE cannot say where its parts stood")
+        depth = np.asarray(self.depth_mm, dtype=np.float64)
+        labels = {part.label for part in kept.parts}
+        shares = np.zeros((len(kept.parts), len(segmentations)))
+        for column, seg in enumerate(segmentations):
+            label = str(getattr(seg, "label", "") or "")
+            if label not in labels:
+                continue
+            cloud = _surface_in_base(np.asarray(seg.mask).astype(bool), depth, self.intrinsics, self.camera_to_base)
+            if cloud.shape[0] < MIN_POINTS:
+                continue
+            for row, part in enumerate(kept.parts):
+                if part.label == label:
+                    shares[row, column] = float(_near(part.cloud_base_mm[:, :2], cloud[:, :2], LEAK_MM).mean())
+        # Each part its segmentation, the largest share first; a segmentation is one part's at most.
+        found: dict[int, int] = {}
+        for flat in np.argsort(-shares, axis=None, kind="stable"):
+            row, column = divmod(int(flat), len(segmentations))
+            if shares[row, column] < PLACE_SHARE:
+                break
+            if column not in found and row not in found.values():
+                found[column] = row
+        renamed = 0
+        kept_segmentations: list[Any] = []
+        for column, seg in enumerate(segmentations):
+            label = str(getattr(seg, "label", "") or "")
+            if label in labels and column not in found:
+                seg = replace(seg, label=f"{label}, not the one singled out")
+                renamed += 1
+            kept_segmentations.append(seg)
+        lost = [f"part {row} ({part.label!r}) stands nowhere it stood: at most "
+                f"{float(shares[row].max()) if shares.shape[1] else 0.0:.0%} of a segmentation on its footprint"
+                for row, part in enumerate(kept.parts) if row not in found.values()]
+        said = (f"{len(found)} of {len(kept.parts)} part(s) singled out found where they stood, {renamed} other part(s) "
+                "of the kind kept as neighbours" + ("; " + "; ".join(lost) if lost else ""))
+        _LOG.info("the kind grounded for the parts singled out: %s", said)
+        return kept_segmentations, said
 
     def accept(self, image_bgr: Any, masks: Sequence[Any]) -> Accepted:
         """Judge the masks SAM2 cut for :attr:`boxes`, in their order, on this frame (``image_bgr``, BGR uint8): every
@@ -370,15 +437,20 @@ class KeptScene:
             return _grounded("the frame cannot be placed in BASE")
         changed = self._scene_changed(depth, lens, matrix, regions)
         if changed:
-            return _grounded(changed)
+            return self._refused(changed, depth, lens, matrix)
         boxes: list[tuple[tuple[float, float, float, float], str]] = []
         for index, part in enumerate(self.parts):
             box = self._where_it_stands(index, part, depth, image_bgr, lens, matrix)
             if isinstance(box, str):
-                return _grounded(f"part {index} ({part.label!r}): {box}")
+                return self._refused(f"part {index} ({part.label!r}): {box}", depth, lens, matrix)
             boxes.append((box, part.label))
         return Following(boxes=tuple(boxes), said=f"{len(boxes)} part(s) followed, nothing new in depth", kept=self,
                          depth_mm=depth, intrinsics=lens, camera_to_base=matrix)
+
+    def _refused(self, why: str, depth: np.ndarray, lens: np.ndarray, matrix: np.ndarray) -> Following:
+        """A frame the detector grounds, and why, placed in BASE with these parts: where a phrase singled them out of
+        their kind, the camera source keeps them where they stood on it (:meth:`Following.where_they_stood`)."""
+        return Following(why=why, kept=self, depth_mm=depth, intrinsics=lens, camera_to_base=matrix)
 
     def _scene_changed(self, depth: np.ndarray, lens: np.ndarray, matrix: np.ndarray, regions: Sequence[Any]) -> str:
         """Step 1: ``""`` where nothing changed in depth between the kept frame and this one, both ways, else why."""
@@ -399,7 +471,7 @@ class KeptScene:
             high = float(np.percentile(new[spot, 2], _TAKEN_PERCENTILE)) - self.support_mm
             if high > TAKEN_TOP_MM:
                 return (f"the taken part's spot reads {high:.1f} mm over the support (at most {TAKEN_TOP_MM:g}): "
-                        "something stands where it stood")
+                        f"{TAKEN_STILL_STANDS}")
         old = old[self._within(old) & self._judged_by_depth(old[:, :2], regions)]
         judged = within & self._judged_by_depth(new[:, :2], regions)
         new, rows, cols = new[judged], rows[judged], cols[judged]
@@ -516,7 +588,8 @@ class KeptScene:
             rows, cols, z, inside = _projected(part.cloud_base_mm, lens, matrix, depth.shape)
             share = float(inside.mean()) if inside.size else 0.0
             if share < SEEN_SHARE:
-                return _grounded(f"part {index} ({part.label!r}): only {share:.0%} of it falls in this look's frame")
+                return self._refused(f"part {index} ({part.label!r}): only {share:.0%} of it falls in this look's "
+                                     "frame", depth, lens, matrix)
             nearest = _nearest_per_pixel(rows[inside], cols[inside], z[inside], depth.shape[1])
             r, c = rows[inside][nearest], cols[inside][nearest]
             boxes.append((_box(r, c, float(BOX_PAD_PX), depth.shape), part.label))
@@ -540,9 +613,6 @@ def _judge_mask(
     """Step 4 for one mask: the mask clipped to the part's footprint, shifted by its move, and :data:`LEAK_MM`; or why
     it is not followed. On a later look of the same pick the part has not moved, and the mask is held to the projected
     top's pixels from below only (its sides may show too)."""
-    from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps  # noqa: PLC0415
-    from src.robot.grasping.multiview.scene_geometry import grazing_pixels, to_base_mm  # noqa: PLC0415
-
     pixels = int(mask.sum())
     ratio = pixels / max(int(expected_px), 1)
     if ratio < AREA_RATIO[0] or (not later and ratio > AREA_RATIO[1]):
@@ -550,11 +620,7 @@ def _judge_mask(
         return f"its mask holds {pixels} px, {ratio:.2f} of the {expected_px} kept ({bounds})"
     lens = np.asarray(lens, dtype=np.float64)
     matrix = np.asarray(matrix, dtype=np.float64)
-    # Its surface as a look keeps one (the pick loop's ``_look_view``): less the pixels behind a depth step, then less
-    # the grazing ones of what is left, so a mask that did not change measures where its part stood.
-    surface = mask & ~pixels_behind_depth_steps(mask, depth)
-    surface &= ~grazing_pixels(surface, depth, lens)
-    cloud = to_base_mm(surface, depth, lens, matrix)
+    cloud = _surface_in_base(mask, depth, lens, matrix)
     if cloud.shape[0] < MIN_POINTS:
         return f"its mask holds {cloud.shape[0]} surface point(s), fewer than {MIN_POINTS}"
     centre = np.median(cloud[:, :2], axis=0)
@@ -600,6 +666,18 @@ def _judge_mask(
 # ---------------------------------------------------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------------------------------------------------
+
+
+def _surface_in_base(mask: np.ndarray, depth: np.ndarray, lens: Any, matrix: Any) -> np.ndarray:
+    """``mask``'s surface in BASE as a look keeps one (the pick loop's ``_look_view``): less the pixels behind a depth
+    step, then less the grazing ones of what is left, so a mask that did not change measures where its part stood."""
+    from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps  # noqa: PLC0415
+    from src.robot.grasping.multiview.scene_geometry import grazing_pixels, to_base_mm  # noqa: PLC0415
+
+    lens = np.asarray(lens, dtype=np.float64)
+    surface = mask & ~pixels_behind_depth_steps(mask, depth)
+    surface &= ~grazing_pixels(surface, depth, lens)
+    return to_base_mm(surface, depth, lens, np.asarray(matrix, dtype=np.float64))
 
 
 def _grounded(why: str) -> Following:

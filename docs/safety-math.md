@@ -226,7 +226,8 @@ holds, turned about `+Z` by its yaw `phi`, placed by `Rz(phi)` about its centre,
 `m`, so the arm keeps `d_seen + m` from what the camera saw, and the load requires
 `d_seen + m >= min_distance_mm`, the path step: a surface that clears both samples of a step cannot be
 reached between them. That holds for the thinned cloud the boxes are fitted to, one point per 10 mm voxel;
-over 3,400 synthetic scenes the nearest raw pixel lay 4.1 mm inside its box, a measurement and not a bound.
+over 3,400 synthetic scenes a raw pixel lay up to 10.9 mm past the points kept, at an oblique face or an edge (4.1 mm
+inside a box grown by 15), a measurement and not a bound.
 At a 20 mm voxel a measured pixel lay 5.6 mm outside every box, so while `d_seen < min_distance_mm` the load
 also refuses `perceived.voxel_size_mm` coarser than 10.
 
@@ -270,7 +271,7 @@ keeps its `min_distance_mm`; the padding lifted is never more than the margin. A
 saw, the same cushion reaches 25 to 29 mm past the shoulder housing: a sample the planner's world refused
 runs only where the planner, judging it again with exactly those boxes set aside, clears its world, no part
 is carried, modelled or not, the hand reads empty and open, and the exact guard, judging it again with the
-same boxes, keeps `perceived_min_distance_mm`, which a load refuses below 5 mm. The planner's joint bounds,
+same boxes, keeps `perceived_min_distance_mm`, which a load refuses below 1 mm. The planner's joint bounds,
 the carried part, the robot's base, the bench and every declared fixture stay its refusals, and so do the
 camera's boxes while the hand is not known empty and open; a grasp judges its lift with them in before the
 jaws close.

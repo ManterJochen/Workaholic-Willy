@@ -1554,9 +1554,10 @@ class AutonomousGraspService:
             target_label=orchestrator.target_label,
             object_labels=tuple(getattr(first, "object_labels", ()) or ()),
             target_labels=tuple(getattr(orchestrator, "target_labels", ()) or ()),
+            kind=str(getattr(first, "kind", "") or ""),
         )
         for source in sources:
-            source.set_prompt(wanted.phrase, object_labels=wanted.object_labels)
+            source.set_prompt(wanted.phrase, object_labels=wanted.object_labels, kind=wanted.kind)
         orchestrator.target_label = wanted.target_label
         orchestrator.target_labels = tuple(wanted.target_labels)
         return previous

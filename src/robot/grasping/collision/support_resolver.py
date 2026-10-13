@@ -31,6 +31,16 @@ lowest visible point is the rim and not the base: p90 error of 50.6 mm in the ``
 of parts more than 10 mm too high. The lowest point over every camera that identified the part cuts
 that to 13.3 mm and 10.6 %, and stays at 0 % too low everywhere.
 
+A real mask is not a reference mask. On the owner's cell (2026-10-12, "the gray cube on top") the upper
+of two stacked cubes was cut with 3 % of its pixels run down the lower cube's side onto the mat: its
+lowest point read the mat, 41 mm under its foot, and its grasps were planned on the mat, on one part
+82 mm tall. So a cloud's lowest point is its foot only where nothing else says so: where the lowest band
+of :data:`FOOT_BAND_MM` holding :data:`FOOT_SHARE` of its points stands :data:`STACKED_MM` or more over
+the declared height, with :data:`STACKED_BODY_MM` of the part above it, the part stands on another part,
+and that band is its foot. Below it lies the tail a mask ran onto what the part stands on. The part
+under it stays what the planner world holds it as; only the plane this part's grasps are planned on is
+its top.
+
 Pure and deterministic: numpy only, no vendor SDKs, no perception models. BASE millimetres throughout.
 """
 
@@ -45,6 +55,17 @@ from src.geometry import Frame
 from .table_collision import SupportPlane
 
 __all__ = ["SupportResolution", "resolve_support_plane"]
+
+#: The foot of a part standing on another part (the module's last paragraph): the lowest band this many millimetres
+#: deep along the normal that holds :data:`FOOT_SHARE` of the cloud's points, 0.3 % a millimetre. The cell's upper
+#: cube: 0.48 % of its fused cloud a millimetre over its foot, at most 0.17 % in the tail under it.
+FOOT_BAND_MM = 4.0
+FOOT_SHARE = 0.012
+#: How far over the declared height a foot stands for its part to stand on another part, and how much of the part
+#: stands over it, millimetres: two parts stacked, and no single face seen from straight on
+#: (``pick_loop._MIN_CLOUD_EXTENT_FOR_SUPPORT_MM``).
+STACKED_MM = 15.0
+STACKED_BODY_MM = 25.0
 
 
 class SupportResolution:
@@ -107,7 +128,7 @@ def resolve_support_plane(
     declared = float(container_floor_mm if container_floor_mm is not None else declared_height_mm)
     observed: float | None = None
     if refine_from_target and target_clouds_base_mm:
-        lows = [float((np.asarray(c, dtype=np.float64).reshape(-1, 3) @ unit).min())
+        lows = [_lowest_mm(np.asarray(c, dtype=np.float64).reshape(-1, 3) @ unit, declared)
                 for c in target_clouds_base_mm
                 if np.asarray(c).size]
         if lows:
@@ -126,3 +147,20 @@ def resolve_support_plane(
                                  declared, observed, "observed")
     return SupportResolution(SupportPlane(normal=unit, offset_mm=declared, frame=Frame.BASE),
                              declared, observed, "declared")
+
+
+def _lowest_mm(heights: np.ndarray, declared: float) -> float:
+    """A cloud's lowest point along the normal (``heights``), or its foot where it stands on another part: the lowest
+    band of :data:`FOOT_BAND_MM` that holds :data:`FOOT_SHARE` of its points, where that stands :data:`STACKED_MM` or
+    more over ``declared`` with :data:`STACKED_BODY_MM` of the part over it (its 95th percentile)."""
+    ordered = np.sort(heights)
+    lowest = float(ordered[0])
+    least = max(1, int(np.ceil(FOOT_SHARE * ordered.size)))
+    held = np.searchsorted(ordered, ordered + FOOT_BAND_MM, side="right") - np.arange(ordered.size)
+    dense = np.flatnonzero(held >= least)
+    if not dense.size:
+        return lowest
+    foot = float(ordered[dense[0]])
+    if foot >= declared + STACKED_MM and float(np.percentile(ordered, 95.0)) - foot >= STACKED_BODY_MM:
+        return foot
+    return lowest

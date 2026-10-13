@@ -494,7 +494,7 @@ class TheRealSurfaceStaysClearBetweenSamplesTests(unittest.TestCase):
 
     def test_the_shipped_numbers_add_up_to_the_step(self) -> None:
         config = RobotSafetyConfig()
-        self.assertEqual(config.self_collision.perceived_min_distance_mm, 3.0)  # type: ignore[attr-defined]
+        self.assertEqual(config.self_collision.perceived_min_distance_mm, 2.0)  # type: ignore[attr-defined]
         self.assertGreaterEqual(
             config.self_collision.perceived_min_distance_mm + config.planning_world.perceived.margin_mm,  # type: ignore[attr-defined]
             config.self_collision.min_distance_mm)
@@ -513,7 +513,7 @@ class TheRealSurfaceStaysClearBetweenSamplesTests(unittest.TestCase):
         from src.config.schema.robot import RobotConfig
 
         robot = load_robot_section(None, profile="ur10")
-        self.assertEqual(robot.safety.self_collision.perceived_min_distance_mm, 3.0)  # type: ignore[attr-defined]
+        self.assertEqual(robot.safety.self_collision.perceived_min_distance_mm, 2.0)  # type: ignore[attr-defined]
         self.assertEqual(robot.safety.planning_world.perceived.max_boxes, 64)
         self.assertEqual(WorldBuildTuning().max_boxes, 64)
         # The planner reserves a slot for every box the world may send: the bench, and the 64.

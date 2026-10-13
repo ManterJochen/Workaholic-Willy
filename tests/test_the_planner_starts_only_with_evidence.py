@@ -106,8 +106,10 @@ class TheFileHalfRunsAtTheDesk(unittest.TestCase):
         self.assertIn("m6mm", said)
 
     def test_a_guard_asking_more_than_was_measured_refuses(self) -> None:
-        """The matrix measured this combination against a 10 mm guard: a guard asking 11 mm was never proven."""
-        said, _ = desk_evidence_refusal(_cell(safety__self_collision__min_distance_mm=11.0))
+        """The matrix measured this combination against a 10 mm guard: a guard asking 11 mm was never proven. The seen
+        boxes' distance is raised with it, so the cell still loads (its sum with the box margin reaches the step)."""
+        said, _ = desk_evidence_refusal(_cell(safety__self_collision__min_distance_mm=11.0,
+                                              safety__self_collision__perceived_min_distance_mm=3.0))
         assert said is not None
         self.assertIn("guard", said)
 

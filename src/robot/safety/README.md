@@ -30,7 +30,7 @@ wires refuse a violation of its own family, and exits 1 when one does not.
 | 1 | `workspace` | the TCP target is outside the box, shrunk by `limits.workspace_margin_mm` on every face | a target pose in `Frame.BASE` |
 | 2 | `joint_limit` | an axis is outside its limit, less `margin_deg` at both ends | target joints |
 | 3 | `ik_quality` | the solution is non-finite, the wrong size, a large jump, near a limit, or near-singular | target joints; the arm for the singularity probe |
-| 4 | `self_collision` | a link, the tool or a declared fixture comes closer than `min_distance_mm` (10), or a box a camera saw closer than `perceived_min_distance_mm` (5) | target joints and a kinematics model |
+| 4 | `self_collision` | a link, the tool or a declared fixture comes closer than `min_distance_mm` (10), or a box a camera saw closer than `perceived_min_distance_mm` (2) | target joints and a kinematics model |
 | 5 | `payload` | mass, centre of gravity or inertia is outside the declared envelope | config only |
 | 6 | `motion_continuity` | the step from the last accepted target is larger than its cap | the previous accepted target |
 
@@ -60,7 +60,7 @@ names what is gone. Every verdict is a frozen `SafetyDecision` with a `SafetyRea
 | `ConfigError` when the gate is built | the declared tool frame places no hand model (a mirror, an oblique axis) | declare the tool frame the hand model admits |
 | a config refused at load | `self_collision.perceived_min_distance_mm` plus `planning_world.perceived.margin_mm` falls short of `self_collision.min_distance_mm`, the step every path is sampled at | raise either of the first two until they reach the step |
 | a config refused at load | `planning_world.perceived.voxel_size_mm` is coarser than 10 while `perceived_min_distance_mm` is under `min_distance_mm`: the seen boxes are fitted to one pixel per voxel, and that distance was measured at a 10 mm voxel | keep `voxel_size_mm` at 10 or finer |
-| a config refused at load | `self_collision.perceived_min_distance_mm` is below 5: where only the camera's boxes refuse the planner's world, the exact guard alone decides them at that distance (the owner, 2026-10-01) | set it to 5 or more |
+| a config refused at load | `self_collision.perceived_min_distance_mm` is below 1: where only the camera's boxes refuse the planner's world, the exact guard alone decides them at that distance (the owner, 2026-10-12) | set it to 1 or more |
 | a path gate refusal, `UNSUPPORTED` | no self-collision guard, the capsule proxy, no reach for the arm, or too many samples | `path_judge_refusal(arm)` names the cause before any motion |
 | a UR connect refusal | `payload.enforce: true` with `mass_kg: 0.0`, or a mass with `cog_mm` at the origin | weigh the tool and measure its centre of gravity, or `enforce: false` for a bare flange |
 | `UNAVAILABLE` on a move | a guard lacks the config, telemetry or asset it needs while its family is enforced | the message names what is missing |
@@ -106,7 +106,7 @@ in a path judged whole.
 camera saw carries the turned box the planner holds (`AxisAlignedBox.turned`), and the exact backend judges
 that one, turned about base Z; the capsule proxy judges its enclosure. The guard asks the arm and the
 declared fixtures at `min_distance_mm` (10) first, then the seen boxes alone at
-`self_collision.perceived_min_distance_mm` (5), each already grown by `planning_world.perceived.margin_mm`
+`self_collision.perceived_min_distance_mm` (2), each already grown by `planning_world.perceived.margin_mm`
 (15), so the arm keeps 20 mm off a seen face, measured to the thinned cloud, one point per 10 mm voxel. A
 pixel the thinning dropped was measured as near as 4.1 mm inside its box, about 9 mm from the arm at a
 sample that passes; a measurement, not a bound ([guide 04](../../../docs/guide/04-robot-and-safety.md), 5.5).

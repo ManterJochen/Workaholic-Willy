@@ -1670,8 +1670,8 @@ class BinPickingOrchestrator:
     # ---- per pick, while a wrist pick looks around (``look_around``) ----
     #: The earlier looks of this pick, in the order they were visited: what every later look is fused with.
     _look_views: "list[_LookView]" = field(default_factory=list, init=False, repr=False)
-    #: The parts this look sequence's first look saw, which its later looks find by their projected boxes where
-    #: :attr:`follow_looks` is on; ``None`` otherwise, and outside a look sequence (the re-looks after a push or a
+    #: The parts the first look of this sequence that kept any saw, which its later looks find by their projected boxes
+    #: where :attr:`follow_looks` is on; ``None`` otherwise, and outside a look sequence (the re-looks after a push or a
     #: blocker ground as before).
     _looks_kept: "KeptScene | None" = field(default=None, init=False, repr=False)
     #: How the camera source found the last look's parts (its ``last_route``), read by the look sequence after each
@@ -2370,9 +2370,10 @@ class BinPickingOrchestrator:
                 if self._unclaimed_at_first_look is None:
                     # The pick's first look: what its label gate turned away, a sort's parts no rule claims.
                     self._unclaimed_at_first_look = self._unclaimed_in_frame
-                if self.follow_looks:
-                    # What the later looks of this pick find by their projected boxes: the parts this look saw.
-                    self._looks_kept = self._kept_by_the_first_look()
+            if self.follow_looks and self._looks_kept is None and self._look_views:
+                # What the later looks of this pick find by their projected boxes: the parts the first look that keeps
+                # any saw, so a phrase that singles out a part is resolved by that look alone (the owner, 2026-10-12).
+                self._looks_kept = self._kept_by(self._look_views[-1])
             targets.append(self._targets_in_frame)
             if missed:
                 dropped.append(label)
@@ -2669,19 +2670,16 @@ class BinPickingOrchestrator:
 
         return follow
 
-    def _kept_by_the_first_look(self) -> "KeptScene | None":
-        """The parts the first look of this sequence saw, for its later looks to find by their projected boxes: its
+    def _kept_by(self, view: "_LookView") -> "KeptScene | None":
+        """The parts ``view``, a look of this sequence, saw, for its later looks to find by their projected boxes: its
         segmentations of the target label outside the task's keep-out regions (``KeptScene.of_view``); ``None`` where it
-        keeps none, and every later look is grounded as before. A sort's are those of its kinds (:attr:`target_labels`,
+        keeps none, and the next look is grounded as before. A sort's are those of its kinds (:attr:`target_labels`,
         the label gate's :meth:`_is_target`): the look is handed on with those segmentations and their surfaces alone, so
         a part no rule claims is left out before anything is kept, as one kind's label leaves out every other."""
         from src.robot.perception.kept_scene import KeptScene  # noqa: PLC0415
 
-        if not self._look_views:
-            return None
         zones = self.exclusion_zones
         regions = tuple(zones.regions()) if zones is not None and callable(getattr(zones, "regions", None)) else ()
-        view = self._look_views[0]
         if self.target_labels:
             # What KeptScene.of_view reads of a look: its frame's segmentations and their surfaces in BASE, by index.
             kinds = [index for index, seg in enumerate(view.frame.segmentations) if self._is_target(seg)]

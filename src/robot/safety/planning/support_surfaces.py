@@ -657,21 +657,22 @@ def detect(
     surfaces: list[SupportSurface] = []
     solids: list[SupportSolid] = []
     left_out: list[str] = []
-    for region in candidates:
+
+    def take(region: dict[str, Any]) -> None:
         built = _surface(points, views, grid, region, clearance, band_of_view, plane, margin, cell,
                          int(tuning.min_points), keep_out)
         if built is None:
             stats["refused_own_pixels"] = int(stats.get("refused_own_pixels", 0)) + 1
-            continue
+            return
         pieces, coef, extra, why = built
         if why:
             left_out.append(why)
         if not pieces:
-            continue
+            return
         if len(solids) + len(pieces) > max_solids:
             left_out.append(f"a surface of {region['area'] / 1e6:.3f} m2 at {region['z50']:.0f} mm: its "
                             f"{len(pieces)} solid(s) did not fit the {max_solids} a world holds, so it takes nothing")
-            continue
+            return
         index = len(surfaces)
         names = []
         for piece in pieces:
@@ -685,6 +686,23 @@ def detect(
             area_mm2=float(region["area"]), width_mm=float(region["width"]), z_range_mm=extra["z_range"],
             band_mm=float(extra["band"]), solids=tuple(names), own_pixels=int(extra["own"]),
         ))
+
+    for region in candidates:
+        take(region)
+    # The ground a held target stands on where no surface found holds it there: the floor of a crate its parts cut into
+    # cells too small to be a surface each (the owner's crate, 2026-10-12 11:49 and 11:51), seeded by the ring of pixels
+    # round the target and held to every rule a found surface keeps (``_ground_round``). A surface found under the
+    # target holds it where it reads its ground; the bench under the crate does not.
+    for box in keep_out:
+        ground = _ground_round(box, points, grid, clearance, plane, bench_band, int(tuning.min_points))
+        if ground is None:
+            continue
+        middle = np.asarray(box.box_to_base_mm, dtype=np.float64)[:2, 3].reshape(1, 2)
+        if any(bool(solid.covers_xy(middle)[0]) and float(solid.reading_at(middle)[0]) >= float(ground["z50"]) - clearance
+               for solid in solids):
+            continue
+        stats.setdefault("grounds", []).append({k: ground[k] for k in ("area", "tilt", "rms", "width", "z50")})
+        take(ground)
     supports = list(solids)
     if bench is not None:
         solids.append(replace(bench, name=f"{prefix}s{len(solids):02d}_bench"))
@@ -895,6 +913,59 @@ def _fit_region(grid: _CellGrid, member: np.ndarray, band: float, plane: float, 
         verdict = "bench"
     return {"coef": coef, "cells": member[keep], "area": float(keep.sum()) * cell * cell, "tilt": tilt, "rms": rms,
             "width": width, "verdict": verdict, "z50": float(np.median(z[keep]))}
+
+
+#: How far round a held target its ground is read, millimetres: past its rim, as far as a finger stands beside it.
+_GROUND_RIM_MM = 5.0
+_GROUND_REACH_MM = 50.0
+#: The least share of a ring's pixels its ground holds, and how many of the eight sides round the target it holds
+#: pixels on: a ledge on one side is no ground the target stands on.
+_GROUND_SHARE = 0.15
+_GROUND_SIDES = 3
+
+
+def _ground_round(box: "KeepOutBox", points: np.ndarray, grid: _CellGrid, band: float, plane: float,
+                  bench_band: float, min_points: int) -> "dict[str, Any] | None":
+    """The ground a held target stands on, as a region :func:`_surface` builds its solids from, or ``None``.
+
+    The ring of pixels between :data:`_GROUND_RIM_MM` and :data:`_GROUND_REACH_MM` round the target's box, under its
+    top and over the bench's band: its lowest level that holds :data:`_GROUND_SHARE` of them within the band, on
+    :data:`_GROUND_SIDES` of the eight sides round the target or more, is the ground. Its plane is fitted to those
+    pixels (level where it would tilt past :data:`MAX_SUPPORT_TILT_DEG`), and the region is their cells and the cells
+    under the target, which stands on it. :func:`_surface` then holds it to every rule a found surface keeps: its own
+    pixels within the band, no window where something lower was seen, no target's own top, and 75 mm across and
+    100 x 100 mm at the least, so the top of a part under another is never a ground.
+    """
+    matrix = np.asarray(box.box_to_base_mm, dtype=np.float64)
+    half = np.asarray(box.half_extents_mm, dtype=np.float64)
+    local = (points - matrix[:3, 3]) @ matrix[:3, :3]
+    reach = (np.abs(local[:, 0]) <= half[0] + _GROUND_REACH_MM) & (np.abs(local[:, 1]) <= half[1] + _GROUND_REACH_MM)
+    rim = (np.abs(local[:, 0]) <= half[0] + _GROUND_RIM_MM) & (np.abs(local[:, 1]) <= half[1] + _GROUND_RIM_MM)
+    ring = np.flatnonzero(reach & ~rim & (local[:, 2] <= half[2]) & (points[:, 2] > plane + bench_band))
+    if ring.size < 4 * int(min_points):
+        return None
+    z = np.sort(points[ring, 2])
+    least = max(int(min_points), int(math.ceil(_GROUND_SHARE * ring.size)))
+    held = np.searchsorted(z, z + band, side="right") - np.arange(z.size)
+    levels = np.flatnonzero(held >= least)
+    if levels.size == 0:
+        return None
+    level = float(np.median(z[levels[0]:levels[0] + held[levels[0]]]))
+    own = ring[np.abs(points[ring, 2] - level) <= band]
+    angle = np.arctan2(local[own, 1], local[own, 0])
+    if np.unique(np.floor((angle + np.pi) / (np.pi / 4.0)).astype(np.int64) % 8).size < _GROUND_SIDES:
+        return None
+    coef = _plane_fit(points[own, 0], points[own, 1], points[own, 2], np.ones(own.size))
+    if _tilt_deg(coef) > MAX_SUPPORT_TILT_DEG:
+        coef = np.array([level, 0.0, 0.0])
+    under = np.flatnonzero(rim)
+    keys = np.unique(grid.cell_of_pixel[np.concatenate((own, under))])
+    member = np.searchsorted(grid.cells, keys)
+    residual = points[own, 2] - (coef[0] + coef[1] * points[own, 0] + coef[2] * points[own, 1])
+    extent = np.ptp(points[own, :2], axis=0)
+    return {"coef": coef, "cells": member, "area": float(member.size) * grid.cell * grid.cell,
+            "tilt": _tilt_deg(coef), "rms": float(np.sqrt(np.mean(residual ** 2))), "width": float(extent.min()),
+            "verdict": "ok", "z50": level}
 
 
 def _surface(

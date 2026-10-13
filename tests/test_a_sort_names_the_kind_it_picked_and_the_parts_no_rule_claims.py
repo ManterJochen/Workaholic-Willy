@@ -388,11 +388,11 @@ class AWristPickCountsItsFirstLookTests(unittest.TestCase):
         orchestrator, _ = _wrist(grasps_on=(0,))
         orchestrator.look_around()
         try:
-            kept = orchestrator._kept_by_the_first_look()
+            kept = orchestrator._kept_by(orchestrator._look_views[0])
             assert kept is not None
             self.assertEqual(["green part"], [part.label for part in kept.parts])
             orchestrator.target_labels = ()
-            every = orchestrator._kept_by_the_first_look()
+            every = orchestrator._kept_by(orchestrator._look_views[0])
             assert every is not None
             self.assertEqual(["green part", "ambiguous"], [part.label for part in every.parts])
         finally:

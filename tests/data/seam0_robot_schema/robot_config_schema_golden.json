@@ -3271,9 +3271,9 @@
           "type": "number"
         },
         "perceived_min_distance_mm": {
-          "default": 3.0,
+          "default": 2.0,
           "maximum": 500.0,
-          "minimum": 3.0,
+          "minimum": 1.0,
           "title": "Perceived Min Distance Mm",
           "type": "number"
         },

@@ -594,7 +594,7 @@
         "planner_margin_mm": null,
         "link_radii_mm": null,
         "fixtures": [],
-        "perceived_min_distance_mm": 3.0,
+        "perceived_min_distance_mm": 2.0,
         "mesh_dir": null,
         "kinematics_model": null,
         "kinematics_base_yaw_deg": 0.0,

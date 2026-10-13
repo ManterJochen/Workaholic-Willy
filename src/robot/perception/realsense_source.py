@@ -188,6 +188,9 @@ class RealSenseVisionPerceptionSource:
         self._backend = backend
         self._prompt = prompt
         self._object_labels = tuple(object_labels)
+        #: The phrase for every part of the kind :attr:`prompt` singles one out of (``PickPrompt.kind``), ``""`` where it
+        #: singles none out.
+        self._kind = ""
         self._intrinsics_override = None if intrinsics is None else np.asarray(intrinsics, dtype=np.float64)
         self._warmup_grabs = max(0, int(warmup_grabs))
         #: What to do with a mask that underfills its detection box. `mask_completion.py` carries
@@ -224,13 +227,20 @@ class RealSenseVisionPerceptionSource:
         return self._object_labels
 
     @property
+    def kind(self) -> str:
+        """The phrase for every part of the kind :attr:`prompt` singles one out of, ``""`` where it singles none out:
+        what a frame whose follow of the part is refused grounds (:meth:`acquire`)."""
+        return self._kind
+
+    @property
     def colour_check(self) -> ColourCheck:
         """What a part whose pixels contradict its object label's colour goes by: ``on``, ``log`` or ``off``."""
         return self._colour_check
 
-    def set_prompt(self, prompt: str, *, object_labels: tuple[str, ...] = ()) -> None:
+    def set_prompt(self, prompt: str, *, object_labels: tuple[str, ...] = (), kind: str = "") -> None:
         """Ground ``prompt`` from the next frame on, and map the detector's words onto
-        ``object_labels``.
+        ``object_labels``; ``kind`` is the phrase for every part of the kind ``prompt`` singles one
+        out of (``PickPrompt.kind``), ``""`` where it singles none out.
 
         Nothing reopens and nothing reloads: the backend takes the phrase on every call, so a cell
         built for one object looks for another after this line. An empty phrase is refused here,
@@ -241,6 +251,7 @@ class RealSenseVisionPerceptionSource:
             raise ValueError("a grounding prompt names what to find; the detector refuses an empty one")
         self._prompt = phrase
         self._object_labels = tuple(str(label) for label in object_labels)
+        self._kind = str(kind).strip()
 
     # ------------------------------------------------------------------ label canonicalisation
     def _canonical_label(self, gdino_label: str) -> str:
@@ -437,6 +448,9 @@ class RealSenseVisionPerceptionSource:
         parts a task kept pass every check on this frame (:meth:`_followed`), and grounded as ever where any does not.
 
         One grab either way: following reads the frame the detector would have read. :attr:`last_route` says which.
+        Where :attr:`prompt` singles its parts out of their kind (:attr:`kind`), a frame the follow refused once it
+        placed it in BASE is grounded for the kind, and each part kept where it stood on it
+        (``Following.where_they_stood``): the phrase's relation is resolved once, by the look that kept the parts.
         Handed ``hide``, a frame the detector grounds is read by it on a copy with the regions the task keeps out painted
         over (:meth:`_detector_copy`); the segmenter, the colour check, the depth and the frame this returns are the real
         ones, and :attr:`last_hidden_px` says how many pixels the copy painted.
@@ -472,19 +486,28 @@ class RealSenseVisionPerceptionSource:
             intrinsics = np.asarray(k, dtype=np.float64)
 
         segmentations = None
+        refused: "Following | None" = None
         if follow is not None:
-            segmentations = self._followed(follow, bgr=bgr, depth_mm=rendered_depth_mm, intrinsics=intrinsics,
-                                           tool_pose=tool_pose)
+            segmentations, refused = self._followed(follow, bgr=bgr, depth_mm=rendered_depth_mm, intrinsics=intrinsics,
+                                                    tool_pose=tool_pose)
         if segmentations is None:
             # The detector/segmenter chain and its two failure rules live in the backend: a detector
             # error yields no objects (an honest no_valid_grasp downstream), and a single segmentation
             # error skips that object and keeps the rest. The detector may read a copy with the task's own
             # places painted over (the owner, 2026-10-08 night); the segmenter always reads the real frame.
+            # A part the phrase singled out of its kind, kept and refused here, is found again among its kind where it
+            # stood: from another look the relation, grounded again, named another cube or none (the owner, 2026-10-12).
+            kind = self._kind if refused is not None else ""
+            phrase = kind or self._prompt
             copy = self._detector_copy(hide, bgr=bgr, depth_mm=rendered_depth_mm, intrinsics=intrinsics,
                                        tool_pose=tool_pose) if hide is not None else None
-            perceived = (self._backend.perceive(bgr, self._prompt) if copy is None
-                         else self._backend.perceive(bgr, self._prompt, detect_on=copy))
+            perceived = (self._backend.perceive(bgr, phrase) if copy is None
+                         else self._backend.perceive(bgr, phrase, detect_on=copy))
             segmentations = self._segmented(bgr, perceived)
+            if kind and refused is not None:
+                segmentations, said = refused.where_they_stood(segmentations)
+                why = self._last_route[1] if self._last_route is not None else "not followed"
+                self._last_route = ("grounded", f"{why}; the kind {kind!r} grounded: {said}")
 
         rgb = bgr[..., ::-1]  # BGR -> RGB for any debugging consumer (no reader in robot/ today)
         # The depth this publishes is the depth the sensor measured, under a mask as everywhere
@@ -533,9 +556,11 @@ class RealSenseVisionPerceptionSource:
     def _followed(
         self, follow: "Follow", *, bgr: np.ndarray, depth_mm: np.ndarray, intrinsics: np.ndarray,
         tool_pose: "Pose | None",
-    ) -> "list[Any] | None":
+    ) -> "tuple[list[Any] | None, Following | None]":
         """This frame's segmentations as ``follow`` finds the parts a task kept again, or ``None`` where it does not and
-        the frame is grounded by the detector, as every frame was (the owner, 2026-10-09: all or nothing per frame).
+        the frame is grounded by the detector, as every frame was (the owner, 2026-10-09: all or nothing per frame);
+        beside them the follow that refused the frame, where it placed the frame in BASE (``Following.placed``), else
+        ``None``.
 
         ``follow`` reads the frame first (the scene check, each part where it stood) and answers the boxes to cut; the
         backend's segmenter cuts them (``segment_boxes``), no detector asked; each mask then goes through what every
@@ -551,40 +576,41 @@ class RealSenseVisionPerceptionSource:
             return self._not_followed(f"the follow raised {type(exc).__name__}: {exc}")
         why = str(getattr(following, "why", "") or "") if following is not None else "nothing was kept to follow"
         if why:
-            return self._not_followed(why)
+            return self._not_followed(why, following)
         cut = getattr(self._backend, "segment_boxes", None)
         if not callable(cut):
-            return self._not_followed("the perception backend cuts no boxes it is handed")
+            return self._not_followed("the perception backend cuts no boxes it is handed", following)
         boxes = tuple(following.boxes)
         try:
             segmented = cut(bgr, boxes)
         except Exception as exc:  # noqa: BLE001 (boxes that cannot be cut ground the frame)
             _LOG.exception("the boxes of the parts kept could not be cut")
-            return self._not_followed(f"cutting the boxes raised {type(exc).__name__}: {exc}")
+            return self._not_followed(f"cutting the boxes raised {type(exc).__name__}: {exc}", following)
         objects = tuple(getattr(segmented, "objects", ()) or ())
         failed = tuple(getattr(segmented, "failed", ()) or ())
         if failed or len(objects) != len(boxes) or any(obj is None for obj in objects):
-            return self._not_followed("the segmenter did not cut every box: " + ("; ".join(failed) or "no answer"))
+            return self._not_followed("the segmenter did not cut every box: " + ("; ".join(failed) or "no answer"),
+                                      following)
         segmentations = self._segmented(bgr, objects)
         refused = [f"part {index} ({label!r}) became {seg.label!r}"
                    for index, (seg, (_, label)) in enumerate(zip(segmentations, boxes)) if seg.label != label]
         if refused:
-            return self._not_followed("the colour check or the labels refused it: " + "; ".join(refused))
+            return self._not_followed("the colour check or the labels refused it: " + "; ".join(refused), following)
         accepted = following.accept(bgr, [np.asarray(seg.mask).astype(bool) for seg in segmentations])
         if accepted.why:
-            return self._not_followed(accepted.why)
+            return self._not_followed(accepted.why, following)
         followed = [replace(seg, mask=mask.astype(np.uint8)) for seg, mask in zip(segmentations, accepted.masks)]
         said = str(following.said or f"{len(followed)} part(s) followed")
         self._last_route = ("followed", said)
         _LOG.info("%s in %.0f ms: the detector was not asked", said, (time.perf_counter() - started) * 1000.0)
-        return followed
+        return followed, None
 
-    def _not_followed(self, why: str) -> "list[Any] | None":
+    def _not_followed(self, why: str, following: Any = None) -> "tuple[None, Following | None]":
         """A frame the parts kept were not followed on: said, and grounded by the detector, as every frame was; no
-        segmentations, so :meth:`acquire` grounds it."""
+        segmentations, so :meth:`acquire` grounds it, and ``following`` where it placed the frame in BASE."""
         self._last_route = ("grounded", f"not followed: {why}")
         _LOG.info("the parts kept are not followed on this frame (%s): the detector grounds it", why)
-        return None
+        return None, following if getattr(following, "placed", False) is True else None
 
     def _detector_copy(
         self, hide: "Hide", *, bgr: np.ndarray, depth_mm: np.ndarray, intrinsics: np.ndarray, tool_pose: "Pose | None",

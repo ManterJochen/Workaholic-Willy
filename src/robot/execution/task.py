@@ -1074,6 +1074,7 @@ class _Task:
             carry = first.kept.look if not self.sorts and first.at.pose is None and first.kept is not None else None
             with expecting_next(self.arm, carry):
                 report, failures_before = self._pick(check=check)
+            self._the_last_part_not_taken(report)
             checked, check = check, False
             self._stop_on_what_the_pick_said(report)
             kept_out = _only_kept_out(report)
@@ -1339,7 +1340,10 @@ class _Task:
                 prompt = self._sort_prompt(PickPrompt)
             else:
                 phrase = pick_phrase(named, which=self.plan.which, source=self.plan.source)
-                prompt = (PickPrompt(phrase=phrase, target_label=named, object_labels=(named,))
+                # The one part a which singles out is resolved once and then followed where it stood among its kind
+                # (``PickPrompt.kind``); with no kind named, every part is a target, and the which is grounded alone.
+                kind = pick_phrase(named, source=self.plan.source) if named and self.plan.which.strip() else ""
+                prompt = (PickPrompt(phrase=phrase, target_label=named, object_labels=(named,), kind=kind)
                           if named else PickPrompt(phrase=phrase, target_label=None, object_labels=("object",)))
             previous = self.service.set_prompt(prompt)
             undo.callback(_quietly, "putting the cell's prompt back", self.service.set_prompt, previous)
@@ -2457,6 +2461,25 @@ class _Task:
         self._return()
         self._said_part_finished(placed=False)
         self._end(stop, f"{sentence}; the part was put back where it was gripped")
+
+    def _the_last_part_not_taken(self, report: Any) -> None:
+        """Count the last part placed not placed where this pick's first look found the spot the last pick took it
+        from still standing (``KeptScene``'s taken check, ``TAKEN_STILL_STANDS``, with ``robot.grasping.follow_parts``):
+        a hand with no sensor closed on nothing and carried nothing to the drop (the owner, 2026-10-12: until the URCap
+        reports the grip). This pick is that part again, and the run says so with the part's end."""
+        from src.robot.perception.kept_scene import TAKEN_STILL_STANDS  # noqa: PLC0415
+
+        said = str((getattr(report, "telemetry", None) or {}).get("follow_why", "") or "")
+        if TAKEN_STILL_STANDS not in said or self.parts_placed <= 0:
+            return
+        part = self.parts_placed
+        self.parts_placed -= 1
+        self.part_number = part
+        logger.warning("task: part %d is counted not placed: pick %d's first look %s", part, self.picks, said)
+        self._say(TaskEvent.PART_FINISHED, f"Part {part} was not placed after all: this pick's first look found "
+                                           f"something standing where it was taken from ({said}), so the last pick "
+                                           "most likely closed on nothing. It is picked again.",
+                  part=part, placed=False, taken_spot_stands=True, duration_s=None)
 
     def _said_part_finished(self, *, placed: bool) -> None:
         self._say(TaskEvent.PART_FINISHED, f"Part {self.part_number} " + ("is placed." if placed else "was not placed."),

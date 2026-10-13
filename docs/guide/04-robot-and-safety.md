@@ -295,7 +295,7 @@ remembers the target for the next continuity check.
 | 1 | `workspace` | always wired | `target_pose` in `Frame.BASE` | a pose outside the box shrunk by `safety.limits.workspace_margin_mm` (default 20.0) |
 | 2 | `joint_limit` | `safety.joint_limits.enforce` | `target_joints`, plus `arm` for the vendor table | an axis outside `[min + margin_deg, max - margin_deg]`, `margin_deg` default 5.0 |
 | 3 | `ik_quality` | `safety.ik_quality.enforce` | `target_joints`, plus `arm` | non-finite joints, DoF mismatch, joint jump, near-limit proximity, near-singularity |
-| 4 | `self_collision` | `safety.self_collision.enforce` | `target_joints` and a kinematics model | any monitored pair closer than `min_distance_mm`, default 10.0; a box a camera saw closer than `perceived_min_distance_mm`, default 5.0 and never less (5.5) |
+| 4 | `self_collision` | `safety.self_collision.enforce` | `target_joints` and a kinematics model | any monitored pair closer than `min_distance_mm`, default 10.0; a box a camera saw closer than `perceived_min_distance_mm`, default 2.0 and never less than 1 (5.5) |
 | 5 | `payload` | `safety.payload.enforce` | config only | negative mass, mass over `max_mass_kg`, a negative inertia component |
 | 6 | `motion_continuity` | `safety.motion_continuity.enforce` | a previous **accepted** target | a joint, TCP or orientation step over its cap |
 
@@ -537,27 +537,29 @@ planner cleared. The capsule fallback cannot turn a box and judges the enclosure
 camera world holds is [05](05-pick-loop.md), 5.3.
 
 **A seen box keeps its own distance.** `robot.safety.self_collision.perceived_min_distance_mm`, default
-**5**. A seen box is already the seen surface grown by `planning_world.perceived.margin_mm` (15 mm), so 5
-keeps the arm **20 mm off a flat face**. Across a box edge the margin reaches 21 mm, so where a rim meets the
-round shoulder housing the arm needs about **26 mm**: a square bin 25.0 mm from the arm reads 4.0 mm and is
-refused, one 26.3 mm away passes. The arm against itself and every **declared** fixture, which is measured
-geometry, keep `min_distance_mm` (**10**). The guard asks in that order, the arm and the declared fixtures at
-10 first, then the seen boxes alone at 5, so a refusal names the first pair it always named. **Below 5 a load
-refuses it**, naming the key (the owner, 2026-10-01): wherever only the camera's boxes refuse the planner's
-world, this guard alone decides them (section 6).
+**2**. A seen box is already the seen surface grown by `planning_world.perceived.margin_mm` (8 mm, the
+owner's cell 6), so 2 keeps the arm **10 mm off a flat face** (8 on the owner's cell). The arm against itself
+and every **declared** fixture, which is measured geometry, keep `min_distance_mm` (**10**). The guard asks in
+that order, the arm and the declared fixtures first, then the seen boxes alone at 2, so a refusal names the
+first pair it always named. **Below 1 a load refuses it**, naming the key (the owner: 5 on 2026-10-01, 3 on
+2026-10-05, 1 on 2026-10-12): wherever only the camera's boxes refuse the planner's world, this guard alone
+decides them (section 6). Why 2: over the replay bank's 116 recorded picks of the owner's cell
+(`scripts/replay_bank`), 75 have a grasp the guard admits at 2 mm and at 1 mm, 71 at 3 mm, and none has fewer.
 
 **The load refuses a gap between samples.** `perceived_min_distance_mm` plus `perceived.margin_mm` has to
 reach `min_distance_mm`, the step every path is sampled at (5.4). Short of it the arm could reach a seen
 surface between two samples that both passed, so such a config is refused at load, naming all three keys.
 
-**The 20 mm and that sum hold to the thinned cloud, not to every pixel.** The camera world keeps one point
+**The margin and that sum hold to the thinned cloud, not to every pixel.** The camera world keeps one point
 per 10 mm voxel (`perceived.voxel_size_mm`), the first pixel seen in it, and fits its boxes to those points.
-A pixel the thinning dropped can lie much nearer a box face: over 3,400 noise-free synthetic scenes at the
-shipped tuning, the nearest lay **4.1 mm** inside its box, about **9 mm** from the arm at a sample that
-passes. That is a measurement, not a bound. A coarser voxel drops more: at 20 mm a measured pixel lay up to
-**5.6 mm outside** every box, where a sample the guard passes at 5 mm can touch it. So while
-`perceived_min_distance_mm` is below `min_distance_mm`, the load refuses a `perceived.voxel_size_mm` coarser
-than **10**, naming the keys.
+A face the box is square to loses nothing: every pixel of it stands where its kept points stand. At an
+oblique face or an edge a pixel the thinning dropped can lie much further out: over 3,400 noise-free
+synthetic scenes, up to **10.9 mm** past the points kept (4.1 mm inside a box grown by 15). That is a
+measurement, not a bound. With the owner's 6 mm margin and 2 mm such a pixel can stand about 3 mm inside the
+distance a sample that passes keeps from it, as it could by 2 mm at 3 mm: a finger may brush the edge of a
+part there, which the owner allows (2026-10-05). A coarser voxel drops more: at 20 mm a measured pixel lay up
+to **5.6 mm outside** every box. So while `perceived_min_distance_mm` is below `min_distance_mm`, the load
+refuses a `perceived.voxel_size_mm` coarser than **10**, naming the keys.
 
 **A refusal says where the box stood.** The `rejected a PLANNED PATH` and `rejected joint move` log lines
 carry the refusal's detail: `joints_deg`, `fixture` (`seen` or `declared`), `box_centre_mm`, `box_size_mm`,
@@ -610,7 +612,7 @@ obstacle. What the band swallows keeps the guard's 5 mm plus the allowance: on t
 (2026-10-01) the worst swallowed part kept **9.2 mm** at a true reading and **5.2 mm** with the camera reading
 4 mm low, and of 32 attack scenes (pins and squares on the mat, small cubes on the bare bench) none was left
 free, the least distance 13.2 mm. A property test pins that every pixel either stands for a kept point or
-lies inside a held solid. That is why `perceived_min_distance_mm` stays **5**. **What it does not cover:** a
+lies inside a held solid. Those numbers were measured at 5 mm; at 2 each is 3 mm less. **What it does not cover:** a
 camera reading more than 4 mm low (the bench check below reports it; a ruler and a TCP touch-off measure it),
 the arm model's own vertical error of about 2.6 mm, which every guard distance carries, and a part above the
 band inside a target's 15 mm keep-out.
@@ -709,9 +711,9 @@ its own. Two keys in `safety.planned_motion` bound that choice. `line_clearance_
 every configuration of a straight line has to stay from the planner's world before the line runs instead of
 a plan: the distance cuRobo's optimiser keeps its plans from an obstacle, and the local guard's shipped
 `self_collision.min_distance_mm`, which the guard keeps from the arm and a declared fixture. From a box the
-camera saw, already grown by `perceived.margin_mm`, the guard keeps `perceived_min_distance_mm`, 5 mm (5.5).
+camera saw, already grown by `perceived.margin_mm`, the guard keeps `perceived_min_distance_mm`, 2 mm (5.5).
 A line is held the full 10 mm from the bench and the declared fixtures. Where only the camera's boxes come
-closer, the planner is asked again without them, and with a hand known empty and open the exact guard's 5 mm
+closer, the planner is asked again without them, and with a hand known empty and open the exact guard's 2 mm
 decides (below). `max_detour_deg` (default 45) is how far any joint of a cuRobo plan may
 swing beyond the span between where it starts and where it ends: a plan past it is not run, the next goal
 is planned to instead, and with none left the move is refused `JOINT_LIMIT_REJECTED` naming the joint. A

@@ -20,6 +20,7 @@ it needs another interpreter.
 | [`ursim/`](ursim/) | real UR controller software in Docker: the SDK, the driver, both I/O grippers, a protective stop, "halt now" and the operator console's task driven against it | [`ursim/README.md`](ursim/README.md) |
 | [`console/`](console/) | captures the operator console's event logs, the ones the frontend's run model replays, byte for byte the same on every run | `python scripts/console/capture_event_log.py` |
 | [`cell/`](cell/) | reads a cell's logs back: every pick split into its stages, best, median and worst, and two log folders set A against B | [`cell/README.md`](cell/README.md) |
+| [`replay_bank/`](replay_bank/) | judges the cell's recorded picks again with today's code, offline, and exits 1 where a change admits fewer grasps than the run before | [`replay_bank/README.md`](replay_bank/README.md) |
 | [`trial/`](trial/) | runs [`your_own_gripper.md`](../docs/runbooks/your_own_gripper.md) in a copy of the tree with two hands whose answers are known | [`trial/README.md`](trial/README.md) |
 
 ```bash
