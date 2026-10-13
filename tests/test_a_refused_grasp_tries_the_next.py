@@ -100,7 +100,8 @@ class _Ranked:
             turn = math.radians(20.0 * rank)
             grasps.append(GraspPoint(position=np.array(CUBE_CENTRE), approach=np.array([0.0, 0.0, -1.0]),
                                      axis=np.array([math.cos(turn), math.sin(turn), 0.0]), grip_width_mm=40.0,
-                                     score=0.9 - 0.05 * rank, frame=GraspFrame.BASE, label="part"))
+                                     score=0.9 - 0.9 * rank / max(self.count, 18), frame=GraspFrame.BASE,
+                                     label="part"))
         self.latest = tuple(grasps)
         return GraspResult(candidates=self.latest, top_score=0.9)
 
@@ -302,17 +303,17 @@ class TheNextGraspOfTheSameLookTests(unittest.TestCase):
         self.assertEqual([0], cell.policy.executed)
         self.assertIs(PickOutcome.EXECUTION_FAILED, report.outcome)
 
-    def test_never_more_than_twelve_grasps_an_attempt(self) -> None:
-        """Twelve since 2026-10-06, every candidate the calculator offers; four before: a grasp refused at the hand on
-        its line down is refused before its route is planned, so the more cost little
-        (``pick_loop.GRASPS_TRIED_PER_ATTEMPT``)."""
-        cell = _Cell(dict.fromkeys(range(14), REFUSED), count=14)
+    def test_never_more_than_twenty_four_grasps_an_attempt(self) -> None:
+        """Twenty-four since 2026-10-13, every candidate the calculator offers, SFE's twelve and the part's own body's
+        twelve; twelve since 2026-10-06, four before: a grasp refused at the hand on its line down is refused before its
+        route is planned, so the more cost little (``pick_loop.GRASPS_TRIED_PER_ATTEMPT``)."""
+        cell = _Cell(dict.fromkeys(range(26), REFUSED), count=26)
 
         report = cell.run()
 
-        self.assertEqual(list(range(12)), cell.policy.executed)
+        self.assertEqual(list(range(24)), cell.policy.executed)
         (attempt,) = report.attempts
-        self.assertEqual(12, len(attempt.tries))
+        self.assertEqual(24, len(attempt.tries))
 
 
 class AStopWinsBetweenTwoGraspsTests(unittest.TestCase):

@@ -1387,7 +1387,13 @@ class _Task:
         from src.models.vlm.qwen import class_list_prompt  # noqa: PLC0415
 
         rules = self.plan.rules
-        phrase = class_list_prompt([pick_phrase(rule.object, which=rule.which, source=rule.source) for rule in rules])
+        # Every phrase where its parts lie (lever C, 2026-10-13): a rule that names no place grounds where the task's
+        # parts lie, the first place a rule named. On the owner's Tuesday trays "each separate other object", said with
+        # no place beside "each separate round object on the black mat", boxed the frame's aluminium slats as parts: 24
+        # to 27 boxes a look, 15 to 18 s a grounding.
+        where = next((rule.source.strip() for rule in rules if rule.source.strip()), "")
+        phrase = class_list_prompt([pick_phrase(rule.object, which=rule.which, source=rule.source.strip() or where)
+                                    for rule in rules])
         kinds = tuple(rule.object.strip() for rule in rules)
         keywords: dict[str, Any] = {"phrase": phrase, "target_label": None, "object_labels": kinds}
         if "target_labels" in {item.name for item in dataclasses.fields(prompt_type)}:

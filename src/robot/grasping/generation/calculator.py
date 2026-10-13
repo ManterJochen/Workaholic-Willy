@@ -50,6 +50,7 @@ from src.robot.grasping.generation.scene_obstacles import (
 )
 from src.robot.grasping.generation.support_footprint import (
     DEFAULT_FLOOR_MARGIN_MM,
+    JAW_SIDE_ROOM_MM,
     HandFloor,
     SupportFootprintJaw,
     reconstruct_support_prism,
@@ -527,7 +528,9 @@ class GraspCalculator:
             geom=self._geom,
             approach_cam=self.approach_cam,
             min_grip_mm=self.min_grip_mm,
-            max_grip_mm=self.max_grip_mm,
+            # The widest span the silhouette and antipodal paths offer: the stroke less the room beside each jaw, the
+            # rule SFE keeps as its ``width_safety_mm``.
+            max_grip_mm=max(self.min_grip_mm, self.max_grip_mm - 2.0 * JAW_SIDE_ROOM_MM),
             max_candidates=self.max_candidates,
             max_geometry_points=self.max_geometry_points,
             normal_radius_mm=self.normal_radius_mm,
@@ -571,6 +574,11 @@ class GraspCalculator:
         # ``build_calculator``): the same candidates, refusal counts and telemetry, to the bit, in a tenth of the time
         # on a boxed-in part (2026-10-09). False, the default, builds them one at a time, as before.
         self.sfe_batched: bool = False
+        #: Whether the cell's hand opens only as wide as a grasp needs before it closes (lever G, 2026-10-13: a Robotiq
+        #: hand told a width): the part's body is then searched for jaws that open to each span and the room beside
+        #: each jaw, and each such grasp carries that opening (``score_components["support_footprint"]["open_width_mm"]``),
+        #: which the execution opens to and the guard holds the fingers at. Off, a hand that opens fully.
+        self.opens_as_needed: bool = False
 
 
     @property
@@ -1261,15 +1269,21 @@ class GraspCalculator:
                 # The other parts the detector named in this frame: a finger may come to their measured surface
                 # (the owner, 2026-10-05: "Finger dürfen streifen"), where the cell lets the fingers touch parts.
                 part_mask = None
+                part_owner = None
                 if other_object_masks and float(self._scene_obstacles.part_soft_mm) > 0.0:
                     part_mask = np.zeros(mask_bool.shape, dtype=bool)
-                    for other in other_object_masks:
+                    # Each named part its own owner: the fine world's boxes are a part's, never all of them one part's.
+                    part_owner = np.full(mask_bool.shape, -1, dtype=np.int64)
+                    for number, other in enumerate(other_object_masks):
                         other_mask = np.asarray(other).astype(bool)
                         if other_mask.shape == part_mask.shape:
+                            part_owner[other_mask & part_mask] = -1
+                            part_owner[other_mask & ~part_mask] = number
                             part_mask |= other_mask
                 scene = scene_obstacle_points(
                     depth_arr * scale, mask_bool, intrinsics, transform, rules=self._scene_obstacles,
-                    support_height_mm=scene_support_mm, support_model=support_model, part_mask=part_mask)
+                    support_height_mm=scene_support_mm, support_model=support_model, part_mask=part_mask,
+                    part_owner=part_owner)
                 telemetry["scene_obstacle_points"] = int(scene.points_base_mm.shape[0])
                 telemetry["scene_obstacle_clusters"] = int(scene.clusters)
                 telemetry["scene_obstacle_world_rule_points"] = int(scene.world_rule_base_mm.shape[0])
@@ -1448,6 +1462,7 @@ class GraspCalculator:
                     fine_pass=self.sfe_fine_pass,
                     runner=sfe_workers,
                     batched=self.sfe_batched,
+                    opens_as_needed=self.opens_as_needed,
                     **sfe_side,
                 )
                 telemetry.update(sfe_telemetry)

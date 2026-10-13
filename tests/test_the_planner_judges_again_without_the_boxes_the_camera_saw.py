@@ -546,8 +546,9 @@ class _Conn:
         return [0.0, -math.pi / 3.0, 4.0 * math.pi / 9.0, -11.0 * math.pi / 18.0, -math.pi / 2.0, 0.0]
 
 
-def _glue(*, fixtures: "tuple[dict[str, Any], ...]" = ()) -> "tuple[Any, _Judging, Any]":
-    """The UR glue with a live world of a bin beside the base, and the client it asks."""
+def _glue(*, fixtures: "tuple[dict[str, Any], ...]" = (), fine: bool = False) -> "tuple[Any, _Judging, Any]":
+    """The UR glue with a live world of a bin beside the base, and the client it asks; with the guard's fine world about
+    the goal where ``fine`` (``fine_world``, as a cell's wiring builds it)."""
     from src.robot.drivers.ur.curobo_motion import CuroboUrPlanner
     from src.robot.safety.planning.live_world import CameraView, DepthSnapshot, LivePlannerWorld
     from src.robot.safety.planning.perceived import SelfEnvelope, WorldBuildTuning
@@ -566,7 +567,8 @@ def _glue(*, fixtures: "tuple[dict[str, Any], ...]" = ()) -> "tuple[Any, _Judgin
 
     declared = (planner_cuboid("support_plane", (0.0, 0.0, -25.0), (2000.0, 2000.0, 50.0)), *fixtures)
     world = LivePlannerWorld(cameras=(CameraView(name="look", depth_source=_Camera(), camera_to_base=camera),),
-                             declared=declared, limits=LIMITS, tuning=WorldBuildTuning(pixel_stride=2),
+                             declared=declared, limits=LIMITS,
+                             tuning=WorldBuildTuning(pixel_stride=2, fine_reach_mm=150.0 if fine else 0.0),
                              max_age_ms=60000.0)
     joints = np.asarray(_Conn().get_joint_positions())
     frames = yawed_link_transforms_mm("ur10", joints, 0.0)
@@ -592,6 +594,22 @@ class TheGlueAsksOnlyWithWhatItsRefreshHandedThePlannerTests(unittest.TestCase):
         self.assertEqual(sorted(held), sorted(box["name"] for box in client.worlds[-1] if box["name"].startswith("seen_")))
         glue.set_world([{"name": "seen_00", "dims_m": [0.1] * 3, "pose": [0.0, -0.4, 0.05, 1.0, 0.0, 0.0, 0.0]}])
         self.assertIsNone(glue.perceived_in_world(), "a world set by hand is no refresh's: nobody can say")
+
+    def test_with_the_fine_world_it_says_the_planners_boxes_and_the_guards_apart(self) -> None:
+        """Near the motion's goal the guard holds the fine world and the planner the camera world's own boxes (2026-10-13):
+        the glue says which the planner holds and which the guard was handed of the same refresh, and a set-aside asks
+        with the planner's."""
+        glue, client, told = _glue(fine=True)
+        glue.refresh_world(near_point_mm=(0.0, -400.0, 40.0))
+        held, handed = glue.perceived_in_world(), glue.guard_held_in_world()
+        assert held and handed
+        self.assertEqual(sorted(held), sorted(box["name"] for box in client.worlds[-1] if box["name"].startswith("seen_")))
+        self.assertEqual(sorted(handed), sorted(box.name for box in told[-1]), "the very boxes the guard was handed")
+        self.assertNotEqual(sorted(held), sorted(handed), "the guard holds the fine world about the goal")
+        judged = glue.judge_joint_path([[0.0] * 6], clearance_mm=10.0, name_pairs=False, ignore_perceived=held)
+        self.assertEqual(sorted(judged.perceived_ignored), sorted(held))
+        glue.set_world([{"name": "seen_00", "dims_m": [0.1] * 3, "pose": [0.0, -0.4, 0.05, 1.0, 0.0, 0.0, 0.0]}])
+        self.assertIsNone(glue.guard_held_in_world(), "a world set by hand is no refresh's: nobody can say")
 
     def test_it_asks_with_the_cameras_boxes_its_refresh_handed_the_planner(self) -> None:
         glue, client, _ = _glue()

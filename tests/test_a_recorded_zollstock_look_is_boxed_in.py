@@ -8,10 +8,13 @@ and the pick ended with no typed reason. Replayed here the way the pick loop cal
 replay, ``pick_loop.py:4264-4384``): the owner's Hand-E, the dense mode of that profile, the support the single view
 resolved.
 
-With ``robot.grasping.scene_obstacles`` the same calculator offers nothing on both looks, with the support model of
-the look and without it: ``ALL_COLLIDED`` first, the reason the push answers, and the sentence that a neighbour the
-camera saw is in the way. On all five of the owner's recorded looks (P1-P5, ``cellfix/ae/work/replay_zollstock.out``):
-today 3 of 3 grasps with an open finger in a neighbour, after 0 grasps.
+With ``robot.grasping.scene_obstacles`` SFE's prism offers nothing on both looks, with the support model of the look
+and without it: every one of its builds meets a neighbour the camera saw. On all five of the owner's recorded looks (P1-P5,
+``cellfix/ae/work/replay_zollstock.out``): today 3 of 3 grasps with an open finger in a neighbour, after 0 grasps.
+
+Since 2026-10-13 the part's own body is searched beside the prism (``body_grasps``, lever A) on the fine world's boxes
+(``fine_world``): it holds the folded Zollstock across its 20 mm, and no open finger of any grasp it offers stands on a
+point the camera world keeps.
 """
 
 from __future__ import annotations
@@ -127,9 +130,7 @@ class ARecordedZollstockLookIsBoxedInTests(unittest.TestCase):
                 held = [_in_open_fingers(grasp, world) for grasp in today.candidates]
                 self.assertTrue(all(n > 0 for n in held), held)
 
-    def test_with_the_scene_none_and_it_says_a_neighbour_is_in_the_way(self) -> None:
-        from src.robot.grasping.generation.scene_obstacles import no_grasp_said
-        from src.robot.grasping.types.feedback import GraspFailureReason
+    def test_with_the_scene_the_prism_is_boxed_in_and_no_open_finger_meets_a_neighbour(self) -> None:
         from tests._cell_2026_10_01 import look
 
         for name in ("P1", "P5"):
@@ -137,11 +138,16 @@ class ARecordedZollstockLookIsBoxedInTests(unittest.TestCase):
             for label, model in (("without the support model", None), ("with it", _model(recorded))):
                 with self.subTest(look=name, model=label):
                     after = _compute(recorded, scene=True, model=model)
-                    self.assertEqual((), after.candidates)
-                    self.assertEqual((GraspFailureReason.ALL_COLLIDED, GraspFailureReason.RESCAN_RECOMMENDED),
-                                     after.reasons)
+                    # SFE's prism: every build meets a neighbour the camera saw.
+                    self.assertEqual(after.telemetry["support_footprint_candidates"], 0)
                     self.assertGreater(after.telemetry["support_footprint_refused"]["seen_corridor"], 0)
-                    self.assertIn("meets a neighbour the camera saw beside the part", no_grasp_said(after))
+                    # The body's grasps: none with an open finger on what the camera world keeps beside the part.
+                    stages = {(grasp.metadata.get("score_components") or {}).get("support_footprint", {}).get("stage")
+                              for grasp in after.candidates}
+                    self.assertLessEqual(stages, {"body"})
+                    world = after.metadata["scene_points_world_rule_base_mm"]
+                    held = [_in_open_fingers(grasp, world) for grasp in after.candidates]
+                    self.assertTrue(all(n == 0 for n in held), held)
 
     def test_with_the_model_the_mat_is_no_neighbour(self) -> None:
         """The support model takes the mat out of what the push is handed: the world rule keeps the pile, not the mat

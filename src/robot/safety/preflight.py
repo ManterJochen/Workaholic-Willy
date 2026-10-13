@@ -546,6 +546,25 @@ class SafetyPreflight:
                 told += 1
         return told
 
+    def set_finger_opening(self, width_mm: float | None) -> int:
+        """Tell every guard that holds the hand's fingers how wide they stand open, between their inner faces,
+        millimetres (lever G, 2026-10-13: a Robotiq hand told a width before the line down opens no wider); ``None``
+        stands them fully open, as baked. Returns how many guards were told. The goal's jaw region follows it
+        (``self_envelope.goal_keep_out``). Only the motion that told the hand that width and read it back says it, and
+        it says ``None`` again before the hand opens wider."""
+        told = 0
+        for guard in self._guards:
+            setter = getattr(guard, "set_finger_opening", None)
+            if callable(setter):
+                setter(width_mm)
+                told += 1
+        return told
+
+    def finger_opening_mm(self, arm: "RobotArm | None" = None) -> float | None:
+        """How wide the path's guard holds the fingers open (:meth:`set_finger_opening`); ``None`` fully open."""
+        guard = self._path_authority(arm)
+        return getattr(guard, "finger_opening_mm", None) if guard is not None else None
+
     def perceived_obstacles(self, arm: "RobotArm | None" = None) -> "tuple[AxisAlignedBox, ...]":
         """The obstacles a camera saw that the self-collision guard holds now, empty where none is wired or none was
         handed in: the very boxes the path gates judge at ``perceived_min_distance_mm``."""

@@ -78,6 +78,7 @@ __all__ = [
     "DEFAULT_FLOOR_MARGIN_MM",
     "DEFAULT_MAX_CANDIDATES",
     "FINE",
+    "JAW_SIDE_ROOM_MM",
     "FINE_SEARCH_DEFERRED",
     "REFUSAL_CAUSES",
     "ROBUST_ERROR_MM",
@@ -118,9 +119,10 @@ DEFAULT_FLOOR_MARGIN_MM: Final[float] = 2.0
 DEFAULT_MAX_CANDIDATES: Final[int] = 12
 
 #: The cell of the grid that keeps the hand off the neighbours' points where the boxes the camera world builds of them
-#: decide (``seen_envelope``), millimetres, grown by one cell: 4 to 8 mm off a point, under the guard's distance from a
-#: box its margin grew round the same point. A choice: the rigid grid's 4 mm.
-SEEN_POINTS_CELL_MM: Final[float] = 4.0
+#: decide (``seen_envelope``), millimetres, grown by one cell: 2 to 4 mm off a point, under the guard's distance from a
+#: fine box its margin grew round the same point (``fine_world``, 2 mm and the guard's 2 mm). At 4 mm, 4 to 8 mm off a
+#: point, the grid refused grasps the fine world admits.
+SEEN_POINTS_CELL_MM: Final[float] = 2.0
 
 #: How close two footprint points have to lie to count as one surface, millimetres, for the fragment
 #: trim in :func:`reconstruct_support_prism`. It is the side of a grid cell and two points in touching
@@ -325,6 +327,14 @@ _CLEARANCE_FULL_MM: Final[float] = 20.0
 #: (:func:`robust_to`) and be ranked first. The owner, 2026-10-09: 3 to 5 mm is what a real cell gets; the two looks of
 #: the one recorded pick seen from two poses (2026-10-07) lay 5.4 mm apart at the median, about 3.8 mm each.
 ROBUST_ERROR_MM: Final[float] = 4.0
+#: How much room a grasp leaves each jaw beside the part as the open hand comes down, millimetres: a part is closed
+#: across only where the stroke spans it with this much to spare on either side. The owner's 2 mm (2026-10-13), a little
+#: over the hand-eye calibration's own spread (1.6 mm RMS over its 20 stations, 2.3 mm at most), so a jaw that comes down
+#: as far off as the cell's error puts it still clears the part's edge. Until then the silhouette path offered spans up
+#: to the stroke itself: at 15:14 that day a 48.9 mm metal part under the 50 mm Hand-E, half a millimetre a side, and
+#: the hand closed on nothing. Every source of candidates reads this number: SFE twice over as its ``width_safety_mm``,
+#: the silhouette and antipodal paths as the widest span they offer, and the pick loop's lazy ranking.
+JAW_SIDE_ROOM_MM: Final[float] = 2.0
 #: A candidate tilted this far off vertical or more is offered, with side approaches, only through space a depth ray saw.
 _SEEN_FROM_TILT_DEG: Final[float] = 15.0
 #: Scores this near the best of a run are equal by geometry, and the run is ranked vertical first. A face's normal read
@@ -354,7 +364,8 @@ class SupportFootprintJaw:
     pad_behind_mm: float = 14.39
     friction: float = 0.5
     table_clearance_mm: float = 5.0
-    width_safety_mm: float = 2.0
+    #: The stroke a span leaves spare, both sides together (:data:`JAW_SIDE_ROOM_MM` on either side).
+    width_safety_mm: float = 2.0 * JAW_SIDE_ROOM_MM
     #: The palm. It sits behind the fingers, so on a straight-down grasp it is nowhere near the
     #: table; it is 70 mm wide against the fingers' 27, so as the approach tilts and the binormal
     #: swings toward vertical the palm becomes the lowest part of the gripper. The collision
@@ -373,7 +384,7 @@ class SupportFootprintJaw:
         min_width_mm: float = 5.0,
         friction: float = 0.5,
         table_clearance_mm: float = 5.0,
-        width_safety_mm: float = 2.0,
+        width_safety_mm: float = 2.0 * JAW_SIDE_ROOM_MM,
     ) -> "SupportFootprintJaw":
         """Derive the planning dimensions from the collision envelope, so the two cannot drift.
 

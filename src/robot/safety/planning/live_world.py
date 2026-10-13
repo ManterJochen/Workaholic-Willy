@@ -1549,6 +1549,10 @@ class WorldRefresh:
     #: that encloses it (``_guard_boxes``). Empty when the world was not usable,
     #: which is the state a guard has to be put back into rather than left holding stale boxes.
     guard_boxes: tuple["AxisAlignedBox", ...] = ()
+    #: The names of the boxes the camera saw that the planner was handed, the camera world's own
+    #: (``PerceivedWorld.boxes``): the guard's, but near the motion's goal, where the guard holds the fine world
+    #: (``fine_world``). Empty when the world was not usable.
+    planner_seen: tuple[str, ...] = ()
     #: Values in the distance field the planner accepted, or `None` when no field was sent. The
     #: boxes go to the guard and the field goes to the planner, and both come from one cloud.
     voxels_registered: int | None = None
@@ -1797,6 +1801,8 @@ def refresh_planner_world(
         build_ms=build_ms, register_ms=register_ms, age_ms=snapshot.age_ms, grab_ms=grab_ms,
         dropped_obstacles=dropped, reason=reason,
         guard_boxes=() if reason else _guard_boxes(snapshot.perceived),
+        planner_seen=() if reason or snapshot.perceived is None else tuple(
+            str(box.name) for box in snapshot.perceived.boxes),
         voxels_registered=voxels,
         cameras=snapshot.cameras, captured_at_s=snapshot.captured_at_s,
         keep_out=snapshot.keep_out,
@@ -1838,6 +1844,9 @@ def _guard_boxes(perceived: PerceivedWorld | None) -> tuple[AxisAlignedBox, ...]
     """
     if perceived is None:
         return ()
+    # Near the motion's goal the guard holds the fine world, where the world built one (``fine_world``).
+    fine = getattr(perceived, "guard_boxes", None)
+    held = perceived.boxes if fine is None else fine
     return tuple(
         AxisAlignedBox(
             center_mm=np.asarray(box.center_mm, dtype=np.float64),
@@ -1854,7 +1863,7 @@ def _guard_boxes(perceived: PerceivedWorld | None) -> tuple[AxisAlignedBox, ...]
             # How far under a support solid's top a finger keeps the distance from (``PerceivedBox.finger_top_mm``).
             finger_top_mm=float(getattr(box, "finger_top_mm", 0.0) or 0.0),
         )
-        for box in perceived.boxes
+        for box in held
     )
 
 

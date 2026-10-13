@@ -426,7 +426,12 @@ def goal_keep_out(preflight: Any, arm: Any, tcp_to_base_mm: Any) -> "GoalKeepOut
     if tcp_to_base_mm is None:
         return GoalKeepOut(region=None, reason="the TCP at this goal is not known, so no goal region is placed")
     jaw = hand.jaw
+    # Where the hand was told to open no wider than a width (lever G), the space between its jaws is that wide: what
+    # stands between that and the stroke is beside the fingers, and stays in the world.
+    told = getattr(preflight, "finger_opening_mm", None)
+    opening = told(arm) if callable(told) else None
+    aperture = float(jaw.aperture_mm) if opening is None else min(float(opening), float(jaw.aperture_mm))
     return GoalKeepOut(region=KeepOutBox.from_jaw(
-        aperture_mm=jaw.aperture_mm, finger_width_mm=jaw.finger_width_mm, pad_ahead_mm=jaw.pad_ahead_mm,
+        aperture_mm=aperture, finger_width_mm=jaw.finger_width_mm, pad_ahead_mm=jaw.pad_ahead_mm,
         pad_behind_mm=jaw.pad_behind_mm, tcp_to_base_mm=tcp_to_base_mm,
     ))

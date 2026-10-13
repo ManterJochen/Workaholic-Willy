@@ -72,13 +72,13 @@ class _Captured:
 
     def __call__(
         self, model: str, mesh_dir: str | None = None, mesh_name: str | None = None, coupling_mm: float = 0.0,
-        *, placement: Any = None, coupling_boxes: Any = (),
+        *, placement: Any = None, coupling_boxes: Any = (), baked_opening_mm: Any = None,
     ) -> None:
         # ⛔ A STUB POORER THAN THE THING IT STANDS FOR cannot fail the way the thing fails, and one richer
         # cannot either. Every argument the guard passes is recorded here, so adding one to `make_backend`
         # without teaching this stub is a TypeError rather than a silently untested path.
         self.calls.append({"model": model, "mesh_name": mesh_name, "coupling_mm": coupling_mm,
-                           "coupling_boxes": tuple(coupling_boxes)})
+                           "coupling_boxes": tuple(coupling_boxes), "baked_opening_mm": baked_opening_mm})
         return None
 
 
@@ -308,7 +308,8 @@ class TheGuardTakesItsHandFromTheRobotConfigTests(unittest.TestCase):
         captured = _Captured()
         with mock.patch(_FCL, captured):
             guard.exact_mesh_engine(arm)
-        self.assertEqual(captured.calls, [{"model": "ur5e", "mesh_name": "robotiq_hande", "coupling_mm": 20.0, "coupling_boxes": ()}])
+        self.assertEqual(captured.calls, [{"model": "ur5e", "mesh_name": "robotiq_hande", "coupling_mm": 20.0, "coupling_boxes": (),
+                                           "baked_opening_mm": 49.99}])
         self.assertEqual(guard.hand.model, "robotiq_hande")
 
     def test_a_guard_built_directly_keeps_the_arm_bundle(self) -> None:
@@ -319,7 +320,8 @@ class TheGuardTakesItsHandFromTheRobotConfigTests(unittest.TestCase):
         captured = _Captured()
         with mock.patch(_FCL, captured):
             guard.exact_mesh_engine(_ur_arm())
-        self.assertEqual(captured.calls, [{"model": "ur5e", "mesh_name": None, "coupling_mm": 0.0, "coupling_boxes": ()}])
+        self.assertEqual(captured.calls, [{"model": "ur5e", "mesh_name": None, "coupling_mm": 0.0, "coupling_boxes": (),
+                                           "baked_opening_mm": None}])
 
     def test_a_guard_built_directly_has_no_hand(self) -> None:
         from src.robot.safety.self_collision import SelfCollisionGuard
@@ -335,7 +337,9 @@ class TheGuardTakesItsHandFromTheRobotConfigTests(unittest.TestCase):
                 "ur5e", 180.0, (), ContinuousGuardProfile(enabled=True, margin_mm=8.0),
                 variant="robotiq_hande", coupling_mm=20.0,
             )
-        self.assertEqual(captured.calls, [{"model": "ur5e", "mesh_name": "robotiq_hande", "coupling_mm": 20.0, "coupling_boxes": ()}])
+        # The monitor, a simulation's opt-in layer, holds the fingers as baked: it is told no opening.
+        self.assertEqual(captured.calls, [{"model": "ur5e", "mesh_name": "robotiq_hande", "coupling_mm": 20.0, "coupling_boxes": (),
+                                           "baked_opening_mm": None}])
 
 
 class TheRealCellPreflightNamesTheHandTests(unittest.TestCase):

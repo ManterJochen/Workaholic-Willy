@@ -631,6 +631,12 @@ class IsaacRobotArm(RobotArm):
         if self._preflight is not None:
             self._preflight.reset()
 
+    def set_finger_opening(self, width_mm: float | None) -> None:
+        """Hold the hand's fingers ``width_mm`` apart in this arm's guard (lever G, ``URRobotArm.set_finger_opening``);
+        ``None`` stands them fully open, as baked."""
+        if self._preflight is not None:
+            self._preflight.set_finger_opening(width_mm)
+
     @property
     def camera_world_required(self) -> bool:
         """Whether every motion of this arm needs a live camera world or a decline: a non-mock cuRobo arm."""

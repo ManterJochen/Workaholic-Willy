@@ -112,42 +112,59 @@ class TheMatIsNoNeighbourTests(unittest.TestCase):
 
 
 class TooShortForThisHandTests(unittest.TestCase):
-    """A part lower than the Hand-E grips at any tilt: ``ALL_TABLE_CONFLICT``, "too short for this hand"."""
+    """A part lower than the Hand-E grips at any tilt and on its body: ``ALL_TABLE_CONFLICT``, "too short for this
+    hand"."""
 
-    def test_a_12_mm_part_is_too_short_and_says_so(self) -> None:
-        """Under the Hand-E's least height: 1 mm over the support, the fingertip's 10.45 mm and 2 mm (2026-10-06, the
-        owner's "bis auf 1 mm"; 15.5 mm at the 3 mm of 2026-10-05, 28 mm until the fingers stood at the anchor)."""
+    def test_a_12_mm_part_is_held_on_its_body_and_a_3_mm_part_is_too_short_and_says_so(self) -> None:
+        """Under SFE's least height, 1 mm over the support, the fingertip's 10.45 mm and 2 mm (2026-10-06, the owner's
+        "bis auf 1 mm"), the part's own body holds a 12 mm part: the Hand-E's pads reach its fingertips, which stand the
+        1 mm over the mat (2026-10-13). A 6 mm part, under the body's 8 mm (1 mm, 3 mm into the pads and 4 mm of
+        outline above), nothing does."""
         from src.robot.grasping.generation.scene_obstacles import no_grasp_said
         from src.robot.grasping.types.feedback import GraspFailureReason
 
-        frame = Frame_((BENCH, MAT), Cylinder((0.0, -650.0), 20.0, MAT_MM, MAT_MM + 12.0))
-        result = compute(calculator(scene=True), frame)
+        flat = compute(calculator(scene=True), Frame_((BENCH, MAT), Cylinder((0.0, -650.0), 20.0, MAT_MM,
+                                                                             MAT_MM + 12.0)))
+        self.assertTrue(flat.candidates)
+        for grasp in flat.candidates:
+            self.assertEqual("body", grasp.metadata["score_components"]["support_footprint"]["stage"])
+            self.assertGreaterEqual(float(grasp.position[2]) - 10.45, MAT_MM + 1.0 - 0.5)
+        result = compute(calculator(scene=True), Frame_((BENCH, MAT), Cylinder((0.0, -650.0), 20.0, MAT_MM,
+                                                                               MAT_MM + 6.0)))
         self.assertEqual((), result.candidates)
         self.assertEqual((GraspFailureReason.ALL_TABLE_CONFLICT, GraspFailureReason.RESCAN_RECOMMENDED),
                          result.reasons)
         said = no_grasp_said(result)
         self.assertIn("too short for this hand", said)
-        self.assertIn("less than about 13 mm", said)
+        self.assertIn("less than about 8 mm", said)
 
     def test_a_25_mm_part_gets_grasps(self) -> None:
         """The owner's flat parts, 24 to 26 mm tall, which the hand did not grip until 2026-10-06."""
         frame = Frame_((BENCH, MAT), Cylinder((0.0, -650.0), 20.0, MAT_MM, MAT_MM + 25.0))
         self.assertTrue(compute(calculator(scene=True), frame).candidates)
 
-    def test_the_least_height_is_the_one_SFE_grips_at(self) -> None:
-        """``least_part_height_mm`` restates SFE's ladder: just under it SFE offers nothing, just over it a grasp."""
+    def test_the_least_height_is_the_one_the_hand_grips_at(self) -> None:
+        """``least_part_height_mm`` restates the lower of SFE's ladder and the body's pads: just under SFE's 13.45 mm
+        SFE offers nothing and just over it a grasp; just under the body's 8 mm neither offers anything, and just over
+        it the body a grasp."""
+        from src.robot.grasping.generation.body_grasps import body_grasps
         from src.robot.grasping.generation.scene_obstacles import least_part_height_mm
         from src.robot.grasping.generation.support_footprint import SupportFootprintJaw, generate_support_footprint_grasps
         from tests.test_sfe_says_why_it_refused import cylinder_cloud
 
         jaw = SupportFootprintJaw.from_robot_config(_hande())
         least = least_part_height_mm(jaw)
-        self.assertAlmostEqual(13.45, least, delta=0.05)
-        for height, expect in ((least - 1.0, False), (least + 1.5, True)):
-            with self.subTest(height=height):
+        self.assertAlmostEqual(8.0, least, delta=0.05)
+        ladder = 13.45
+        for height, expect in ((ladder - 1.0, False), (ladder + 1.5, True)):
+            with self.subTest(sfe=height):
                 cloud = cylinder_cloud(40.0, height, support_mm=MAT_MM)
-                found = generate_support_footprint_grasps(cloud, support_height_mm=MAT_MM, jaw=jaw)
-                self.assertEqual(expect, bool(found))
+                self.assertEqual(expect, bool(generate_support_footprint_grasps(cloud, support_height_mm=MAT_MM,
+                                                                                jaw=jaw)))
+        for height, expect in ((least - 1.0, False), (least + 1.5, True)):
+            with self.subTest(body=height):
+                cloud = cylinder_cloud(40.0, height, support_mm=MAT_MM)
+                self.assertEqual(expect, bool(body_grasps(cloud, support_height_mm=MAT_MM, jaw=jaw)))
 
 
 class TheOpenHandKeepsTheGuardsDistanceFromTheMatTests(unittest.TestCase):

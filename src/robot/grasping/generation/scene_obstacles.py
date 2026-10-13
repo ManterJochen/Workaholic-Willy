@@ -38,6 +38,15 @@ from typing import TYPE_CHECKING, Any, Final
 import numpy as np
 
 from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps
+from src.robot.safety.planning.fine_world import (
+    FINE_MARGIN_MM,
+    FINE_REACH_MM,
+    FineRegion,
+    fine_columns,
+    fringe_of,
+    noise_clusters,
+    specks,
+)
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.robot.grasping.types.feedback import GraspFailureReason
@@ -141,6 +150,9 @@ class SceneObstacleRules:
     finger_floor_drop_mm: float = 0.0
     #: Declared meshes that could not be read, each said: what the camera sees of them stays an obstacle.
     unread: tuple[str, ...] = field(default=())
+    #: How far from the part, in BASE x and y, the guard holds the fine world (``fine_world``), millimetres: the boxes
+    #: here are the fine world's within it, the camera world's beyond it. 0 for none, the boxes of before.
+    fine_reach_mm: float = 0.0
 
     @classmethod
     def from_robot_config(cls, robot_config: Any) -> "SceneObstacleRules":
@@ -191,6 +203,8 @@ class SceneObstacleRules:
             fingers_to_the_reading=bool(getattr(perceived, "fingers_to_the_support_reading", False)),
             finger_floor_drop_mm=finger_floor_drop_mm(robot_config),
             unread=tuple(unread),
+            # The camera world of a cell holds the fine world about every goal (``camera_world_wiring``).
+            fine_reach_mm=FINE_REACH_MM if on else 0.0,
         )
 
 
@@ -289,6 +303,7 @@ def scene_obstacle_points(
     support_height_mm: float | None,
     support_model: Any = None,
     part_mask: "np.ndarray | None" = None,
+    part_owner: "np.ndarray | None" = None,
 ) -> SceneObstacles:
     """The obstacles one frame shows beside the part ``target_mask`` covers, by ``rules``.
 
@@ -302,6 +317,14 @@ def scene_obstacle_points(
 
     ``part_mask`` is the pixels of the other parts the detector named in the frame: their points are a neighbour part's,
     which a finger may come to (``rules.part_soft_mm``), and their boxes are built apart, soft (``SeenBox.soft_mm``).
+    ``part_owner`` says which part each of those pixels is, an index per pixel and -1 for none: the fine world's boxes
+    (``rules.fine_reach_mm``) are a part's where most of their pixels are that part's, and soft where the part is no
+    larger than a part.
+
+    Within ``rules.fine_reach_mm`` of the part the boxes are the fine world's the guard will hold there
+    (``fine_world``, ``perceived._fine_guard_world``): every pixel the camera world's rule keeps, but for the box the
+    world keeps out for the part, on a 2 mm grid grown by :data:`fine_world.FINE_MARGIN_MM`; beyond it the camera world's
+    as before.
     """
     depth = np.asarray(depth_mm, dtype=np.float64)
     mask = np.asarray(target_mask).astype(bool)
@@ -405,15 +428,93 @@ def scene_obstacle_points(
     kept, kept_part = candidates[keep], candidates_part[keep]
     counts["speck"] = int(candidates.shape[0] - kept.shape[0])
     counts["kept"] = int(kept.shape[0])
+    # Within the fine world's reach the guard holds the fine world: its boxes here, the camera world's beyond it.
+    fine_boxes: tuple[Any, ...] = ()
+    if float(rules.fine_reach_mm) > 0.0 and rules.floor_to_plane and rules.bench_top_mm is not None:
+        region = FineRegion.about(centre, float(rules.fine_reach_mm))
+        beyond_thinned, beyond_worlds = ~region.contains(thinned), ~region.contains(worlds)
+        thinned, thinned_part = thinned[beyond_thinned], thinned_part[beyond_thinned]
+        worlds, worlds_part = worlds[beyond_worlds], worlds_part[beyond_worlds]
+        held = ~surface & ~below & ~erased & ~declared & region.contains(points)
+        if keep_out is not None:
+            within = np.nonzero(held)[0]
+            held[within[np.asarray(keep_out.contains(points[within]), dtype=bool)]] = False
+        owner = (np.asarray(part_owner, dtype=np.int64)[rows, cols] if part_owner is not None and float(rules.part_soft_mm) > 0.0
+                 else np.full(points.shape[0], -1, dtype=np.int64))
+        fine_boxes = _fine_boxes(points[held], owner[held], rules, support_model, cut_around)
     # A named neighbour's points make its own boxes, soft for the fingers; everything else makes the rest, whole.
     boxes = seen_boxes(thinned[~thinned_part], rules) + seen_boxes(worlds[~worlds_part], rules, cut_around=cut_around)
     if bool(thinned_part.any()) or bool(worlds_part.any()):
         boxes = boxes + soft_boxes(seen_boxes(thinned[thinned_part], rules)
                                    + seen_boxes(worlds[worlds_part], rules, cut_around=cut_around),
                                    float(rules.part_soft_mm))
+    boxes = boxes + fine_boxes
     return SceneObstacles(points_base_mm=kept, world_rule_base_mm=world_rule, clusters=groups, counts=counts,
                           grown_px=grow, boxes=boxes, part_points=kept_part,
                           world_rule_part=world_rule_part if bool(world_rule_part.any()) else None)
+
+
+def _fine_boxes(points_mm: np.ndarray, owners: np.ndarray, rules: SceneObstacleRules, support_model: Any,
+                cut_around: Sequence[Any]) -> tuple[Any, ...]:
+    """The fine world's boxes of ``points_mm``, every pixel the camera world's rule keeps within its reach, as
+    ``perceived._fine_guard_world`` builds them: the clusters the camera world takes for noise left out unless they
+    stand on a solid, each pixel's owner a part's index or -1, each box a :class:`perceived.SeenBox`, a part's soft
+    where the part is no larger than a part."""
+    from src.robot.safety.planning.perceived import (  # noqa: PLC0415
+        PART_SIZED_MM,
+        SeenBox,
+        WorldBuildTuning,
+        _stands_on_a_solid,
+    )
+
+    if points_mm.shape[0] == 0 or rules.bench_top_mm is None:
+        return ()
+    bench = float(rules.bench_top_mm)
+    tuning = WorldBuildTuning(voxel_size_mm=float(rules.voxel_size_mm), cluster_voxel_mm=float(rules.cluster_voxel_mm))
+    noise, cluster = noise_clusters(points_mm, cluster_mm=float(rules.cluster_voxel_mm), min_points=int(rules.min_points))
+    if noise.any() and support_model is not None:
+        for number in np.unique(cluster[noise]):
+            member = cluster == number
+            if _stands_on_a_solid(points_mm[member], np.zeros(0), support_model, tuning):
+                noise[member] = False
+    noise |= specks(points_mm)
+    points_mm, owners = points_mm[~noise], owners[~noise]
+    # The part's own fringe, beyond the box the world keeps out for it, is the part's: soft for the fingers, as the
+    # guard holds it (``perceived._fine_guard_world``).
+    if cut_around:
+        fringe = (owners < 0) & fringe_of(points_mm, cut_around)
+        if fringe.any():
+            owners = owners.copy()
+            owners[fringe] = int(owners.max(initial=-1)) + 1
+    floors = []
+    for box in cut_around:
+        matrix = np.asarray(box.box_to_base_mm, dtype=np.float64).reshape(4, 4)
+        half = np.asarray(box.half_extents_mm, dtype=np.float64)
+        middle = float(matrix[2, 3])
+        floors.append(((lambda xy, box=box, middle=middle: box.contains(
+            np.column_stack([xy, np.full(xy.shape[0], middle)]))), middle + float(np.abs(matrix[2, :3]) @ half)))
+    columns = fine_columns(points_mm, owners, floor_mm=bench, floors=floors)
+    extent: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    for column in columns:
+        if column.owner is not None:
+            low, high = extent.get(column.owner, (np.full(3, np.inf), np.full(3, -np.inf)))
+            extent[column.owner] = (np.minimum(low, column.low_mm), np.maximum(high, column.high_mm))
+    across, tall = PART_SIZED_MM
+    soft_fine = (max(0.0, float(rules.part_soft_mm) - float(rules.margin_mm)) + FINE_MARGIN_MM
+                 if float(rules.part_soft_mm) > 0.0 else 0.0)
+    out = []
+    upright = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+    for column in columns:
+        soft = 0.0
+        if column.owner is not None and soft_fine > 0.0:
+            low, high = extent[column.owner]
+            size = high - low
+            if max(float(size[0]), float(size[1])) <= across and float(size[2]) <= tall:
+                soft = soft_fine
+        dims = column.dims_mm
+        out.append(SeenBox(centre_mm=column.centre_mm, rotation=upright,
+                           half_extents_mm=(dims[0] / 2.0, dims[1] / 2.0, dims[2] / 2.0), soft_mm=soft))
+    return tuple(out)
 
 
 def _the_parts_keep_out(part_base_mm: np.ndarray, rules: SceneObstacleRules, support_height_mm: float | None) -> Any:
@@ -1157,15 +1258,20 @@ def _surface_distances(finger_centres: np.ndarray, turn: np.ndarray, finger_halv
 
 
 def least_part_height_mm(jaw: Any) -> float:
-    """How far over its support a part has to stand for SFE to plan this hand on it at all, millimetres.
+    """How far over its support a part has to stand for this hand to be planned on it at all, millimetres: the lower of
+    SFE's ladder and the part's own body (``body_grasps``).
 
     SFE solves, per tilt of its ladder, the anchor height at which the fingers clear the support by the table
-    clearance, and tries that height only where it lies 2 mm under the part's top (``generate_support_footprint_grasps``).
-    A part lower than the least of those over the ladder gets no height to try: it is too short for this hand.
+    clearance, and tries that height only where it lies 2 mm under the part's top (``generate_support_footprint_grasps``):
+    13.45 mm for the Hand-E. The body's pads hold where the part stands into them and its outline can be read above
+    them (``body_grasps.body_least_height_mm``): 8 mm for the Hand-E (2026-10-13). A part lower than both gets no
+    height to try: it is too short for this hand.
     """
+    from src.robot.grasping.generation.body_grasps import body_least_height_mm  # noqa: PLC0415 (it imports SFE)
+
     tilts = np.radians(np.asarray(_SFE_TILTS_DEG))
     need = float(jaw.finger_ahead_mm) * np.cos(tilts) + (float(jaw.finger_width_mm) / 2.0) * np.sin(tilts)
-    return float(jaw.table_clearance_mm + need.min() + _SFE_TOP_SLACK_MM)
+    return min(float(jaw.table_clearance_mm + need.min() + _SFE_TOP_SLACK_MM), body_least_height_mm(jaw))
 
 
 def why_no_grasp(telemetry: Mapping[str, Any]) -> "tuple[tuple[GraspFailureReason, ...], str]":
@@ -1179,7 +1285,7 @@ def why_no_grasp(telemetry: Mapping[str, Any]) -> "tuple[tuple[GraspFailureReaso
       push answers;
     * it met a declared body (``declared_*``): ``ALL_TABLE_CONFLICT``;
     * the support refused it (``table``): ``ALL_TABLE_CONFLICT``, and where the part stands lower than the hand grips at
-      any tilt, that it is too short for this hand;
+      any tilt or on its body (:func:`least_part_height_mm`), that it is too short for this hand;
     * the part's own low fragments alone: ``NO_VALID_GRASP``.
 
     ``RESCAN_RECOMMENDED`` comes last on every one, as before.

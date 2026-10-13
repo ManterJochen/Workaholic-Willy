@@ -542,7 +542,9 @@ robot:
       # How far the gripper envelope must stay above the support surface: 1 mm, the finger floor the
       # exact guard holds over what a support reads (perceived.finger_floor_mm), the deepest it lets a
       # finger go (the owner, 2026-10-06). The schema default too, so writing it changes nothing. A part
-      # has to stand this, the fingertip's reach past the grasp centre and 2 mm tall: 13.5 mm for the Hand-E.
+      # has to stand this, the fingertip's reach past the grasp centre and 2 mm tall for SFE: 13.5 mm for the
+      # Hand-E; this, the fingertip's reach past the pad, 3 mm into the pad and 4 mm of its outline above for
+      # the part's own body: 8 mm for the Hand-E.
       min_clearance_mm: 1.0
       # The bin, tray or KLT the parts sit inside, if there is one. Everything here defaults to no
       # container, which is what this cell has.

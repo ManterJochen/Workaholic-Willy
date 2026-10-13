@@ -191,6 +191,22 @@ class SelfCollisionGuard:
         """
         self._perceived_fixtures = tuple(boxes)
 
+    def set_finger_opening(self, width_mm: float | None) -> None:
+        """Hold the hand's fingers ``width_mm`` apart, between their inner faces, where the hand was told to open no
+        wider (lever G, 2026-10-13); ``None`` holds them as baked, fully open, as before. Kept for the backend where it is
+        not built yet. Only a caller that told the hand that width, and read it back, may say so: the guard then judges
+        the fingers where they stand."""
+        self._finger_opening_mm = None if width_mm is None else float(width_mm)
+        if self._fcl_backend_built and self._fcl_backend is not None:
+            setter = getattr(self._fcl_backend, "set_finger_opening", None)
+            if callable(setter):
+                setter(self._finger_opening_mm)
+
+    @property
+    def finger_opening_mm(self) -> float | None:
+        """How wide this guard holds the fingers open (:meth:`set_finger_opening`); ``None`` fully open, as baked."""
+        return getattr(self, "_finger_opening_mm", None)
+
     @property
     def perceived_fixtures(self) -> "tuple[AxisAlignedBox, ...]":
         """The boxes a camera saw that this guard holds now, as :meth:`set_perceived_fixtures` last handed them.
@@ -489,11 +505,16 @@ class SelfCollisionGuard:
             for body in self._wrist_bodies:
                 wrist.update(body.guard_parts())  # type: ignore[attr-defined]
             carried: dict = {"wrist_parts": wrist} if wrist else {}
+            # How wide the baked fingers stand open, the hand's own stroke, for a told finger opening (lever G).
+            stroke = float(hand.jaw.aperture_mm) if chosen(hand) else None
             self._fcl_backend = make_backend(
                 model, self._config.mesh_dir, variant, coupling_mm=coupling_mm, placement=placement,
-                coupling_boxes=boxes, **carried,
+                coupling_boxes=boxes, baked_opening_mm=stroke, **carried,
             )
             self._fcl_backend_built = True
+            told = getattr(self, "_finger_opening_mm", None)
+            if told is not None and self._fcl_backend is not None:
+                self._fcl_backend.set_finger_opening(told)  # type: ignore[attr-defined]
             # The config asked for the exact-mesh backend. Falling back to the coarser
             # capsule proxy in silence would look like a robot that cannot grasp
             # anything rather than a missing safety authority, because the proxy

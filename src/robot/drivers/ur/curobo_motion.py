@@ -242,10 +242,13 @@ class CuroboUrPlanner:
         #: and cleared by a detach it confirmed or by closing it. `detach_payload` asks nothing while it is clear.
         self._payload_handed = False
         #: The names of the boxes the camera saw that the planner holds now, as the last refresh it confirmed
-        #: handed them over and the guard was handed them too; `()` while it holds none, and `None` where
-        #: nobody can say: a refused refresh, a world set by hand, a restarted sidecar. Only these are ever
-        #: asked to be set aside (:meth:`judge_joint_path`).
+        #: handed them over; `()` while it holds none, and `None` where nobody can say: a refused refresh, a
+        #: world set by hand, a restarted sidecar. Only these are ever asked to be set aside
+        #: (:meth:`judge_joint_path`).
         self._seen_held: "tuple[str, ...] | None" = ()
+        #: The names of the boxes the camera saw that the same refresh handed the guard: the planner's own, but near
+        #: the motion's goal, where the guard holds the fine world (``fine_world``); `None` alike.
+        self._guard_held: "tuple[str, ...] | None" = ()
         #: What the sidecar allocates when it starts, told to the client before `start`. None leaves
         #: the client as its factory built it.
         self._reservation = reservation
@@ -371,7 +374,7 @@ class CuroboUrPlanner:
         if count == expected:
             self._world_registered = True
             # The declared world alone: whatever the camera saw before is gone from the planner.
-            self._seen_held = ()
+            self._seen_held = self._guard_held = ()
             self.logger.info("registered %d cell obstacle(s) with the planner", count)
             return
         message = (
@@ -420,7 +423,7 @@ class CuroboUrPlanner:
         envelope = self._self_envelope() if self._self_envelope is not None else None
         client = self._client_or_start()
         # Until this refresh says what the planner holds, nobody can say which of the camera's boxes it does.
-        self._seen_held = None
+        self._seen_held = self._guard_held = None
         try:
             refresh = refresh_planner_world(
                 source=self._live_world,
@@ -439,9 +442,11 @@ class CuroboUrPlanner:
             self.logger.error("%s", exc)
             raise
         self._last_refresh = refresh
-        # The camera's boxes the planner and the guard now both hold, where the planner confirmed the world;
-        # after a refused refresh nobody can say what the planner holds of them.
-        self._seen_held = tuple(str(box.name) for box in refresh.guard_boxes) if refresh.ok else None
+        # The camera's boxes the planner now holds, and those the guard was handed of the same world, where the
+        # planner confirmed it: the same boxes, but near the motion's goal, where the guard holds the fine world. After
+        # a refused refresh nobody can say what the planner holds of them.
+        self._seen_held = tuple(refresh.planner_seen) if refresh.ok else None
+        self._guard_held = tuple(str(box.name) for box in refresh.guard_boxes) if refresh.ok else None
         # Including the empty list on a refusal: a guard left holding boxes from a refused
         # refresh is checking a cell that no longer exists.
         if self._on_perceived_obstacles is not None:
@@ -537,7 +542,7 @@ class CuroboUrPlanner:
         """
         merged = merge_planner_worlds(self._world_cuboids, cuboids)
         # A world set by hand is no refresh's: whatever of it the camera saw, the guard was not handed it.
-        self._seen_held = None
+        self._seen_held = self._guard_held = None
         try:
             count = self._client_or_start().set_world(merged)
             if count == len(merged):
@@ -572,7 +577,7 @@ class CuroboUrPlanner:
                 self._client.close()
                 self._client = None
             self._payload_handed = False
-            self._seen_held = None
+            self._seen_held = self._guard_held = None
 
     def retire(self, why: str = _RETIRED) -> None:
         """Shut the planning server down for good: this glue never starts another (idempotent).
@@ -688,9 +693,14 @@ class CuroboUrPlanner:
 
     def perceived_in_world(self) -> "tuple[str, ...] | None":
         """The names of the boxes the camera saw that the planner holds now, as the last refresh it confirmed handed them
-        over and the guard was handed them too; ``()`` where it holds none, ``None`` where nobody can say (a refused
-        refresh, a world set by hand, a sidecar closed since)."""
+        over; ``()`` where it holds none, ``None`` where nobody can say (a refused refresh, a world set by hand, a
+        sidecar closed since)."""
         return self._seen_held
+
+    def guard_held_in_world(self) -> "tuple[str, ...] | None":
+        """The names of the boxes the camera saw that the same refresh handed the guard: :meth:`perceived_in_world`'s,
+        but near the motion's goal, where the guard holds the fine world (``fine_world``); ``None`` alike."""
+        return self._guard_held
 
     @property
     def carries_part(self) -> bool:

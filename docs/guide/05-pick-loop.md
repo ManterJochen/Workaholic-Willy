@@ -202,7 +202,7 @@ samples it replaces are not computed. The details are in the
 **The next grasp of the same look.** Where a try was refused by a guard or the planner before anything was
 sent (`self_collision_rejected` and its kin, or the planner's own no-plan sentence) and every pose it did
 reach kept the open hand's jaw region out of the part's keep-out box, the attempt hands the policy the
-look's next grasp, up to twelve in all, every candidate the calculator offers (`GRASPS_TRIED_PER_ATTEMPT`); with `both_faces` only the best. Before
+look's next grasp, up to 24 in all, every candidate the calculator offers, SFE's twelve and the part's own body's twelve (`GRASPS_TRIED_PER_ATTEMPT`); with `both_faces` only the best. Before
 each, a stop asked for and the controller are read, and a wrist pick that sent a motion goes back to its
 look on a judged move. A toggle is never switched between tries. The box is judged at the poses a try
 reached, not along the planned move to them. At a 10 mm standoff the open jaws stand inside the part's box

@@ -87,8 +87,8 @@ This module imports no vendor driver. It talks only to the
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
-from contextlib import AbstractContextManager, nullcontext
+from collections.abc import Iterator, Sequence
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, cast
@@ -411,21 +411,39 @@ class GraspExecutionPolicy:
         waypoints = self._build_waypoints(grasp)
 
         # Pre-open the gripper before driving the approach so the jaws
-        # are clear at the grasp point.
+        # are clear at the grasp point. A grasp planned for jaws that open only as needed (lever G, a Robotiq hand)
+        # opens to the width it was planned with, and the guard holds the fingers where the hand reads them back.
+        planned = _planned_opening(grasp)
+        told_the_guard = False
         if self.gripper is not None and self.pre_open_width_mm is not None and toggle is None:
             try:
                 if isinstance(self.gripper, OpensAndCloses):
                     # A two-state gripper told what it means: a pre-open is an open whatever its width reads as.
                     self.gripper.set_closed(False)
                 else:
+                    opening = float(self.pre_open_width_mm) if planned is None else min(
+                        float(planned), float(self.pre_open_width_mm))
                     self.gripper.set_width_mm(
-                        float(self.pre_open_width_mm),
+                        opening,
                         speed=self.close_speed,
                         force=None,
                     )
+                    if planned is not None:
+                        told_the_guard = _the_guard_holds_the_fingers_at(self.arm, self.gripper, opening)
             except Exception as exc:  # noqa: BLE001 (a gripper fault is the report, never an escaping raise)
+                _the_guard_holds_the_fingers_at(self.arm, None, None)
                 return _gripper_fault(exc, line_motion=line_motion)
+        try:
+            return self._approach_held(grasp, waypoints, reading, line_motion)
+        finally:
+            if told_the_guard:
+                # Fully open again for the guard before anything opens the hand wider: a release, a back out, the next
+                # pick (the guard's fingers stand as baked).
+                _the_guard_holds_the_fingers_at(self.arm, None, None)
 
+    def _approach_held(self, grasp: GraspPoint, waypoints: Sequence[Pose], reading: "LineReading | None",
+                       line_motion: "LineMotion | None") -> PolicyReport:
+        """:meth:`execute` from the approach on, the jaws open as wide as they will be at the part."""
         approach = waypoints[:-self.retreat_steps]  # all but the retreat lift(s)
         legs: list[tuple[Pose, bool]] = [(pose, False) for pose in approach]
         if reading is not None:
@@ -697,8 +715,11 @@ class GraspExecutionPolicy:
         waypoints = self._build_waypoints(grasp)
         approach = waypoints[:-self.retreat_steps]
         try:
-            said = self.arm.grasp_refusal_ahead(standoff=approach[0], grasp=approach[-1], lift=waypoints[-1],
-                                                grip_width_mm=self._judged_width(grasp))
+            # Judged with the fingers where the grasp opens them (lever G): its world leaves out the space between the
+            # jaws as wide as they will be, and the move to the standoff and the line down are later driven in it.
+            with _fingers_as_planned(self.arm, grasp):
+                said = self.arm.grasp_refusal_ahead(standoff=approach[0], grasp=approach[-1], lift=waypoints[-1],
+                                                    grip_width_mm=self._judged_width(grasp))
         except CameraWorldUnavailable:
             raise
         except Exception as exc:  # noqa: BLE001 (a grasp nobody could judge ahead is not driven to)
@@ -718,7 +739,8 @@ class GraspExecutionPolicy:
             return ""
         approach = self._build_waypoints(grasp)[:-self.retreat_steps]
         try:
-            return str(judge(standoff=approach[0], grasp=approach[-1]) or "")
+            with _fingers_as_planned(self.arm, grasp):
+                return str(judge(standoff=approach[0], grasp=approach[-1]) or "")
         except CameraWorldUnavailable:
             raise
         except Exception:  # noqa: BLE001 (no early answer: the whole judgement follows and says why)
@@ -1021,6 +1043,58 @@ def _stopped_at_the_part(
         camera_worlds=tuple(stamps),
         line_motion=line_motion,
     )
+
+
+
+def _planned_opening(grasp: "GraspPoint") -> float | None:
+    """How wide the jaws open before they close, where the grasp was planned for jaws that open only as needed (lever G,
+    ``score_components["support_footprint"]["open_width_mm"]``), millimetres; ``None`` where it was planned for jaws that
+    open fully."""
+    components = (getattr(grasp, "metadata", None) or {}).get("score_components") or {}
+    value = (components.get("support_footprint") or {}).get("open_width_mm") if isinstance(components, dict) else None
+    return float(value) if isinstance(value, (int, float)) and float(value) > 0.0 else None
+
+
+#: How much wider than the hand reads them back the guard holds the fingers, millimetres: the Robotiq's position count
+#: is 0.2 mm a step over the Hand-E's stroke, and a reading never stands the fingers nearer the part than they are.
+_OPENING_SLACK_MM = 0.5
+
+
+@contextmanager
+def _fingers_as_planned(arm: Any, grasp: "GraspPoint") -> "Iterator[None]":
+    """The block in which ``arm``'s guard holds the fingers where ``grasp`` opens them, where it was planned for jaws that
+    open only as needed (lever G), and :data:`_OPENING_SLACK_MM` wider: a judgement ahead of the pre-open, with nothing
+    moved. Elsewhere a block that changes nothing; after it the fingers stand fully open for the guard again."""
+    planned = _planned_opening(grasp)
+    if planned is None or not _the_guard_holds_the_fingers_at(arm, None, planned):
+        yield
+        return
+    try:
+        yield
+    finally:
+        _the_guard_holds_the_fingers_at(arm, None, None)
+
+
+def _the_guard_holds_the_fingers_at(arm: Any, gripper: Any, commanded_mm: float | None) -> bool:
+    """Tell ``arm``'s guard where the fingers stand: the wider of what was commanded and what the hand reads back, and
+    :data:`_OPENING_SLACK_MM`; ``None`` (``commanded_mm``) stands them fully open again. Whether the guard was told: an arm
+    that cannot say it judges the fingers fully open, as before, which is never nearer the part than they are."""
+    setter = getattr(arm, "set_finger_opening", None)
+    if not callable(setter):
+        return False
+    if commanded_mm is None:
+        setter(None)
+        return True
+    reading = None
+    read = getattr(gripper, "get_width_mm", None)
+    if callable(read):
+        try:
+            reading = float(read())
+        except Exception:  # noqa: BLE001 (a hand that cannot read back is held at its command and the slack)
+            reading = None
+    width = max(float(commanded_mm), reading if reading is not None else float(commanded_mm)) + _OPENING_SLACK_MM
+    setter(width)
+    return True
 
 
 def _gripper_fault(

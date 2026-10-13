@@ -71,7 +71,7 @@ and WXYZ happens in `world.py`, which owns that wire format for both sources.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Callable, Sequence
 
@@ -79,6 +79,15 @@ import numpy as np
 
 from src.robot.core.keep_out import KeepOutBox
 from src.robot.safety.planning._curobo_protocol import PERCEIVED_PREFIX
+from src.robot.safety.planning.fine_world import (
+    FINE_LABEL_MM,
+    FINE_MARGIN_MM,
+    FineRegion,
+    fine_columns,
+    fringe_of,
+    noise_clusters,
+    specks,
+)
 from src.robot.safety.planning.height_map import Column, bridge_columns, coarsen, height_map_columns, turn_of
 from src.robot.safety.planning.support_surfaces import SupportModel, SupportSolid, detect, detection_step
 
@@ -329,6 +338,10 @@ class WorldBuildTuning:
     support_surfaces: bool = False
     #: How far the solids the guard and the planner hold stand over what they take out, millimetres (fix plan F3).
     support_allowance_mm: float = 0.0
+    #: How far from the motion's goal, in BASE x and y, the guard holds the fine world instead of the boxes the planner
+    #: gets (``fine_world``), millimetres; 0 builds none, the world of before byte for byte. The cell's own wiring sets
+    #: ``fine_world.FINE_REACH_MM``.
+    fine_reach_mm: float = 0.0
 
     def __post_init__(self) -> None:
         if float(self.voxel_size_mm) <= 0.0 or float(self.cluster_voxel_mm) <= 0.0:
@@ -351,6 +364,9 @@ class WorldBuildTuning:
         allowance = float(self.support_allowance_mm)
         if not (math.isfinite(allowance) and allowance >= 0.0):
             raise PerceptionGeometryError(f"support_allowance_mm is finite and not negative, got {allowance!r}")
+        reach = float(self.fine_reach_mm)
+        if not (math.isfinite(reach) and reach >= 0.0):
+            raise PerceptionGeometryError(f"fine_reach_mm is finite and not negative, got {reach!r}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -767,23 +783,32 @@ class SelfBody:
             return np.zeros(points.shape[0], dtype=bool)
         inside = np.zeros(points.shape[0], dtype=bool)
         for index, ((start, end), radius) in enumerate(zip(self.segments_mm, self.radii_mm)):
+            # Only the points within the box about the capsule can lie within its radius of its segment, and a point
+            # already inside the body is not asked again: the same verdicts, over the few points that need one (the fine
+            # world asks every pixel about a goal, most of them far from every link).
+            reach = np.all((points >= np.minimum(start, end) - radius) & (points <= np.maximum(start, end) + radius),
+                           axis=1)
+            candidate = np.nonzero(reach & ~inside)[0]
+            if not candidate.size:
+                continue
+            at = points[candidate]
             axis = end - start
             length_squared = float(axis @ axis)
             if length_squared <= 0.0:
-                closest = np.broadcast_to(start, points.shape)
+                closest = np.broadcast_to(start, at.shape)
             else:
-                travel = np.clip(((points - start) @ axis) / length_squared, 0.0, 1.0)
+                travel = np.clip(((at - start) @ axis) / length_squared, 0.0, 1.0)
                 closest = start + travel[:, None] * axis
-            near = np.linalg.norm(points - closest, axis=1) <= radius
+            near = np.linalg.norm(at - closest, axis=1) <= radius
             refined = self.surfaces[index] if self.surfaces else None
             if refined is not None:
-                asked = np.nonzero(near & ~inside)[0]
+                asked = np.nonzero(near)[0]
                 near[:] = False
                 if asked.size:
                     to_link, surface = refined
-                    local = points[asked] @ to_link[:3, :3].T + to_link[:3, 3]
+                    local = at[asked] @ to_link[:3, :3].T + to_link[:3, 3]
                     near[asked] = surface.distance_mm(local) <= self.surface_padding_mm
-            inside |= near
+            inside[candidate[near]] = True
         return inside
 
     def cut_by(self, centre_mm: Sequence[float], dims_mm: Sequence[float], yaw_rad: float) -> bool:
@@ -1104,6 +1129,14 @@ class PerceivedWorld:
     #: looked for them (``WorldBuildTuning.support_surfaces``); ``None`` where it did not. The solids are among
     #: :attr:`boxes`, last.
     supports: SupportModel | None = None
+    #: What the guard holds, where it holds the fine world about the motion's goal (``fine_world``): the fine boxes
+    #: there, the boxes of what lies beyond, and every solid; ``None`` where it holds :attr:`boxes`.
+    guard_boxes: "tuple[PerceivedBox, ...] | None" = None
+    #: The fine world's square, as one clause; how many fine boxes it holds; how many points the camera world kept in
+    #: its square lay in none of them, whose own boxes the guard then holds beside them (``fine_world``).
+    fine_region: str = ""
+    fine_boxes: int = 0
+    fine_uncovered: int = 0
 
     @property
     def is_empty(self) -> bool:
@@ -1160,6 +1193,10 @@ class PerceivedWorld:
                             "maybe the robot seen off where its model stands")
         if self.supports is not None:
             tail.append(f"  {self.supports.render()}")
+        if self.guard_boxes is not None:
+            tail.append(f"  the guard holds the fine world: {self.fine_boxes} box(es) in the {self.fine_region}"
+                        + (f", and {self.fine_uncovered} point(s) the camera world kept there in none of them, their "
+                           "own boxes held beside" if self.fine_uncovered else ""))
         return "\n".join([head, *rows, *tail])
 
     def to_dict(self) -> dict[str, Any]:
@@ -1182,6 +1219,9 @@ class PerceivedWorld:
         }
         if self.supports is not None:
             out["supports"] = self.supports.to_dict()
+        if self.guard_boxes is not None:
+            out["fine_world"] = {"region": self.fine_region, "boxes": int(self.fine_boxes),
+                                 "uncovered": int(self.fine_uncovered), "guard_boxes": len(self.guard_boxes)}
         return out
 
 
@@ -1506,6 +1546,8 @@ def build_perceived_boxes(
     # Every part of every cluster is a height map of columns in the part's own turn (``height_map``): a bin is its
     # walls, a low part beside a tall one keeps its height, and every point stays inside a column by the margin.
     mapped: list[tuple[np.ndarray, float, list[Column]]] = []
+    #: Each mapped part's floor, for the fine world (:func:`_fine_guard_world`).
+    mapped_floor: list[float | None] = []
     for cluster_id in np.unique(labels):
         member = np.nonzero(labels == cluster_id)[0]
         if member.size < int(tuning.min_points) and not (
@@ -1523,6 +1565,7 @@ def build_perceived_boxes(
             keep_out_cuts[name] = keep_out_cuts.get(name, 0) + 1
         for part, part_floor, part_yaw in parts:
             chosen_points = member[part]
+            mapped_floor.append(part_floor)
             mapped.append((chosen_points, part_yaw, height_map_columns(
                 points[chosen_points], yaw_rad=part_yaw, floor_mm=part_floor, margin_mm=float(tuning.margin_mm),
                 cell_mm=float(tuning.cluster_voxel_mm), step_mm=float(tuning.voxel_size_mm),
@@ -1539,6 +1582,7 @@ def build_perceived_boxes(
             robot_on=None if self_body is None else _the_moving_robot(self_body),
         )
         if bridged:
+            mapped_floor.append(floor)
             mapped.append((np.zeros(0, dtype=np.int64), 0.0, bridged))
     # Past the slot budget the columns merge into the boxes that hold them, never into less. The solids of what the
     # parts stand on come first and are never merged: the obstacles get what is left.
@@ -1559,38 +1603,46 @@ def build_perceived_boxes(
     named_trees = _named_trees(named_points_base_mm)
     named_labels = [label for label, _ in named_trees]
     on_named = _on_named_parts(named_trees, points)
+    def column_box(chosen_points: np.ndarray, part_yaw: float, column: Column) -> PerceivedBox | None:
+        """The box of one column of a part's height map, unnamed yet; ``None`` where it is the robot itself."""
+        held = chosen_points[column.members]
+        centre, dims = column.placed(part_yaw)
+        if (self_body is not None and held.size and bool(np.isfinite(gaps[held]).all())
+                and self_body.cut_by(*_without_the_margin(centre, dims, float(tuning.margin_mm)), part_yaw)):
+            # Every point of it near the robot's links, and what they span, the margin left off, through one of
+            # them: the robot itself, seen off where its model stands. No object stands where the robot does (the
+            # owner, 2026-10-12). A fill of what the robot hid, which holds no point, is never the robot: under the
+            # base, the shoulder and the hand it is kept clear of them (``_STANDING_FRAMES``), and under the arm it
+            # stands for a rim the arm hides.
+            return None
+        label = (_dominant_label(lookups, kept_pixels[held], kept_view[held])
+                 or _named_by_points(named_labels, on_named[held]))
+        return PerceivedBox(
+            name="",  # named once the survivors are known, so the numbering has no holes
+            center_mm=centre,
+            dims_mm=dims,
+            yaw_rad=part_yaw,
+            points=int(held.size),
+            distance_mm=float(np.linalg.norm(np.asarray(centre) - reference)),
+            label=label,
+            soft_mm=_soft_mm(label, dims, tuning),
+            hidden_cells=int(column.hidden_cells),
+            robot_gap_mm=(float(gaps[held].max()) if held.size and bool(np.isfinite(gaps[held]).all())
+                          else None),
+        )
+
     candidates: list[PerceivedBox] = []
+    #: Which mapped part each candidate is a column of, by the candidate's identity, for the fine world.
+    candidate_part: dict[int, int] = {}
     robot_itself = 0
-    for chosen_points, part_yaw, columns in mapped:
+    for part_index, (chosen_points, part_yaw, columns) in enumerate(mapped):
         for column in columns:
-            held = chosen_points[column.members]
-            centre, dims = column.placed(part_yaw)
-            if (self_body is not None and held.size and bool(np.isfinite(gaps[held]).all())
-                    and self_body.cut_by(*_without_the_margin(centre, dims, float(tuning.margin_mm)), part_yaw)):
-                # Every point of it near the robot's links, and what they span, the margin left off, through one of
-                # them: the robot itself, seen off where its model stands. No object stands where the robot does (the
-                # owner, 2026-10-12). A fill of what the robot hid, which holds no point, is never the robot: under the
-                # base, the shoulder and the hand it is kept clear of them (``_STANDING_FRAMES``), and under the arm it
-                # stands for a rim the arm hides.
+            boxed = column_box(chosen_points, part_yaw, column)
+            if boxed is None:
                 robot_itself += 1
                 continue
-            label = (_dominant_label(lookups, kept_pixels[held], kept_view[held])
-                     or _named_by_points(named_labels, on_named[held]))
-            candidates.append(
-                PerceivedBox(
-                    name="",  # named once the survivors are known, so the numbering has no holes
-                    center_mm=centre,
-                    dims_mm=dims,
-                    yaw_rad=part_yaw,
-                    points=int(held.size),
-                    distance_mm=float(np.linalg.norm(np.asarray(centre) - reference)),
-                    label=label,
-                    soft_mm=_soft_mm(label, dims, tuning),
-                    hidden_cells=int(column.hidden_cells),
-                    robot_gap_mm=(float(gaps[held].max()) if held.size and bool(np.isfinite(gaps[held]).all())
-                                  else None),
-                )
-            )
+            candidate_part[id(boxed)] = part_index
+            candidates.append(boxed)
 
     if robot_itself:
         dropped_clusters[DropReason.SELF] = dropped_clusters.get(DropReason.SELF, 0) + robot_itself
@@ -1614,6 +1666,19 @@ def build_perceived_boxes(
         )
         for index, box in enumerate(survivors)
     ) + solids
+    # Near the motion's goal the guard holds the fine world instead of these boxes (``fine_world``); the planner keeps
+    # them. Only where a floor is held: a box of the fine world stands on it.
+    fine: "_FineGuardWorld | None" = None
+    if float(tuning.fine_reach_mm) > 0.0 and near_point_mm is not None and floor is not None:
+        fine = _fine_guard_world(
+            views=views, projections=per_view_projection, reads=per_view_read, lookups=lookups, limits=limits,
+            tuning=tuning, self_body=self_body, keep_out=tuple(keep_out),
+            cut_around=tuple(keep_out if cut_around is None else cut_around), reach=reach, declared=tuple(declared),
+            supports=supports, named=named_trees, reference=reference, floor=floor, points=points, mapped=mapped,
+            mapped_floor=mapped_floor, candidates=candidates, candidate_part=candidate_part,
+            survivors=dict(zip((id(box) for box in survivors), boxes)), solids=solids, column_box=column_box,
+            shadow=shadow,
+        )
     return PerceivedWorld(
         boxes=boxes,
         dropped_points=dropped_points,
@@ -1632,6 +1697,10 @@ def build_perceived_boxes(
         merged_to_fit=merged_to_fit,
         hidden_cells=sum(box.hidden_cells for box in boxes),
         supports=supports,
+        guard_boxes=None if fine is None else fine.boxes,
+        fine_region="" if fine is None else fine.region,
+        fine_boxes=0 if fine is None else fine.fine,
+        fine_uncovered=0 if fine is None else fine.uncovered,
     )
 
 
@@ -2775,6 +2844,256 @@ class _RobotShadow:
 
 #: The largest a box may be and hold a finger to a named part's surface, millimetres: its longer side across and its
 #: height. A bin's wall is longer or taller and stays whole whatever the detector named it.
+@dataclass(frozen=True, slots=True)
+class _FineGuardWorld:
+    """What the guard holds where it holds the fine world (:func:`_fine_guard_world`)."""
+
+    boxes: tuple[PerceivedBox, ...]
+    region: str
+    fine: int
+    uncovered: int
+
+
+def _fine_guard_world(
+    *,
+    views: Sequence[DepthView],
+    projections: Sequence[_Projection],
+    reads: Sequence["tuple[np.ndarray, np.ndarray, np.ndarray]"],
+    lookups: Sequence[Sequence[tuple[str, np.ndarray]]],
+    limits: WorldBuildLimits,
+    tuning: WorldBuildTuning,
+    self_body: "SelfBody | None",
+    keep_out: Sequence[KeepOutBox],
+    cut_around: Sequence[KeepOutBox],
+    reach: "ReachSphere | None",
+    declared: Sequence[DeclaredBody],
+    supports: SupportModel | None,
+    named: "Sequence[tuple[str, Any]]",
+    reference: np.ndarray,
+    floor: float,
+    points: np.ndarray,
+    mapped: "Sequence[tuple[np.ndarray, float, list[Column]]]",
+    mapped_floor: Sequence[float | None],
+    candidates: Sequence[PerceivedBox],
+    candidate_part: dict[int, int],
+    survivors: dict[int, PerceivedBox],
+    solids: Sequence[PerceivedBox],
+    column_box: "Callable[[np.ndarray, float, Column], PerceivedBox | None]",
+    shadow: "_RobotShadow | None",
+) -> _FineGuardWorld:
+    """The guard's world where it holds the fine world about the motion's goal (``fine_world``).
+
+    Every pixel the camera world read within the fine square, of every view, is judged on its own by the rules each of
+    the camera world's points is judged by: the robot's own body now and where it stood for its frame, the bench's band
+    and the solids of what the parts stand on, the keep-outs, the declared bodies, the workspace and the reach. What
+    stays makes the fine boxes, but for a cluster the camera world would take for noise (``perceived.min_points`` of its
+    own voxels, and not standing on a solid). A pixel is a named part's where a mask names it (a fixed camera) or where
+    it lies within :data:`fine_world.FINE_LABEL_MM` of the part's points (a camera on the wrist), each part on its own.
+
+    Beside the fine boxes the guard holds the boxes of what lies outside the square, as the camera world holds them (a
+    part reaching into the square is boxed again of its points outside it), every solid, the camera world's boxes the
+    robot's hidden cells filled, and the camera world's own boxes of any part one of whose points no fine box holds a
+    margin inside its sides and under its top (``uncovered``): the guard never holds less than the camera world kept.
+    """
+    region = FineRegion.about(reference, float(tuning.fine_reach_mm))
+    clearance = float(limits.plane_clearance_mm)
+    bench = float(limits.support_plane_top_mm if limits.support_plane_top_mm is not None else floor)
+    stride = max(1, int(tuning.pixel_stride))
+    owner_labels = [str(label) for label, _ in named]
+    clouds: list[np.ndarray] = []
+    owners: list[np.ndarray] = []
+    for index, (view, projection, read) in enumerate(zip(views, projections, reads)):
+        xyz, ranges = projection.in_base()
+        if not xyz.shape[0]:
+            continue
+        inside = np.nonzero(region.contains(xyz))[0]
+        if not inside.size:
+            continue
+        p, distance = xyz[inside], ranges[inside]
+        keep = np.ones(p.shape[0], dtype=bool)
+        if self_body is not None:
+            keep &= ~self_body.contains(p)
+        if view.self_body is not None:
+            keep &= ~view.self_body.contains(p)
+        band = clearance + np.minimum(float(view.placement_error_mm) + float(view.placement_error_rad) * distance,
+                                      MAX_DECLARED_BAND_MM)
+        keep &= p[:, 2] > bench + band
+        alive = np.nonzero(keep)[0]
+        if supports is not None and alive.size:
+            keep[alive[np.asarray(supports.erased_by_support(p[alive]), dtype=bool)]] = False
+        for held_out in keep_out:
+            alive = np.nonzero(keep)[0]
+            if alive.size:
+                keep[alive[np.asarray(held_out.contains(p[alive]), dtype=bool)]] = False
+        for body in declared:
+            alive = np.nonzero(keep)[0]
+            if alive.size:
+                body_band = band[alive] - clearance + min(clearance, DECLARED_SURFACE_MM)
+                keep[alive[np.asarray(body.distance_mm(p[alive]), dtype=np.float64) <= body_band]] = False
+        in_limits = ((p[:, 0] >= limits.x_mm[0]) & (p[:, 0] <= limits.x_mm[1])
+                     & (p[:, 1] >= limits.y_mm[0]) & (p[:, 1] <= limits.y_mm[1])
+                     & (p[:, 2] >= limits.z_mm[0]) & (p[:, 2] <= limits.z_mm[1]))
+        if reach is not None:
+            in_limits |= reach.contains(p)
+        keep &= in_limits
+        kept = np.nonzero(keep)[0]
+        if not kept.size:
+            continue
+        p = p[kept]
+        owner = np.full(p.shape[0], -1, dtype=np.int64)
+        # A fixed camera's masks name its pixels, each mask a part of its own; two masks over one pixel name none.
+        rows, cols = read[0][inside][kept] * stride, read[1][inside][kept] * stride
+        for name, mask in lookups[index]:
+            on = np.asarray(mask, dtype=bool)[rows, cols]
+            if on.any():
+                part = len(owner_labels)
+                owner_labels.append(str(name))
+                owner[on & (owner == -1)] = part
+                owner[on & (owner >= 0) & (owner != part)] = -2
+        # A camera on the wrist: the parts the detector named, by their points in BASE.
+        for part, (_, tree) in enumerate(named):
+            free = np.nonzero(owner == -1)[0]
+            if not free.size:
+                break
+            near, _ = tree.query(p[free], k=1, distance_upper_bound=FINE_LABEL_MM)
+            owner[free[np.isfinite(near)]] = part
+        clouds.append(p)
+        owners.append(np.where(owner == -2, -1, owner))
+    cloud = np.concatenate(clouds) if clouds else np.zeros((0, 3))
+    owner_of = np.concatenate(owners) if owners else np.zeros(0, dtype=np.int64)
+    # The clusters the camera world takes for noise leave, unless they stand on a solid (``_stands_on_a_solid``).
+    noise, cluster = noise_clusters(cloud, cluster_mm=float(tuning.cluster_voxel_mm), min_points=int(tuning.min_points))
+    if noise.any() and supports is not None:
+        for number in np.unique(cluster[noise]):
+            member = cluster == number
+            if _stands_on_a_solid(cloud[member], np.zeros(0), supports, tuning):
+                noise[member] = False
+    # And a speck of a pixel or two, which a 10 mm voxel would have thinned away (``fine_world.specks``). Never a pixel
+    # the camera world kept a point at: a cluster the square cuts at its edge is not the cluster the camera world kept
+    # whole, and what the camera world keeps the guard keeps.
+    noise |= specks(cloud)
+    if noise.any() and points.shape[0]:
+        from scipy.spatial import cKDTree  # noqa: PLC0415 (only the fine world pays for it)
+
+        kept_here = points[region.contains(points)]
+        if kept_here.shape[0]:
+            at, _ = cKDTree(kept_here).query(cloud[noise], k=1, distance_upper_bound=1e-3)
+            noise[np.nonzero(noise)[0][np.isfinite(at)]] = False
+    cloud, owner_of = cloud[~noise], owner_of[~noise]
+    # A held target's own fringe, what the camera smears its far edge into, is the target's: soft for the fingers that
+    # close on it, as a named part's surface is (``fine_world.FINE_TARGET_FRINGE_MM``).
+    if cut_around:
+        fringe = (owner_of < 0) & fringe_of(cloud, cut_around)
+        if fringe.any():
+            owner_of = owner_of.copy()
+            owner_of[fringe] = len(owner_labels)
+            owner_labels.append("target")
+    # A part resting on a held target stands on it, its boxes not carried down through it.
+    floors = []
+    for held_out in cut_around:
+        matrix = np.asarray(held_out.box_to_base_mm, dtype=np.float64).reshape(4, 4)
+        half = np.asarray(held_out.half_extents_mm, dtype=np.float64)
+        middle = float(matrix[2, 3])
+        floors.append(((lambda xy, held=held_out, middle=middle: held.contains(
+            np.column_stack([xy, np.full(xy.shape[0], middle)]))), middle + float(np.abs(matrix[2, :3]) @ half)))
+    columns = fine_columns(cloud, owner_of, floor_mm=float(floor), floors=floors)
+    # A part's fine boxes hold the fingers to its measured surface as the camera world's do, where the part as a whole
+    # is no larger than a part.
+    extent: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    for fine_column in columns:
+        if fine_column.owner is not None:
+            low, high = extent.get(fine_column.owner, (np.full(3, np.inf), np.full(3, -np.inf)))
+            extent[fine_column.owner] = (np.minimum(low, fine_column.low_mm), np.maximum(high, fine_column.high_mm))
+    across, tall = PART_SIZED_MM
+    soft_fine = (max(0.0, float(tuning.part_soft_mm) - float(tuning.margin_mm)) + FINE_MARGIN_MM
+                 if float(tuning.part_soft_mm) > 0.0 else 0.0)
+    fine: list[PerceivedBox] = []
+    for number, fine_column in enumerate(columns):
+        label = owner_labels[fine_column.owner] if fine_column.owner is not None else None
+        soft = 0.0
+        if fine_column.owner is not None and soft_fine > 0.0:
+            low, high = extent[fine_column.owner]
+            size = high - low
+            if max(float(size[0]), float(size[1])) <= across and float(size[2]) <= tall:
+                soft = soft_fine
+        centre = fine_column.centre_mm
+        fine.append(PerceivedBox(
+            name=_box_name(f"{tuning.name_prefix}f", number, label), center_mm=centre, dims_mm=fine_column.dims_mm,
+            yaw_rad=0.0, points=fine_column.pixels, distance_mm=float(np.linalg.norm(np.asarray(centre) - reference)),
+            label=label, soft_mm=soft,
+        ))
+
+    # What the camera world kept in the square, each point a margin inside a fine box, or its part's boxes stay.
+    cores_low = np.array([[b.center_mm[0] - b.dims_mm[0] / 2.0 + FINE_MARGIN_MM,
+                           b.center_mm[1] - b.dims_mm[1] / 2.0 + FINE_MARGIN_MM,
+                           b.center_mm[2] - b.dims_mm[2] / 2.0] for b in fine]).reshape(-1, 3)
+    cores_high = np.array([[b.center_mm[0] + b.dims_mm[0] / 2.0 - FINE_MARGIN_MM,
+                            b.center_mm[1] + b.dims_mm[1] / 2.0 - FINE_MARGIN_MM,
+                            b.center_mm[2] + b.dims_mm[2] / 2.0 - FINE_MARGIN_MM] for b in fine]).reshape(-1, 3)
+
+    def covered(at: np.ndarray) -> np.ndarray:
+        out = np.zeros(at.shape[0], dtype=bool)
+        for start in range(0, cores_low.shape[0], 256):
+            low, high = cores_low[start:start + 256], cores_high[start:start + 256]
+            out |= np.any(np.all((at[:, None, :] >= low[None] - 1e-6) & (at[:, None, :] <= high[None] + 1e-6), axis=2),
+                          axis=1)
+        return out
+
+    by_part: dict[int, list[PerceivedBox]] = {}
+    for candidate in candidates:
+        by_part.setdefault(candidate_part[id(candidate)], []).append(candidate)
+    guard: list[PerceivedBox] = list(fine)
+    uncovered = 0
+    extra = 0
+    robot_on = None if self_body is None else _the_moving_robot(self_body)
+    for part, (chosen, part_yaw, _) in enumerate(mapped):
+        own = by_part.get(part, [])
+        if chosen.size == 0:
+            # What the robot hid between two parts: as the camera world holds it.
+            guard.extend(survivors[id(own_box)] for own_box in own if id(own_box) in survivors)
+            continue
+        inside = region.contains(points[chosen])
+        if not inside.any():
+            guard.extend(survivors[id(own_box)] for own_box in own if id(own_box) in survivors)
+            continue
+        at = points[chosen[inside]]
+        lost = ~covered(at)
+        missed = int(np.count_nonzero(lost))
+        if missed:
+            # The camera world kept a point here no fine box holds: its own boxes of this part stay, all of them. A
+            # point it kept on the robot's own body (a support's solid moved it there, ``_Erasure``, where the self
+            # filter had passed it before) is not counted, as no pixel of the robot is the cell's, but its boxes stay.
+            robot = self_body.contains(at[lost]) if self_body is not None else np.zeros(missed, dtype=bool)
+            uncovered += int(np.count_nonzero(~np.asarray(robot, dtype=bool)))
+            for own_box in own:
+                guard.append(survivors.get(id(own_box)) or replace(own_box, name=_box_name(
+                    f"{tuning.name_prefix}c", extra, own_box.label)))
+                extra += 1
+            continue
+        # The cells the robot hid, filled as the camera world fills them, stay as the camera world holds them.
+        for own_box in own:
+            if own_box.hidden_cells:
+                guard.append(survivors.get(id(own_box)) or replace(own_box, name=_box_name(
+                    f"{tuning.name_prefix}c", extra, own_box.label)))
+                extra += 1
+        outside = chosen[~inside]
+        if outside.size:
+            for beyond in height_map_columns(
+                    points[outside], yaw_rad=part_yaw, floor_mm=mapped_floor[part],
+                    margin_mm=float(tuning.margin_mm), cell_mm=float(tuning.cluster_voxel_mm),
+                    step_mm=float(tuning.voxel_size_mm), hidden=None if shadow is None else shadow.hides,
+                    reach_mm=_HIDDEN_REACH_MM, taken_mm=None if shadow is None else shadow.taken_mm,
+                    robot_on=robot_on):
+                boxed = column_box(outside, part_yaw, beyond)
+                if boxed is not None:
+                    guard.append(replace(boxed, name=_box_name(f"{tuning.name_prefix}o", extra, boxed.label)))
+                    extra += 1
+    guard.extend(solids)
+    return _FineGuardWorld(boxes=tuple(guard), region=region.render(), fine=len(fine), uncovered=uncovered)
+
+
+
+
 PART_SIZED_MM: tuple[float, float] = (250.0, 150.0)
 
 

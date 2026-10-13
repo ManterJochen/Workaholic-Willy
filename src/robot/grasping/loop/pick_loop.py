@@ -209,6 +209,7 @@ from src.robot.grasping.generation._support_footprint_stage import FINE_SEARCH_D
 from src.robot.grasping.generation.calculator import GraspCalculator
 from src.robot.grasping.generation.parts_beside import LABEL as PART_BESIDE_LABEL
 from src.robot.grasping.generation.parts_beside import parts_beside
+from src.robot.grasping.generation.support_footprint import JAW_SIDE_ROOM_MM
 from src.robot.grasping.types.perception import (
     PerceptionFrame,
     PerceptionSource,
@@ -310,13 +311,15 @@ _LOG: logging.Logger = create_robot_logger(__name__, "pick_loop.log")
 SURFACE_SPAN_MM = 250.0
 SURFACE_FLAT_MM = 20.0
 
-#: How many grasps of one look an attempt tries at most: the best, then up to eleven more of its candidates, each only
+#: How many grasps of one look an attempt tries at most: the best, then up to 23 more of its candidates, each only
 #: after the one before was refused before anything was sent with the hand kept out of the part's keep-out box (the
-#: owner's "try the next grasps", cell fixes Track C), every candidate the calculator offers. Four until 2026-10-06; a
-#: grasp refused at the hand on its line down is now refused before its route is planned, in about half a second
-#: (``URRobotArm._flange_line_refusal``), and on a tray all six tried were refused 0.03 to 0.5 mm short of the guard's
-#: 3 mm with six more untried (the grasp bench, 2026-10-06).
-GRASPS_TRIED_PER_ATTEMPT: int = 12
+#: owner's "try the next grasps", cell fixes Track C), every candidate the calculator offers: SFE's twelve and the
+#: twelve of the part's own body (``body_grasps``, lever A). Four until 2026-10-06; a grasp refused at the hand on its
+#: line down is now refused before its route is planned, in about half a second (``URRobotArm._flange_line_refusal``),
+#: and on a tray all six tried were refused 0.03 to 0.5 mm short of the guard's 3 mm with six more untried (the grasp
+#: bench, 2026-10-06). Twelve until 2026-10-13: with the body's grasps ranked in beside SFE's, the twelve tried left out
+#: SFE grasps the guard admits, in 7 of the owner's Tuesday picks (the replay bank).
+GRASPS_TRIED_PER_ATTEMPT: int = 24
 #: How far a cuRobo plan to a grasp's standoff may swing a joint past its span while the first pass of the tries keeps the
 #: arm's branch, degrees (the owner's R2, 2026-10-08): a plan past it is a detour there, and its grasp waits for the
 #: grasps that keep the branch, as one whose standoff only another branch reaches does. Outside the first pass the
@@ -350,8 +353,8 @@ _SUPPORT_RAISE_SAID_MM: float = 0.5
 _CROWDING_RING_MM: float = 40.0
 _CROWDING_OVER_MM: float = 5.0
 #: How much of the stroke a part's footprint leaves spare for a lazy ranking to count it among the parts the hand closes
-#: across (``BinPickingOrchestrator._fits_the_stroke``), millimetres: SFE's own ``width_safety_mm``.
-_STROKE_SPARE_MM: float = 2.0
+#: across (``BinPickingOrchestrator._fits_the_stroke``), millimetres: the room SFE leaves beside each jaw, both sides.
+_STROKE_SPARE_MM: float = 2.0 * JAW_SIDE_ROOM_MM
 
 #: How much vertical extent a single-view target cloud needs before it may be used to locate the
 #: support plane, in millimetres along the support normal.

@@ -47,7 +47,10 @@ from tests.test_a_side_grasp_never_goes_through_unseen_space import Box, Cylinde
 #: left out, so the grasps and the reasons are the ones of before. Re-pinned on 2026-10-09 (the owner's evening): the
 #: tree's rim of 2.0 mm is on by default and the mask pixels SFE does not read stand in the part's visual hull, so the
 #: 40 mm cylinder's footprint reads 39.1 x 39.6 mm instead of the rim's 34.2 x 36.7, and the robust grasps are ranked
-#: first; ``scene_obstacles=None`` changing nothing is still pinned beside it.
+#: first; ``scene_obstacles=None`` changing nothing is still pinned beside it. Since 2026-10-13 the part's own body is
+#: searched beside SFE's prism (``body_grasps``, lever A) and its grasps ranked in beside SFE's, every one of SFE's
+#: kept: the digests are of SFE's own grasps, the body's telemetry keys left out (``digest(sfe_only=True)``), and they
+#: are 2026-10-09's to the bit.
 BEFORE_TRACK_A = {
     # Since the rim and the visual hull are on, the robust grasps ranked first, and a round footprint's fan stands in
     # the base frame with its lines through its centroid (2026-10-09; the bar's footprint fills 0.87 of its rectangle,
@@ -58,8 +61,15 @@ BEFORE_TRACK_A = {
 }
 
 
-def digest(result: Any) -> str:
-    """The candidates rounded, with the sign of a rounded zero dropped.
+def stage_of(grasp: Any) -> str:
+    """Which stage offered ``grasp``: ``"prism"`` (SFE) or ``"body"`` (``body_grasps``)."""
+    components = (getattr(grasp, "metadata", None) or {}).get("score_components") or {}
+    return str((components.get("support_footprint") or {}).get("stage", "prism"))
+
+
+def digest(result: Any, *, sfe_only: bool = False) -> str:
+    """The candidates rounded, with the sign of a rounded zero dropped; of SFE's alone, the body's telemetry keys left
+    out, where ``sfe_only``.
 
     OpenBLAS picks its kernels by CPU: the owner's AVX-512 machine runs SkylakeX's, CI's runner Haswell's or Zen's. Their
     last bits differ (1e-13 mm, 5e-17 in an axis), and a coordinate that is zero lands on either side of it; rounding
@@ -67,10 +77,12 @@ def digest(result: Any) -> str:
     """
     h = hashlib.sha256()
     for g in result.candidates:
+        if sfe_only and stage_of(g) != "prism":
+            continue
         for v in (*np.round(g.position, 6), *np.round(g.approach, 9), *np.round(g.axis, 9),
                   round(float(g.grip_width_mm), 6), round(float(g.score), 9)):
             h.update(repr(float(v) + 0.0).encode())
-    h.update(repr(sorted(result.telemetry)).encode())
+    h.update(repr(sorted(key for key in result.telemetry if not (sfe_only and key.startswith("body_")))).encode())
     h.update(repr([r.value for r in result.reasons]).encode())
     return h.hexdigest()
 
@@ -120,9 +132,11 @@ class NoFalseRefusalWhereThereIsRoomTests(unittest.TestCase):
         self.assertEqual(0, on.telemetry["scene_obstacle_points"])
 
     def test_cubes_40_to_70_mm_off_take_away_only_what_the_guard_refuses(self) -> None:
-        """The cubes are seen, and of the grasps the calculator offers without them it keeps exactly those whose open
-        hand keeps the guard's 5 mm from the boxes the camera world builds of them: a tilted approach toward the cube
-        40 mm off, and a vertical one closing toward it, came within 3 mm of its box (the owner, 2026-10-03)."""
+        """The cubes are seen, and of the grasps SFE offers without them it keeps exactly those whose open hand keeps
+        the guard's 5 mm from the boxes the camera world builds of them: a tilted approach toward the cube 40 mm off,
+        and a vertical one closing toward it, came within 3 mm of its box (the owner, 2026-10-03). Of the part's own
+        body (``body_grasps``) none is offered that the guard refuses; its seen grid of 2 mm cells holds a hand up to a
+        cell further off than the guard's boxes do, and left one grasp 5.3 mm from the cube's box out (2026-10-13)."""
         from tests.test_the_calculator_keeps_the_guards_distance_from_a_neighbour import GUARD_MM, least_mm, world_boxes
 
         frame = photo_layout()
@@ -134,7 +148,7 @@ class NoFalseRefusalWhereThereIsRoomTests(unittest.TestCase):
         off, on = compute(unseen, frame), compute(seen, frame)
         self.assertGreater(on.telemetry["scene_obstacle_points"], 0)
         boxes = world_boxes(PHOTO_NEIGHBOURS, frame)
-        admitted = [g for g in off.candidates if least_mm(g, boxes) >= GUARD_MM]
+        admitted = [g for g in off.candidates if least_mm(g, boxes) >= GUARD_MM and stage_of(g) == "prism"]
         refused = [g for g in off.candidates if least_mm(g, boxes) < GUARD_MM]
         self.assertTrue(admitted and refused, (len(admitted), len(refused)))
         key = lambda g: tuple(np.round(np.concatenate([g.position, g.axis, g.approach]), 2))  # noqa: E731
@@ -211,8 +225,9 @@ class NoFalseRefusalOnTheRealMatTests(unittest.TestCase):
                 for height in (30.0, 48.0):
                     with self.subTest(look=name, patch=(x, y), height=height):
                         off, on, centre = self._run(name, x, y, height)
-                        offered = on.telemetry["support_footprint_kept"]
-                        self.assertEqual(off.telemetry["support_footprint_kept"], offered)
+                        # SFE's own grasps (the body's beside them, ``body_kept``, read the support the model finds).
+                        offered = on.telemetry["support_footprint_kept"] - on.telemetry["body_kept"]
+                        self.assertEqual(off.telemetry["support_footprint_kept"] - off.telemetry["body_kept"], offered)
                         self.assertGreaterEqual(offered, 10)
                         # Nothing of the mat within the open hand's reach of the part (the Hand-E open stands 36 mm
                         # off its axis); what tilted corridors meet further off is the pile, refused builds, no grasp.
@@ -233,7 +248,7 @@ class TheSwitchesTests(unittest.TestCase):
                             ("boxed_in_bar", boxed_in_bar())):
             with self.subTest(name):
                 plain = compute(scene_off_calculator(), frame)
-                self.assertEqual(BEFORE_TRACK_A[name], digest(plain))
+                self.assertEqual(BEFORE_TRACK_A[name], digest(plain, sfe_only=True))
                 passed_none = compute(calculator(scene=False, side=False), frame)
                 self.assertEqual(digest(plain), digest(passed_none))
                 for key in ("scene_obstacle_points", "candidates_final_source", "rejected_support"):

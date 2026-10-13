@@ -3137,15 +3137,25 @@ class URRobotArm(RobotArm):
         """``None`` where the planner, asked again about ``rows`` with every box the camera saw set aside, finds only those
         boxes refused them on its world; else why its world stands, and on which sample (the owner's Option 1).
 
-        The boxes are the ones the exact guard holds now (``SafetyPreflight.perceived_obstacles``), by name; the glue asks
-        with exactly those, where its last refresh handed the planner the same and none is a declared fixture's
-        (``CuroboUrPlanner.judge_joint_path``). The second judgement is of exactly the samples the world refused, at the
-        clearance they were refused at, and it has to account for every one of them, say it set aside exactly those
-        boxes, and find the bounds and the robot itself as the first did (``band.world_admission_refusal``). The exact
-        guard judges every refused sample after this, with the same boxes.
+        The boxes are every one the planner holds of what the camera saw, by name, where the exact guard holds the boxes
+        the same refresh handed it (``SafetyPreflight.perceived_obstacles``): the planner's own, but near the motion's
+        goal, where the guard holds the fine world, which holds every point the planner's boxes were built of
+        (``fine_world``). The glue asks with exactly those, where its last refresh handed the planner the same and none
+        is a declared fixture's (``CuroboUrPlanner.judge_joint_path``). The second judgement is of exactly the samples
+        the world refused, at the clearance they were refused at, and it has to account for every one of them, say it
+        set aside exactly those boxes, and find the bounds and the robot itself as the first did
+        (``band.world_admission_refusal``). The exact guard judges every refused sample after this, with its boxes.
         """
         assert self._preflight is not None  # noqa: S101 (the caller found the exact guard running)
         names = tuple(sorted(str(box.name) for box in self._preflight.perceived_obstacles(self)))
+        held, handed = getattr(planner, "perceived_in_world", None), getattr(planner, "guard_held_in_world", None)
+        if callable(held) and callable(handed):
+            if tuple(sorted(handed() or ())) != names:
+                why = ("the exact guard does not hold the boxes the planner's last refresh handed it, so the planner's "
+                       "world stands")
+                self.logger.warning("the planner's refusal stands: %s", why)
+                return _Standing(why, rows[0])
+            names = tuple(sorted(held() or ()))
         asked = [[float(v) for v in configs[row.index]] for row in rows]
         judge = getattr(planner, "judge_joint_path")
         try:
@@ -4183,6 +4193,17 @@ class URRobotArm(RobotArm):
         say, keeps them in, and cuRobo decides as before.
         """
         self._hand = gripper
+
+    def set_finger_opening(self, width_mm: float | None) -> None:
+        """Hold the hand's fingers ``width_mm`` apart in this arm's guard, between their inner faces, where the hand was
+        told that width and read it back (lever G, 2026-10-13); ``None`` stands them fully open, as baked. The goal's
+        jaw region follows it (``self_envelope.goal_keep_out``)."""
+        told = self._preflight.set_finger_opening(width_mm)
+        if width_mm is None:
+            self.logger.info("the guard holds the hand's fingers fully open again (%d guard(s) told)", told)
+        else:
+            self.logger.info("the hand opened to a grasp's planned width: the guard holds its fingers %.1f mm apart "
+                             "until the pick's motions end (%d guard(s) told)", float(width_mm), told)
 
     @property
     def camera_world_required(self) -> bool:

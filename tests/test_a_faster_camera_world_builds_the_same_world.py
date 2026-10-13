@@ -205,6 +205,9 @@ def canonical(snapshot: Any) -> dict[str, Any]:
     report = perceived.to_dict()
     report.pop("boxes")
     report.pop("supports", None)
+    # What the guard holds about the goal in the planner's stead (``fine_world``) is not the planner's world, which this
+    # golden pins: ``tests/test_the_guard_holds_the_fine_world_about_the_goal.py`` holds it.
+    report.pop("fine_world", None)
     supports = perceived.supports
     model = None if supports is None else {
         "surfaces": [{"index": s.index, "name": s.name, "coef": s.coef, "tilt_deg": s.tilt_deg, "rms_mm": s.rms_mm,

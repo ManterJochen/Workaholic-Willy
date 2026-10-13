@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from src.contracts import UNSET, Maybe, chosen
 from src.robot.constants import create_robot_logger
 from src.robot.safety.planning.depth_source import RigDepthSource
+from src.robot.safety.planning.fine_world import FINE_REACH_MM
 from src.robot.safety.planning.live_world import CameraView, LivePlannerWorld
 from src.robot.safety.planning.perceived import WorldBuildTuning
 from src.robot.safety.planning.reservation import PlannerReservation, planner_world_limits
@@ -389,6 +390,8 @@ def _live_planner_world(robot_cfg: "RobotConfig", views: Sequence[CameraView]) -
             floor_to_plane=bool(perceived.floor_to_plane),
             support_surfaces=bool(perceived.support_surfaces),
             support_allowance_mm=float(perceived.support_allowance_mm),
+            # Near a motion's goal the guard holds every pixel the cameras measured, at 2 mm (``fine_world``).
+            fine_reach_mm=FINE_REACH_MM,
         ),
         max_age_ms=float(perceived.max_age_ms),
         fresh_frame_attempts=int(perceived.fresh_frame_attempts),

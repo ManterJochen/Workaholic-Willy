@@ -347,7 +347,8 @@ class MeshSelfCollisionBackend:
 
     def __init__(
         self, adapter: _EngineAdapter, meshes: dict[str, tuple[np.ndarray, np.ndarray, int]],
-        wrist_parts: "frozenset[str]" = frozenset(),
+        wrist_parts: "frozenset[str]" = frozenset(), *, closing_axis: "np.ndarray | None" = None,
+        baked_opening_mm: float | None = None,
     ) -> None:
         self._a = adapter
         #: Parts a wrist camera adds on frame 6. They are checked against wrist_2 on frame 5, which the
@@ -390,6 +391,73 @@ class MeshSelfCollisionBackend:
         self._pair_first = np.asarray([i for i, _ in self._pairs], dtype=np.int64)
         self._pair_second = np.asarray([j for _, j in self._pairs], dtype=np.int64)
         self._hulls: "dict[str, Any] | None" = None
+        # The fingers as they were baked, fully open, and where the hand was told to open them (``set_finger_opening``).
+        self._baked = {name: meshes[name] for name in self._names if name in FINGER_PARTS}
+        self._baked_state = {name: (self._models[name], self._sph_c[name], self._sph_r[name], self._hull[name])
+                             for name in self._baked}
+        # The closing axis on the flange, the hand model's own X as its placement turns it, and how wide the baked
+        # fingers stand open, the hand's stroke (``set_finger_opening``).
+        self._closing = (None if closing_axis is None
+                         else np.asarray(closing_axis, dtype=np.float64) / max(float(np.linalg.norm(closing_axis)), 1e-12))
+        self._baked_gap_mm = None if baked_opening_mm is None else float(baked_opening_mm)
+        self._opening_mm: float | None = None
+        self._opened: dict[float, dict[str, tuple[Any, np.ndarray, float, np.ndarray]]] = {}
+
+    @property
+    def finger_opening_mm(self) -> float | None:
+        """How wide the fingers stand open, millimetres, between their inner faces, where the hand was told
+        (:meth:`set_finger_opening`); ``None`` where they stand as baked, fully open."""
+        return self._opening_mm
+
+    @property
+    def baked_opening_mm(self) -> float | None:
+        """How wide the baked fingers stand open between their inner faces, millimetres; ``None`` without two fingers."""
+        return self._baked_gap_mm
+
+    def set_finger_opening(self, width_mm: float | None) -> None:
+        """Hold the fingers ``width_mm`` apart between their inner faces, each moved in along the closing axis by half
+        of what the baked opening is wider (lever G, 2026-10-13: a Robotiq hand told a width opens no wider); ``None``
+        stands them as baked, fully open. Never wider than baked: a width over it stands them as baked. Each width is
+        built once and kept; nothing else of the backend changes, so every verdict before is the same where no width
+        is told.
+        """
+        if not self._baked or self._closing is None or self._baked_gap_mm is None:
+            return
+        if width_mm is None or float(width_mm) >= self._baked_gap_mm - 1e-9:
+            key = None
+        else:
+            key = round(max(0.0, float(width_mm)), 2)
+        if key == self._opening_mm:
+            return
+        states: "dict[str, tuple[Any, np.ndarray, float, np.ndarray]] | None"
+        if key is None:
+            states = self._baked_state
+        else:
+            states = self._opened.get(key)
+            if states is None:
+                states = {}
+                inward = (self._baked_gap_mm - key) / 2.0
+                for name, (verts, faces, _frame) in self._baked.items():
+                    v = np.asarray(verts, dtype=np.float64)
+                    # Which side the finger stands on: the middle of its own reach along the axis (each finger's mesh
+                    # carries its slide, which reaches past the hand's middle).
+                    along = v @ self._closing
+                    side = 1.0 if float(along.min() + along.max()) > 0.0 else -1.0
+                    moved = v - side * inward * self._closing
+                    centre = moved.mean(axis=0)
+                    states[name] = (self._a.build_object(moved, faces), centre,
+                                    float(np.linalg.norm(moved - centre, axis=1).max()), _hull_vertices(moved))
+                self._opened[key] = states
+        for name, (model, centre, radius, hull) in states.items():
+            self._models[name] = model
+            self._sph_c[name] = centre
+            self._sph_r[name] = radius
+            self._hull[name] = hull
+            row = self._names.index(name)
+            self._centre_rows[row] = centre
+            self._radius_row[row] = radius
+        self._hulls = None
+        self._opening_mm = key
 
     def checks(self, part_a: str, part_b: str) -> bool:
         """Whether :meth:`evaluate` judges ``part_a`` against ``part_b``: its pair rule, asked of one pair.
@@ -969,6 +1037,7 @@ def make_backend(
     placement: HandPlacement | None = None,
     coupling_boxes: "tuple[Box, ...] | list[Box]" = (),
     wrist_parts: "dict[str, np.ndarray] | None" = None,
+    baked_opening_mm: float | None = None,
 ) -> MeshSelfCollisionBackend | None:
     """Build the mesh backend for ``model``, Coal where available and python-fcl otherwise, or ``None``.
 
@@ -1019,7 +1088,11 @@ def make_backend(
     # A cell without a camera hands the backend no wrist argument at all; only a camera's parts are named.
     marked: dict[str, frozenset[str]] = {"wrist_parts": frozenset(wrist)} if wrist else {}
     try:
-        return MeshSelfCollisionBackend(_EngineAdapter(mod, kind), meshes, **marked)
+        # The hand's closing axis on the flange, its model's X as the placement turns it, for a told finger opening.
+        closing = (np.asarray(placement.rotation, dtype=np.float64) @ np.array([1.0, 0.0, 0.0])
+                   if placement is not None and not placement.is_identity else np.array([1.0, 0.0, 0.0]))
+        return MeshSelfCollisionBackend(_EngineAdapter(mod, kind), meshes, **marked, closing_axis=closing,
+                                        baked_opening_mm=baked_opening_mm)
     except Exception:  # noqa: BLE001 (any engine construction failure falls back to capsules)
         return None
 

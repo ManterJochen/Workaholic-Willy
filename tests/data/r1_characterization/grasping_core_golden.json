@@ -63,7 +63,7 @@
             -52.5,
             1300.0
           ],
-          "score": 0.79098
+          "score": 0.79198
         },
         {
           "approach": [
@@ -109,7 +109,7 @@
             -52.5,
             1300.0
           ],
-          "score": 0.79098
+          "score": 0.79198
         },
         {
           "approach": [
@@ -155,13 +155,13 @@
             -52.5,
             1300.0
           ],
-          "score": 0.79098
+          "score": 0.79198
         }
       ],
       "n_candidates": 3,
       "telemetry": {
         "approach_clearance_mm": 200.0,
-        "best_score": 0.79098,
+        "best_score": 0.79198,
         "camera_base_z_mm": 300.0,
         "candidates_geometry": 0,
         "candidates_silhouette": 3,
@@ -232,7 +232,7 @@
             -2.5,
             1000.0
           ],
-          "score": 0.79098
+          "score": 0.79198
         },
         {
           "approach": [
@@ -277,7 +277,7 @@
             -2.5,
             1000.0
           ],
-          "score": 0.79098
+          "score": 0.79198
         },
         {
           "approach": [
@@ -322,13 +322,13 @@
             -2.5,
             1000.0
           ],
-          "score": 0.79098
+          "score": 0.79198
         }
       ],
       "n_candidates": 3,
       "telemetry": {
         "approach_clearance_mm": 200.0,
-        "best_score": 0.79098,
+        "best_score": 0.79198,
         "candidates_geometry": 0,
         "candidates_silhouette": 3,
         "closing_levelled": false,
@@ -397,7 +397,7 @@
             -2.5,
             1000.0
           ],
-          "score": 0.79098
+          "score": 0.79198
         },
         {
           "approach": [
@@ -442,7 +442,7 @@
             -2.5,
             1000.0
           ],
-          "score": 0.79098
+          "score": 0.79198
         },
         {
           "approach": [
@@ -487,13 +487,13 @@
             -2.5,
             1000.0
           ],
-          "score": 0.79098
+          "score": 0.79198
         }
       ],
       "n_candidates": 3,
       "telemetry": {
         "approach_clearance_mm": 200.0,
-        "best_score": 0.79098,
+        "best_score": 0.79198,
         "candidates_geometry": 0,
         "candidates_silhouette": 3,
         "closing_levelled": false,

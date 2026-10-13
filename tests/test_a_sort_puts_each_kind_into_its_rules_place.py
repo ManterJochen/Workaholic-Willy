@@ -223,6 +223,19 @@ class TwoBinsTests(unittest.TestCase):
             self.assertEqual(("green part", "red part"), prompt.target_labels)
         self.assertEqual(PickPrompt(phrase="object"), ran.service.prompt, "the cell's prompt was not put back")
 
+    def test_a_rule_that_names_no_place_grounds_where_the_parts_lie(self) -> None:
+        """Lever C (2026-10-13): "each separate other object", said with no place, boxed the frame's slats as parts."""
+        from src.robot.execution.task import PlaceAt, SortRule
+
+        ran = _sort(["empty", "empty"], plan=_plan(SortRule(object="red part", place=PlaceAt(camera="blue bin")),
+                                                   source="on the black mat"))
+        self.assertEqual("each separate green part on the black mat | each separate red part on the black mat",
+                         ran.service.prompts[0].phrase)
+        own = _sort(["empty", "empty"], plan=_plan(SortRule(object="red part", place=PlaceAt(camera="blue bin"),
+                                                            source="in the blue bin"), source="on the black mat"))
+        self.assertEqual("each separate green part on the black mat | each separate red part in the blue bin",
+                         own.service.prompts[0].phrase)
+
     def test_a_bin_no_look_saw_stops_the_sort_before_its_first_pick_and_is_named(self) -> None:
         from src.robot.execution.task import TaskStop
 

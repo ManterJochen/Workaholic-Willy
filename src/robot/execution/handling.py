@@ -966,7 +966,22 @@ class _Handling:
             detach()
         if opening is not None:
             self._command_gripper(float(opening), close=False)
-        standoff = self._standoff()
+            if float(opening) < float(self.gripper.max_width_mm) - 1e-6:
+                # Opened no wider than a width short of the stroke: the guard holds the fingers where the hand reads
+                # them back until the verb ends (lever G, ``execution_policy._the_guard_holds_the_fingers_at``), and the
+                # space between the jaws at the goal is that wide.
+                from src.robot.grasping.motion.execution_policy import _the_guard_holds_the_fingers_at  # noqa: PLC0415
+
+                if _the_guard_holds_the_fingers_at(self.arm, self.gripper, float(opening)):
+                    try:
+                        return self._picked_from(standoff_pose=self._standoff(), close_to=close_to, width_mm=width_mm)
+                    finally:
+                        _the_guard_holds_the_fingers_at(self.arm, None, None)
+        return self._picked_from(standoff_pose=self._standoff(), close_to=close_to, width_mm=width_mm)
+
+    def _picked_from(self, *, standoff_pose: Pose, close_to: float, width_mm: float) -> HandlingReport:
+        """:meth:`_pick_body` from the move to the standoff on, the jaws open as wide as they will be at the part."""
+        standoff = standoff_pose
         lift = self._lift(standoff)
         self._move(standoff, linear=False)
         # The owner's O2 (safety.planning_world.hold.standoff): the line down judged in the world its route was judged in,

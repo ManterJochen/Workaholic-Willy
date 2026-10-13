@@ -347,6 +347,14 @@ def _batched_builds_here(robot_cfg: "RobotConfig", calculator: Any) -> bool:
     return True
 
 
+def opens_as_needed(robot_cfg: "RobotConfig") -> bool:
+    """Whether the cell's hand opens only as wide as a grasp needs before it closes: a Robotiq hand, which is told a
+    width (lever G, the owner's "nur wenn Robotiq genutzt wird", 2026-10-13). A toggle, an I/O jaw and every other
+    hand open fully."""
+    gripper = getattr(robot_cfg, "gripper", None)
+    return str(getattr(gripper, "vendor", "") or "").strip().lower() == "robotiq"
+
+
 def build_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" = None,
                      purpose: Purpose = "cell", **kwargs: Any) -> Any:
     """The generator this cell's config asks for, built from ``kwargs`` common to both.
@@ -377,6 +385,9 @@ def build_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" 
         calculator = GraspCalculator(**kwargs)
         if bool(getattr(robot_cfg.grasping, "batched_builds", False)):
             calculator.sfe_batched = _batched_builds_here(robot_cfg, calculator)
+        # A Robotiq hand is told a width: it opens only as wide as a grasp needs (lever G, the owner, 2026-10-13: "aber
+        # nur wenn Robotiq genutzt wird"). Every other hand opens fully, as before.
+        calculator.opens_as_needed = opens_as_needed(robot_cfg)
         return calculator
     if choice != "deep":
         raise ValueError(f"unknown grasping.calculator {choice!r}: expected 'geometric' or 'deep'")

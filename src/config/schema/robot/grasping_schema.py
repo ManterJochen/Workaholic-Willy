@@ -1623,7 +1623,9 @@ class GraspingSupportConfig(StrictModel):
             "\"bis auf 1 mm, solange er sie nicht berührt\"; 3 mm from 2026-10-05, 5 mm before). Swept 0 / 2 / 5 mm "
             "over the gate subset (n=354): precision 18.87 -> 20.00 -> 22.08 %, coverage 28.81 -> 28.53 -> 28.53 %, "
             "top-1 flat at ~24.3 %. A part has to stand at least this, the fingertip's reach past the grasp centre "
-            "and 2 mm tall (scene_obstacles.least_part_height_mm): 13.5 mm for the Hand-E."
+            "and 2 mm tall for SFE's ladder (13.5 mm for the Hand-E), or this, the fingertip's reach past the pad, "
+            "3 mm into the pad and 4 mm of its outline above for the part's own body "
+            "(scene_obstacles.least_part_height_mm): 8 mm for the Hand-E."
         ),
     )
 

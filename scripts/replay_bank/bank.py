@@ -43,8 +43,8 @@ if str(_ROOT / "scripts" / "bench") not in sys.path:
 
 #: Where the recordings and the cell's config tree lie: ``<bank>/<day>/views/*.npz`` and ``<bank>/robominds_config``.
 BANK = Path(os.environ.get("WILLY_REPLAY_BANK", "D:/dev/willy_replay_bank"))
-#: How many grasps of a look the cell tries at most (``pick_loop`` tries the best and up to eleven more).
-MAX_TRIES = 12
+#: How many grasps of a look the cell tries at most (``pick_loop.GRASPS_TRIED_PER_ATTEMPT``: the best and up to 23 more).
+MAX_TRIES = 24
 #: The stamp the recorded frames are given, seconds, and how much later each world is asked for.
 _STAMP_S = 1000.0
 _ASKED_AFTER_S = 0.05
@@ -186,9 +186,10 @@ class _NoCamera:
 
 
 #: What a bank run may switch off to set a lever beside the code without it (``ReplayCell(off=...)``): the ground
-#: seeded round a held target (``support_surfaces._ground_round``) and the parts beside the named ones read off the
-#: depth (``robot.grasping.name_neighbours``).
-LEVERS = ("ground", "parts_beside")
+#: seeded round a held target (``support_surfaces._ground_round``), the parts beside the named ones read off the
+#: depth (``robot.grasping.name_neighbours``), and the fine world the guard holds about a motion's goal
+#: (``safety.planning.fine_world``) with the 2 mm grid SFE keeps the hand off the neighbours' points by.
+LEVERS = ("ground", "parts_beside", "fine_world")
 
 
 class ReplayCell:
@@ -232,6 +233,13 @@ class ReplayCell:
             from src.robot.safety.planning import support_surfaces  # noqa: PLC0415
 
             support_surfaces._ground_round = lambda *args, **kwargs: None  # noqa: SLF001
+        if "fine_world" in self.off:
+            from src.robot.execution import camera_world_wiring  # noqa: PLC0415
+            from src.robot.grasping.generation import scene_obstacles, support_footprint  # noqa: PLC0415
+
+            camera_world_wiring.FINE_REACH_MM = 0.0
+            scene_obstacles.FINE_REACH_MM = 0.0
+            support_footprint.SEEN_POINTS_CELL_MM = 4.0
 
     # -------------------------------------------------------------- the cell's own parts, per camera matrix
     def _service(self, intrinsics: np.ndarray) -> Any:
@@ -316,7 +324,19 @@ class ReplayCell:
         from src.robot.grasping.loop.pick_loop import _named_points_base  # noqa: PLC0415
 
         named = _named_points_base(beside, tuple(beside.segmentations), index, look.camera_to_base)
-        world.offer_segmentation(target_points_base_mm=pick.target_cloud_mm, target_label=pick.target_label,
+        # The part the orchestrator ranked is the one held out, as the cell holds out the part it grasps: where many
+        # parts share the target's word it may take another than the one the pick recorded, and that one's own points
+        # stood in its world as obstacles (2026-10-13). The recorded target's cloud, fused over the looks, where it is
+        # the one taken.
+        recorded = look.target if look.target is not None else len(look.masks)
+        held = pick.target_cloud_mm
+        self.took_the_recorded_target = index is None or index == recorded
+        if not self.took_the_recorded_target:
+            from src.robot.grasping.multiview.scene_geometry import to_base_mm  # noqa: PLC0415
+
+            mask = np.asarray(beside.segmentations[index].mask).astype(bool)
+            held = to_base_mm(mask, look.surface_depth_mm, look.intrinsics, look.camera_to_base)
+        world.offer_segmentation(target_points_base_mm=held, target_label=pick.target_label,
                                  hold=True, timestamp=_STAMP_S + len(pick.looks) - 1, named_points_base_mm=named)
         return result, beside, orchestrator
 
@@ -353,13 +373,23 @@ class ReplayCell:
     def judge(self, world: Any, grasp: Any, policy: Any, seed: Any) -> dict[str, Any]:
         """The guard's word on ``grasp``: its line down from the standoff and its lift, each sample judged by the cell's
         path gate in the world of this grasp, the space between its jaws left out."""
+        waypoints = policy._build_waypoints(grasp)  # noqa: SLF001 (the poses the cell would command)
+        standoff, target, top = waypoints[0], waypoints[policy.approach_steps - 1], waypoints[-1]
+        tcp = np.asarray(target.to_matrix(), dtype=np.float64)
+        # A grasp planned for jaws that open only as needed (lever G, a Robotiq cell) is judged with the fingers where
+        # the cell opens them, as the execution tells the guard (``execution_policy._fingers_as_planned``).
+        from src.robot.grasping.motion.execution_policy import _fingers_as_planned  # noqa: PLC0415
+
+        with _fingers_as_planned(self.arm, grasp):
+            return self._judged(world, waypoints, standoff, target, top, tcp, seed)
+
+    def _judged(self, world: Any, waypoints: Any, standoff: Any, target: Any, top: Any, tcp: np.ndarray,
+                seed: Any) -> dict[str, Any]:
+        """:meth:`judge` once the guard holds the fingers where the grasp opens them."""
         from src.robot.core import MotionCommand  # noqa: PLC0415
         from src.robot.safety.planning.live_world import _guard_boxes  # noqa: PLC0415
         from src.robot.safety.planning.self_envelope import goal_keep_out  # noqa: PLC0415
 
-        waypoints = policy._build_waypoints(grasp)  # noqa: SLF001 (the poses the cell would command)
-        standoff, target, top = waypoints[0], waypoints[policy.approach_steps - 1], waypoints[-1]
-        tcp = np.asarray(target.to_matrix(), dtype=np.float64)
         at = self._nearest(np.asarray(standoff.to_matrix(), dtype=np.float64), np.asarray(seed, dtype=np.float64))
         if at is None:
             return {"verdict": "no IK at the standoff"}
@@ -416,6 +446,7 @@ def replay(cell: ReplayCell, path: "str | Path") -> dict[str, Any]:
     result, frame, orchestrator = cell.grasps(pick, world)
     candidates = tuple(getattr(result, "candidates", ()) or ())[:MAX_TRIES] if result is not None else ()
     record["parts_beside"] = len(getattr(frame, "parts_beside", ()) or ())
+    record["recorded_target"] = bool(getattr(cell, "took_the_recorded_target", True))
     record["offered"] = len(candidates)
     if not candidates:
         reasons = getattr(result, "reasons", ()) if result is not None else ()
@@ -430,6 +461,15 @@ def replay(cell: ReplayCell, path: "str | Path") -> dict[str, Any]:
             verdicts.append({"verdict": f"not judged: {type(exc).__name__}: {exc}"[:160]})
     admitted = [i for i, v in enumerate(verdicts) if v["verdict"] == "admitted"]
     record["admitted"] = len(admitted)
+    # Which stage found each grasp (``_support_footprint_stage``: SFE's prism or the part's body), and how each fared.
+    by_stage: dict[str, list[int]] = {}
+    for grasp, verdict in zip(candidates, verdicts):
+        components = (getattr(grasp, "metadata", {}) or {}).get("score_components") or {}
+        stage = str((components.get("support_footprint") or {}).get("stage", "other"))
+        tally = by_stage.setdefault(stage, [0, 0])
+        tally[0] += verdict["verdict"] == "admitted"
+        tally[1] += 1
+    record["by_stage"] = by_stage
     record["first_admitted"] = admitted[0] + 1 if admitted else None
     causes: dict[str, int] = {}
     for verdict in verdicts:

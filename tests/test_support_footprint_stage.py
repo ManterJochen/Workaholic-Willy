@@ -113,8 +113,11 @@ class CameraFrameSeamTests(unittest.TestCase):
                 ParallelJawGripperModel(), table_clearance_mm=MIN_CLEARANCE_MM),
             obstacle_points_base_mm=None, max_candidates=12)
         self.assertTrue(breakdowns)
-        self.assertEqual(len(breakdowns), len(base_candidates))
-        for breakdown, candidate in zip(breakdowns, base_candidates):
+        self.assertTrue(all(breakdown.pose.frame is Frame.CAMERA for breakdown in breakdowns))
+        # SFE's own, in its order; the part's own body's (``body_grasps``) ranked in beside them.
+        sfe = [breakdown for breakdown in breakdowns if breakdown.components["support_footprint"]["stage"] == "prism"]
+        self.assertEqual(len(sfe), len(base_candidates))
+        for breakdown, candidate in zip(sfe, base_candidates):
             self.assertIs(breakdown.pose.frame, Frame.CAMERA)
             back = (camera_to_base[:3, :3] @ breakdown.pose.position_mm) + camera_to_base[:3, 3]
             np.testing.assert_allclose(back, candidate.position_mm, atol=1e-6)

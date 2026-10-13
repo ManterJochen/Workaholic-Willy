@@ -149,7 +149,7 @@ class _Captured:
 
     last: dict[str, Any] | None = None
 
-    def __init__(self, adapter: Any, meshes: dict[str, Any]) -> None:
+    def __init__(self, adapter: Any, meshes: dict[str, Any], **_: Any) -> None:
         type(self).last = meshes
 
 
