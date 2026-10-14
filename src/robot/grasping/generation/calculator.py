@@ -101,7 +101,7 @@ from src.robot.grasping.generation._candidate_generator import (
 from src.robot.grasping.generation._debug_renderer import _DebugRenderer
 from src.robot.grasping.generation._camera_geometry import _SharedGeometryUtil
 from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
-from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
+from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint, fingers_held_at, outer_first
 from src.robot.grasping.generation.mask_analyzer import MaskAnalyzer
 from src.robot.grasping.types.modes import (
     GraspSamplingMode,
@@ -188,13 +188,6 @@ def _validate_camera_to_base_transform(
         return validate_transform(value.to_matrix(), name=name)
     return validate_transform(np.asarray(value, dtype=np.float64), name=name)
 
-
-
-def _planned_opening_of(score: GraspScoreBreakdown) -> float | None:
-    """How wide the jaws open before they close for ``score``'s grasp, where it was planned for jaws that open only as
-    needed (``score_components["support_footprint"]["open_width_mm"]``, lever G), millimetres; ``None`` for fully."""
-    value = ((getattr(score, "components", None) or {}).get("support_footprint") or {}).get("open_width_mm")
-    return float(value) if isinstance(value, (int, float)) and float(value) > 0.0 else None
 
 
 class GraspCalculator:
@@ -595,6 +588,12 @@ class GraspCalculator:
         #: each jaw, and each such grasp carries that opening (``score_components["support_footprint"]["open_width_mm"]``),
         #: which the execution opens to and the guard holds the fingers at. Off, a hand that opens fully.
         self.opens_as_needed: bool = False
+        #: Whether the part's bores are searched for grasps from inside (``robot.grasping.inner_grasps``, on as shipped,
+        #: set by ``build_calculator`` for a Robotiq hand): the fingers come down narrow into a bore and open onto its
+        #: wall (``generation.inner_grasps``). Each such grasp ranks after every outer grasp, here as in the stage
+        #: (``types.grasp_point.grips_from_inside``). Off, a calculator built without the config's word, searches no
+        #: bore, and every result is as before.
+        self.inner_grasps: bool = False
 
 
     @property
@@ -1484,6 +1483,7 @@ class GraspCalculator:
                     runner=sfe_workers,
                     batched=self.sfe_batched,
                     opens_as_needed=self.opens_as_needed,
+                    inner_grasps=self.inner_grasps,
                     **sfe_side,
                 )
                 telemetry.update(sfe_telemetry)
@@ -1943,7 +1943,10 @@ class GraspCalculator:
                 from ._isotropic_closing import snap_isotropic_closing_to_radial
 
                 candidates = snap_isotropic_closing_to_radial(candidates)
-        candidates.sort(key=lambda grasp: grasp.score, reverse=True)
+        # Best first, and every grasp from inside a bore after every outer grasp (``robot.grasping.inner_grasps``): it is
+        # taken where no outer grasp is. With none from inside, the order of the scores alone, as before: both sorts
+        # keep grasps of equal keys in the order they came.
+        candidates.sort(key=outer_first)
         telemetry["final"] = len(candidates)
         telemetry["best_score"] = candidates[0].score if candidates else 0.0
         # Approach-clearance for the best (camera-frame)
@@ -2310,7 +2313,8 @@ class GraspCalculator:
         ``perceived_min_distance_mm`` too, counted as ``rejected_collision``: a neighbour the camera saw, which a
         blocker cleared or a push may free. A candidate planned for jaws that open only as needed (lever G,
         ``score_components["support_footprint"]["open_width_mm"]``) is judged with its fingers that wide open and
-        ``FINGER_OPENING_SLACK_MM``, where the guard holds them as it comes down; every other fully open.
+        ``FINGER_OPENING_SLACK_MM``, where the guard holds them as it comes down, a grasp from inside a bore with them
+        at its wall (``types.grasp_point.fingers_held_at``); every other fully open.
         """
         rules = self._scene_obstacles
         assert rules is not None  # noqa: S101 (the caller checks)
@@ -2324,7 +2328,7 @@ class GraspCalculator:
         poses = [(rotation_cb @ np.asarray(score.pose.position_mm, dtype=np.float64) + translation_cb,
                   rotation_cb @ np.asarray(score.pose.rotation_matrix, dtype=np.float64)) for score in ranked]
         openings = [self.max_grip_mm if planned is None else min(planned + FINGER_OPENING_SLACK_MM, self.max_grip_mm)
-                    for planned in (_planned_opening_of(score) for score in ranked)]
+                    for planned in (fingers_held_at(score) for score in ranked)]
         verdicts: list[Any] = [None] * len(ranked)
         for opening in sorted(set(openings)):
             at = [n for n, width in enumerate(openings) if width == opening]

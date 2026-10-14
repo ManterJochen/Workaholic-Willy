@@ -1395,6 +1395,13 @@ robot:
     # [default: true]
     side_approaches: true
 
+    # Grasps from inside a part's bore join the outer ones, each after every outer grasp (the owner, 2026-10-14: "Nur
+    # wo außen nichts geht"): a Robotiq hand comes down narrow into a bore the camera saw free, opens at the close's
+    # force until its wall stops the fingers, and closes to let the part go at the place. No other hand is offered
+    # one. Off, no bore is searched, as before.
+    # [default: true]
+    inner_grasps: true
+
     # The pick computes a frame's parts one at a time and takes the first good one (the owner's "speed first",
     # 2026-10-08): the parts the hand closes across first, the less crowded first, and the first whose grasp is full,
     # carries no rescan reason and scores good_part_score or more is taken without computing the rest; none good, the

@@ -1900,6 +1900,14 @@ class RobotGraspingConfig(StrictModel):
     #: are ranked by geometry alone (the owner, 2026-10-01: "gleichwertig nach Geometrie"). Only space the camera saw
     #: counts as clear for a tilted approach. Off, a tilted grasp is offered only where no vertical one fits.
     side_approaches: bool = Field(default=True)
+    #: Grasps from inside a part's bore join the outer ones, each after every outer grasp (the owner, 2026-10-14: "Nur
+    #: wo außen nichts geht", on until the cell shows otherwise).
+    #:
+    #: A ring wider than the stroke cannot be closed across, and a ring or a hub packed among its neighbours leaves no
+    #: room for a finger beside it. On, a Robotiq hand searches the part's bores too (``generation.inner_grasps``): the
+    #: fingers come down narrow into a bore the camera saw free, open at the close's force until its wall stops them,
+    #: and close to let the part go at the place. No other hand is offered one. Off, no bore is searched, as before.
+    inner_grasps: bool = Field(default=True)
     #: The pick computes a frame's parts one at a time and takes the first good one.
     #:
     #: Every part of a look used to be computed before one was chosen: on the owner's cell one tilted cube cost 24 s and

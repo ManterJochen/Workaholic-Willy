@@ -202,6 +202,11 @@ The always-on tunings are a separate family and are not gated by mode:
   every tilt the hand fits at, scored by the room each grasp keeps, vertical on a tie, and a grasp 15
   degrees or more off vertical only through space a depth ray saw. Off, a tilted grasp is offered only where
   no vertical one fits.
+* `inner_grasps` (**on**, the owner's decision of 2026-10-14: "Nur wo außen nichts geht") lets a Robotiq hand grip a
+  part from inside a bore the camera saw free: it comes down narrow, opens at the close's force onto the wall and
+  closes to let the part go. Every such grasp comes after every outer grasp, so it is taken where no outer grasp is
+  admitted. No other hand is offered one. Off, no bore is searched, as before
+  ([generation README](../src/robot/grasping/generation/README.md)).
 * The two that come with them sit under `robot.safety.planning_world.perceived`: `support_surfaces`
   (**on**) finds what the parts stand on and holds it as solid, and `support_allowance_mm` (**2**, 0 to 10)
   is how far those solids stand over what they take out ([04](guide/04-robot-and-safety.md), 5.5). A

@@ -355,6 +355,21 @@ def opens_as_needed(robot_cfg: "RobotConfig") -> bool:
     return str(getattr(gripper, "vendor", "") or "").strip().lower() == "robotiq"
 
 
+def inner_grasps(robot_cfg: "RobotConfig") -> bool:
+    """Whether the calculator searches the part's bores for grasps from inside (``robot.grasping.inner_grasps``, on as
+    shipped): where the cell asks for it and its hand is a Robotiq, which is told a width to come down at, opens onto the
+    bore's wall at its force and says it stopped there (``core.gripper.GripsFromInside``). A toggle would need two
+    changes of its output more a pick, and no other hand says how it holds.
+
+    Args:
+        robot_cfg: The cell's robot tree.
+
+    Returns:
+        bool: ``True`` where the cell asks for inner grasps and its hand can grip so.
+    """
+    return getattr(getattr(robot_cfg, "grasping", None), "inner_grasps", False) is True and opens_as_needed(robot_cfg)
+
+
 def build_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" = None,
                      purpose: Purpose = "cell", **kwargs: Any) -> Any:
     """The generator this cell's config asks for, built from ``kwargs`` common to both.
@@ -388,6 +403,9 @@ def build_calculator(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" 
         # A Robotiq hand is told a width: it opens only as wide as a grasp needs (lever G, the owner, 2026-10-13: "aber
         # nur wenn Robotiq genutzt wird"). Every other hand opens fully, as before.
         calculator.opens_as_needed = opens_as_needed(robot_cfg)
+        # The part's bores are searched for grasps from inside where the cell asks for it (on as shipped) and its hand
+        # grips so.
+        calculator.inner_grasps = inner_grasps(robot_cfg)
         return calculator
     if choice != "deep":
         raise ValueError(f"unknown grasping.calculator {choice!r}: expected 'geometric' or 'deep'")

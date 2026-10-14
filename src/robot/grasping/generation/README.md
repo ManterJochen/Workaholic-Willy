@@ -201,6 +201,33 @@ and 21 mm across where its pad sits, its housing 62 mm across the binormal where
 one box of each stood 4.8 and 6.5 mm past them, and the calculator refused grasps the guard admitted. A hand without a
 bundle keeps the registry's boxes.
 
+## Grasps from inside a bore
+
+On a Robotiq hand the stage also searches the part's bores (`robot.grasping.inner_grasps`, on as shipped;
+[inner_grasps.py](inner_grasps.py); the owner, 2026-10-14: "Nur wo außen nichts geht"), and offers what it finds
+after every outer grasp, so a grasp from inside is tried where no outer grasp is admitted. A ring wider than the stroke
+cannot be closed across, and a ring or a hub packed among its neighbours leaves no room for a finger beside it.
+
+A bore is a hollow of the body the body encloses in the plane: cells no point stands in, or whose top stands deeper
+than the pads need under the part's top, joined to no cell at the grid's edge. Through its centre, every 5 degrees of
+closing direction and every height the outer search asks, the closing line meets the wall either side, read off the
+body's own points in the finger's band. The fingers come down with 7 mm of room beside each jaw (`NARROW_ROOM_MM`, as
+lever G's narrow grasps), closed where the bore leaves less, and open at the close's force until the wall stops them;
+both contacts hold inside the friction cone, as the outer search reads them. The fingers' way into the bore and out to
+its wall must be space a ray of the frame reached, because the guard does not hold the part it grasps: a bore nobody saw
+free offers nothing, nor one with a neighbour's points in it. The guard's boxes of the neighbours are asked with the
+fingers at the wall, the widest they stand. A bore reads up to about 8 mm narrow on the synthetic rings (52.5 of 60, 43.6
+of 50): the mixed pixels of its rim fall inward, which leaves the fingers more room on the way in, and the open finds
+the wall wherever it is.
+
+Each grasp says it grips from inside (`components["support_footprint"]["inner"]`, `stage` `inner`) and carries what
+its execution reads: the jaws' width on the way in (`line_in_width_mm`, as `open_width_mm`), where they meet the wall
+(`grip_width_mm`), the part's width about the grasp it is carried as (`part_width_mm`), the fingertips' depth and the
+bore across. `inner_grasps`, `inner_kept`, `inner_refused` and `inner_bores` in the telemetry say how many it offered,
+why it offered no more, and how wide each bore it found read. The execution opens the jaws onto the wall
+(`GripsFromInside.grip_from_inside`), and the release closes them where the hand says it holds so
+(`execution.handling`).
+
 ## Two closing-axis rules
 
 **The closing axis lies in the support plane.** A jaw closes across an object standing on something,
@@ -287,6 +314,7 @@ path never pretends otherwise.
 | [_candidate_generator.py](_candidate_generator.py) | the silhouette, geometry-first and dense candidate generators |
 | [support_footprint.py](support_footprint.py) | the support-footprint stage; a candidate's `pose()` is the base pose `Robot.pick` takes; its refusal counts by cause (`REFUSAL_CAUSES`) and the side approaches; a search's plan, units and ranking (`plan_support_footprint`, `run_units`, `rank_found`), which any process may run |
 | [body_grasps.py](body_grasps.py) | `body_grasps`, `body_map`: the stage's grasps, on the part's own measured body, leaning where the scene refuses them straight down (`merged_ranking`, which ranked them beside the prism's, goes with the prism) |
+| [inner_grasps.py](inner_grasps.py) | `inner_grasps`, `bores`: the grasps from inside the part's bores, after every outer grasp (`robot.grasping.inner_grasps`) |
 | [scene_obstacles.py](scene_obstacles.py) | what the camera saw beside the part as obstacles, the support taken out, and `why_no_grasp`; every look's view of the scene (`SceneView`) and the parts named as the guard names them (`named_surface`); the seen test of a frame (`SeenInTheFrame`), which a worker process can be handed |
 | [parts_beside.py](parts_beside.py) | `parts_beside`, `why_no_part_beside`, `LABEL`: the parts beside the named ones, read off the depth on the supports (`robot.grasping.name_neighbours`) |
 | [footprint_rim.py](footprint_rim.py) | `footprint_rim`, `rim_px`, `FootprintRim`, `FOOTPRINT_RIM_MAX_SHARE`: a mask less its rim, for the support-footprint stage's input alone (`robot.grasping.geometry.footprint_rim_mm`) |

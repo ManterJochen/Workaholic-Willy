@@ -62,6 +62,16 @@ reads wider than the grasp said, or a retreat in steps can still refuse it,
 and the arm then holds the part where it stands until a person opens the jaws
 (``Robot.release``).
 
+A grasp from inside a bore
+--------------------------
+A grasp the calculator found inside a part's bore (``types.grasp_point.grips_from_inside``, ``robot.grasping.inner_grasps``)
+comes down with the jaws as narrow as it was planned, opens them at the part with the close's force and speed as far
+as the hand goes, the bore's wall stopping them (a Robotiq's ``gOBJ`` 1, held), and carries the part attached at its own
+width about the grasp. Only a hand that says how it holds (:class:`GripsFromInside`) takes one, for its release must
+close: any other is refused one before anything is commanded. From the judgement ahead to the lift the guard holds the
+fingers at the wall, the widest they stand (``types.grasp_point.fingers_held_at``), and after the open where the hand
+reads them, wider where the bore read small.
+
 Judged while the arm waits
 --------------------------
 Three switches move a judgement to where the arm waits anyway, and change nothing of what is judged (the owner,
@@ -122,6 +132,7 @@ from src.robot.core.camera_world import weakest_camera_world
 from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.core.gripper import (
     FINGER_OPENING_SLACK_MM,
+    GripsFromInside,
     HoldEvidence,
     OpensAndCloses,
     ReportsHoldEvidence,
@@ -131,7 +142,13 @@ from src.robot.core.gripper import (
     width_is_measured_of,
 )
 from src.robot.grasping.geometry.closing_axis import ClosingAxis, closing_axis_of
-from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
+from src.robot.grasping.types.grasp_point import (
+    GraspFrame,
+    GraspPoint,
+    fingers_held_at,
+    grip_from_inside_of,
+    grips_from_inside,
+)
 
 __all__ = [
     "GraspExecutionPolicy",
@@ -394,6 +411,11 @@ class GraspExecutionPolicy:
                 motion_message=refused,
                 line_motion=line_motion,
             )
+        # A grasp from inside a bore needs a hand that says how it holds, for its release closes: asked before the toggle
+        # is, and before anything is commanded.
+        refused = _no_grip_from_inside(grasp, self.gripper)
+        if refused:
+            return PolicyReport(outcome=PolicyOutcome.GRIPPER_FAULT, motion_message=refused, line_motion=line_motion)
         toggle = toggle_without_sensor_of(self.gripper)
         if toggle is not None:
             # Never a pulse before the arm moves (owner's decision, 2026-09-24): a toggle is asked, and asks a person
@@ -414,24 +436,27 @@ class GraspExecutionPolicy:
 
         # Pre-open the gripper before driving the approach so the jaws
         # are clear at the grasp point. A grasp planned for jaws that open only as needed (lever G, a Robotiq hand)
-        # opens to the width it was planned with, and the guard holds the fingers where the hand reads them back.
+        # opens to the width it was planned with, and the guard holds the fingers where the hand reads them back. A
+        # grasp from inside a bore comes down as narrow as it was planned, a pre-open asked or not, and the guard holds
+        # its fingers at the wall, where they open to.
         planned = _planned_opening(grasp)
+        held = fingers_held_at(grasp)
         told_the_guard = False
-        if self.gripper is not None and self.pre_open_width_mm is not None and toggle is None:
+        if self.gripper is not None and toggle is None and (
+                self.pre_open_width_mm is not None or grips_from_inside(grasp)):
             try:
                 if isinstance(self.gripper, OpensAndCloses):
                     # A two-state gripper told what it means: a pre-open is an open whatever its width reads as.
                     self.gripper.set_closed(False)
                 else:
-                    opening = float(self.pre_open_width_mm) if planned is None else min(
-                        float(planned), float(self.pre_open_width_mm))
+                    opening = min(float(width) for width in (planned, self.pre_open_width_mm) if width is not None)
                     self.gripper.set_width_mm(
                         opening,
                         speed=self.close_speed,
                         force=None,
                     )
-                    if planned is not None:
-                        told_the_guard = _the_guard_holds_the_fingers_at(self.arm, self.gripper, opening)
+                    if held is not None:
+                        told_the_guard = _the_guard_holds_the_fingers_at(self.arm, self.gripper, max(opening, held))
             except Exception as exc:  # noqa: BLE001 (a gripper fault is the report, never an escaping raise)
                 _the_guard_holds_the_fingers_at(self.arm, None, None)
                 return _gripper_fault(exc, line_motion=line_motion)
@@ -544,7 +569,8 @@ class GraspExecutionPolicy:
             # refuse a retreat the empty hand would run, and the arm would stand here with the part in its jaws.
             held = self._carried_retreat_refusal(grasp, waypoints[-1], reading)
             if held is not None:
-                return self._back_out(held, approach[0], commanded, stamps, line_motion)
+                return self._back_out(held, approach[0], commanded, stamps, line_motion,
+                                      inside=grips_from_inside(grasp))
             # Asked again, last before the jaws: a stop that fell during the judgement above leaves an arm that cannot
             # lift what the jaws would take.
             refused = _controller_refusal(self.arm)
@@ -552,7 +578,15 @@ class GraspExecutionPolicy:
                 return _stopped_at_the_part(refused, commanded, stamps, line_motion)
             target_width = self._resolve_close_width(grasp)
             try:
-                if isinstance(self.gripper, OpensAndCloses):
+                if grips_from_inside(grasp):
+                    # From inside a bore: the jaws open at the close's force and speed as far as the hand goes, and the
+                    # wall stops them (held); a hand that reaches its full stroke met no wall (empty). The guard holds
+                    # the fingers where the hand reads them now, for the lift: wider than planned where the bore read
+                    # small.
+                    cast("GripsFromInside", self.gripper).grip_from_inside(speed=self.close_speed,
+                                                                           force=self.close_force_n)
+                    _the_guard_holds_the_fingers_at(self.arm, self.gripper, fingers_held_at(grasp))
+                elif isinstance(self.gripper, OpensAndCloses):
                     # The grasp width read against closed_below_mm opens a two-state gripper when the part is wider
                     # than the threshold, and the loop then reported object_not_detected on jaws it never closed
                     # (URSim, the owner's toggle cell, 2026-09-23). A grasp is a close. Its stroke is left to this
@@ -705,8 +739,12 @@ class GraspExecutionPolicy:
         the planned move to its standoff, the line down to it and the lift as if the jaws held the part, the very poses
         :meth:`execute` drives (:class:`JudgesGraspsAhead`). ``""`` where every judgement passes, and where nothing is
         judged ahead: an arm that does not judge grasps ahead or keeps no line, a camera-frame grasp :meth:`execute`
-        refuses itself. A camera that cannot vouch for the cell leaves the pick, as on every motion of it; a judgement
-        that raised otherwise is said and counts as a refusal. Nothing moves and nothing is commanded."""
+        refuses itself. A grasp from inside a bore on a hand that cannot take one is refused on any arm
+        (:func:`_no_grip_from_inside`). A camera that cannot vouch for the cell leaves the pick, as on every motion of
+        it; a judgement that raised otherwise is said and counts as a refusal. Nothing moves and nothing is commanded."""
+        refused = _no_grip_from_inside(grasp, self.gripper)
+        if refused:
+            return refused
         if not isinstance(self.arm, JudgesGraspsAhead):
             return ""
         if grasp.frame is not GraspFrame.BASE:
@@ -785,7 +823,11 @@ class GraspExecutionPolicy:
         that is known ahead. A hand that does not measure its width is attached at the width it is told
         (:meth:`_measured_or_commanded_width`), so it is judged at exactly that: the box the attach hands the planner
         (verifier W, 2026-10-01). A hand that measures is attached at what it measures, which nobody knows before the
-        close; the part's own width stands in for it there, never a narrower one than the jaws are told."""
+        close; the part's own width stands in for it there, never a narrower one than the jaws are told. A part held from
+        inside a bore is judged at its own width about the grasp, as it is attached."""
+        inside = grip_from_inside_of(grasp)
+        if inside is not None:
+            return inside.part_width_mm
         told = self._resolve_close_width(grasp)
         if not (callable(getattr(self.gripper, "get_width_mm", None)) and width_is_measured_of(self.gripper)):
             return told
@@ -799,14 +841,18 @@ class GraspExecutionPolicy:
         commanded: list[Pose],
         stamps: list[CameraWorldStamp],
         line_motion: LineMotion | None,
+        *,
+        inside: bool = False,
     ) -> PolicyReport:
-        """The jaws stay open: the arm goes back up the line it came down, to ``standoff``, and the pick ends there.
+        """The jaws stay open, or as narrow as they came down into a bore (``inside``): the arm goes back up the line it
+        came down, to ``standoff``, and the pick ends there.
 
         :attr:`PolicyOutcome.CARRIED_RETREAT_REFUSED` with the judgement's status and sentence where the line back runs;
         :attr:`PolicyOutcome.MOTION_FAILED` saying both where it does not, the arm then standing at the part, empty-handed.
         """
         status, sentence, error = held
-        said = f"{sentence.rstrip('.')}. The jaws stayed open and nothing was attached"
+        jaws = "stayed as narrow as they came down into the bore" if inside else "stayed open"
+        said = f"{sentence.rstrip('.')}. The jaws {jaws} and nothing was attached"
         try:
             result = self._drive_to(standoff, linear=True)
         except CameraWorldUnavailable:
@@ -861,7 +907,12 @@ class GraspExecutionPolicy:
         to, its closed band 5 mm on the owner's Hand-E, and the carried part was attached 5 mm wide
         for a 40 mm grasp, so the planner lifted it out of a bin about 34 mm too narrow across the
         jaws (owner-cell audit, reproduced 2026-09-23).
+
+        A part held from inside a bore is attached at its own width about the grasp: the jaws read the bore.
         """
+        inside = grip_from_inside_of(grasp)
+        if inside is not None:
+            return inside.part_width_mm
         read = getattr(self.gripper, "get_width_mm", None)
         if callable(read) and width_is_measured_of(self.gripper):
             try:
@@ -1061,12 +1112,28 @@ def _planned_opening(grasp: "GraspPoint") -> float | None:
     return float(value) if isinstance(value, (int, float)) and float(value) > 0.0 else None
 
 
+def _no_grip_from_inside(grasp: "GraspPoint", gripper: object) -> str:
+    """Why ``gripper`` cannot take ``grasp`` from inside a bore, or ``""``: for every outer grasp, and for a hand told a
+    width that says how it holds (:class:`GripsFromInside`), whose release closes, where the grasp's margins carry
+    every number its execution reads."""
+    if not grips_from_inside(grasp):
+        return ""
+    if gripper is None or not isinstance(gripper, GripsFromInside) or isinstance(gripper, OpensAndCloses):
+        return (f"the grasp grips its part from inside a bore, and the hand ({type(gripper).__name__}) does not say how "
+                "it holds a part, so its release would not know to close: nothing is commanded for it")
+    if grip_from_inside_of(grasp) is None or _planned_opening(grasp) is None:
+        return ("the grasp grips its part from inside a bore, and its margins lack a number its execution reads (the "
+                "jaws' width on the way in, the part's width, the depth or the bore): nothing is commanded for it")
+    return ""
+
+
 @contextmanager
 def _fingers_as_planned(arm: Any, grasp: "GraspPoint") -> "Iterator[None]":
     """The block in which ``arm``'s guard holds the fingers where ``grasp`` opens them, where it was planned for jaws that
-    open only as needed (lever G), and ``FINGER_OPENING_SLACK_MM`` wider: a judgement ahead of the pre-open, with nothing
-    moved. Elsewhere a block that changes nothing; after it the fingers stand fully open for the guard again."""
-    planned = _planned_opening(grasp)
+    open only as needed (lever G), at a bore's wall for a grasp from inside it (``fingers_held_at``), and
+    ``FINGER_OPENING_SLACK_MM`` wider: a judgement ahead of the pre-open, with nothing moved. Elsewhere a block that
+    changes nothing; after it the fingers stand fully open for the guard again."""
+    planned = fingers_held_at(grasp)
     if planned is None or not _the_guard_holds_the_fingers_at(arm, None, planned):
         yield
         return

@@ -273,7 +273,7 @@ flowchart LR
 **The next grasp of the same look comes first, and needs no recovery.** Where the policy's try was refused by
 a guard or the planner before anything was sent (`generated_view.REFUSED_BEFORE_SENDING`, or the planner's own
 no-plan sentence) and every pose it reached kept the open hand's jaw region out of the part's keep-out box, the
-attempt hands the policy the look's next grasp, up to `GRASPS_TRIED_PER_ATTEMPT` (24); with `both_faces` only the
+attempt hands the policy the look's next grasp, up to `GRASPS_TRIED_PER_ATTEMPT` (36); with `both_faces` only the
 best. A stop asked for and the controller are read before each, a wrist pick that sent a motion goes back to its
 look on a judged move first, and a toggle is never switched between tries. Every try is a row of
 `PickAttempt.tries` (rank, outcome, motion status and message, sent, reached the part).

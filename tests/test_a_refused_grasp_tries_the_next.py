@@ -303,17 +303,18 @@ class TheNextGraspOfTheSameLookTests(unittest.TestCase):
         self.assertEqual([0], cell.policy.executed)
         self.assertIs(PickOutcome.EXECUTION_FAILED, report.outcome)
 
-    def test_never_more_than_twenty_four_grasps_an_attempt(self) -> None:
-        """Twenty-four since 2026-10-13, every candidate the calculator offers, SFE's twelve and the part's own body's
-        twelve; twelve since 2026-10-06, four before: a grasp refused at the hand on its line down is refused before its
-        route is planned, so the more cost little (``pick_loop.GRASPS_TRIED_PER_ATTEMPT``)."""
-        cell = _Cell(dict.fromkeys(range(26), REFUSED), count=26)
+    def test_never_more_than_thirty_six_grasps_an_attempt(self) -> None:
+        """Thirty-six since 2026-10-14, every candidate the calculator offers, the part's own body's twenty-four and the
+        twelve from inside a bore after them; twenty-four since 2026-10-13, twelve since 2026-10-06, four before: a grasp
+        refused at the hand on its line down is refused before its route is planned, so the more cost little
+        (``pick_loop.GRASPS_TRIED_PER_ATTEMPT``)."""
+        cell = _Cell(dict.fromkeys(range(38), REFUSED), count=38)
 
         report = cell.run()
 
-        self.assertEqual(list(range(24)), cell.policy.executed)
+        self.assertEqual(list(range(36)), cell.policy.executed)
         (attempt,) = report.attempts
-        self.assertEqual(24, len(attempt.tries))
+        self.assertEqual(36, len(attempt.tries))
 
 
 class AStopWinsBetweenTwoGraspsTests(unittest.TestCase):

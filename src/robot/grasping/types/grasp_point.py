@@ -146,3 +146,113 @@ class GraspPoint:
             f"{self.frame.value}, width={self.grip_width_mm:.1f}mm, "
             f"score={self.score:.2f}, label={self.label!r})"
         )
+
+
+#: The key under a grasp's ``score_components["support_footprint"]`` (a breakdown's ``components``) whose ``True`` says
+#: the grasp grips its part from inside a bore (``generation.inner_grasps``, ``robot.grasping.inner_grasps``): its
+#: fingers come down narrow into the bore, open onto its wall, and let the part go by closing.
+INNER_GRASP_KEY = "inner"
+
+
+@dataclass(frozen=True, slots=True)
+class GripFromInside:
+    """How an inner grasp grips its part, as the stage that found it says (``generation.inner_grasps``).
+
+    Attributes:
+        line_in_width_mm (float): How far apart the jaws stand on the way into the bore, between their inner faces: the
+            hand comes down at it (lever G's ``open_width_mm``).
+        part_width_mm (float): The part's extent about the grasp, the diameter of the circle about the hand's axis that
+            holds it in the plane: what the carried part is attached as.
+        depth_mm (float): How far under the part's top the fingertips stand at the grasp.
+        bore_mm (float): The bore across, wall to wall, along the closing axis in the finger's band.
+    """
+
+    line_in_width_mm: float
+    part_width_mm: float
+    depth_mm: float
+    bore_mm: float
+
+
+def _footprint_components(grasp: object) -> "dict[str, Any] | None":
+    """The ``support_footprint`` margins of ``grasp``: a breakdown's ``components``, or a grasp point's
+    ``metadata["score_components"]``; ``None`` where it has none."""
+    components = getattr(grasp, "components", None)
+    if components is None:
+        components = (getattr(grasp, "metadata", None) or {}).get("score_components")
+    stage = components.get("support_footprint") if isinstance(components, dict) else None
+    return stage if isinstance(stage, dict) else None
+
+
+def grips_from_inside(grasp: object) -> bool:
+    """Whether ``grasp`` grips its part from inside a bore: its ``support_footprint`` margins say so (:data:`INNER_GRASP_KEY`
+    ``True``), read off a ``GraspPoint``'s ``metadata["score_components"]`` or a breakdown's ``components``.
+
+    Never guessed from a width: a grasp no inner search found is an outer one.
+
+    Args:
+        grasp: A ``GraspPoint``, a ``GraspScoreBreakdown`` or anything else.
+
+    Returns:
+        bool: ``True`` only where the margins carry the key as ``True``.
+    """
+    stage = _footprint_components(grasp)
+    return stage is not None and stage.get(INNER_GRASP_KEY) is True
+
+
+def outer_first(grasp: GraspPoint) -> tuple[bool, float]:
+    """The key that ranks grasps best first, every grasp from inside a bore after every outer grasp (the owner,
+    2026-10-14: "Nur wo außen nichts geht"); a sort keeps grasps of equal keys in the order they came.
+
+    Args:
+        grasp: The grasp.
+
+    Returns:
+        tuple[bool, float]: Whether it grips from inside, and its score negated.
+    """
+    return grips_from_inside(grasp), -float(grasp.score)
+
+
+def grip_from_inside_of(grasp: object) -> "GripFromInside | None":
+    """How ``grasp`` grips from inside, where it does (:func:`grips_from_inside`) and its margins carry every number the
+    execution reads: the jaws' width on the way in, the part's width, the fingertips' depth and the bore; else ``None``.
+
+    Args:
+        grasp: A ``GraspPoint``, a ``GraspScoreBreakdown`` or anything else.
+
+    Returns:
+        GripFromInside | None: The numbers, millimetres; ``None`` for an outer grasp, and for an inner one whose margins
+            lack a number or hold one that is not a finite non-negative number.
+    """
+    if not grips_from_inside(grasp):
+        return None
+    stage = _footprint_components(grasp) or {}
+    read: dict[str, float] = {}
+    for name in ("line_in_width_mm", "part_width_mm", "depth_mm", "bore_mm"):
+        value = stage.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(float(value)) \
+                or float(value) < 0.0:
+            return None
+        read[name] = float(value)
+    return GripFromInside(**read)
+
+
+def fingers_held_at(grasp: object) -> float | None:
+    """How wide the guard holds the fingers of ``grasp`` from the judgement ahead to the lift, millimetres: from inside
+    a bore, where they meet its wall (its margins' ``grip_width_mm``), the widest they stand, wider than they come
+    down; planned for jaws that open only as needed (lever G), at that opening (``open_width_mm``); ``None``, fully
+    open, for every other grasp.
+
+    Args:
+        grasp: A ``GraspPoint``, a ``GraspScoreBreakdown`` or anything else.
+
+    Returns:
+        float | None: The opening, millimetres, before the guard's slack; ``None`` for fully open.
+    """
+    stage = _footprint_components(grasp)
+    if stage is None:
+        return None
+    value = stage.get("grip_width_mm" if stage.get(INNER_GRASP_KEY) is True else "open_width_mm")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not np.isfinite(float(value)) \
+            or float(value) <= 0.0:
+        return None
+    return float(value)

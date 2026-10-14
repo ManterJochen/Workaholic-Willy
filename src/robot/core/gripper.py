@@ -23,6 +23,8 @@ Readings a caller takes after a command
   whether a hold was measured reads this instead.
 * :class:`MeasuresWidth` says whether ``get_width_mm`` is a measurement or the band the jaws were
   commanded to.
+* :class:`GripsFromInside` says the hand holds its part from inside a bore, its fingers stopped on the wall while
+  opening: a release closes it (:func:`holds_from_inside_of`).
 
 A hand that toggles
 -------------------
@@ -49,6 +51,7 @@ __all__ = [
     "FINGER_OPENING_SLACK_MM",
     "OPEN_WITHIN_MM",
     "Gripper",
+    "GripsFromInside",
     "HoldEvidence",
     "MeasuresWidth",
     "ObjectDetectingGripper",
@@ -59,6 +62,7 @@ __all__ = [
     "TwoStateGripper",
     "closes_onto_the_part_of",
     "hold_evidence_of",
+    "holds_from_inside_of",
     "toggle_without_sensor_of",
     "why_not_known_open",
     "why_toggle_count_unknown",
@@ -303,6 +307,34 @@ class ClosesOntoThePart(Protocol):
 def closes_onto_the_part_of(gripper: object) -> bool:
     """Whether ``gripper`` closes until its fingers stop on the part (:class:`ClosesOntoThePart`)."""
     return isinstance(gripper, ClosesOntoThePart) and getattr(gripper, "closes_onto_the_part", False) is True
+
+
+@runtime_checkable
+class GripsFromInside(Protocol):
+    """Capability extension: the hand grips a part from inside a bore, its fingers opening until the bore's wall stops
+    them, and says while it holds one so. Such a part is let go by closing (``robot.grasping.inner_grasps``,
+    ``execution.handling``).
+
+    It holds from inside where its last command gripped so and its fingers stopped on something while opening (a
+    Robotiq's ``gOBJ`` 1): a release that opened onto something stops the same way and is no such hold, and is opened
+    again, not closed. ``holds_from_inside`` is read as ``is True``, so a double that answers every attribute is not
+    taken for one.
+    """
+
+    def grip_from_inside(self, *, speed: float | None = None, force: float | None = None) -> None:
+        """Open the fingers as far as they go at ``speed`` and ``force``, onto a bore's wall."""
+        ...
+
+    def holds_from_inside(self) -> bool:
+        """``True`` where the last command gripped from inside and the fingers stand stopped on something while
+        opening."""
+        ...
+
+
+def holds_from_inside_of(gripper: object) -> bool:
+    """Whether ``gripper`` says it holds its part from inside a bore (:class:`GripsFromInside`); ``False`` for any
+    other hand."""
+    return isinstance(gripper, GripsFromInside) and gripper.holds_from_inside() is True
 
 
 def toggle_without_sensor_of(gripper: object) -> TogglesWithoutSensor | None:

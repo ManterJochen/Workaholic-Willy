@@ -2413,7 +2413,8 @@ class _Task:
         if drop.instead is not None:
             # Which line in ran: the one into the box, or the one to the drop over its rim.
             below = {"below_the_rim": len(placed.poses) >= 2 and placed.poses[1] is drop.pose}
-        self._say(TaskEvent.PLACED, "Placed: the jaws opened at the drop"
+        # "let the part go": a part held from inside a bore is let go by closing (``handling._letting_go``).
+        self._say(TaskEvent.PLACED, "Placed: the jaws let the part go at the drop"
                   + ("" if not below or below["below_the_rim"]
                      else " over the rim: the line into the box was refused before anything was sent")
                   + (" (no sensor: the release is not measured)" if no_sensor else "")

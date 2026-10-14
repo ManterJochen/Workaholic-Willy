@@ -83,7 +83,7 @@ socket that stopped answering shows as a read that fails.
 
 | Driver | A hold is read from | Width |
 |---|---|---|
-| `robotiq` | gOBJ: fingers stalled on something, or reached their target | measured |
+| `robotiq` | gOBJ: fingers stalled on something, or reached their target; after `grip_from_inside`, stalled while opening is a part held from inside a bore, which a release lets go by closing | measured |
 | `onrobot` | the grip-detected bit of the status word | measured |
 | `jaw_io` | the reed switches or a part sensor, where wired; nothing on a `single_toggle` | commanded; none on a `single_toggle` |
 | `vacuum` | the vacuum switch, where wired | commanded |

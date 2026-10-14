@@ -43,8 +43,8 @@ if str(_ROOT / "scripts" / "bench") not in sys.path:
 
 #: Where the recordings and the cell's config tree lie: ``<bank>/<day>/views/*.npz`` and ``<bank>/robominds_config``.
 BANK = Path(os.environ.get("WILLY_REPLAY_BANK", "D:/dev/willy_replay_bank"))
-#: How many grasps of a look the cell tries at most (``pick_loop.GRASPS_TRIED_PER_ATTEMPT``: the best and up to 23 more).
-MAX_TRIES = 24
+#: How many grasps of a look the cell tries at most (``pick_loop.GRASPS_TRIED_PER_ATTEMPT``: the best and up to 35 more).
+MAX_TRIES = 36
 #: The stamp the recorded frames are given, seconds, and how much later each world is asked for.
 _STAMP_S = 1000.0
 _ASKED_AFTER_S = 0.05

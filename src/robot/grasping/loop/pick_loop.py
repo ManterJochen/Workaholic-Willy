@@ -215,7 +215,7 @@ from src.robot.grasping.types.perception import (
     PerceptionFrame,
     PerceptionSource,
 )
-from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
+from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint, grips_from_inside
 from src.robot.grasping.types.modes import (
     GraspSamplingMode,
     resolve_grasp_sampling_mode,
@@ -312,15 +312,17 @@ _LOG: logging.Logger = create_robot_logger(__name__, "pick_loop.log")
 SURFACE_SPAN_MM = 250.0
 SURFACE_FLAT_MM = 20.0
 
-#: How many grasps of one look an attempt tries at most: the best, then up to 23 more of its candidates, each only
+#: How many grasps of one look an attempt tries at most: the best, then up to 35 more of its candidates, each only
 #: after the one before was refused before anything was sent with the hand kept out of the part's keep-out box (the
-#: owner's "try the next grasps", cell fixes Track C), every candidate the calculator offers: SFE's twelve and the
-#: twelve of the part's own body (``body_grasps``, lever A). Four until 2026-10-06; a grasp refused at the hand on its
-#: line down is now refused before its route is planned, in about half a second (``URRobotArm._flange_line_refusal``),
-#: and on a tray all six tried were refused 0.03 to 0.5 mm short of the guard's 3 mm with six more untried (the grasp
-#: bench, 2026-10-06). Twelve until 2026-10-13: with the body's grasps ranked in beside SFE's, the twelve tried left out
-#: SFE grasps the guard admits, in 7 of the owner's Tuesday picks (the replay bank).
-GRASPS_TRIED_PER_ATTEMPT: int = 24
+#: owner's "try the next grasps", cell fixes Track C), every candidate the calculator offers: the part's own body's
+#: twenty-four (``body_grasps``, lever A: twelve narrow and twelve fully open on a hand that opens as needed) and the
+#: twelve from inside a bore after them (``inner_grasps``, the owner's "Nur wo außen nichts geht", 2026-10-14). Four
+#: until 2026-10-06; a grasp refused at the hand on its line down is now refused before its route is planned, in about
+#: half a second (``URRobotArm._flange_line_refusal``), and on a tray all six tried were refused 0.03 to 0.5 mm short of
+#: the guard's 3 mm with six more untried (the grasp bench, 2026-10-06). Twelve until 2026-10-13: with the body's grasps
+#: ranked in beside SFE's, the twelve tried left out SFE grasps the guard admits, in 7 of the owner's Tuesday picks (the
+#: replay bank). Twenty-four until 2026-10-14, which a ring's outer grasps could fill before any from inside.
+GRASPS_TRIED_PER_ATTEMPT: int = 36
 #: How far over a part's top a point of something else over its outline stands for the part to lie under it,
 #: millimetres (:meth:`BinPickingOrchestrator._under_another`): over the depth's noise and a part's smeared rim.
 _UNDER_MM: float = 10.0
@@ -7383,10 +7385,11 @@ class BinPickingOrchestrator:
                     # A move back that failed once it was sent may have moved the arm: that is no refusal before sending.
                     return replace(ended, report=report, tries=tuple(tries),
                                    refused=refused_all and ended.moved_back is None)
-            _LOG.info("try %d of %d: %s (rank %d of the look's grasps), %.1f mm across", number, len(queue),
+            _LOG.info("try %d of %d: %s (rank %d of the look's grasps), %.1f mm across%s", number, len(queue),
                       "the grasp the look ranked first" if number == 1 else "the next grasp of the same look" if keeps
                       or not keeps_branches else "a grasp of the same look that waited for its change of branch", rank,
-                      float(getattr(candidate, "grip_width_mm", float("nan"))))
+                      float(getattr(candidate, "grip_width_mm", float("nan"))),
+                      ", from inside a bore, the jaws opening onto its wall" if grips_from_inside(candidate) else "")
             if refused_ahead_last:
                 # The grasp before was refused before anything was sent: this one's line down is judged first against the
                 # boxes that refused it, in the world its judgement built, with no new frame (the owner, 2026-10-12: the

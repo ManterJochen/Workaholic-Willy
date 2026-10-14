@@ -805,6 +805,7 @@
       "isotropic_radial_closing": false,
       "scene_obstacles": true,
       "side_approaches": true,
+      "inner_grasps": true,
       "first_good_part": true,
       "good_part_score": 0.6,
       "fine_pass_waits": true,

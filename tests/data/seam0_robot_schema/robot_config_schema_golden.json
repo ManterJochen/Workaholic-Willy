@@ -2796,6 +2796,11 @@
           "title": "Hide Own Places",
           "type": "boolean"
         },
+        "inner_grasps": {
+          "default": true,
+          "title": "Inner Grasps",
+          "type": "boolean"
+        },
         "isotropic_radial_closing": {
           "default": false,
           "title": "Isotropic Radial Closing",

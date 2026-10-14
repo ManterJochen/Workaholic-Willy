@@ -115,6 +115,8 @@ class GripperController:
         #: Warn once per controller about a seam that cannot confirm motion. A per-command warning
         #: is noise, and no warning at all hides that no wait happens.
         self._warned_no_wait: bool = False
+        #: Whether the last command gripped from inside a bore (:meth:`grip_from_inside`); every other command clears it.
+        self._from_inside: bool = False
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -237,6 +239,7 @@ class GripperController:
         :meth:`get_width_mm` for the achieved opening.
         """
         drv = self._require_connected()
+        self._from_inside = False
         if not self._activated:
             self.logger.warning("set_width_mm called before activate(); activating now.")
             self.activate()
@@ -376,6 +379,22 @@ class GripperController:
         if status == 3:
             return HoldEvidence.EMPTY
         return HoldEvidence.UNMEASURED
+
+    def grip_from_inside(self, *, speed: float | None = None, force: float | None = None) -> None:
+        """Open the fingers as far as they go at ``speed`` and ``force``, onto a bore's wall (``core.gripper.GripsFromInside``):
+        the wall stops them, gOBJ 1, held."""
+        self.set_width_mm(self.max_width_mm, speed=speed, force=force)
+        self._from_inside = True
+
+    def holds_from_inside(self) -> bool:
+        """Whether the last command gripped from inside (:meth:`grip_from_inside`) and the fingers stopped on something
+        while opening (gOBJ 1): a part held from inside a bore, which a release lets go by closing. A release that
+        opened onto something is no such hold, and a seam that cannot report gOBJ says no."""
+        if not self._from_inside:
+            return False
+        drv = self._require_connected()
+        status_fn = getattr(drv, "object_status", None)
+        return status_fn is not None and int(status_fn()) == 1
 
     def width_is_measured(self) -> bool:
         """``get_width_mm`` reads the fingers' position register."""

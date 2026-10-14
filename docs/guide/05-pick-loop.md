@@ -169,6 +169,14 @@ only through space a depth ray saw. The policy lifts every grasp straight up (BA
 `Robot.pick` lifts a grasp more than 10 degrees off vertical straight up too, by the standoff and at least
 60 mm; an empty hand backs out along its approach.
 
+**Rings from inside** (`grasping.inner_grasps`, on; the owner, 2026-10-14: "Nur wo außen nichts geht"). On a
+Robotiq hand the search also looks for a part's bores and offers a grasp from inside each, after every outer grasp: the
+jaws come down narrow into a bore the camera saw free, open at the close's force and speed until the wall stops them
+(the hand's `gOBJ` says it held), and the part is carried at its own width. The guard holds the fingers at the wall
+from the judgement ahead to the lift, and after the open where the hand reads them. At the place the jaws close to let
+the part go, where the hand says it gripped so: a release that opened onto something opens again. A ring wants a bore
+of about 45 mm or more for the Hand-E's 10.8 mm fingers; narrower ones are left to the outer grasps.
+
 **The first good part, and the fine search that waits** (`grasping.first_good_part`, `good_part_score` and
 `fine_pass_waits`, each on as shipped; the owner's "speed first", 2026-10-08). A look's parts were computed one
 after another in the camera's order and the best grasp taken. Now they are computed in the order they stand
@@ -202,7 +210,7 @@ samples it replaces are not computed. The details are in the
 **The next grasp of the same look.** Where a try was refused by a guard or the planner before anything was
 sent (`self_collision_rejected` and its kin, or the planner's own no-plan sentence) and every pose it did
 reach kept the open hand's jaw region out of the part's keep-out box, the attempt hands the policy the
-look's next grasp, up to 24 in all, every candidate the calculator offers, SFE's twelve and the part's own body's twelve (`GRASPS_TRIED_PER_ATTEMPT`); with `both_faces` only the best. Before
+look's next grasp, up to 36 in all, every candidate the calculator offers: the part's own body's twenty-four (twelve narrow and twelve fully open on a Robotiq) and the twelve from inside a bore after them (`GRASPS_TRIED_PER_ATTEMPT`); with `both_faces` only the best. Before
 each, a stop asked for and the controller are read, and a wrist pick that sent a motion goes back to its
 look on a judged move. A toggle is never switched between tries. The box is judged at the poses a try
 reached, not along the planned move to them. At a 10 mm standoff the open jaws stand inside the part's box

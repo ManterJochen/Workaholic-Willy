@@ -36,6 +36,15 @@ pick ranked in 6.8 s with it and 5.0 s without. Its search and the arguments onl
 ``palm_aware``, ``fine_pass``, ``runner``, ``batched``) go with the cleanup after the cell has picked with the body
 alone; until then they are taken and not read. ``body_grasps`` and ``body_refused`` in the telemetry say how many the
 body offered and why it offered no more.
+
+Where the cell asks for them (``inner_grasps``, ``robot.grasping.inner_grasps``, on as shipped for a Robotiq hand), the
+grasps from inside the part's bores follow (``inner_grasps``): every one after every grasp of the body's outer search,
+so a grasp from inside is taken where no outer grasp is. Each says it grips from inside
+(``components["support_footprint"]["inner"]``, ``types.grasp_point.grips_from_inside``) and carries what its execution
+reads: the jaws' width on the way into the bore, the part's width it is carried as, how deep the fingertips stand and
+the bore across; the narrow opening the hand comes down at rides as lever G's ``open_width_mm``.
+``inner_grasps``, ``inner_refused`` and ``inner_bores`` in the telemetry say how many it offered, why it offered no
+more, and how wide each bore it found was. Off, the stage offers what it offered before, to the bit.
 """
 
 from __future__ import annotations
@@ -47,8 +56,11 @@ import numpy as np
 from src.geometry import Frame
 from src.robot.grasping.planning import GraspPose
 from src.robot.grasping.scoring import GraspScoreBreakdown
+from src.robot.grasping.types.grasp_point import INNER_GRASP_KEY
 
 from .body_grasps import body_grasps
+from .inner_grasps import Bore, InnerGrasp
+from .inner_grasps import inner_grasps as find_inner_grasps
 from .support_footprint import (
     DEFAULT_FLOOR_MARGIN_MM,
     FINE_SEARCH_DEFERRED,
@@ -113,6 +125,7 @@ def support_footprint_breakdowns(
     runner: SfeRunner | None = None,
     batched: bool = False,
     opens_as_needed: bool = False,
+    inner_grasps: bool = False,
 ) -> tuple[list[GraspScoreBreakdown], dict]:
     """Run SFE and return camera-frame breakdowns plus its telemetry.
 
@@ -145,6 +158,10 @@ def support_footprint_breakdowns(
 
     ``opens_as_needed`` plans the body's grasps for a hand that opens only as wide as each span needs
     (``body_grasps``, lever G); off, a hand that opens fully.
+
+    ``inner_grasps`` adds the grasps from inside the part's bores after every outer grasp (``inner_grasps``, the
+    module docstring), each planned for a hand told a width; off, the default here, adds nothing and leaves every
+    breakdown and every telemetry key as before.
     """
     # The part the guard holds out (``perceived.target_body_points``): never a piece of something else its mask ran onto.
     from src.robot.safety.planning.perceived import target_body_points  # noqa: PLC0415 (the stage's only use of it)
@@ -154,13 +171,14 @@ def support_footprint_breakdowns(
     # more (the owner, 2026-10-01). By the plain weights a vertical grasp of the body 16 mm from a wall outranked SFE's
     # tilt 21 mm from it (2026-10-14).
     body_refused: dict[str, int] = {}
+    weights = score_weights if score_weights is not None or not side_approaches else SIDE_APPROACH_SCORE_WEIGHTS
+    floor = DEFAULT_FLOOR_MARGIN_MM if floor_margin_mm is None else float(floor_margin_mm)
     candidates = body_grasps(
         target_cloud_base_mm, support_height_mm=support_height_mm, jaw=jaw,
         obstacle_points_base_mm=obstacle_points_base_mm, rigid_obstacle_points_base_mm=rigid_obstacle_points_base_mm,
         seen_envelope=seen_envelope, hand_floor=hand_floor, corridor_seen=corridor_seen,
-        floor_margin_mm=DEFAULT_FLOOR_MARGIN_MM if floor_margin_mm is None else float(floor_margin_mm),
-        opens_as_needed=opens_as_needed, max_candidates=max_candidates, refusals=body_refused,
-        score_weights=score_weights if score_weights is not None or not side_approaches else SIDE_APPROACH_SCORE_WEIGHTS)
+        floor_margin_mm=floor, opens_as_needed=opens_as_needed, max_candidates=max_candidates, refusals=body_refused,
+        score_weights=weights)
     breakdowns: list[GraspScoreBreakdown] = []
     for candidate in candidates:
         pose = _to_camera_pose(candidate, camera_to_base)
@@ -230,4 +248,55 @@ def support_footprint_breakdowns(
             # How far off vertical the one the robot would take approaches: a side grasp that won says so here.
             telemetry["support_footprint_top_tilt_deg"] = round(float(np.degrees(np.arccos(
                 np.clip(-float(candidates[0].approach[2]), -1.0, 1.0)))), 1)
+    if inner_grasps:
+        # The grasps from inside the part's bores, after every outer grasp: taken where no outer grasp is.
+        inner_refused: dict[str, int] = {}
+        found_bores: list[Bore] = []
+        inner = find_inner_grasps(
+            target_cloud_base_mm, support_height_mm=support_height_mm, jaw=jaw,
+            obstacle_points_base_mm=obstacle_points_base_mm,
+            rigid_obstacle_points_base_mm=rigid_obstacle_points_base_mm, seen_envelope=seen_envelope,
+            hand_floor=hand_floor, corridor_seen=corridor_seen, floor_margin_mm=floor, max_candidates=max_candidates,
+            refusals=inner_refused, score_weights=weights, bores_found=found_bores)
+        kept = [b for b in (_inner_breakdown(grasp, camera_to_base) for grasp in inner) if b is not None]
+        breakdowns.extend(kept)
+        telemetry["inner_grasps"] = len(inner)
+        telemetry["inner_kept"] = len(kept)
+        telemetry["inner_refused"] = inner_refused
+        telemetry["inner_bores"] = [round(float(bore.diameter_mm), 1) for bore in found_bores]
     return breakdowns, telemetry
+
+
+def _inner_breakdown(grasp: InnerGrasp, camera_to_base: np.ndarray) -> GraspScoreBreakdown | None:
+    """An inner grasp as the calculator's pipeline takes it, in CAMERA, scored by its own score as the body's are; its
+    margins say it grips from inside and carry what its execution reads (the module docstring)."""
+    candidate = grasp.candidate
+    pose = _to_camera_pose(candidate, camera_to_base)
+    if pose is None:
+        return None
+    margins: dict[str, Any] = {
+        "contact_angle_deg": float(np.degrees(candidate.contact_angle_rad)),
+        "support_clearance_mm": float(candidate.clearance_mm),
+        # The jaws' opening where their outer faces meet the bore's wall.
+        "grip_width_mm": float(candidate.grip_width_mm),
+        "robust": bool(candidate.robust),
+        "stage": "inner",
+        # It grips from inside: the jaws come down closed or narrow, open onto the wall, and close to let go.
+        INNER_GRASP_KEY: True,
+        "line_in_width_mm": float(grasp.line_in_width_mm),
+        "part_width_mm": float(grasp.part_width_mm),
+        "depth_mm": float(grasp.depth_mm),
+        "bore_mm": float(grasp.bore_mm),
+        # The hand comes down as narrow as this (lever G); the guard holds its fingers at the wall
+        # (``types.grasp_point.fingers_held_at``).
+        **({"open_width_mm": float(candidate.open_width_mm)} if candidate.open_width_mm is not None else {}),
+    }
+    return GraspScoreBreakdown(
+        pose=pose,
+        total_score=pose.score,
+        geometric_score=pose.score,
+        stability_score=0.0,
+        reachability_score=0.0,
+        components={"support_footprint": margins},
+        metadata={"geometry_stage": "inner", "score_is_undecomposed": True},
+    )

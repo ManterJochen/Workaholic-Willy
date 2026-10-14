@@ -95,7 +95,13 @@ from src.robot.core.camera_world import (
     weakest_camera_world,
 )
 from src.robot.core.errors import CameraWorldUnavailable
-from src.robot.core.gripper import HoldEvidence, hold_evidence_of, toggle_without_sensor_of, width_is_measured_of
+from src.robot.core.gripper import (
+    HoldEvidence,
+    hold_evidence_of,
+    holds_from_inside_of,
+    toggle_without_sensor_of,
+    width_is_measured_of,
+)
 from src.robot.core.keep_out import SegmentationOffer, keeping_out
 from src.robot.execution.motion import gates_its_own_sends, route_of, steady_timeout_of
 from src.robot.constants import create_robot_logger
@@ -155,8 +161,10 @@ class HandOutcome(StrEnum):
     Attributes:
         GRASPED: The jaws closed and nothing measured them empty.
         NOTHING_HELD: The jaws closed and the hand measured nothing held.
-        RELEASED: The jaws opened and nothing measured a part still in them.
-        RELEASE_NOT_CONFIRMED: The jaws opened and the hand still measures a part: the carried part stays modelled.
+        RELEASED: The jaws opened (closed, off a part held from inside a bore) and nothing measured a part still in
+            them.
+        RELEASE_NOT_CONFIRMED: The jaws moved to let go and the hand still measures a part: the carried part stays
+            modelled.
         GRIPPER_FAULT: The hand raised; it was stopped where it can be.
         REFUSED: Nothing was commanded.
     """
@@ -165,9 +173,9 @@ class HandOutcome(StrEnum):
     GRASPED = "grasped"
     #: The jaws closed and the gripper measured nothing held.
     NOTHING_HELD = "nothing_held"
-    #: The jaws opened and nothing measured a part still in them.
+    #: The jaws let the part go and nothing measured a part still in them.
     RELEASED = "released"
-    #: The jaws opened and the gripper still measures a part: the carried part stays modelled.
+    #: The jaws moved to let go and the gripper still measures a part: the carried part stays modelled.
     RELEASE_NOT_CONFIRMED = "release_not_confirmed"
     #: The gripper raised; it was stopped where it can be.
     GRIPPER_FAULT = "gripper_fault"
@@ -302,7 +310,8 @@ def grasp(robot: Any, width_mm: float) -> HandReport:
 
 
 def release(robot: Any) -> HandReport:
-    """Open ``robot``'s gripper to the hand's width and forget the carried part unless one is still measured."""
+    """Open ``robot``'s gripper to the hand's width and forget the carried part unless one is still measured; a hand that
+    holds its part from inside a bore closes instead (:func:`_letting_go`)."""
     return _said(_release(robot))
 
 
@@ -357,15 +366,18 @@ def _release(robot: Any, *, meanwhile: "Callable[[], None] | None" = None) -> Ha
     if refused is not None:
         return refused
     gripper = robot.gripper
-    commanded = float(gripper.max_width_mm)
-    why = "" if isinstance(gripper, OpensAndCloses) else _width_refusal(gripper, commanded, close=False,
+    try:
+        commanded, close = _letting_go(gripper)
+    except Exception as exc:  # noqa: BLE001 (a gripper fault is the report, after the jaws are stopped)
+        return _fault(gripper, HandVerb.RELEASE, None, exc)
+    why = "" if isinstance(gripper, OpensAndCloses) else _width_refusal(gripper, commanded, close=close,
                                                                        what="a release to")
     if why:
         return HandReport(verb=HandVerb.RELEASE, outcome=HandOutcome.REFUSED, error=why)
     toggle = toggle_without_sensor_of(gripper)
     note = _already(toggle, closed=False)
     try:
-        settles_at = _command(gripper, commanded, close=False, leave_the_stroke=meanwhile is not None)
+        settles_at = _command(gripper, commanded, close=close, leave_the_stroke=meanwhile is not None)
         reported = float(gripper.get_width_mm())
         measured = width_is_measured_of(gripper)
         hold = hold_evidence_of(gripper)
@@ -387,6 +399,16 @@ def _release(robot: Any, *, meanwhile: "Callable[[], None] | None" = None) -> Ha
     return HandReport(verb=HandVerb.RELEASE, outcome=HandOutcome.RELEASED, commanded_width_mm=commanded,
                       reported_width_mm=reported, width_measured=measured, hold=hold, payload=state,
                       payload_reason=reason)
+
+
+def _letting_go(gripper: Any) -> tuple[float, bool]:
+    """The width that lets ``gripper``'s part go, and whether it is a close: as far closed as the hand goes where it
+    holds its part from inside a bore (``holds_from_inside_of``, its fingers stopped on the wall while opening), the
+    hand's full opening for every other hand. Closing from inside, the jaws leave the wall for the bore's middle, the
+    way they came down."""
+    if holds_from_inside_of(gripper):
+        return float(gripper.min_width_mm), True
+    return float(gripper.max_width_mm), False
 
 
 def is_holding(robot: Any) -> HoldEvidence:
@@ -837,8 +859,13 @@ class _Handling:
             return self._report(HandlingOutcome.REFUSED, message=(
                 f"the drop over the rim is in {self.instead.frame.value!r}, and a place takes a pose in BASE"))
         # Asked before the arm moves, not when release() asks it at the tray.
+        try:
+            width, close = _letting_go(self.gripper)
+        except Exception as exc:  # noqa: BLE001 (a hand that cannot say how it holds is refused before the arm moves)
+            return self._report(HandlingOutcome.GRIPPER_FAULT, message=(
+                f"the hand could not say how it holds its part ({type(exc).__name__}: {exc}), so nothing was moved"))
         why = "" if isinstance(self.gripper, OpensAndCloses) else _width_refusal(
-            self.gripper, float(self.gripper.max_width_mm), close=False, what="the place's release to")
+            self.gripper, width, close=close, what="the place's release to")
         if why:
             return self._report(HandlingOutcome.REFUSED, message=why)
         # What the part is set down on is held out of the world from here, after every refusal and before the first
