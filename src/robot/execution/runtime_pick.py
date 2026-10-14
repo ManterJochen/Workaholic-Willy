@@ -416,7 +416,7 @@ class RuntimePickService:
         # another part may have a full result (fine_pass_waits). A config that carries no such keys ranks as before.
         grasping = getattr(robot_cfg, "grasping", None)
         runtime.orchestrator.lazy_objects = bool(getattr(grasping, "first_good_part", False))
-        runtime.orchestrator.accept_score = float(getattr(grasping, "good_part_score", 0.75))
+        runtime.orchestrator.accept_score = float(getattr(grasping, "good_part_score", 0.6))
         runtime.orchestrator.fine_search_waits = bool(getattr(grasping, "fine_pass_waits", False))
         return runtime
 

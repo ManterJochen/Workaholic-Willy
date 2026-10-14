@@ -35,41 +35,8 @@ from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import (
 )
 from tests.test_a_side_grasp_never_goes_through_unseen_space import Box, Cylinder
 
-#: Byte identity with the calculator of before (HEAD 1d91e3a with the cell fixes' stage 1, before Track A), recorded
-#: there by this file's own scenes: sha256 over each candidate's position, approach, axis, width and score, and the
-#: telemetry keys. A calculator built with ``scene_obstacles=None`` must reproduce them. Re-pinned on 2026-10-03 with a
-#: rounded zero's sign dropped (see ``digest``), from a tree that still gave the digests of before. Re-pinned on
-#: 2026-10-06: SFE, which this calculator runs too, stands its fingers at the anchor and no longer pays for height over
-#: the support, so its grasps sit lower on the part (the owner, 2026-10-05: "wir müssen tiefer gehen"); the 50 mm part's
-#: best grasps now stand at 80 mm, its middle, and 75. That ``scene_obstacles=None`` changes nothing is still pinned
-#: beside it. Re-pinned on 2026-10-08: the geometry-first contacts SFE replaces are no longer computed, and the
-#: telemetry says so (``geometry_skipped``); the digests of 2026-10-06 come back from the same results with that one key
-#: left out, so the grasps and the reasons are the ones of before. Re-pinned on 2026-10-09 (the owner's evening): the
-#: tree's rim of 2.0 mm is on by default and the mask pixels SFE does not read stand in the part's visual hull, so the
-#: 40 mm cylinder's footprint reads 39.1 x 39.6 mm instead of the rim's 34.2 x 36.7, and the robust grasps are ranked
-#: first; ``scene_obstacles=None`` changing nothing is still pinned beside it. Since 2026-10-13 the part's own body is
-#: searched beside SFE's prism (``body_grasps``, lever A) and its grasps ranked in beside SFE's, every one of SFE's
-#: kept: the digests are of SFE's own grasps, the body's telemetry keys left out (``digest(sfe_only=True)``), and they
-#: are 2026-10-09's to the bit.
-BEFORE_TRACK_A = {
-    # Since the rim and the visual hull are on, the robust grasps ranked first, and a round footprint's fan stands in
-    # the base frame with its lines through its centroid (2026-10-09; the bar's footprint fills 0.87 of its rectangle,
-    # round by that rule: its nine grasps moved 0.32 mm along it).
-    "isolated": "c331bf03b1a2205a1f7a0b958cc4066343cfe0bbeeb7dca8a6478bbf1c72ba2f",
-    "photo_layout": "c331bf03b1a2205a1f7a0b958cc4066343cfe0bbeeb7dca8a6478bbf1c72ba2f",
-    "boxed_in_bar": "8792cdf3c5ee0d74acf35b694d007a2eec05117cd249f05815cbfa8ddfa55fc3",
-}
-
-
-def stage_of(grasp: Any) -> str:
-    """Which stage offered ``grasp``: ``"prism"`` (SFE) or ``"body"`` (``body_grasps``)."""
-    components = (getattr(grasp, "metadata", None) or {}).get("score_components") or {}
-    return str((components.get("support_footprint") or {}).get("stage", "prism"))
-
-
-def digest(result: Any, *, sfe_only: bool = False) -> str:
-    """The candidates rounded, with the sign of a rounded zero dropped; of SFE's alone, the body's telemetry keys left
-    out, where ``sfe_only``.
+def digest(result: Any) -> str:
+    """The candidates rounded, with the sign of a rounded zero dropped, the telemetry's keys and the reasons.
 
     OpenBLAS picks its kernels by CPU: the owner's AVX-512 machine runs SkylakeX's, CI's runner Haswell's or Zen's. Their
     last bits differ (1e-13 mm, 5e-17 in an axis), and a coordinate that is zero lands on either side of it; rounding
@@ -77,12 +44,10 @@ def digest(result: Any, *, sfe_only: bool = False) -> str:
     """
     h = hashlib.sha256()
     for g in result.candidates:
-        if sfe_only and stage_of(g) != "prism":
-            continue
         for v in (*np.round(g.position, 6), *np.round(g.approach, 9), *np.round(g.axis, 9),
                   round(float(g.grip_width_mm), 6), round(float(g.score), 9)):
             h.update(repr(float(v) + 0.0).encode())
-    h.update(repr(sorted(key for key in result.telemetry if not (sfe_only and key.startswith("body_")))).encode())
+    h.update(repr(sorted(result.telemetry)).encode())
     h.update(repr([r.value for r in result.reasons]).encode())
     return h.hexdigest()
 
@@ -132,11 +97,11 @@ class NoFalseRefusalWhereThereIsRoomTests(unittest.TestCase):
         self.assertEqual(0, on.telemetry["scene_obstacle_points"])
 
     def test_cubes_40_to_70_mm_off_take_away_only_what_the_guard_refuses(self) -> None:
-        """The cubes are seen, and of the grasps SFE offers without them it keeps exactly those whose open hand keeps
-        the guard's 5 mm from the boxes the camera world builds of them: a tilted approach toward the cube 40 mm off,
-        and a vertical one closing toward it, came within 3 mm of its box (the owner, 2026-10-03). Of the part's own
-        body (``body_grasps``) none is offered that the guard refuses; its seen grid of 2 mm cells holds a hand up to a
-        cell further off than the guard's boxes do, and left one grasp 5.3 mm from the cube's box out (2026-10-13)."""
+        """The cubes are seen, and of the grasps offered without them those whose open hand comes nearer the boxes the
+        camera world builds of them than the guard's 5 mm are taken away: a tilted approach toward the cube 40 mm off,
+        and a vertical one closing toward it, came within 3 mm of its box (the owner, 2026-10-03). None is offered that
+        the guard refuses; the body's seen grid of 2 mm cells holds a hand up to a cell further off than the guard's
+        boxes do, so a grasp a little over 5 mm from a box may go too (2026-10-13)."""
         from tests.test_the_calculator_keeps_the_guards_distance_from_a_neighbour import GUARD_MM, least_mm, world_boxes
 
         frame = photo_layout()
@@ -148,12 +113,10 @@ class NoFalseRefusalWhereThereIsRoomTests(unittest.TestCase):
         off, on = compute(unseen, frame), compute(seen, frame)
         self.assertGreater(on.telemetry["scene_obstacle_points"], 0)
         boxes = world_boxes(PHOTO_NEIGHBOURS, frame)
-        admitted = [g for g in off.candidates if least_mm(g, boxes) >= GUARD_MM and stage_of(g) == "prism"]
         refused = [g for g in off.candidates if least_mm(g, boxes) < GUARD_MM]
-        self.assertTrue(admitted and refused, (len(admitted), len(refused)))
+        self.assertTrue(refused and on.candidates, (len(refused), len(on.candidates)))
         key = lambda g: tuple(np.round(np.concatenate([g.position, g.axis, g.approach]), 2))  # noqa: E731
         offered = set(map(key, on.candidates))
-        self.assertTrue(set(map(key, admitted)) <= offered, "a grasp the guard admits beside the cubes was taken away")
         self.assertFalse(set(map(key, refused)) & offered, "a grasp the guard refuses beside the cubes is offered")
         self.assertTrue(all(least_mm(g, boxes) >= GUARD_MM for g in on.candidates))
 
@@ -225,9 +188,9 @@ class NoFalseRefusalOnTheRealMatTests(unittest.TestCase):
                 for height in (30.0, 48.0):
                     with self.subTest(look=name, patch=(x, y), height=height):
                         off, on, centre = self._run(name, x, y, height)
-                        # SFE's own grasps (the body's beside them, ``body_kept``, read the support the model finds).
-                        offered = on.telemetry["support_footprint_kept"] - on.telemetry["body_kept"]
-                        self.assertEqual(off.telemetry["support_footprint_kept"] - off.telemetry["body_kept"], offered)
+                        # The body's grasps, the same with the scene as without: the mat is no neighbour.
+                        offered = on.telemetry["body_kept"]
+                        self.assertEqual(off.telemetry["body_kept"], offered)
                         self.assertGreaterEqual(offered, 10)
                         # Nothing of the mat within the open hand's reach of the part (the Hand-E open stands 36 mm
                         # off its axis); what tilted corridors meet further off is the pile, refused builds, no grasp.
@@ -239,7 +202,8 @@ class NoFalseRefusalOnTheRealMatTests(unittest.TestCase):
 
 
 class TheSwitchesTests(unittest.TestCase):
-    """Track A test 7: off is the calculator of before; the cell's tree turns both on; a deep cell builds with them."""
+    """Track A test 7: off is the calculator without the keyword, byte for byte; the cell's tree turns both on; a deep
+    cell builds with them."""
 
     def test_off_is_the_calculator_of_before_byte_for_byte(self) -> None:
         from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import boxed_in_bar
@@ -248,7 +212,6 @@ class TheSwitchesTests(unittest.TestCase):
                             ("boxed_in_bar", boxed_in_bar())):
             with self.subTest(name):
                 plain = compute(scene_off_calculator(), frame)
-                self.assertEqual(BEFORE_TRACK_A[name], digest(plain, sfe_only=True))
                 passed_none = compute(calculator(scene=False, side=False), frame)
                 self.assertEqual(digest(plain), digest(passed_none))
                 for key in ("scene_obstacle_points", "candidates_final_source", "rejected_support"):
@@ -362,6 +325,56 @@ class OnlySeenSpaceIsClearTests(unittest.TestCase):
         seen = corridor_seen_in(np.zeros_like(frame.depth), frame.intrinsics, frame.camera_to_base)
         self.assertFalse(seen(np.array([[0.0, -650.0, 150.0]])).any())
         self.assertEqual((0,), seen(np.zeros((0, 3))).shape)
+
+
+class WhatAnotherLookSawTests(unittest.TestCase):
+    """The guard holds the boxes of every look of a pick; the calculator, handed the other looks
+    (``scene_obstacles.SceneView``), holds them too: a neighbour only another look saw keeps the open hand off it
+    (2026-10-13, the part at the wall: every grasp straight down, the housing at a wall the last look did not show)."""
+
+    def test_a_neighbour_only_another_look_saw_keeps_the_open_fingers_off_it(self) -> None:
+        from src.robot.grasping.generation.scene_obstacles import SceneView
+        from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import (
+            BENCH,
+            MAT,
+            MAT_MM,
+            PART,
+            Frame_,
+            calculator,
+            compute,
+            open_fingers_hold,
+            solid_points,
+        )
+
+        cube = Box(lo=(35.0, -670.0, MAT_MM), hi=(75.0, -630.0, MAT_MM + 40.0))   # 15 mm off the part along +x
+        here, other = Frame_((BENCH, MAT), PART), Frame_((BENCH, MAT, cube), PART)
+        inside = solid_points((cube,))
+        blind = compute(calculator(scene=True), here)
+        self.assertTrue(any(open_fingers_hold(g, inside) for g in blind.candidates),
+                        "the look that does not show the cube offers grasps whose open fingers stand in it")
+        view = SceneView(depth_mm=other.depth, intrinsics=other.intrinsics, camera_to_base=other.camera_to_base)
+        told = compute(calculator(scene=True), here, scene_views=(view,))
+        self.assertTrue(told.candidates)
+        self.assertEqual(1, told.telemetry["scene_views"])
+        self.assertFalse(any(open_fingers_hold(g, inside) for g in told.candidates))
+
+    def test_another_look_leaves_the_part_out_as_the_guard_does(self) -> None:
+        """The part's pixels in another look are the ones whose points stand in its keep-out box, as the guard leaves
+        them out (``perceived.target_keep_out_box``): its faces only that look saw among them, and nothing that stands
+        clear of the box."""
+        from src.robot.grasping.generation.scene_obstacles import SceneObstacleRules, SceneView, _the_parts_keep_out
+        from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import BENCH, MAT, MAT_MM, PART, Frame_
+
+        frame = Frame_((BENCH, MAT), PART)
+        view = SceneView(depth_mm=frame.depth, intrinsics=frame.intrinsics, camera_to_base=frame.camera_to_base)
+        box = _the_parts_keep_out(frame.target_points(), SceneObstacleRules(), MAT_MM)
+        assert box is not None
+        held = view.held_out(box)
+        self.assertGreater(float((held & frame.mask).sum()) / float(frame.mask.sum()), 0.95)
+        # A part 100 mm beside this one holds out none of this one's pixels, though they are its shape and its height.
+        beside = _the_parts_keep_out(frame.target_points() + np.array([100.0, 0.0, 0.0]), SceneObstacleRules(), MAT_MM)
+        assert beside is not None
+        self.assertFalse((view.held_out(beside) & frame.mask).any())
 
 
 if __name__ == "__main__":

@@ -41,7 +41,13 @@ Every formula in that chain is in [docs/grasping-math.md](../../../../docs/grasp
 
 ## The support-footprint stage
 
-The default geometry stage reconstructs the target as a vertical prism, its visible footprint extruded down to the
+Since 2026-10-14 the stage asks the part's own body alone (below, *The part's own body*): from each pick's first pose
+the prism added no pick on the owner's three days, and with it fewer first grasps were admitted and a pick ranked
+slower. What follows describes the prism's search as it stands in `support_footprint.py`, no longer asked; it goes with
+the cleanup after the cell has picked with the body alone. The stage's frame, telemetry and abstention below hold for
+the body as they did for the prism.
+
+The prism's search reconstructed the target as a vertical prism, its visible footprint extruded down to the
 support plane, and enumerates the grasps that prism admits: the two axes of the footprint's minimum-area rectangle,
 plus a radial fan when the footprint is round. A round footprint's fan stands in the base frame, every 30 degrees,
 and its closing lines pass through its centroid (`SupportPrism.middle`): the rectangle about a round outline turns
@@ -156,6 +162,45 @@ bit (`batched_builds_hold`) and says the answer in the calculator's log; where t
 cannot be made, the builds are made one at a time and the log says why. `scripts/checks/batched_builds.py`
 compares the two on a cell's own PC before the key goes on there.
 
+## The part's own body
+
+The stage searches the part as the cameras measured it ([body_grasps.py](body_grasps.py), the owner's lever A of
+2026-10-13, alone since 2026-10-14): its points on a 2 mm grid in BASE x and y, each cell as high as its highest point, the solid
+under it carried down to the support. For every closing direction (every 5 degrees), every place across the part and
+every height the pads can stand at (every 2 mm), the pads close on one run of the body along the closing axis, or on
+two or three runs and what lies between them, so one wall of a ring, one lobe of a star or one leg of an L is a grasp
+of its own. Turned to each closing direction the body is binned from its points again, not from the grid's cells, so a
+part turned 45 degrees spans what it measures and its straight faces stay straight. A span holds where it fits the
+stroke with 2 mm beside each jaw, no part of the body stands over the open fingertips or between them and the span,
+and both contacts hold inside the friction cone by the body's own flanks: how steeply it rises at the contact, and how
+its outline turns across the pad there, read as the least-squares line over three rows either way and taken on the
+gentler side: the face the pad comes to lie on as the squeeze turns the part. A round part's outline crossing a cell's
+edge reads as its curvature, a box a few degrees off the closing axis by its face, and a cube across its diagonal, whose
+both sides turn steeply, as a corner. The
+rest of the scene is asked as the guard holds it: the support's clearance, the solids the guard holds under the
+hand (`HandFloor`), the neighbours' points and the guard's boxes of them (`SeenEnvelope`), and an open finger over the
+part's outline only through space a ray of the frame reached. Where the scene refuses a grasp straight down for a
+neighbour, a wall or a solid under the hand, the same contacts are asked leaning 15, 30 and 45 degrees about the closing
+axis, the least tilt first, at most 48 a tilt, one of each place across the part before a second. A closing line
+within a cell of the part's centre of mass is moved onto it. A part lower than the pads hold it with the fingertips the
+clearance over the support counts a `table` refusal, and the result says it is too short for this hand. The grasps are
+ranked robust first, by score (with side approaches on, upright weighs nothing and the room a grasp keeps counts more);
+`score_components["support_footprint"]["stage"]` says `body`, and `body_grasps`, `body_kept` and `body_refused` in the
+telemetry count them.
+
+On a hand that opens as needed (a Robotiq that is told a width) each place is offered narrow, the span and 7 mm beside
+each jaw (`NARROW_ROOM_MM`: at 2 mm the owner's Robotiq came down onto the parts, 2026-10-14), and fully open where
+the open fingers are clear there too, the fully open one scored down by the stroke it opens past the narrow one, the
+search asked on until enough places pass of each opening, `max_candidates` of each; a span the narrow room leaves no
+stroke past is offered fully open alone. The grasp carries its opening (`open_width_mm`).
+
+**The hand as the guard holds it.** The calculator holds each finger in three steps along the approach and the housing
+in four, measured off the hand's own guard bundle (`gripper_model.hand_steps_of`): each step is the box of its 1 mm
+slices of the mesh, so the calculator never holds less of the hand than the guard does. A Hand-E's tip is 6 mm thick
+and 21 mm across where its pad sits, its housing 62 mm across the binormal where it meets the fingers; the registry's
+one box of each stood 4.8 and 6.5 mm past them, and the calculator refused grasps the guard admitted. A hand without a
+bundle keeps the registry's boxes.
+
 ## Two closing-axis rules
 
 **The closing axis lies in the support plane.** A jaw closes across an object standing on something,
@@ -207,7 +252,18 @@ streifen"), and where the cell names the parts beside it too (`robot.grasping.na
 2026-10-12) the pick reads them off the depth (`parts_beside.py`): what stands over the supports, outside the named
 masks, seen whole, apart from anything larger, within 120 mm of a named part and of a part's size and shape. Their
 masks reach the calculator with the named parts' (`PerceptionFrame.parts_beside`), so their points make soft boxes
-too, and the camera world names its boxes by the same points.
+too, and the camera world names its boxes by the same points. A pixel beside the part is a named part's where it lies
+within 5 mm (`fine_world.FINE_LABEL_MM`) of the surface the pick names that part by (`named_surface`), the first part
+in order, as the guard names a wrist camera's pixels.
+
+**Every look of the pick.** The guard holds the boxes of every look a pick took, and so does the calculator: the pick
+loop hands it each other look as a `SceneView` (its depth, lens and pose), and `scene_obstacle_points` builds one set of
+boxes from the union of the looks' points, each other look's view of the target held out by the box the world keeps
+out for it (`perceived.target_keep_out_box`). Held out by the target's mask projected into the other look instead, the
+faces only that look saw stood as neighbours: the owner's pick of 2026-10-12 at 08:18 lost every grasp (0 the guard
+admitted, 22 now). The corridor test asks every look's rays (`SeenInAnyFrame`). The open hand is measured only against
+the boxes whose spheres and whose extents along BASE's axes come within the guard's distance of it
+(`SeenEnvelope.refuses_many`, `envelope_verdicts`): the same verdicts, measured on the recorded picks.
 
 ## What it does not do
 
@@ -230,7 +286,8 @@ path never pretends otherwise.
 | [calculator.py](calculator.py) | `GraspCalculator`, and the `compute()` and `compute_result()` contract every pipeline relies on; `redraw_debug_image(candidates)`, the last overlay drawn again over the grasps a caller kept, as the pick loop does where a closing axis or the natural orientation changed a result |
 | [_candidate_generator.py](_candidate_generator.py) | the silhouette, geometry-first and dense candidate generators |
 | [support_footprint.py](support_footprint.py) | the support-footprint stage; a candidate's `pose()` is the base pose `Robot.pick` takes; its refusal counts by cause (`REFUSAL_CAUSES`) and the side approaches; a search's plan, units and ranking (`plan_support_footprint`, `run_units`, `rank_found`), which any process may run |
-| [scene_obstacles.py](scene_obstacles.py) | what the camera saw beside the part as obstacles, the support taken out, and `why_no_grasp`; the seen test of a frame (`SeenInTheFrame`), which a worker process can be handed |
+| [body_grasps.py](body_grasps.py) | `body_grasps`, `body_map`: the stage's grasps, on the part's own measured body, leaning where the scene refuses them straight down (`merged_ranking`, which ranked them beside the prism's, goes with the prism) |
+| [scene_obstacles.py](scene_obstacles.py) | what the camera saw beside the part as obstacles, the support taken out, and `why_no_grasp`; every look's view of the scene (`SceneView`) and the parts named as the guard names them (`named_surface`); the seen test of a frame (`SeenInTheFrame`), which a worker process can be handed |
 | [parts_beside.py](parts_beside.py) | `parts_beside`, `why_no_part_beside`, `LABEL`: the parts beside the named ones, read off the depth on the supports (`robot.grasping.name_neighbours`) |
 | [footprint_rim.py](footprint_rim.py) | `footprint_rim`, `rim_px`, `FootprintRim`, `FOOTPRINT_RIM_MAX_SHARE`: a mask less its rim, for the support-footprint stage's input alone (`robot.grasping.geometry.footprint_rim_mm`) |
 | [footprint_hull.py](footprint_hull.py) | `hull_points`, `unread_pixels`, `HULL_LIFT_MM`: the mask pixels the stage does not read, placed in the part's visual hull, for its input alone |

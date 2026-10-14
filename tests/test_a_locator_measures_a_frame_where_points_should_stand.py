@@ -18,7 +18,7 @@ import numpy as np
 
 from src.camera.setup.image_taking.frames import RGBDFrame
 from src.robot.core.errors import PerceptionFrameMoved
-from src.robot.core.shutter_motion import PICK_FRAME_WARMUP_GRABS
+from src.robot.core.shutter_motion import PICK_FRAME_BURST_GRABS, PICK_FRAME_WARMUP_GRABS
 from src.robot.perception.locator import Located, Locator, Measured
 from tests.test_locator import _SHAPE, _TOOL_FRAME, _backend, _block_frame, _Handle, _Owner, _pose, _wrist
 
@@ -58,7 +58,8 @@ class AMeasureTests(unittest.TestCase):
 
         self.assertIsInstance(read, Measured)
         self.assertEqual([], backend.asked, "a measure asked the detector")
-        self.assertEqual(PICK_FRAME_WARMUP_GRABS + 1, handle.grabs, "not the warm-ups and one frame, as a locate takes")
+        self.assertEqual(PICK_FRAME_WARMUP_GRABS + PICK_FRAME_BURST_GRABS, handle.grabs,
+                         "not the warm-ups and one burst, as a locate takes")
         self.assertEqual("overhead", read.camera)
         self.assertEqual(50.0, read.captured_at_s)
 

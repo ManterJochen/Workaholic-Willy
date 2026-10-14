@@ -105,9 +105,12 @@ class TheMatIsNoNeighbourTests(unittest.TestCase):
         self.assertGreater(seen.points_base_mm.shape[0], 0)
 
     def test_the_calculator_keeps_the_grasps_it_offers_without_the_scene(self) -> None:
+        """SFE keeps every grasp it keeps without the scene. The body's own grasps are searched until enough places pass
+        the scene's checks, the mat's solid among them, so how many it keeps is not this test's question."""
         on = compute(calculator(scene=True), self.frame, support_model=self.model)
         off = compute(calculator(scene=False), self.frame)
-        self.assertEqual(off.telemetry["support_footprint_kept"], on.telemetry["support_footprint_kept"])
+        self.assertEqual(off.telemetry["support_footprint_kept"] - off.telemetry["body_kept"],
+                         on.telemetry["support_footprint_kept"] - on.telemetry["body_kept"])
         self.assertEqual(0, on.telemetry["scene_obstacle_points"])
 
 
@@ -314,6 +317,21 @@ class TheReasonsReadTheCountsTests(unittest.TestCase):
         reasons, said = self._read(seen_corridor=6, table=111, aperture=117)
         self.assertEqual((R.ALL_COLLIDED, R.RESCAN_RECOMMENDED), reasons)
         self.assertIn("neighbour", said)
+
+    def test_the_bodys_refusals_count_beside_the_prisms(self) -> None:
+        """A part the body alone was searched for (its prism switched off, or counting nothing) that met a neighbour is
+        boxed in as SFE's builds would say: the reason a push answers, and a blocker's spared refusals are counted the
+        same (``scene_obstacles.refusal_counts``)."""
+        from src.robot.grasping.generation.scene_obstacles import refusal_counts, why_no_grasp
+        from src.robot.grasping.types.feedback import GraspFailureReason as R
+
+        telemetry = {"geometry_stage": "support_footprint", "support_footprint_kept": 0, "support_footprint_points": 900,
+                     "support_footprint_refused": {}, "body_refused": {"cone": 40, "seen_fingers": 3, "table": 9}}
+        reasons, said = why_no_grasp(telemetry)
+        self.assertEqual((R.ALL_COLLIDED, R.RESCAN_RECOMMENDED), reasons)
+        self.assertIn("neighbour", said)
+        self.assertEqual({"seen_corridor": 2, "seen_fingers": 3, "cone": 40, "table": 9},
+                         refusal_counts({**telemetry, "support_footprint_refused": {"seen_corridor": 2}}))
 
     def test_a_declared_body_is_a_table_conflict(self) -> None:
         from src.robot.grasping.types.feedback import GraspFailureReason as R

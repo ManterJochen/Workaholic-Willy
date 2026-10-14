@@ -677,14 +677,12 @@ robot:
     # [default: 10.0]
     opening_margin_mm: 10.0
 
-    # What a part's hang below the tool is measured from: declared_support, the support the cell declares
-    # (grasping.support, a lower bound on where any part stood, so every error goes toward more air: on the owner's
-    # cell the drop stood 85 to 92 mm over the rim, a 55 mm mat under the part); or measured, the lowest reading of a
-    # surface the pick's looks found under the part's cloud, or its cloud's lowest point where that is lower. Where
-    # the pick's looks found no surface under it, the declared support stands. Measured, a part set down at a taught
-    # pose keeps 5 mm of air over it.
-    # [default: declared_support] [one of: declared_support | measured]
-    part_bottom: declared_support
+    # How far over a box's rim the jaws open, 0 to 50 mm (the owner, 2026-10-14: "genau auf Höhe der Kante" is 0):
+    # under the part's bottom where the cell declares safety.planning_world.payload.length_mm, its hang measured part
+    # by part from what the pick's looks read under it; under the tool where the cell declares none. A task's own air
+    # (PlaceAt.air_mm) goes before it.
+    # [default: 20.0]
+    rim_air_mm: 20.0
 
     # Whether the parts on a flat place (a taught pose, or a target the camera found with no inside) lie side by side
     # rather than at the one spot: a spot the camera reads free first (the pick's own looks for a taught pose, the
@@ -1405,10 +1403,10 @@ robot:
     # [default: true]
     first_good_part: true
 
-    # The score, 0 to 1, a part's best grasp needs for first_good_part to take it at once. A full result's best grasp
-    # scored 0.80 at the median on the grasp bench, one SFE's fine search found 0.57.
-    # [default: 0.75]
-    good_part_score: 0.75
+    # The score, 0 to 1, a part's best grasp needs for first_good_part to take it at once. The body's best grasp of a
+    # part scores 0.67 at the median on the replay bank, 0.51 at the 10th percentile.
+    # [default: 0.6]
+    good_part_score: 0.6
 
     # SFE's fine search waits while another part may have a full result: a part is computed without it, but for the
     # last where no part has a full result yet, and gets it only where no part has a full result with a grasp. Off,

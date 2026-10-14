@@ -29,7 +29,7 @@ import os
 import re
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -188,8 +188,16 @@ class _NoCamera:
 #: What a bank run may switch off to set a lever beside the code without it (``ReplayCell(off=...)``): the ground
 #: seeded round a held target (``support_surfaces._ground_round``), the parts beside the named ones read off the
 #: depth (``robot.grasping.name_neighbours``), and the fine world the guard holds about a motion's goal
-#: (``safety.planning.fine_world``) with the 2 mm grid SFE keeps the hand off the neighbours' points by.
-LEVERS = ("ground", "parts_beside", "fine_world")
+#: (``safety.planning.fine_world``) with the 2 mm grid SFE kept the hand off the neighbours' points by; the pick's
+#: other looks the calculator holds beside its own (``scene_views``), and the
+#: body's open finger over the part's outline only through seen space (``unseen``), and the looks the pick took after
+#: its first (``later_looks``: the pick replayed from its first pose alone, as if it had found its grasp there; the
+#: owner, 2026-10-14: with SFE alone the cell needed many more poses). ``oracle`` measures how far the
+#: calculator's mirror of the guard falls short: the body's grasps alone, every one the part itself admits (its own
+#: body, its unseen outline) offered to the guard, :data:`ORACLE_TRIES` of them, the scene judged by the guard alone.
+LEVERS = ("ground", "parts_beside", "fine_world", "scene_views", "unseen", "oracle", "later_looks")
+#: How many grasps an ``oracle`` run offers the guard a pick.
+ORACLE_TRIES = 60
 
 
 class ReplayCell:
@@ -237,21 +245,64 @@ class ReplayCell:
             from src.robot.execution import camera_world_wiring  # noqa: PLC0415
             from src.robot.grasping.generation import scene_obstacles, support_footprint  # noqa: PLC0415
 
-            camera_world_wiring.FINE_REACH_MM = 0.0
-            scene_obstacles.FINE_REACH_MM = 0.0
-            support_footprint.SEEN_POINTS_CELL_MM = 4.0
+            # A lever sets the code's own constants aside for one run: mypy holds them Final, the bank does not.
+            camera_world_wiring.FINE_REACH_MM = 0.0  # type: ignore[misc]
+            scene_obstacles.FINE_REACH_MM = 0.0  # type: ignore[misc]
+            support_footprint.SEEN_POINTS_CELL_MM = 4.0  # type: ignore[misc]
+        if "scene_views" in self.off:
+            from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator  # noqa: PLC0415
+
+            BinPickingOrchestrator._scene_views = lambda *args, **kwargs: ()  # type: ignore[method-assign]
+        if "unseen" in self.off:
+            from src.robot.grasping.generation import body_grasps  # noqa: PLC0415
+
+            body_grasps._outline = lambda body: None  # noqa: SLF001
+        if "oracle" in self.off:
+            global MAX_TRIES  # noqa: PLW0603 (a measurement run's own count)
+            from src.robot.grasping.generation import body_grasps as oracle_body  # noqa: PLC0415
+
+            MAX_TRIES = ORACLE_TRIES
+            oracle_body._ENOUGH = ORACLE_TRIES  # type: ignore[misc]  # noqa: SLF001
+            judged_by_the_part = oracle_body._refusal  # noqa: SLF001
+
+            def _the_part_alone(*args: Any, **kwargs: Any) -> str:
+                why = judged_by_the_part(*args, **kwargs)
+                return why if why in ("unseen_corridor", "prism") else ""
+
+            oracle_body._refusal = _the_part_alone  # noqa: SLF001
+            kept_by_the_scene = oracle_body._kept  # noqa: SLF001
+
+            def _kept_without_the_boxes(*args: Any, **kwargs: Any) -> Any:
+                return kept_by_the_scene(*args, **{**kwargs, "seen_envelope": None})
+
+            oracle_body._kept = _kept_without_the_boxes  # noqa: SLF001
+            from src.robot.grasping.generation.calculator import GraspCalculator  # noqa: PLC0415
+
+            GraspCalculator._keep_off_what_the_guard_holds = (  # type: ignore[method-assign]
+                lambda self, ranked, *args, **kwargs: list(ranked))
 
     # -------------------------------------------------------------- the cell's own parts, per camera matrix
     def _service(self, intrinsics: np.ndarray) -> Any:
         key = np.asarray(intrinsics, dtype=np.float64).tobytes()
         if key not in self._services:
             from src.robot.execution.autonomous_grasp.service import AutonomousGraspService  # noqa: PLC0415
+            from src.robot.execution.autonomous_grasp.cells import _scene_kwargs  # noqa: PLC0415
             from src.robot.grasping.calculator_factory import build_calculator  # noqa: PLC0415
 
+            # As the cell builds it (``autonomous_grasp.cells``): the geometry stage and its inflation from the tree, and
+            # what the tree says it reads beside the part (``scene_obstacles``, ``side_approaches``). Until 2026-10-14
+            # the bank built the library's calculator, which reads neither: no guard's boxes about the open hand, no
+            # solids under it, no tilted approach.
             gripper = self.robot.gripper
+            geometry = self.robot.grasping.geometry
             calculator = build_calculator(self.robot, data_dir=self.tree.root, camera_matrix=intrinsics,
                                           min_grip_width_mm=gripper.min_width_mm,
-                                          max_grip_width_mm=gripper.max_width_mm)
+                                          max_grip_width_mm=gripper.max_width_mm,
+                                          support_footprint_geometry=geometry.stage == "support_footprint",
+                                          support_footprint_inflate_mm=geometry.inflate_mm,
+                                          **_scene_kwargs(self.robot))
+            if "oracle" in self.off:
+                calculator.max_candidates = ORACLE_TRIES
             resolver = _RecordedResolver()
             service = AutonomousGraspService.from_robot_config(
                 self.robot, calculator=calculator, perception=_NoCamera(), arm=self.arm, frame_resolver=resolver)
@@ -317,6 +368,14 @@ class ReplayCell:
         self.state.teleport(list(look.joints_rad))
         orchestrator.target_label = pick.target_label
         orchestrator.target_labels = ()
+        # The pick's earlier looks, as the cell's loop holds them when it ranks the last: what the supports are found on
+        # and what a point any look saw past is seen by.
+        from src.robot.grasping.loop.pick_loop import _LookView  # noqa: PLC0415
+
+        orchestrator._look_views = [  # noqa: SLF001
+            _LookView(label=earlier.name, pose=None, name=earlier.name, frame=self.frame_of(pick, earlier),
+                      camera_to_base=earlier.camera_to_base, depth=earlier.surface_depth_mm)
+            for earlier in pick.looks[:-1]]
         beside = orchestrator._with_the_parts_beside(frame)  # noqa: SLF001 (what every acquired frame carries)
         if beside is not frame:
             resolver.by_frame[id(beside)] = look.camera_to_base
@@ -344,14 +403,53 @@ class ReplayCell:
     def _flange(self, tcp: np.ndarray) -> np.ndarray:
         return tcp @ np.linalg.inv(self.tool)
 
+    def _into_window(self, joints: np.ndarray) -> np.ndarray:
+        """``joints`` with each axis a full turn on where that brings it inside the window the guard keeps the arm in
+        (``safety.joint_limits.within_half_turn_of_home``): a look recorded before the window, or a home moved since,
+        stood outside it, and the cell of today stands at the same pose a turn round."""
+        from src.robot.safety.joint_limits import JointLimitGuard  # noqa: PLC0415
+
+        guard = next((g for g in self.preflight.guards if isinstance(g, JointLimitGuard)), None)
+        limits = guard.limits_for_arm(self.arm) if guard is not None else None
+        if guard is None or limits is None:
+            return joints
+        low = np.radians(np.asarray(limits[0], dtype=np.float64) + guard.margin_deg)
+        high = np.radians(np.asarray(limits[1], dtype=np.float64) - guard.margin_deg)
+        out = np.array(joints, dtype=np.float64)
+        for axis in range(min(out.size, low.size)):
+            for turn in (0.0, 2.0 * np.pi, -2.0 * np.pi):
+                if low[axis] <= out[axis] + turn <= high[axis]:
+                    out[axis] += turn
+                    break
+        return out
+
     def _nearest(self, tcp: np.ndarray, seed: np.ndarray) -> "np.ndarray | None":
         from src.robot.safety._ur_ik import ur_flange_ik  # noqa: PLC0415
 
+        seed = self._into_window(np.asarray(seed, dtype=np.float64))
         solutions = ur_flange_ik(self.model, self._flange(tcp), q6_if_singular=float(seed[-1]))
         if not solutions:
             return None
         turned = [seed + (np.asarray(s) - seed + np.pi) % (2.0 * np.pi) - np.pi for s in solutions]
         return min(turned, key=lambda q: float(np.sum((q - seed) ** 2)))
+
+    def _goal(self, tcp: np.ndarray, seed: np.ndarray) -> "np.ndarray | None":
+        """The configuration the cell's driver moves to for ``tcp`` from ``seed`` (``URArm._ranked_goals``): of the
+        goals in the guard's window, each by the moveJ it takes (``_ur_ik.nearest_goals``), the arm's own branch first.
+        Taken nearest by the sum of squares alone, the standoff of 2026-10-12 at 08:21 and 08:22 stood on the other
+        shoulder with the elbow under the table, and the guard refused every grasp of both picks."""
+        from src.robot.safety._ur_ik import nearest_goals, ur_flange_ik  # noqa: PLC0415
+
+        seed = self._into_window(np.asarray(seed, dtype=np.float64))
+        solutions = ur_flange_ik(self.model, self._flange(tcp), q6_if_singular=float(seed[-1]))
+        if not solutions:
+            return None
+        lower, upper = self.arm._goal_joint_window()  # noqa: SLF001 (the driver's own window)
+        goals = nearest_goals(solutions, current=seed.tolist(), lower=lower, upper=upper, velocity=1.0)
+        if not goals:
+            return None
+        ranked = self.arm._ranked_goals(seed.tolist(), goals)  # noqa: SLF001 (the driver's own order)
+        return np.asarray((ranked.groups[0] or ranked.groups[1])[0].joints, dtype=np.float64)
 
     def _line(self, start: Any, goal: Any, seed: np.ndarray) -> "tuple[Any, str]":
         """The line from ``start`` to ``goal`` (TCP poses) as the path gate's samples, each solved nearest the one
@@ -390,7 +488,7 @@ class ReplayCell:
         from src.robot.safety.planning.live_world import _guard_boxes  # noqa: PLC0415
         from src.robot.safety.planning.self_envelope import goal_keep_out  # noqa: PLC0415
 
-        at = self._nearest(np.asarray(standoff.to_matrix(), dtype=np.float64), np.asarray(seed, dtype=np.float64))
+        at = self._goal(np.asarray(standoff.to_matrix(), dtype=np.float64), np.asarray(seed, dtype=np.float64))
         if at is None:
             return {"verdict": "no IK at the standoff"}
         down, why = self._line(standoff, target, at)
@@ -437,6 +535,8 @@ def replay(cell: ReplayCell, path: "str | Path") -> dict[str, Any]:
     """One recorded pick judged again: the record :mod:`run` writes."""
     started = time.perf_counter()
     pick = load_pick(path)
+    if "later_looks" in cell.off:
+        pick = replace(pick, looks=pick.looks[:1])
     record: dict[str, Any] = {"pick": pick.name, "day": pick.day, "looks": len(pick.looks),
                               "target": pick.target_label, "segmented": bool(pick.looks and pick.looks[-1].masks)}
     if not pick.looks or pick.target_cloud_mm.shape[0] < 50:

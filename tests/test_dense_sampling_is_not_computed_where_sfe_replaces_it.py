@@ -93,10 +93,8 @@ class WhereSfeReplacesThemTests(unittest.TestCase):
         self.assertTrue(skipping.candidates)
         self.assertEqual(_grasps(computing), _grasps(skipping))
         self.assertEqual(computing.reasons, skipping.reasons)
-        self.assertEqual(computing.telemetry["support_footprint_refused"],
-                         skipping.telemetry["support_footprint_refused"])
-        self.assertEqual(computing.telemetry["support_footprint_candidates"],
-                         skipping.telemetry["support_footprint_candidates"])
+        self.assertEqual(computing.telemetry["body_refused"], skipping.telemetry["body_refused"])
+        self.assertEqual(computing.telemetry["body_grasps"], skipping.telemetry["body_grasps"])
 
 
 class WhereSfeIsNotReadyTests(unittest.TestCase):

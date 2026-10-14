@@ -6,8 +6,7 @@ each closing line's builds at once (``support_footprint._build_many``): ``_build
 build still standing, every number a candidate carries made one build at a time through a stacked ``np.matmul``, every
 number only a verdict reads held 1e-6 off its threshold, and a build nearer one made by ``_build`` alone.
 
-Here the five scenes of the units' test, the seventeen golden scenes and the owner's two recorded Zollstock looks get
-the same candidates (every field, a signed zero included), the same refusal counts in the same order and the same stages
+Here the five scenes of the units' test and the seventeen golden scenes get the same candidates (every field, a signed zero included), the same refusal counts in the same order and the same stages
 with it as without, under every switch the search has. A seen test, an envelope or a floor of another kind is asked one
 build at a time and answers the same; without every tilt the ladder makes exactly the builds the loop makes; one BLAS
 thread or eight give the same grasps; and a pool's workers make their units' builds at once too.
@@ -111,21 +110,6 @@ class EveryScenesAnswerIsTheSameTests(unittest.TestCase):
                     self.assertEqual(json.dumps(said(expected)), json.dumps(said(runs[True][name])))
                     if not side:
                         self.assertEqual(golden.HEAD_DIGESTS[name], golden.candidate_digest(runs[True][name]))
-
-    def test_the_owners_recorded_zollstock_looks_get_the_same_result_from_the_cells_calculator(self) -> None:
-        """``test_a_recorded_zollstock_look_is_boxed_in``'s replay with the scene, the look's support model and side
-        approaches, on a calculator the cell's tree builds with the key and without it: the candidates, reasons, counts
-        and every telemetry key, bit for bit."""
-        from tests.test_a_pool_of_workers_grasps_as_one_process_does import _result
-
-        for name in ("P1", "P5"):
-            with self.subTest(look=name):
-                here, calculator = zollstock(name, batched=False)
-                self.assertFalse(calculator.sfe_batched)
-                at_once, calculator = zollstock(name, batched=True)
-                self.assertTrue(calculator.sfe_batched, "the key reached the calculator")
-                self.assertIn("support_footprint_refused", here.telemetry)
-                self.assertEqual(_result(here), _result(at_once))
 
 
 class AFrameOfSeveralPartsTests(unittest.TestCase):

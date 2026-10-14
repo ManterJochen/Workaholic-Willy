@@ -185,7 +185,7 @@ class ABoxedInPartGetsNoGraspTests(unittest.TestCase):
         self.assertTrue(any(n > 0 for n in inside), inside)
 
     def test_with_the_scene_it_offers_none_and_says_a_neighbour_is_in_the_way(self) -> None:
-        from src.robot.grasping.generation.scene_obstacles import no_grasp_said
+        from src.robot.grasping.generation.scene_obstacles import no_grasp_said, refusal_counts
         from src.robot.grasping.types.feedback import GraspFailureReason
 
         self.assertEqual(0, len(self.after.candidates))
@@ -193,7 +193,7 @@ class ABoxedInPartGetsNoGraspTests(unittest.TestCase):
         self.assertIn(GraspFailureReason.RESCAN_RECOMMENDED, self.after.reasons)
         self.assertNotIn(GraspFailureReason.ALL_TABLE_CONFLICT, self.after.reasons)
         self.assertGreater(self.after.telemetry["scene_obstacle_points"], 0)
-        self.assertGreater(self.after.telemetry["support_footprint_refused"]["seen_corridor"], 0)
+        self.assertGreater(refusal_counts(self.after.telemetry).get("seen_corridor", 0), 0)
         self.assertEqual("scene", self.after.telemetry["candidates_final_source"])
         self.assertIn("meets a neighbour the camera saw beside the part", no_grasp_said(self.after))
 

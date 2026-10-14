@@ -1,23 +1,28 @@
-"""A task sets a part down at a taught pose: the pose says where the part's BOTTOM is let go (build plan, item 7).
+"""A task sets a part down at a taught pose: the pose says where the part's BOTTOM is let go, where the cell declares
+how far its parts hang (build plan, item 7; the owner, 2026-10-14).
 
-The person teaches a place pose with empty jaws, the fingertips where the part's bottom should be released. Each part
-hangs below the tool by its own amount, so the tool goes to the taught pose raised by the part's hang: the grasp's Z
-less the part's declared support (an upper bound, so every error goes toward more air), or the declared
-``payload.length_mm`` where the pick reports no grasp pose. The raised drop is screened (``nearest_configuration``,
-``screen_configuration``) before the line in, and an ERROR there puts the part back where it was grasped, returns, and
-asks (``pose_refused``). The place itself is ``Robot.place``: a planned move to the standoff, a line in, the release, a
-line out. A line out refused AFTER the release still counts the part placed, and the return is still tried.
+The person teaches a place pose with empty jaws, the fingertips where the part's bottom should be released. Where the
+cell declares ``safety.planning_world.payload.length_mm``, each part hangs below the tool by its own amount: the
+grasp's Z less what the pick's looks read under the part, or the support the cell declares where they read none (a
+lower bound on its bottom, so every error goes toward more air). The tool goes to the taught pose raised by how far the
+part reaches past the fingertips: its hang less their reach, none for a part gripped by its foot, or the declared length
+where the pick reports no grasp pose; no air is added over the taught point. Where the cell declares no length the part
+hangs from the TCP ("Wenn kein Payloadlength angegeben ist, dann soll es am TCP hängen"): the tool goes to the taught
+pose itself, a grasp pose reported or not. The drop is screened (``nearest_configuration``, ``screen_configuration``)
+before the line in, and an ERROR there puts the part back where it was grasped, returns, and asks (``pose_refused``).
+The place itself is ``Robot.place``: a planned move to the standoff, a line in, the release, a line out. A line out
+refused AFTER the release still counts the part placed, and the return is still tried.
 
 Before any motion a task screens every taught pose it will use (``task.pose_screened``): its place, raised by the
-worst hang the cell declares, and a taught return. An ERROR there ends the task ``pose_refused`` with nothing moved. An
-arm that screens nothing says so on the event, unscreened, and the moves judge each pose when they run. A Restart's
-first motion is the planned move to the return pose, after its screen.
+length the cell declares its longest part reaches past the fingertips (at the taught pose itself where it declares
+none), and a taught return. An ERROR there ends the task ``pose_refused`` with nothing moved. An arm that screens
+nothing says so on the event, unscreened, and the moves judge each pose when they run. A Restart's first motion is the
+planned move to the return pose, after its screen.
 """
 
 from __future__ import annotations
 
 import unittest
-from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
@@ -25,6 +30,7 @@ import numpy as np
 from src.geometry import Pose
 from src.robot.core import MotionStatus
 from src.robot.safety.planning.band import PoseVerdict
+from tests._place_fakes import hande_tree
 from tests._task_fakes import (
     GRASP_Z_MM,
     PARK_JOINTS,
@@ -35,6 +41,7 @@ from tests._task_fakes import (
     Pick,
     RecordingHooks,
     TaskArm,
+    declaring,
     do0_changes,
     motions,
     run,
@@ -42,14 +49,9 @@ from tests._task_fakes import (
 
 
 def _declaring(log: list[Any], length_mm: float | None, **keywords: Any) -> TaskArm:
-    """An arm whose tree declares the carried part's hang past the fingertips and the bench at 0."""
-    arm = TaskArm(log, **keywords)
-    arm.config = SimpleNamespace(  # type: ignore[attr-defined]
-        safety=SimpleNamespace(planning_world=SimpleNamespace(payload=SimpleNamespace(length_mm=length_mm),
-                                                              perceived=SimpleNamespace(margin_mm=15.0))),
-        grasping=SimpleNamespace(support=SimpleNamespace(height_mm=0.0, container=SimpleNamespace(
-            floor_height_mm=None))))
-    return arm
+    """An arm whose tree declares how far the carried part reaches past the fingertips (``None``: not at all) and the
+    bench at 0, and names no hand: its fingertips reach nothing past the TCP."""
+    return declaring(TaskArm(log, **keywords), length_mm)
 
 
 def _key(joints: Any) -> tuple[float, ...]:
@@ -68,7 +70,11 @@ def _line_in(ran: Any) -> Any:
 
 class TheHangTests(unittest.TestCase):
     def test_the_drop_stands_the_grasps_hang_above_the_taught_pose(self) -> None:
-        ran = run(["part"])
+        """A cell that declares how far its parts hang and names no hand, so its fingertips reach nothing past the TCP:
+        the part gripped 20 mm over the bench hangs 20 mm below the tool, which stands that far over the taught pose,
+        with no air."""
+        log: list[Any] = []
+        ran = run(["part"], arm=_declaring(log, 60.0))
 
         np.testing.assert_allclose(PLACE_TCP.position_mm + (0.0, 0.0, GRASP_Z_MM), _line_in(ran)[1])
         drop = ran.hooks.of("task.drop_planned")[0]
@@ -77,9 +83,32 @@ class TheHangTests(unittest.TestCase):
         self.assertIsNone(drop["rim_mm"])
         self.assertIsNone(drop["air_mm"])
 
+    def test_the_parts_bottom_goes_where_the_fingertips_were_taught(self) -> None:
+        """The Hand-E's fingertips reach 10.45 mm past its TCP, and the person taught them where the part's bottom goes:
+        the part gripped 20 mm over the bench reaches 9.55 mm past them, so the tool stands 9.55 mm over the taught pose
+        and the part's bottom where the fingertips stood. Before the owner's word of 2026-10-14 the tool stood the whole
+        20 mm hang over it, the part's bottom 10.45 mm over where it was taught to go."""
+        from src.robot.execution.task import _fingertips_past_the_tcp_mm
+
+        log: list[Any] = []
+        arm = TaskArm(log)
+        arm.config = hande_tree(length_mm=60.0)  # type: ignore[attr-defined]
+        fingertips = _fingertips_past_the_tcp_mm(arm.config)
+        ran = run(["part"], arm=arm)
+
+        self.assertAlmostEqual(10.45, fingertips, places=6)
+        drop = ran.hooks.of("task.drop_planned")[0]
+        self.assertAlmostEqual(GRASP_Z_MM, drop["hang_mm"])
+        np.testing.assert_allclose(PLACE_TCP.position_mm + (0.0, 0.0, GRASP_Z_MM - fingertips), drop["pose_mm"])
+        self.assertAlmostEqual(float(PLACE_TCP.position_mm[2]) - fingertips, drop["pose_mm"][2] - drop["hang_mm"],
+                               places=9, msg="the part's bottom was not let go where the fingertips were taught")
+        np.testing.assert_allclose(drop["pose_mm"], _line_in(ran)[1], atol=0.05 + 1e-6,
+                                   err_msg="the line in did not end at the drop (the log keeps a tenth of a mm)")
+        self.assertIsNone(drop["air_mm"])
+
     def test_a_part_off_a_raised_support_hangs_from_the_declared_one(self) -> None:
         log: list[Any] = []
-        arm = _declaring(log, None)
+        arm = _declaring(log, 60.0)
         arm.config.grasping.support.height_mm = -10.0  # type: ignore[attr-defined]
         ran = run(["part"], arm=arm)
 
@@ -91,7 +120,7 @@ class TheHangTests(unittest.TestCase):
         for floor_mm, lowest_mm in ((15.0, 0.0), (-25.0, -25.0)):
             with self.subTest(floor_mm=floor_mm):
                 log: list[Any] = []
-                arm = _declaring(log, None)
+                arm = _declaring(log, 60.0)
                 arm.config.grasping.support.container.floor_height_mm = floor_mm  # type: ignore[attr-defined]
                 ran = run(["part"], arm=arm)
 
@@ -104,15 +133,25 @@ class TheHangTests(unittest.TestCase):
 
         np.testing.assert_allclose(PLACE_TCP.position_mm + (0.0, 0.0, 60.0), _line_in(ran)[1])
 
-    def test_with_neither_nothing_is_set_down_blind_and_the_part_cannot_go_back_either(self) -> None:
+    def test_where_the_cell_declares_no_length_the_tool_goes_to_the_taught_pose_itself(self) -> None:
+        """The owner, 2026-10-14: "Wenn kein Payloadlength angegeben ist, dann soll es am TCP hängen". The part hangs
+        from the tool, which goes to the taught pose itself, a grasp pose reported or not, and the place was screened
+        there. Before, with no grasp pose nothing was set down and the part stayed in the jaws where the arm stood."""
         from src.robot.execution.task import TaskStop
 
-        ran = run([Pick("part", grasp=False)])
+        for name, pick in (("a grasp pose", Pick("part")), ("no grasp pose", Pick("part", grasp=False))):
+            with self.subTest(name):
+                ran = run([pick])
 
-        self.assertIs(TaskStop.PART_STILL_HELD, ran.report.stop, ran.report.sentence)
-        self.assertTrue(ran.report.holding)
-        self.assertEqual(1, do0_changes(ran.log))
-        self.assertNotIn("task.place_started", ran.names())
+                self.assertIs(TaskStop.FINISHED, ran.report.stop, ran.report.sentence)
+                np.testing.assert_allclose(PLACE_TCP.position_mm, _line_in(ran)[1])
+                drop = ran.hooks.of("task.drop_planned")[0]
+                self.assertEqual(0.0, drop["hang_mm"])
+                self.assertIsNone(drop["air_mm"])
+                self.assertEqual(1, ran.report.parts_placed)
+                self.assertFalse(ran.report.holding)
+                self.assertEqual(2, do0_changes(ran.log))
+                self.assertIn("screened at the taught pose itself", ran.hooks.of("task.pose_screened")[0]["detail"])
 
 
 class ARefusedDropTests(unittest.TestCase):
@@ -122,7 +161,7 @@ class ARefusedDropTests(unittest.TestCase):
         log: list[Any] = []
         probe = TaskArm([])
         joints = probe.nearest_configuration(_raised(GRASP_Z_MM))
-        arm = TaskArm(log, screens={_key(joints): PoseVerdict.GUARD_REFUSED})
+        arm = _declaring(log, 60.0, screens={_key(joints): PoseVerdict.GUARD_REFUSED})
         ran = run(["part"], arm=arm)
 
         self.assertIs(TaskStop.POSE_REFUSED, ran.report.stop, ran.report.sentence)
@@ -153,7 +192,7 @@ class ARefusedDropTests(unittest.TestCase):
                 refusing.append(True)
             return MotionStatus.WORKSPACE_REJECTED if refusing else None
 
-        arm = TaskArm(log, screens={_key(joints): PoseVerdict.GUARD_REFUSED}, refuse=refuse_after_the_drop)
+        arm = _declaring(log, 60.0, screens={_key(joints): PoseVerdict.GUARD_REFUSED}, refuse=refuse_after_the_drop)
         ran = run(["part"], arm=arm, hooks=hooks)
 
         self.assertIs(TaskStop.PART_STILL_HELD, ran.report.stop, ran.report.sentence)
@@ -221,7 +260,7 @@ class ARefusedDropTests(unittest.TestCase):
             with self.subTest(hand=name):
                 log: list[Any] = []
                 joints = TaskArm([]).nearest_configuration(_raised(GRASP_Z_MM))
-                arm = TaskArm(log, screens={_key(joints): PoseVerdict.GUARD_REFUSED})
+                arm = _declaring(log, 60.0, screens={_key(joints): PoseVerdict.GUARD_REFUSED})
                 ran = run(["part"], arm=arm, jaws=hand)
 
                 self.assertIs(TaskStop.HAND_NEEDS_PERSON, ran.report.stop, ran.report.sentence)
@@ -286,12 +325,21 @@ class TheScreenBeforeAnyMotionTests(unittest.TestCase):
         self.assertIs(TaskStop.POSE_REFUSED, ran.report.stop)
         self.assertEqual([], motions(log))
 
-    def test_the_place_is_screened_raised_by_the_worst_hang_the_cell_declares(self) -> None:
-        log: list[Any] = []
-        arm = _declaring(log, 75.0)
-        run(["part"], arm=arm)
+    def test_the_place_is_screened_raised_by_the_length_the_cell_declares_past_the_fingertips(self) -> None:
+        """The longest part the cell declares reaches 75 mm past the fingertips, which stand where its bottom goes: the
+        place is screened 75 mm over the taught pose, not by the Hand-E's 10.45 mm past the TCP besides; where the cell
+        declares no length, at the taught pose itself, and the screen says so."""
+        for length_mm, rise_mm in ((75.0, 75.0), (None, 0.0)):
+            with self.subTest(length_mm=length_mm):
+                log: list[Any] = []
+                arm = TaskArm(log)
+                arm.config = hande_tree(length_mm=length_mm)  # type: ignore[attr-defined]
+                ran = run(["part"], arm=arm)
 
-        self.assertAlmostEqual(float(PLACE_TCP.position_mm[2]) + 75.0, float(arm.nearest_asked[0].position_mm[2]))
+                self.assertAlmostEqual(float(PLACE_TCP.position_mm[2]) + rise_mm,
+                                       float(arm.nearest_asked[0].position_mm[2]))
+                itself = "screened at the taught pose itself" in ran.hooks.of("task.pose_screened")[0]["detail"]
+                self.assertIs(length_mm is None, itself)
 
     def test_an_arm_that_screens_nothing_says_so_and_the_task_runs(self) -> None:
         from src.robot.execution.task import TaskStop

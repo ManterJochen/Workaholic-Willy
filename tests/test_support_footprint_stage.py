@@ -18,6 +18,7 @@ from src.robot.grasping.collision.table_collision import gripper_table_clearance
 from src.robot.grasping.generation._support_footprint_stage import (
     support_footprint_breakdowns,
 )
+from src.robot.grasping.generation.body_grasps import body_grasps
 from src.robot.grasping.generation.support_footprint import (
     SupportFootprintJaw,
     generate_support_footprint_grasps,
@@ -62,17 +63,17 @@ class TelemetryContractTests(unittest.TestCase):
         cloud = top_face_cloud(90.0)
         breakdowns, tel = run_stage(cloud)
         self.assertTrue(breakdowns)
-        self.assertGreater(tel["support_footprint_candidates"], 0)
+        self.assertGreater(tel["body_grasps"], 0)
         # The anchor sits inside the object, above the support and no higher than the observed top.
         self.assertGreater(tel["support_footprint_top_anchor_z_mm"], 0.0)
         self.assertLessEqual(tel["support_footprint_top_anchor_z_mm"], 90.0)
-        # SFE only ever returns candidates it planned as clearing its own bar.
+        # The stage only ever returns candidates it planned as clearing its own bar.
         self.assertGreaterEqual(tel["support_footprint_best_clearance_mm"], MIN_CLEARANCE_MM)
 
     def test_abstention_still_reports_the_cloud(self) -> None:
         """An abstention is a real answer -- but a diagnosis needs to see WHAT it abstained on.
 
-        Below ``reconstruct_support_prism``'s 20-point floor the stage produces nothing; the cloud
+        Below the body's 20-point floor (``body_grasps.body_map``) the stage produces nothing; the cloud
         keys must survive that, because 'too few points' and 'no legal grasp' are opposite causes and
         the point count is what separates them (the voxel-cliff defect, measured 2026-08-14).
         """
@@ -80,7 +81,7 @@ class TelemetryContractTests(unittest.TestCase):
         self.assertLess(sparse.shape[0], 20)
         breakdowns, tel = run_stage(sparse)
         self.assertEqual(breakdowns, [])
-        self.assertEqual(tel["support_footprint_candidates"], 0)
+        self.assertEqual(tel["body_grasps"], 0)
         self.assertIn("support_footprint_cloud_z_min_mm", tel)
         self.assertNotIn("support_footprint_top_anchor_z_mm", tel)
 
@@ -93,7 +94,7 @@ class TelemetryContractTests(unittest.TestCase):
 
 class CameraFrameSeamTests(unittest.TestCase):
     def test_candidates_come_back_in_camera_frame(self) -> None:
-        """SFE plans in BASE and the calculator filters in CAMERA; the rotation happens once, here."""
+        """The stage plans in BASE and the calculator filters in CAMERA; the rotation happens once, here."""
         cloud = top_face_cloud(90.0)
         # A camera 400 mm above the table, looking down, with the axes flipped as a real one is.
         camera_to_base = np.array([
@@ -102,7 +103,7 @@ class CameraFrameSeamTests(unittest.TestCase):
             [0.0, 0.0, -1.0, 400.0],
             [0.0, 0.0, 0.0, 1.0],
         ], dtype=np.float64)
-        base_candidates = generate_support_footprint_grasps(
+        base_candidates = body_grasps(
             cloud, support_height_mm=0.0,
             jaw=SupportFootprintJaw.from_model(
                 ParallelJawGripperModel(), table_clearance_mm=MIN_CLEARANCE_MM),
@@ -114,13 +115,33 @@ class CameraFrameSeamTests(unittest.TestCase):
             obstacle_points_base_mm=None, max_candidates=12)
         self.assertTrue(breakdowns)
         self.assertTrue(all(breakdown.pose.frame is Frame.CAMERA for breakdown in breakdowns))
-        # SFE's own, in its order; the part's own body's (``body_grasps``) ranked in beside them.
-        sfe = [breakdown for breakdown in breakdowns if breakdown.components["support_footprint"]["stage"] == "prism"]
-        self.assertEqual(len(sfe), len(base_candidates))
-        for breakdown, candidate in zip(sfe, base_candidates):
+        # The part's own body's (``body_grasps``), in its order.
+        self.assertEqual(len(breakdowns), len(base_candidates))
+        for breakdown, candidate in zip(breakdowns, base_candidates):
             self.assertIs(breakdown.pose.frame, Frame.CAMERA)
             back = (camera_to_base[:3, :3] @ breakdown.pose.position_mm) + camera_to_base[:3, 3]
             np.testing.assert_allclose(back, candidate.position_mm, atol=1e-6)
+
+
+class AHandThatOpensAsNeededTests(unittest.TestCase):
+    def test_the_body_is_planned_open_the_narrow_room_beside_each_jaw(self) -> None:
+        """Lever G: a body's grasp for a hand that opens only as needed carries its opening, the span and
+        ``NARROW_ROOM_MM`` beside each jaw, never past the stroke: 7 mm, where at 2 mm the owner's Robotiq came down onto
+        the parts it was to close on and many grasps broke (2026-10-14)."""
+        from src.robot.grasping.generation.support_footprint import NARROW_ROOM_MM
+
+        self.assertEqual(NARROW_ROOM_MM, 7.0)
+        jaw = SupportFootprintJaw.from_model(ParallelJawGripperModel(), table_clearance_mm=MIN_CLEARANCE_MM)
+        breakdowns, _tel = support_footprint_breakdowns(
+            top_face_cloud(40.0, extent=10.0), camera_to_base=IDENTITY, support_height_mm=0.0, jaw=jaw,
+            obstacle_points_base_mm=None, max_candidates=12, opens_as_needed=True)
+        opened = [b.components["support_footprint"] for b in breakdowns
+                  if b.components["support_footprint"]["stage"] == "body"
+                  and "open_width_mm" in b.components["support_footprint"]]
+        self.assertTrue(opened)
+        for margins in opened:
+            self.assertAlmostEqual(margins["open_width_mm"],
+                                   min(jaw.aperture_mm, margins["grip_width_mm"] - 2.0 + 2.0 * NARROW_ROOM_MM), places=6)
 
 
 class PlannerVersusEnvelopeTests(unittest.TestCase):

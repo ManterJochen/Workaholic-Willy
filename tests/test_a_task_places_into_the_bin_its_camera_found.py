@@ -14,10 +14,13 @@ model copy), before its first pick:
    the planner world (``holding_views``), and the camera looks at the bin again: it is followed only within
    min(100 mm, half its footprint's diagonal) of where the survey found it, a footprint within 20 % and a rim within
    20 mm of the survey's (``recheck``), so a bin that creeps between the parts is not followed further and further.
-4. **The drop** (Q3, item 6). Over the middle of the rim, at rim + the part's hang + the rim air (20 mm unless the
-   operator chose 10 to 50), turned along the cell's natural closing axis for a grasp within 5 degrees of vertical;
-   ``Robot.place`` without a keep-out, which would take the bin's walls out of the world the line in is judged against.
-   The return runs inside the hold, which ends after it.
+4. **The drop** (Q3, item 6; the owner, 2026-10-14). Over the middle of the rim, the rim air over it (the operator's 0
+   to 50 mm, else the cell's ``robot.place.rim_air_mm``, 20 as shipped): the part's bottom there and the tool higher by
+   the part's hang, where the cell declares how far its parts hang (``safety.planning_world.payload.length_mm``); the
+   tool there where it declares none, as the doubles' cell does unless a test gives it a tree. Turned along the cell's
+   natural closing axis for a grasp within 5 degrees of vertical; ``Robot.place`` without a keep-out, which would take
+   the bin's walls out of the world the line in is judged against. The return runs inside the hold, which ends after
+   it.
 5. **Lost** (Q13 (c)). A bin not seen, moved too far or swapped, a drop no configuration reaches, a part that does not
    fit the opening: the part goes back where it was gripped (``service.put_back``), the arm returns, and the task asks.
    A put back that does not release stays where it stands; one whose line out a stopped controller refused after the
@@ -55,6 +58,7 @@ from tests._task_fakes import (
     TaskArm,
     bin_object,
     bin_points,
+    declaring,
     do0_changes,
     motions,
     placing,
@@ -69,6 +73,13 @@ AT_L2 = Pose.tool_down(150.0, -650.0, 450.0, label="L2")
 
 def _key(joints: JointPositions) -> tuple[float, ...]:
     return tuple(round(v, 1) for v in joints.degrees())
+
+
+def _declaring(length_mm: "float | None", *, place: "dict[str, Any] | None" = None, **keywords: Any) -> TaskArm:
+    """An arm that knows L1 and L2 (``keywords`` its own), whose tree declares how far its parts hang past the
+    fingertips (``None``: not at all) and the bench at 0, names no hand, and sets its parts down as ``place`` says."""
+    arm = TaskArm([], fk_table={_key(L1): AT_L1, _key(L2): AT_L2}, **keywords)
+    return declaring(arm, length_mm, **(place or {}))
 
 
 class _Bin:
@@ -140,12 +151,13 @@ class TheBinFoundTests(unittest.TestCase):
                           "task.target_checked", "task.drop_planned", "task.place_started", "task.placed",
                           "task.return_started", "task.returned", "task.part_finished"], ran.names())
         self.assertEqual(2, do0_changes(ran.log))
+        # The doubles' cell declares no payload.length_mm: the tool stands the rim air over the rim.
         line_in = _place_moves(ran)[1]
         np.testing.assert_allclose(BIN_CENTRE, line_in[1][:2], atol=10.0)
-        self.assertAlmostEqual(BIN_RIM_MM + GRASP_Z_MM + 20.0, line_in[1][2], delta=0.5)
+        self.assertAlmostEqual(BIN_RIM_MM + 20.0, line_in[1][2], delta=0.5)
         self.assertEqual({"place": "target:blue bin"}, ran.hooks.of("task.place_started")[0])
         drop = ran.hooks.of("task.drop_planned")[0]
-        self.assertEqual(("camera", 20.0), (drop["kind"], drop["air_mm"]))
+        self.assertEqual(("camera", 20.0, 0.0), (drop["kind"], drop["air_mm"], drop["hang_mm"]))
         self.assertAlmostEqual(BIN_RIM_MM, drop["rim_mm"], delta=0.5)
 
     def test_the_survey_finds_the_bin_first_and_keeps_its_look(self) -> None:
@@ -164,6 +176,24 @@ class TheBinFoundTests(unittest.TestCase):
         self.assertEqual(("joints", _key(L1)), motions(ran.log)[0], "the survey did not go to its first look")
         self.assertEqual(["blue bin", "blue bin"], ran.locator.asked)
 
+    def test_the_survey_screens_the_drop_of_the_longest_part_the_cell_declares(self) -> None:
+        """Before its first pick the task screens the drop over the bin it found for the worst hang the cell declares:
+        the Hand-E's fingertips, 10.45 mm past its TCP, and the declared length past them, under the rim air. A cell
+        that declares no length hangs nothing below the tool (the owner, 2026-10-14): the tool the rim air over the
+        rim, not the fingertips' reach over it besides."""
+        from src.robot.execution.task import TaskStop
+        from tests._place_fakes import hande_tree
+
+        for length_mm, hang_mm in ((60.0, 10.45 + 60.0), (None, 0.0)):
+            with self.subTest(length_mm=length_mm):
+                arm = TaskArm([], fk_table={_key(L1): AT_L1, _key(L2): AT_L2})
+                arm.config = hande_tree(length_mm=length_mm)  # type: ignore[attr-defined]
+                ran = _camera_task(arm=arm)
+
+                self.assertIs(TaskStop.FINISHED, ran.report.stop, ran.report.sentence)
+                screened = float(arm.nearest_asked[0].position_mm[2])
+                self.assertAlmostEqual(BIN_RIM_MM + hang_mm + 20.0, screened, delta=0.5)
+
     def test_the_drop_is_checked_from_the_bins_look_with_every_frame_held_and_no_keep_out(self) -> None:
         ran = _camera_task()
 
@@ -181,9 +211,28 @@ class TheBinFoundTests(unittest.TestCase):
         self.assertAlmostEqual(0.0, checked["moved_mm"], delta=1.0)
 
     def test_the_rim_air_is_the_operators_choice(self) -> None:
-        ran = _camera_task(air_mm=45.0)
+        """The operator's 45 mm, over the cell's own: even its 0 mm."""
+        for name, arm in (("the doubles' cell", None), ("a cell whose own air is 0 mm",
+                                                        _declaring(None, place={"rim_air_mm": 0.0}))):
+            with self.subTest(name):
+                ran = _camera_task(air_mm=45.0, arm=arm)
 
-        self.assertAlmostEqual(BIN_RIM_MM + GRASP_Z_MM + 45.0, _place_moves(ran)[1][1][2], delta=0.5)
+                self.assertAlmostEqual(BIN_RIM_MM + 45.0, _place_moves(ran)[1][1][2], delta=0.5)
+
+    def test_no_air_lets_the_parts_bottom_go_at_the_rim(self) -> None:
+        """The owner's "genau auf Höhe der Kante" (2026-10-14): on a cell that declares how far its parts hang, its own
+        ``robot.place.rim_air_mm: 0`` or the operator's 0 mm lets the part go with its bottom at the rim, the tool the
+        part's 20 mm hang over it."""
+        from src.robot.execution.task import TaskStop
+
+        for name, air_mm, place in (("the cell's 0 mm", None, {"rim_air_mm": 0.0}), ("the operator's 0 mm", 0.0, {})):
+            with self.subTest(name):
+                ran = _camera_task(air_mm=air_mm, arm=_declaring(60.0, place=place))
+
+                self.assertIs(TaskStop.FINISHED, ran.report.stop, ran.report.sentence)
+                drop = ran.hooks.of("task.drop_planned")[0]
+                self.assertEqual((0.0, GRASP_Z_MM), (drop["air_mm"], drop["hang_mm"]))
+                self.assertAlmostEqual(BIN_RIM_MM + GRASP_Z_MM, _place_moves(ran)[1][1][2], delta=0.5)
 
     def test_a_vertical_grasp_is_dropped_along_the_cells_natural_axis(self) -> None:
         from src.geometry.closing_axis import closing_axis_of
@@ -191,7 +240,7 @@ class TheBinFoundTests(unittest.TestCase):
         ran = _camera_task(natural_axis=closing_axis_of("-y"))
 
         line_in = [pose for pose in ran.arm.moved if math.isclose(float(pose.position_mm[2]),
-                                                                  BIN_RIM_MM + GRASP_Z_MM + 20.0, abs_tol=0.5)][0]
+                                                                  BIN_RIM_MM + 20.0, abs_tol=0.5)][0]
         tool_x = np.asarray(line_in.to_matrix())[:3, 0]
         self.assertAlmostEqual(270.0, math.degrees(math.atan2(tool_x[1], tool_x[0])) % 360.0, delta=0.01)
 
@@ -471,15 +520,17 @@ class ABinLostAtTheDropTests(unittest.TestCase):
         self.assertNotIn("task.return_started", ran.names())
 
     def test_a_drop_no_configuration_reaches_puts_the_part_back_and_asks(self) -> None:
+        """The cell declares its parts reach 5 mm past the fingertips: the drop the survey screened for that stands 145
+        mm up, where a configuration reaches; the part gripped 20 mm over the bench hangs 20 mm below the tool, and its
+        drop, 160 mm up, stands past the 150 mm any configuration reaches."""
         from src.robot.execution.task import TaskStop
 
-        log: list[Any] = []
-        arm = TaskArm(log, fk_table={_key(L1): AT_L1, _key(L2): AT_L2}, unreachable_above_mm=150.0)
+        arm = _declaring(5.0, unreachable_above_mm=150.0)
         ran = _camera_task(arm=arm)
 
         self.assertIs(TaskStop.TARGET_UNREACHABLE, ran.report.stop, ran.report.sentence)
-        self.assertEqual(2, do0_changes(log))
-        self.assertEqual(("home",), motions(log)[-1])
+        self.assertEqual(2, do0_changes(arm.log))
+        self.assertEqual(("home",), motions(arm.log)[-1])
 
     def test_a_part_that_does_not_fit_the_opening_goes_back(self) -> None:
         from src.robot.execution.task import TaskStop
@@ -709,40 +760,35 @@ class TheSurveyAndTheCarryEndWhereTheArmStandsTests(unittest.TestCase):
 
 
 class APickWithNoGraspPoseTests(unittest.TestCase):
-    """A pick that reports no grasp pose: the part's hang is the declared ``payload.length_mm``, the drop straight down
-    over the rim; with neither, nothing is set down blind, and with no grasp pose it cannot go back either."""
-
-    def _declaring(self, log: list[Any], length_mm: "float | None") -> TaskArm:
-        from types import SimpleNamespace
-
-        arm = TaskArm(log, fk_table={_key(L1): AT_L1, _key(L2): AT_L2})
-        arm.config = SimpleNamespace(  # type: ignore[attr-defined]
-            safety=SimpleNamespace(planning_world=SimpleNamespace(payload=SimpleNamespace(length_mm=length_mm),
-                                                                  perceived=SimpleNamespace(margin_mm=15.0))),
-            grasping=SimpleNamespace(support=SimpleNamespace(height_mm=0.0, container=SimpleNamespace(
-                floor_height_mm=None))))
-        return arm
+    """A pick that reports no grasp pose: the part's hang is the fingertips' reach and the declared
+    ``payload.length_mm`` past them, the drop straight down over the rim; where the cell declares no length the part
+    hangs from the tool, which stands the rim air over the rim, as with a grasp pose (the owner, 2026-10-14)."""
 
     def test_the_declared_length_stands_in_for_the_hang(self) -> None:
         from src.robot.execution.task import TaskStop
 
-        log: list[Any] = []
-        ran = _camera_task((Pick("part", grasp=False),), arm=self._declaring(log, 60.0))
+        ran = _camera_task((Pick("part", grasp=False),), arm=_declaring(60.0))
 
         self.assertIs(TaskStop.FINISHED, ran.report.stop, ran.report.sentence)
         self.assertAlmostEqual(BIN_RIM_MM + 60.0 + 20.0, _place_moves(ran)[1][1][2], delta=0.5)
 
-    def test_with_neither_nothing_is_set_down_blind(self) -> None:
+    def test_with_no_declared_length_the_tool_stands_the_air_over_the_rim_a_grasp_pose_reported_or_not(self) -> None:
+        """The owner, 2026-10-14: "Wenn kein Payloadlength angegeben ist, dann soll es am TCP hängen". Before, a pick
+        that reported no grasp pose on such a cell set nothing down, and the part stayed in the jaws where the arm
+        stood."""
         from src.robot.execution.task import TaskStop
 
-        log: list[Any] = []
-        ran = _camera_task((Pick("part", grasp=False),), arm=self._declaring(log, None))
+        for name, pick in (("no grasp pose", Pick("part", grasp=False)), ("a grasp pose", Pick("part"))):
+            with self.subTest(name):
+                ran = _camera_task((pick,), arm=_declaring(None))
 
-        self.assertIs(TaskStop.PART_STILL_HELD, ran.report.stop, ran.report.sentence)
-        self.assertTrue(ran.report.holding)
-        self.assertEqual(1, do0_changes(log))
-        self.assertNotIn("task.place_started", ran.names())
-        self.assertIn("length_mm", ran.report.sentence)
+                self.assertIs(TaskStop.FINISHED, ran.report.stop, ran.report.sentence)
+                self.assertAlmostEqual(BIN_RIM_MM + 20.0, _place_moves(ran)[1][1][2], delta=0.5)
+                drop = ran.hooks.of("task.drop_planned")[0]
+                self.assertEqual((0.0, 20.0), (drop["hang_mm"], drop["air_mm"]))
+                self.assertEqual(1, ran.report.parts_placed)
+                self.assertFalse(ran.report.holding)
+                self.assertEqual(2, do0_changes(ran.log))
 
 
 class MultiViewOffTests(unittest.TestCase):
@@ -806,9 +852,10 @@ class ARayCastBinTests(unittest.TestCase):
         ran = self._task(200.0)
 
         self.assertIs(TaskStop.FINISHED, ran.report.stop, ran.report.sentence)
+        # The doubles' cell declares no payload.length_mm: the tool stands the air over the rim.
         line_in = _place_moves(ran)[1]
         np.testing.assert_allclose((450.0, -250.0), line_in[1][:2], atol=10.0)
-        self.assertAlmostEqual(110.0 + GRASP_Z_MM + 20.0, line_in[1][2], delta=1.0)
+        self.assertAlmostEqual(110.0 + 20.0, line_in[1][2], delta=1.0)
 
 
 if __name__ == "__main__":  # pragma: no cover

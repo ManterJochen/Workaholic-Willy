@@ -540,7 +540,7 @@
       "release_in_a_box": "over_the_rim",
       "below_the_rim_mm": 30.0,
       "opening_margin_mm": 10.0,
-      "part_bottom": "declared_support",
+      "rim_air_mm": 20.0,
       "side_by_side": false,
       "spacing_margin_mm": 20.0,
       "grid": {
@@ -689,7 +689,7 @@
       "scene_obstacles": true,
       "side_approaches": true,
       "first_good_part": true,
-      "good_part_score": 0.75,
+      "good_part_score": 0.6,
       "fine_pass_waits": true,
       "colour_check": "on",
       "colour_check_clipped": "exclude",

@@ -4,9 +4,9 @@ Where SFE's coarse grid finds fewer than three grasps it searches again on a fin
 costs: on the owner's cell (2026-10-08) one tilted cube took 24 s, and the part the pick took 3. A pick that already holds
 another part's full result need not wait for it (the owner's "speed first"). So
 ``generate_support_footprint_grasps(..., fine_pass=False, stages=...)`` returns the coarse grid's grasps as they are
-and says ``stages["fine"] = "deferred"``; the stage stamps ``support_footprint_fine: "deferred"``, and the calculator holds
-the switch the pick loop turns (``GraspCalculator.sfe_fine_pass``). ``fine_pass=True``, the default, is byte-identical to
-the search before, and stamps nothing.
+and says ``stages["fine"] = "deferred"``. ``fine_pass=True``, the default, is byte-identical to the search before, and
+stamps nothing. Since 2026-10-14 the calculator's stage no longer asks SFE (the part's own body alone); these pin the
+generator itself until its code goes.
 """
 
 from __future__ import annotations
@@ -20,8 +20,6 @@ import numpy as np
 from src.robot.grasping.generation import support_footprint as sf
 from src.robot.grasping.generation._support_footprint_stage import (
     FINE_SEARCH_DEFERRED,
-    FINE_SEARCH_KEY,
-    support_footprint_breakdowns,
 )
 from tests.test_a_grasp_keeps_the_guards_distance_from_the_support_it_holds import READING_MM, _box_cloud, _jaw
 from tests.test_sfe_says_why_it_refused import (
@@ -107,48 +105,6 @@ class AskedNothingTests(unittest.TestCase):
                 asked, stages, _ = _run(cloud, kwargs, fine_pass=True)
                 self.assertEqual(candidate_digest(before), candidate_digest(asked))
                 self.assertEqual({}, stages)
-
-
-class TheStageSaysItTests(unittest.TestCase):
-    def _stage(self, **asked: Any) -> "tuple[list[Any], dict[str, Any]]":
-        cloud, kwargs = _bar_between_declared_neighbours()
-        return support_footprint_breakdowns(
-            cloud, camera_to_base=np.eye(4), support_height_mm=kwargs["support_height_mm"], jaw=kwargs["jaw"],
-            obstacle_points_base_mm=None, rigid_obstacle_points_base_mm=kwargs["rigid_obstacle_points_base_mm"],
-            max_candidates=12, **asked)
-
-    def test_held_back_the_stage_stamps_support_footprint_fine_deferred(self) -> None:
-        breakdowns, telemetry = self._stage(fine_pass=False)
-        self.assertEqual([], breakdowns)
-        self.assertEqual(FINE_SEARCH_DEFERRED, telemetry.get(FINE_SEARCH_KEY))
-
-    def test_asked_nothing_the_stage_stamps_nothing_new(self) -> None:
-        breakdowns, telemetry = self._stage()
-        self.assertTrue(breakdowns)
-        self.assertNotIn(FINE_SEARCH_KEY, telemetry)
-        _, held = self._stage(fine_pass=False)
-        self.assertEqual(telemetry["support_footprint_refused"], held["support_footprint_refused"])
-
-
-class TheCalculatorHoldsTheSwitchTests(unittest.TestCase):
-    def test_the_switch_is_on_until_the_pick_loop_turns_it_off(self) -> None:
-        from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import calculator
-
-        self.assertIs(True, calculator(scene=True).sfe_fine_pass)
-
-    def test_turned_off_a_part_whose_coarse_grid_finds_few_says_it_waited_and_one_that_finds_enough_does_not(
-            self) -> None:
-        from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import BENCH, MAT, PART, Frame_, boxed_in_bar as bar
-        from tests.test_a_boxed_in_part_gets_no_grasp_and_says_so import calculator, compute
-
-        calc = calculator(scene=True)
-        boxed_in = bar()
-        self.assertNotIn(FINE_SEARCH_KEY, compute(calc, boxed_in).telemetry)
-        calc.sfe_fine_pass = False
-        self.assertEqual(FINE_SEARCH_DEFERRED, compute(calc, boxed_in).telemetry.get(FINE_SEARCH_KEY))
-        alone = compute(calc, Frame_((BENCH, MAT), PART))
-        self.assertTrue(alone.is_success)
-        self.assertNotIn(FINE_SEARCH_KEY, alone.telemetry)
 
 
 if __name__ == "__main__":

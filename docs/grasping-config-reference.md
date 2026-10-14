@@ -206,7 +206,7 @@ The always-on tunings are a separate family and are not gated by mode:
   (**on**) finds what the parts stand on and holds it as solid, and `support_allowance_mm` (**2**, 0 to 10)
   is how far those solids stand over what they take out ([04](guide/04-robot-and-safety.md), 5.5). A
   library caller building `WorldBuildTuning` by hand gets neither, as before.
-* `first_good_part` (**on**), `good_part_score` (**0.75**) and `fine_pass_waits` (**on**), the owner's "speed
+* `first_good_part` (**on**), `good_part_score` (**0.6**) and `fine_pass_waits` (**on**), the owner's "speed
   first" of 2026-10-08: a look's parts are computed in the order they stand apart and the first good one is
   taken, the best where none is good, and the support-footprint search's fine pass waits while another part may
   have a full result. Off, every part is computed and the best taken, as before ([05](guide/05-pick-loop.md),

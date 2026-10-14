@@ -4,7 +4,7 @@ Three keys beside ``side_approaches``, each on where the owner chose speed first
 
 * ``robot.grasping.first_good_part`` (true): a look's parts are computed one at a time and the first good one is taken
   (``BinPickingOrchestrator.lazy_objects``);
-* ``robot.grasping.good_part_score`` (0.75, 0 to 1): the score that part's best grasp needs (``accept_score``);
+* ``robot.grasping.good_part_score`` (0.6, 0 to 1): the score that part's best grasp needs (``accept_score``);
 * ``robot.grasping.fine_pass_waits`` (true): SFE's fine search waits while another part may have a full result
   (``fine_search_waits``).
 
@@ -40,7 +40,7 @@ class TheKeysLoadOnTests(unittest.TestCase):
         for layer in (None, *available_profiles()):
             with self.subTest(profile=layer):
                 grasping = load_robot_config(profile=layer).grasping
-                self.assertEqual((True, 0.75, True),
+                self.assertEqual((True, 0.6, True),
                                  (grasping.first_good_part, grasping.good_part_score, grasping.fine_pass_waits))
 
     def test_the_owners_tree_takes_the_first_good_part(self) -> None:
@@ -73,14 +73,14 @@ class TheKeysReachThePickLoopTests(unittest.TestCase):
             perception=_FakePerception([_perception_frame()]))
 
     def test_a_cell_built_from_its_tree_ranks_as_the_keys_say(self) -> None:
-        self.assertEqual((True, 0.75, True), _switches(self._service().orchestrator))
+        self.assertEqual((True, 0.6, True), _switches(self._service().orchestrator))
         switched = self._service(first_good_part=False, good_part_score=0.9, fine_pass_waits=False)
         self.assertEqual((False, 0.9, False), _switches(switched.orchestrator))
 
     def test_a_loop_built_by_hand_ranks_every_part_in_full_as_before(self) -> None:
         orchestrator = BinPickingOrchestrator(arm=_FakeArm(), calculator=_ScriptedCalculator([]),  # type: ignore[arg-type]
                                               perception=_FakePerception([_perception_frame()]))
-        self.assertEqual((False, 0.75, False), _switches(orchestrator))
+        self.assertEqual((False, 0.6, False), _switches(orchestrator))
 
 
 if __name__ == "__main__":

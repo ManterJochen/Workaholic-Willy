@@ -187,11 +187,13 @@ The console's Start runs exactly this ([`api/README.md`](../../../api/README.md)
 way, with hooks of its own.
 
 - **The place.** `PlaceAt(pose=name)` is a taught pose from `poses`, and it says where the part's **bottom** is
-  let go: the tool goes there raised by the part's hang (the grasp height over the declared support; with no
-  grasp pose, `payload.length_mm`), keeping the grasp's tilt at the taught heading. `PlaceAt(camera="blue
+  let go: where the cell declares `payload.length_mm`, the fingertips stood where the part's bottom goes, and the
+  tool goes there raised by how far the part reaches past them (its hang over what the pick's looks read under
+  it, less the fingertips' reach; with no grasp pose, `payload.length_mm`); where it declares none, the tool goes
+  to the taught pose itself. Either keeps the grasp's tilt at the taught heading. `PlaceAt(camera="blue
   bin")` is a bin the camera finds ([`place_target.py`](place_target.py)): before the first pick the task
-  visits its looks and keeps the bin (`survey`), then drops each part at rim + hang + air (`air_mm`, 10 to 50,
-  20 unset); a grasp within 5 degrees of vertical is turned about the vertical along
+  visits its looks and keeps the bin (`survey`), then drops each part at rim + hang + air (`air_mm`, 0 to 50,
+  else `robot.place.rim_air_mm`, 20; the hang none where the cell declares no `payload.length_mm`); a grasp within 5 degrees of vertical is turned about the vertical along
   `robot.natural_closing_axis`. It checks the
   bin again before every drop (`recheck`): moved more than min(100 mm, half its diagonal), another footprint
   (20 %) or another rim (20 mm), and it is lost. A lost bin is looked for again (`robot.place.relocate`, on; the
@@ -223,9 +225,9 @@ way, with hooks of its own.
   already there, read on the same frame as its rim: `recheck(..., inside=True)`); a box that reads full to within
   10 mm of its rim, a part or an open hand that would not stand `opening_margin_mm` inside its opening, a grasp off
   vertical, or a line in the guard refuses before anything is sent let the part go over the rim, as before
-  (`handling.place(..., instead=)`). `part_bottom: measured` hangs the part from what the pick's looks read under
-  it, not the declared support (`place_target.part_bottom`: on the cell the drop stood 85 to 92 mm over the rim, a
-  55 mm mat under the part), and keeps 5 mm of air over a taught pose. `side_by_side` lays the parts of a flat
+  (`handling.place(..., instead=)`). The hang is measured part by part from what the pick's looks read under it
+  (`place_target.part_bottom`; from the declared support the drop stood 85 to 92 mm over the rim on the cell, a
+  55 mm mat under the part). `side_by_side` lays the parts of a flat
   place (a taught pose, a target with no inside) at spots of their own, their reach and `spacing_margin_mm` apart:
   a spot the camera reads free first, else the next of `grid` (rows x columns about the taught pose) this task
   has not filled; no spot left puts the part back and asks (`part_does_not_fit`). `carry: over_the_rim` (or

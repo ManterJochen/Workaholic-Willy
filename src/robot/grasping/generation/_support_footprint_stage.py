@@ -28,11 +28,14 @@ own body (below) did not make up for them, ``support_footprint_fine`` says ``"de
 grid's, and the pick loop asks again in full before it takes such a part (``FINE_SEARCH_KEY``). A search that ran in
 full stamps nothing.
 
-Beside SFE the part's own body is searched (``body_grasps``, lever A of 2026-10-13): the grasps straight down on what
-the cameras measured of it, a ring's wall, a star's lobe, a lying cylinder at its equator, which SFE's convex prism
-cannot offer. Both stages' grasps are ranked together, robust first, each by score, every grasp of SFE kept
-(``body_grasps.merged_ranking``), and each breakdown says which stage found it (``metadata["geometry_stage"]``); ``body_grasps`` and ``body_refused`` in the
-telemetry say how many the body offered and why it offered no more.
+The grasps are the part's own body's (``body_grasps``, lever A of 2026-10-13): what the cameras measured of it, a
+ring's wall, a star's lobe, a lying cylinder at its equator, which SFE's convex prism cannot offer. SFE's prism is no
+longer asked (the owner, 2026-10-14: the body alone). On the owner's three days from each pick's first pose the prism
+added no pick to the body's 178 of 202, the first grasp tried was admitted in 169 picks with it and 175 without, and a
+pick ranked in 6.8 s with it and 5.0 s without. Its search and the arguments only it read (``inflate_mm``,
+``palm_aware``, ``fine_pass``, ``runner``, ``batched``) go with the cleanup after the cell has picked with the body
+alone; until then they are taken and not read. ``body_grasps`` and ``body_refused`` in the telemetry say how many the
+body offered and why it offered no more.
 """
 
 from __future__ import annotations
@@ -45,18 +48,16 @@ from src.geometry import Frame
 from src.robot.grasping.planning import GraspPose
 from src.robot.grasping.scoring import GraspScoreBreakdown
 
-from .body_grasps import body_grasps, merged_ranking
+from .body_grasps import body_grasps
 from .support_footprint import (
-    _FINE_BELOW,
     DEFAULT_FLOOR_MARGIN_MM,
     FINE_SEARCH_DEFERRED,
-    JAW_SIDE_ROOM_MM,
+    SIDE_APPROACH_SCORE_WEIGHTS,
     CorridorSeen,
     HandFloor,
     SfeRunner,
     SupportFootprintCandidate,
     SupportFootprintJaw,
-    generate_support_footprint_grasps,
 )
 
 __all__ = ["FINE_SEARCH_DEFERRED", "FINE_SEARCH_KEY", "support_footprint_breakdowns"]
@@ -145,41 +146,21 @@ def support_footprint_breakdowns(
     ``opens_as_needed`` plans the body's grasps for a hand that opens only as wide as each span needs
     (``body_grasps``, lever G); off, a hand that opens fully.
     """
-    refused: dict[str, int] = {}
-    stages: dict[str, str] = {}
-    candidates = generate_support_footprint_grasps(
-        target_cloud_base_mm,
-        support_height_mm=support_height_mm,
-        jaw=jaw,
-        obstacle_points_base_mm=obstacle_points_base_mm,
-        rigid_obstacle_points_base_mm=rigid_obstacle_points_base_mm,
-        max_candidates=max_candidates,
-        inflate_mm=inflate_mm,
-        palm_aware=palm_aware,
-        score_weights=score_weights,
-        floor_margin_mm=DEFAULT_FLOOR_MARGIN_MM if floor_margin_mm is None else float(floor_margin_mm),
-        refusals=refused,
-        side_approaches=side_approaches,
-        corridor_seen=corridor_seen,
-        seen_envelope=seen_envelope,
-        hand_floor=hand_floor,
-        fine_pass=fine_pass,
-        stages=stages,
-        runner=runner,
-        batched=batched,
-    )
-    # The part's own body beside SFE's prism, both stages' grasps ranked together.
+    # The part the guard holds out (``perceived.target_body_points``): never a piece of something else its mask ran onto.
+    from src.robot.safety.planning.perceived import target_body_points  # noqa: PLC0415 (the stage's only use of it)
+
+    target_cloud_base_mm = target_body_points(target_cloud_base_mm)
+    # Scored by the weights SFE scored by: with side approaches upright weighs nothing and the room a grasp keeps counts
+    # more (the owner, 2026-10-01). By the plain weights a vertical grasp of the body 16 mm from a wall outranked SFE's
+    # tilt 21 mm from it (2026-10-14).
     body_refused: dict[str, int] = {}
-    body = body_grasps(
+    candidates = body_grasps(
         target_cloud_base_mm, support_height_mm=support_height_mm, jaw=jaw,
         obstacle_points_base_mm=obstacle_points_base_mm, rigid_obstacle_points_base_mm=rigid_obstacle_points_base_mm,
-        seen_envelope=seen_envelope, hand_floor=hand_floor,
+        seen_envelope=seen_envelope, hand_floor=hand_floor, corridor_seen=corridor_seen,
         floor_margin_mm=DEFAULT_FLOOR_MARGIN_MM if floor_margin_mm is None else float(floor_margin_mm),
         opens_as_needed=opens_as_needed, max_candidates=max_candidates, refusals=body_refused,
-        score_weights=score_weights)
-    of_the_body = {id(candidate) for candidate in body}
-    sfe_found = len(candidates)
-    candidates = merged_ranking(list(candidates), body, most=max_candidates, apart=opens_as_needed)
+        score_weights=score_weights if score_weights is not None or not side_approaches else SIDE_APPROACH_SCORE_WEIGHTS)
     breakdowns: list[GraspScoreBreakdown] = []
     for candidate in candidates:
         pose = _to_camera_pose(candidate, camera_to_base)
@@ -189,14 +170,13 @@ def support_footprint_breakdowns(
             "contact_angle_deg": float(np.degrees(candidate.contact_angle_rad)),
             "support_clearance_mm": float(candidate.clearance_mm),
             "grip_width_mm": float(candidate.grip_width_mm),
-            # Whether it holds with the hand ROBUST_ERROR_MM off it across the table; SFE ranks these first.
+            # Whether it holds with the hand ROBUST_ERROR_MM off it across the table; these rank first.
             "robust": bool(candidate.robust),
-            # Which stage found it: SFE's prism, or the part's own body (``body_grasps``).
-            "stage": "body" if id(candidate) in of_the_body else "prism",
+            # Which stage found it: the part's own body (``body_grasps``).
+            "stage": "body",
             # How wide the jaws open before they close, where the body's grasp was planned for jaws that open only
             # as needed (lever G): the span and the room beside each jaw. Absent, the hand opens fully.
-            **({"open_width_mm": float(min(jaw.aperture_mm, candidate.grip_width_mm - 2.0 + 2.0 * JAW_SIDE_ROOM_MM))}
-               if opens_as_needed and id(candidate) in of_the_body else {}),
+            **({"open_width_mm": float(candidate.open_width_mm)} if candidate.open_width_mm is not None else {}),
         }
         breakdowns.append(GraspScoreBreakdown(
             pose=pose,
@@ -206,7 +186,7 @@ def support_footprint_breakdowns(
             reachability_score=0.0,
             components={"support_footprint": margins},
             metadata={
-                "geometry_stage": "body" if id(candidate) in of_the_body else "support_footprint",
+                "geometry_stage": "body",
                 # The two zeros above are not measurements of zero stability or zero reachability.
                 # SFE does not compute those categories; its score is one blend of physical
                 # margins, and the margins that exist are in ``components`` above.
@@ -216,24 +196,16 @@ def support_footprint_breakdowns(
     cloud = np.asarray(target_cloud_base_mm, dtype=np.float64).reshape(-1, 3)
     # Counters and millimetre stamps, and one dict: why every refused build was refused.
     telemetry: dict[str, Any] = {
-        "support_footprint_candidates": sfe_found,
         "support_footprint_kept": len(breakdowns),
         "support_footprint_points": int(cloud.shape[0]),
-        "support_footprint_refused": refused,
-        "body_grasps": len(body),
-        "body_kept": sum(1 for candidate in candidates if id(candidate) in of_the_body),
+        "body_grasps": len(candidates),
+        "body_kept": len(breakdowns),
         "body_refused": body_refused,
     }
     if side_approaches:
         telemetry["support_footprint_side_approaches"] = True
         # Without a seen test no tilt past the first that fits is offered, so a reader needs to know which it was.
         telemetry["support_footprint_corridor_seen"] = corridor_seen is not None
-    if stages.get("fine") == FINE_SEARCH_DEFERRED and len(candidates) < _FINE_BELOW:
-        # The coarse grid's grasps, and with the body's still few: a reader that takes the part asks again in full
-        # first. Where the body's grasps make up what the coarse grid lacked, the part is whole without SFE's fine search
-        # (lever D, 2026-10-13: on the owner's Tuesday trays and crate 60 of 92 rankings found no part whole, and every
-        # part was searched again in full, 20 to 120 s a look).
-        telemetry[FINE_SEARCH_KEY] = FINE_SEARCH_DEFERRED
     # How many of the grasps kept still hold with the hand ROBUST_ERROR_MM off them; they come first.
     telemetry["support_footprint_robust"] = sum(1 for candidate in candidates if candidate.robust)
     # What the stage was looking at, and what it planned: both in BASE, both millimetres.

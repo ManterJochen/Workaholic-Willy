@@ -352,14 +352,14 @@ exactly this plan again.
 `ERROR` ends `pose_refused`), finds a camera place's bin first (`task.survey_started`, `task.target_found`),
 then picks, places and returns, part after part:
 
-- **A taught place pose says where the part's bottom is let go.** The tool goes there raised by the part's
-  hang, the grasp height over the declared support, so every error goes toward more air. With
-  `robot.place.part_bottom: measured` the hang is measured from what the pick's looks read under the part, and
-  5 mm of air is kept; with `robot.place.side_by_side` the parts lie side by side, each at a spot of its own (one
+- **A taught place pose says where the part is let go.** Where the cell declares
+  `safety.planning_world.payload.length_mm`, you teach the fingertips where the part's bottom goes, and the tool
+  goes there raised by how far the part reaches past them, its hang measured from what the pick's looks read
+  under it; where the cell declares none, the tool goes to the taught pose itself. With `robot.place.side_by_side` the parts lie side by side, each at a spot of its own (one
   the camera reads free, else the next of a grid about the pose), and a place with no spot left puts the part back
   where it was gripped and asks (`part_does_not_fit`). Both are off as shipped.
-- **A camera place goes into the bin over its rim, or below it**: the drop stands at rim + hang + air (20 mm
-  unless `rim_air_mm` says 10 to 50). With `robot.place.release_in_a_box: below_the_rim` (off as shipped) the
+- **A camera place goes into the bin over its rim, or below it**: the drop stands at rim + hang + air (`rim_air_mm`, the
+  task's 0 to 50, else the cell's `robot.place.rim_air_mm`, 20; no hang where the cell declares no length). With `robot.place.release_in_a_box: below_the_rim` (off as shipped) the
   part is set down `below_the_rim_mm` (30) under the rim instead, never lower than 10 mm over what the check reads
   inside the box, and let go over the rim wherever that cannot be: an inside the check could not read, a box full
   to within 10 mm of its rim, a part or an open hand that would not stand inside the opening, a grasp more than

@@ -1,8 +1,9 @@
 """``robot.grasping.batched_builds`` loads off, reaches the cell's calculator and ``Scene``, and off is SFE as before.
 
 The key makes each of SFE's closing lines build its grasps at once (``support_footprint._build_many``): the same grasps
-to the bit, a tenth of the time on a boxed-in part. Off by default, every build is made one at a time, as before:
-nothing of the batched path is reached. On, ``build_calculator`` asks this machine's numpy whether its stacked products
+to the bit, a tenth of the time on a boxed-in part. Off by default, every build is made one at a time, as before. Since
+2026-10-14 the calculator's stage no longer asks SFE (the part's own body alone); the key is pinned here until SFE's code
+goes. On, ``build_calculator`` asks this machine's numpy whether its stacked products
 answer to the bit (``batched_builds_hold``) and says the answer in the calculator's log; the calculator hands the switch
 to the stage with every ranking (``sfe_batched``); ``Scene.from_robot_config`` takes it too. Where the numpy would round
 otherwise the calculator builds one at a time and says so.
@@ -81,15 +82,6 @@ class TheKeyReachesTheCalculatorTests(unittest.TestCase):
                 result, calculator = zollstock("P1", batched=batched)
                 self.assertIs(calculator.sfe_batched, batched)
                 self.assertEqual(batched, handed[-1])
-
-    def test_off_nothing_of_the_batched_path_is_reached(self) -> None:
-        def reached(*args: Any, **keywords: Any) -> Any:
-            raise AssertionError("the batched path was reached with the key off")
-
-        with mock.patch.object(sf, "_run_units_many", side_effect=reached), \
-                mock.patch.object(sf, "_build_many", side_effect=reached):
-            result, calculator = zollstock("P5", batched=False)
-        self.assertIn("support_footprint_refused", result.telemetry)
 
 
 class TheKeyReachesTheSceneTests(unittest.TestCase):

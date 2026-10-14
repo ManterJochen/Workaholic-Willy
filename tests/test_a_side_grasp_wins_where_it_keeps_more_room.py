@@ -137,11 +137,10 @@ def stage_runs(**switches: Any) -> dict[str, tuple[list[Any], dict]]:
 
 
 def _telemetry(points: int, z: float | None = None, anchor: float | None = None,
-               clearance: float | None = None, candidates: int = 12, body: int = 0) -> dict[str, Any]:
-    # Every grasp these blocks are offered holds with the hand 4 mm off it (``support_footprint_robust``, 2026-10-09),
-    # the body's ``body`` beside SFE's as well.
-    out: dict[str, Any] = {"support_footprint_candidates": candidates, "support_footprint_kept": candidates + body,
-                           "support_footprint_points": points, "support_footprint_robust": candidates + body}
+               clearance: float | None = None, kept: int = 12) -> dict[str, Any]:
+    # Every grasp these blocks are offered holds with the hand 4 mm off it (``support_footprint_robust``, 2026-10-09).
+    out: dict[str, Any] = {"support_footprint_kept": kept, "support_footprint_points": points,
+                           "support_footprint_robust": kept}
     if z is not None:
         out["support_footprint_cloud_z_min_mm"] = z
         out["support_footprint_cloud_z_max_mm"] = z
@@ -153,35 +152,34 @@ def _telemetry(points: int, z: float | None = None, anchor: float | None = None,
 
 #: ``stage_runs()`` on HEAD 1d91e3a (recorded 2026-10-02): the breakdowns' digest and the telemetry the stage stamped.
 #: Re-recorded 2026-10-06: SFE stands its fingers at the anchor and its score pays for how a grasp sits on the part, no
-#: longer for height over the support (the owner, 2026-10-05: "wir müssen tiefer gehen"), so the grasps sit at the parts'
-#: middles (the 90 mm block from 86 mm down to 45) where the fingers reach, and the palm term tells palm-aware runs apart.
-#: Since 2026-10-13 the part's own body is searched beside the prism (``body_grasps``, lever A) and its grasps are ranked
-#: in beside SFE's, every one of SFE's kept (``merged_ranking``): the digest is of SFE's own breakdowns, in their order,
-#: and is 2026-10-06's to the bit; the telemetry counts what the robot is offered of both (``body`` of the body's grasps
-#: among the kept and the robust, the best clearance of either). The body's own counts (``body_grasps``, ``body_kept``,
-#: ``body_refused``) are ``test_the_hand_grasps_the_parts_own_body``'s.
+#: longer for height over the support (the owner, 2026-10-05: "wir müssen tiefer gehen"). Re-recorded 2026-10-14: the
+#: stage asks the part's own body alone (``body_grasps``), SFE's prism no longer, so the digest is of the body's
+#: breakdowns and the grasps sit at the blocks' middles; palm-aware runs come out alike, the body holding the palm off
+#: the solids under the hand (``HandFloor``) where ``palm_aware`` was SFE's. The body's own counts (``body_grasps``,
+#: ``body_kept``, ``body_refused``) are ``test_the_hand_grasps_the_parts_own_body``'s. Re-recorded 2026-10-14 evening:
+#: the pads hold a part at least ``body_grasps.HOLD_OVERLAP_MM`` (10 mm) under its top, 3 before, so the anchors stand
+#: on a grid 1 mm off the earlier one, and how they sit on the part weighs 0.6 of their third (the owner's cell:
+#: "sehr knapp an der Oberseite"); every block keeps its 12 grasps, the best about its middle.
 HEAD_STAGE: dict[str, tuple[str, dict[str, Any]]] = {
-    "top90_identity": ("12:4a842c8c2c29719c", _telemetry(256, 90.0, 45.0, 31.89, body=5)),
-    "top90_flipped": ("12:9342f19cc1c1608e", _telemetry(256, 90.0, 45.0, 31.89, body=5)),
-    "sparse50": ("0:e3b0c44298fc1c14", _telemetry(9, 50.0, candidates=0)),
-    "empty": ("0:e3b0c44298fc1c14", _telemetry(0, candidates=0)),
-    "top50_palm0": ("12:a5ed45b230cdbf2e", _telemetry(256, 50.0, 34.2, 17.28, body=4)),
-    "top50_palm1": ("12:cea11aa065dffb27", _telemetry(256, 50.0, 35.4, 11.78)),
-    "top60_palm0": ("12:0d64c1eb06be10aa", _telemetry(256, 60.0, 34.2, 17.28, body=4)),
-    "top60_palm1": ("12:6ef99477fa0aa95e", _telemetry(256, 60.0, 35.4, 15.89, body=2)),
-    "top70_palm0": ("12:9654d6a8bc30479d", _telemetry(256, 70.0, 35.0, 27.28, body=6)),
-    "top70_palm1": ("12:26710fa6b7e5545a", _telemetry(256, 70.0, 35.4, 17.89, body=2)),
-    "top90_palm0": ("12:4a842c8c2c29719c", _telemetry(256, 90.0, 45.0, 31.89, body=5)),
-    "top90_palm1": ("12:cc91268c92fbdfe1", _telemetry(256, 90.0, 45.0, 31.89, body=7)),
-    "top120_palm0": ("12:3cdd339ced7199d3", _telemetry(256, 120.0, 60.0, 47.89, body=6)),
-    "top120_palm1": ("12:a75f54b2db9e4587", _telemetry(256, 120.0, 60.0, 47.89, body=5)),
-    # Since the Hand-E's fingers come to 1 mm of the support (2026-10-06), and since a round footprint's fan stands in
-    # the base frame and its lines pass through its centroid (2026-10-09; the golden cylinders of
-    # ``test_sfe_says_why_it_refused``).
-    "hande_cylinder_wall_12": ("12:c902b4a244b50b1e", {
-        "support_footprint_candidates": 12, "support_footprint_kept": 20, "support_footprint_points": 5593,
+    "top90_identity": ("12:cf555dcbc209bf7c", _telemetry(256, 90.0, 45.61, 38.89)),
+    "top90_flipped": ("12:86baa4ee10627a7a", _telemetry(256, 90.0, 45.61, 38.89)),
+    "sparse50": ("0:e3b0c44298fc1c14", _telemetry(9, 50.0, kept=0)),
+    "empty": ("0:e3b0c44298fc1c14", _telemetry(0, kept=0)),
+    "top50_palm0": ("12:594b9599f1d6833f", _telemetry(256, 50.0, 35.61, 18.89)),
+    "top50_palm1": ("12:594b9599f1d6833f", _telemetry(256, 50.0, 35.61, 18.89)),
+    "top60_palm0": ("12:e753476d72bb45a1", _telemetry(256, 60.0, 35.61, 22.89)),
+    "top60_palm1": ("12:e753476d72bb45a1", _telemetry(256, 60.0, 35.61, 22.89)),
+    "top70_palm0": ("12:7dc24b49be7079ba", _telemetry(256, 70.0, 35.61, 26.89)),
+    "top70_palm1": ("12:7dc24b49be7079ba", _telemetry(256, 70.0, 35.61, 26.89)),
+    "top90_palm0": ("12:cf555dcbc209bf7c", _telemetry(256, 90.0, 45.61, 38.89)),
+    "top90_palm1": ("12:cf555dcbc209bf7c", _telemetry(256, 90.0, 45.61, 38.89)),
+    "top120_palm0": ("12:81cf4ab6ce627d43", _telemetry(256, 120.0, 61.61, 58.89)),
+    "top120_palm1": ("12:81cf4ab6ce627d43", _telemetry(256, 120.0, 61.61, 58.89)),
+    # The Hand-E's fingers come to 1 mm of the support (2026-10-06).
+    "hande_cylinder_wall_12": ("12:8aee849053ad6fe3", {
+        "support_footprint_kept": 12, "support_footprint_points": 5593,
         "support_footprint_cloud_z_min_mm": 1.0, "support_footprint_cloud_z_max_mm": 60.0,
-        "support_footprint_top_anchor_z_mm": 30.0, "support_footprint_best_clearance_mm": 45.55,
+        "support_footprint_top_anchor_z_mm": 28.45, "support_footprint_best_clearance_mm": 28.0,
         "support_footprint_robust": 12}),
 }
 
@@ -193,13 +191,12 @@ class TheLibraryCallerIsUnchangedTests(unittest.TestCase):
         for name, (breakdowns, telemetry) in runs.items():
             with self.subTest(name):
                 digest, head_telemetry = HEAD_STAGE[name]
-                self.assertEqual(digest, breakdown_digest(
-                    [b for b in breakdowns if b.components["support_footprint"]["stage"] == "prism"]))
-                refused = dict(telemetry)
-                counts = refused.pop("support_footprint_refused")
-                for key in ("body_grasps", "body_kept", "body_refused"):
-                    refused.pop(key)
-                self.assertEqual(head_telemetry, refused, "the stage stamps nothing else new")
+                self.assertEqual(digest, breakdown_digest(breakdowns))
+                stamped = dict(telemetry)
+                counts = stamped.pop("body_refused")
+                for key in ("body_grasps", "body_kept"):
+                    stamped.pop(key)
+                self.assertEqual(head_telemetry, stamped, "the stage stamps nothing else new")
                 self.assertIsInstance(counts, dict)
 
     def test_switched_off_by_name_is_the_default(self) -> None:
@@ -217,9 +214,9 @@ class TheLibraryCallerIsUnchangedTests(unittest.TestCase):
         self.assertTrue(breakdowns)
         self.assertIs(True, telemetry["support_footprint_side_approaches"])
         self.assertIs(True, telemetry["support_footprint_corridor_seen"])
-        # 30 degrees until 2026-10-05; 75 since the score pays for how the grasp sits on the part; 30 again since the
-        # round footprint's fan stands in the base frame (2026-10-09, see above).
-        self.assertAlmostEqual(30.0, telemetry["support_footprint_top_tilt_deg"], places=1)
+        # SFE leaned 30 degrees away from the wall for room. The part's own body (alone since 2026-10-14) leans only
+        # where the scene refuses a grasp straight down, and 12 mm off the wall it does not: straight down.
+        self.assertAlmostEqual(0.0, telemetry["support_footprint_top_tilt_deg"], places=1)
         _none, without = support_footprint_breakdowns(
             cloud, camera_to_base=_FLIPPED, support_height_mm=0.0, jaw=hande_jaw(), obstacle_points_base_mm=wall,
             max_candidates=12, side_approaches=True)

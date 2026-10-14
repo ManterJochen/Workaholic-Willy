@@ -9,9 +9,11 @@ a few pixels are, not where a surface is.
 
 The drop (``drop_plan``) is ``SetDown.onto`` the bin, then four rules, in order:
 
-* the air over the rim is the task's rim air, 13 mm as shipped (20 mm where a tree says nothing) unless the operator chose 10 to 50 (Q3): ``SET_DOWN_AIR_MM`` plus the
-  perceived world's margin (``rim_clearance_mm``), so the carried part clears what the planner keeps around the rim,
-  held to the owner's 10 to 50 mm whatever the margin;
+* the air over the rim is the task's rim air: the operator's 0 to 50 mm, else the cell's ``robot.place.rim_air_mm``
+  (``rim_clearance_mm``: 20 mm as shipped and where a tree says nothing, held to 0 to 50 mm; 0 is the owner's "genau auf
+  Höhe der Kante", 2026-10-14). It stands under the part's bottom, the part hanging below the tool as far as the grasp
+  stood over its bottom, where the cell declares how far its parts hang (``payload.length_mm``); under the tool, which
+  the part hangs from (``hang_mm=0``), where it declares none;
 * a grasp within 5 degrees of vertical is turned about the vertical until it closes along the cell's natural closing
   axis (``robot.natural_closing_axis``); any other keeps the grasp's own turn. Either way the tool keeps the tilt it
   gripped with: the hang is an upper bound on how far the part reaches below the tool only while the part hangs as it
@@ -20,15 +22,18 @@ The drop (``drop_plan``) is ``SetDown.onto`` the bin, then four rules, in order:
   (``screen_configuration``): no configuration, or an ERROR, is unreachable;
 * the part, turned as it will hang, must fit the opening (or the top), else it does not fit.
 
-A taught place pose (``pose_drop``) says where the part's BOTTOM is let go: the tool goes to the taught pose raised in
-BASE Z by the part's hang, the grasp's Z less the part's declared support, or, where the pick reports no grasp, the
-fingertips' reach below the tool and the declared ``payload.length_mm`` past them; turned as taught about the vertical,
-and tilted as the grasp was (the taught turn whole only where the pick reports no grasp), then screened the same way.
-So the part's lowest point never ends below the taught point, however the tool was tilted at the grasp.
+A taught place pose (``pose_drop``) is where the fingertips stood when the person taught it with empty jaws, the taught
+point. Where the cell declares ``payload.length_mm`` the part's BOTTOM is let go there: the tool goes to the taught pose
+raised in BASE Z by how far the part reaches past the fingertips, its hang (the grasp's Z less its bottom) less the
+fingertips' reach and never below 0, or, where the pick reports no grasp, the declared length; where the cell declares
+none the tool goes to the taught pose itself. Turned as taught about the vertical, and tilted as the grasp was (the
+taught turn whole only where the pick reports no grasp), then screened the same way. So the part's lowest point never
+ends below the taught point, however the tool was tilted at the grasp.
 
 The drop a task screens once it has found its bin (``nominal_drop``) hangs the part below the tool by the same worst
-hang, the fingertips' reach past the TCP and the length past them (the cell, 2026-10-07: with the length alone the
-fingers stood 0.35 mm over the rim, inside the camera's boxes about it, and nine task runs ended before a pick).
+hang, the fingertips' reach past the TCP and the length past them, where the cell declares one (the cell, 2026-10-07:
+with the length alone the fingers stood 0.35 mm over the rim, inside the camera's boxes about it, and nine task runs
+ended before a pick); none where it declares none.
 
 The opening is read from the rim band alone, the walls' tops, across the middle half of the band's own extent, so a bin
 seen at a slant (its far wall's inner face filling the view) still shows its inside: within a few millimetres of the
@@ -175,38 +180,44 @@ class WhatATaskKeepsOfItsBinTests(unittest.TestCase):
 
 
 class TheRimClearanceTests(unittest.TestCase):
-    def test_it_is_the_set_down_air_and_the_perceived_worlds_margin_13_mm_as_shipped(self) -> None:
-        """5 mm of set-down air and the 8 mm margin the owner ships since 2026-10-05."""
+    def test_it_is_the_cells_rim_air_20_mm_as_shipped(self) -> None:
+        """``robot.place.rim_air_mm``, the owner's 20 mm as shipped and where a tree says nothing (2026-10-14), whatever
+        margin the perceived world keeps: no longer the 5 mm of set-down air and that margin, 13 mm on the cell."""
         from src.config import load_tree
         from src.robot.execution.place_target import rim_clearance_mm
 
         robot = load_tree("console_dummy").robot
-        self.assertEqual(13.0, rim_clearance_mm(robot))
+        self.assertEqual(20.0, rim_clearance_mm(robot))
+        chosen = robot.model_copy(update={"place": robot.place.model_copy(update={"rim_air_mm": 35.0})})
+        self.assertEqual(35.0, rim_clearance_mm(chosen))
         margin = SimpleNamespace(safety=SimpleNamespace(planning_world=SimpleNamespace(
             perceived=SimpleNamespace(margin_mm=25.0))))
-        self.assertEqual(30.0, rim_clearance_mm(margin))
+        self.assertEqual(20.0, rim_clearance_mm(margin), "the perceived world's margin chose the air")
         self.assertEqual(20.0, rim_clearance_mm(None), "a cell that says nothing gets the owner's 20 mm")
 
-    def test_the_cells_own_air_is_held_to_the_owners_10_to_50_mm(self) -> None:
-        """Q3 bounds the air over a rim at 10 to 50 mm; the schema lets the margin run from 0 to 500 mm. Red before:
-        the cell's default ran from 5 to 505 mm."""
+    def test_the_cells_own_air_is_held_to_the_owners_0_to_50_mm(self) -> None:
+        """0 is "genau auf Höhe der Kante" (the owner, 2026-10-14). The schema holds ``rim_air_mm`` to 0 to 50 mm, and
+        a tree that is no schema's is held there too; one that names no number gets the owner's 20 mm."""
+        from src.config.schema.robot import RobotConfig
         from src.robot.execution.place_target import rim_clearance_mm
 
-        for margin_mm, air_mm in ((0.0, 10.0), (4.0, 10.0), (5.0, 10.0), (15.0, 20.0), (45.0, 50.0), (60.0, 50.0),
-                                  (500.0, 50.0)):
-            with self.subTest(margin_mm=margin_mm):
-                tree = SimpleNamespace(safety=SimpleNamespace(planning_world=SimpleNamespace(
-                    perceived=SimpleNamespace(margin_mm=margin_mm))))
-                self.assertEqual(air_mm, rim_clearance_mm(tree))
+        self.assertEqual(0.0, rim_clearance_mm(RobotConfig.model_validate({"place": {"rim_air_mm": 0.0}})))
+        for air_mm, held_mm in ((0.0, 0.0), (12.5, 12.5), (50.0, 50.0), (-5.0, 0.0), (60.0, 50.0),
+                                (float("nan"), 20.0), (True, 20.0), (None, 20.0)):
+            with self.subTest(air_mm=air_mm):
+                self.assertEqual(held_mm, rim_clearance_mm(SimpleNamespace(place=SimpleNamespace(rim_air_mm=air_mm))))
 
 
 class TheDropOverTheRimTests(unittest.TestCase):
     def _plan(self, kept: Any = None, grasp: "Pose | None" = None, *, arm: "TaskArm | None" = None, air: float = 20.0,
-              natural: Any = None, part: "np.ndarray | None" = None) -> Any:
+              natural: Any = None, part: "np.ndarray | None" = None, hang: "float | None" = None) -> Any:
+        """The drop of the part gripped at ``grasp`` 20 mm over the bench into ``kept``; ``hang`` 0 is a cell that
+        declares no length, ``None`` one that does (the hang measured from the bench)."""
         from src.robot.execution.place_target import drop_plan
 
         return drop_plan(arm or TaskArm([]), kept if kept is not None else _kept(), grasp or _grasp(),
-                         part_bottom_mm=0.0, air_mm=air, standoff_mm=80.0, natural_axis=natural, part_cloud_mm=part)
+                         part_bottom_mm=0.0, air_mm=air, hang_mm=hang, standoff_mm=80.0, natural_axis=natural,
+                         part_cloud_mm=part)
 
     def test_the_part_is_let_go_over_the_middle_of_the_opening_at_rim_hang_and_air(self) -> None:
         plan = self._plan()
@@ -227,6 +238,32 @@ class TheDropOverTheRimTests(unittest.TestCase):
         plan = self._plan(air=45.0)
         assert plan.pose is not None
         self.assertAlmostEqual(BIN_RIM_MM + GRASP_Z_MM + 45.0, float(plan.pose.position_mm[2]), delta=0.5)
+
+    def test_on_a_cell_that_declares_no_length_the_tool_stands_the_air_over_the_rim(self) -> None:
+        """The owner, 2026-10-14: "Wenn kein Payloadlength angegeben ist, dann soll es am TCP hängen". The part hangs
+        from the tool (``hang_mm=0``), so the tool stands the air over the rim, however far the grasp stood over the
+        part's bottom; over the same middle, turned as the drop that hangs the part."""
+        hanging, plan = self._plan(), self._plan(hang=0.0)
+
+        self.assertTrue(plan.ok, plan.reason)
+        assert plan.pose is not None and hanging.pose is not None and plan.rim_mm is not None
+        self.assertEqual(0.0, plan.hang_mm)
+        self.assertAlmostEqual(20.0, plan.air_mm)
+        self.assertAlmostEqual(plan.rim_mm + 20.0, float(plan.pose.position_mm[2]), places=9)
+        self.assertAlmostEqual(BIN_RIM_MM + 20.0, float(plan.pose.position_mm[2]), delta=0.5)
+        np.testing.assert_allclose(hanging.pose.position_mm[:2], plan.pose.position_mm[:2])
+        np.testing.assert_allclose(hanging.pose.quaternion_xyzw, plan.pose.quaternion_xyzw)
+
+    def test_no_air_lets_the_part_go_at_the_rim(self) -> None:
+        """The owner's "genau auf Höhe der Kante" (2026-10-14): 0 mm of air puts the part's bottom at the rim, the tool
+        its 20 mm hang over it; on a cell that declares no length, the tool at the rim."""
+        hanging, at_the_tool = self._plan(air=0.0), self._plan(air=0.0, hang=0.0)
+
+        assert hanging.pose is not None and at_the_tool.pose is not None and hanging.rim_mm is not None
+        self.assertAlmostEqual(hanging.rim_mm + GRASP_Z_MM, float(hanging.pose.position_mm[2]), places=9)
+        self.assertAlmostEqual(hanging.rim_mm, float(at_the_tool.pose.position_mm[2]), places=9)
+        self.assertAlmostEqual(BIN_RIM_MM, hanging.rim_mm, delta=0.5)
+        self.assertEqual((0.0, 0.0), (hanging.air_mm, at_the_tool.air_mm))
 
     def test_a_vertical_grasp_is_turned_along_the_cells_natural_axis(self) -> None:
         """Turned about the vertical alone: it closes along the natural axis, tilted as it gripped. Red before for the
@@ -353,10 +390,11 @@ class TheDropAtATaughtPoseTests(unittest.TestCase):
         self.assertEqual("clear", plan.verdict)
 
     def test_a_tilted_grasp_keeps_its_tilt_so_the_parts_bottom_never_goes_below_the_taught_point(self) -> None:
-        """A 40 mm cube on the bench gripped at its centre, the tool tilted about its closing axis: the drop keeps that
-        tilt, turned about the vertical to the taught heading, and the cube's lowest corner ends at the taught point,
-        where its bottom is let go. Red before: the drop took the taught turn whole, and the corner swung down, 7.3 mm
-        below the taught point at a 30 degree tilt."""
+        """A 40 mm cube on the bench gripped at its centre, the tool tilted about its closing axis, on a cell that
+        declares how far its parts hang (fingertips that reach nothing past the TCP, so the taught point is the taught
+        TCP): the drop keeps that tilt, turned about the vertical to the taught heading, and the cube's lowest corner
+        ends at the taught point, where its bottom is let go. Red before: the drop took the taught turn whole, and the
+        corner swung down, 7.3 mm below the taught point at a 30 degree tilt."""
         from src.robot.execution.place_target import pose_drop
 
         cube = _box((PART_XY[0] - 20.0, PART_XY[1] - 20.0, 0.0), (PART_XY[0] + 20.0, PART_XY[1] + 20.0, 40.0))
@@ -371,7 +409,7 @@ class TheDropAtATaughtPoseTests(unittest.TestCase):
                 matrix[:3, :3] = matrix[:3, :3] @ about_x
                 grasp = Pose.from_matrix(matrix, frame=Frame.BASE)
 
-                plan = pose_drop(TaskArm([]), PLACE_JOINTS, grasp, part_bottom_mm=0.0, length_mm=None,
+                plan = pose_drop(TaskArm([]), PLACE_JOINTS, grasp, part_bottom_mm=0.0, length_mm=60.0,
                                  standoff_mm=80.0)
 
                 assert plan.pose is not None
@@ -385,7 +423,8 @@ class TheDropAtATaughtPoseTests(unittest.TestCase):
 
     def test_a_grasp_whose_closing_axis_points_near_the_vertical_keeps_its_own_turn(self) -> None:
         """A grasp tilted so far that its closing axis heads nowhere on the table has no heading to turn to the taught
-        one: the drop keeps the grasp's turn whole, which still keeps every height under the tool."""
+        one: the drop keeps the grasp's turn whole, which still keeps every height under the tool (on a cell that
+        declares how far its parts hang, the part's bottom stays at or over the taught point)."""
         from src.robot.execution.place_target import pose_drop
 
         down = np.asarray(Pose.tool_down(PART_XY[0], PART_XY[1], GRASP_Z_MM).to_matrix(), dtype=np.float64).copy()
@@ -395,7 +434,7 @@ class TheDropAtATaughtPoseTests(unittest.TestCase):
         down[:3, :3] = down[:3, :3] @ about_y
         grasp = Pose.from_matrix(down, frame=Frame.BASE)
 
-        plan = pose_drop(TaskArm([]), PLACE_JOINTS, grasp, part_bottom_mm=0.0, length_mm=None, standoff_mm=80.0)
+        plan = pose_drop(TaskArm([]), PLACE_JOINTS, grasp, part_bottom_mm=0.0, length_mm=60.0, standoff_mm=80.0)
 
         assert plan.pose is not None
         np.testing.assert_allclose(grasp.quaternion_xyzw, plan.pose.quaternion_xyzw, atol=1e-12)
@@ -420,32 +459,70 @@ class TheDropAtATaughtPoseTests(unittest.TestCase):
         np.testing.assert_allclose(PLACE_TCP.position_mm + (0.0, 0.0, 60.0), plan.pose.position_mm)
         self.assertEqual(60.0, plan.hang_mm)
 
-    def test_without_a_grasp_pose_the_fingertips_reach_comes_first(self) -> None:
+    def test_the_tool_rises_by_the_parts_reach_past_the_fingertips_not_for_a_part_held_by_its_foot(self) -> None:
+        """The fingertips reach 12.65 mm past the TCP on the owner's cell, and stood where the person taught the part's
+        bottom to go. A part gripped 20 mm over its bottom reaches 7.35 mm past them: the tool stands that much over
+        the taught pose. One gripped 10 mm over its bottom, by its foot, reaches no further than the fingertips: they
+        go to the taught point. Either way the lower of the part and the fingertips ends where the fingertips were
+        taught (the owner, 2026-10-14)."""
+        from src.robot.execution.place_target import pose_drop
+
+        taught_z = float(PLACE_TCP.position_mm[2])
+        for bottom_mm, rise_mm in ((0.0, GRASP_Z_MM - 12.65), (10.0, 0.0)):
+            with self.subTest(bottom_mm=bottom_mm):
+                plan = pose_drop(TaskArm([]), PLACE_JOINTS, _grasp(), part_bottom_mm=bottom_mm, length_mm=60.0,
+                                 standoff_mm=80.0, fingertips_mm=12.65)
+
+                self.assertTrue(plan.ok, plan.reason)
+                assert plan.pose is not None and plan.hang_mm is not None
+                np.testing.assert_allclose(PLACE_TCP.position_mm + (0.0, 0.0, rise_mm), plan.pose.position_mm)
+                self.assertAlmostEqual(GRASP_Z_MM - bottom_mm, plan.hang_mm)
+                tool_z = float(plan.pose.position_mm[2])
+                self.assertAlmostEqual(taught_z - 12.65, min(tool_z - plan.hang_mm, tool_z - 12.65), places=9,
+                                       msg="the part or the fingertips did not end where the fingertips were taught")
+                self.assertIsNone(plan.air_mm, "air was added over the taught point")
+
+    def test_without_a_grasp_pose_the_part_reaches_the_declared_length_past_the_taught_fingertips(self) -> None:
+        """The fingertips reach 12.65 mm past the TCP and stood where the part's bottom goes: a part the cell declares
+        1 mm long past them raises the tool 1 mm over the taught pose, and hangs 13.65 mm below the tool."""
         from src.robot.execution.place_target import pose_drop
 
         plan = pose_drop(TaskArm([]), PLACE_JOINTS, None, part_bottom_mm=0.0, length_mm=1.0, standoff_mm=80.0,
                          fingertips_mm=12.65)
         assert plan.pose is not None
-        np.testing.assert_allclose(PLACE_TCP.position_mm + (0.0, 0.0, 13.65), plan.pose.position_mm)
+        np.testing.assert_allclose(PLACE_TCP.position_mm + (0.0, 0.0, 1.0), plan.pose.position_mm)
         self.assertAlmostEqual(13.65, plan.hang_mm or 0.0)
 
-    def test_with_neither_the_hang_is_unknown_and_nothing_is_set_down_blind(self) -> None:
+    def test_on_a_cell_that_declares_no_length_the_tool_goes_to_the_taught_pose_itself(self) -> None:
+        """The owner, 2026-10-14: "Wenn kein Payloadlength angegeben ist, dann soll es am TCP hängen". With no length
+        (none, or one of 0 mm) the part hangs from the tool, which goes to the taught pose itself with no hang and no
+        air, however far the fingertips reach, a grasp pose reported or not, turned as taught. Before, with no grasp
+        pose nothing was set down."""
         from src.robot.execution.place_target import pose_drop
 
-        plan = pose_drop(TaskArm([]), PLACE_JOINTS, None, part_bottom_mm=0.0, length_mm=None, standoff_mm=80.0)
-        self.assertFalse(plan.ok)
-        self.assertEqual("unreachable", plan.refusal)
-        self.assertIn("length_mm", plan.reason)
+        for name, grasp, length_mm in (("no grasp pose", None, None), ("a grasp pose", _grasp(), None),
+                                       ("a length of 0 mm", _grasp(yaw_deg=20.0), 0.0)):
+            with self.subTest(name):
+                plan = pose_drop(TaskArm([]), PLACE_JOINTS, grasp, part_bottom_mm=0.0, length_mm=length_mm,
+                                 standoff_mm=80.0, fingertips_mm=12.65)
+
+                self.assertTrue(plan.ok, plan.reason)
+                assert plan.pose is not None
+                np.testing.assert_allclose(PLACE_TCP.position_mm, plan.pose.position_mm)
+                self.assertEqual(0.0, plan.hang_mm)
+                self.assertIsNone(plan.air_mm)
+                gap = (_heading_deg(PLACE_TCP) - _heading_deg(plan.pose) + 180.0) % 360.0 - 180.0
+                self.assertAlmostEqual(0.0, gap, delta=1e-6, msg="the drop is not turned as taught")
 
     def test_an_error_on_the_raised_drop_is_unreachable(self) -> None:
         from src.robot.execution.place_target import pose_drop
 
         arm = TaskArm([])
-        clear = pose_drop(arm, PLACE_JOINTS, _grasp(), part_bottom_mm=0.0, length_mm=None, standoff_mm=80.0)
+        clear = pose_drop(arm, PLACE_JOINTS, _grasp(), part_bottom_mm=0.0, length_mm=60.0, standoff_mm=80.0)
         assert clear.joints is not None
         key = tuple(round(v, 1) for v in clear.joints.degrees())
         refused = pose_drop(TaskArm([], screens={key: PoseVerdict.PLANNER_REFUSED}), PLACE_JOINTS, _grasp(),
-                            part_bottom_mm=0.0, length_mm=None, standoff_mm=80.0)
+                            part_bottom_mm=0.0, length_mm=60.0, standoff_mm=80.0)
         self.assertEqual("unreachable", refused.refusal)
         self.assertEqual("planner_refused", refused.verdict)
 

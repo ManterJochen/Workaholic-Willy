@@ -261,6 +261,13 @@ class GripperController:
                          "OPEN" if clamped_mm >= self.max_width_mm - 0.5 else "CLOSED", clamped_mm)
         drv.move(target_count, speed_count, force_count)
         self._wait_for_the_fingers(drv)
+        # Where the fingers stopped: on a part, its width as the hand measures it, beside the width the grasp planned.
+        stopped = getattr(drv, "get_current_position", None)
+        if callable(stopped):
+            try:
+                self.logger.info("the jaws stand at %.1f mm", self._count_to_mm(int(stopped())))
+            except Exception as exc:  # noqa: BLE001 (a read for the log is no fault of the motion)
+                self.logger.debug("the jaws' position could not be read: %s", exc)
 
     def _wait_for_the_fingers(self, drv: Any) -> None:
         """Block until the gripper says the motion is over, because ``ack`` is not motion.
@@ -372,6 +379,12 @@ class GripperController:
 
     def width_is_measured(self) -> bool:
         """``get_width_mm`` reads the fingers' position register."""
+        return True
+
+    @property
+    def closes_onto_the_part(self) -> bool:
+        """``True``: the fingers stop on what they close on at the force asked, and ``gOBJ`` says they did
+        (``core.gripper.ClosesOntoThePart``), so a grasp closes this hand as far as it goes."""
         return True
 
     # ------------------------------------------------------------------

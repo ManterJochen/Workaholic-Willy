@@ -45,6 +45,8 @@ from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 __all__ = [
+    "ClosesOntoThePart",
+    "FINGER_OPENING_SLACK_MM",
     "OPEN_WITHIN_MM",
     "Gripper",
     "HoldEvidence",
@@ -55,6 +57,7 @@ __all__ = [
     "StoppableGripper",
     "TogglesWithoutSensor",
     "TwoStateGripper",
+    "closes_onto_the_part_of",
     "hold_evidence_of",
     "toggle_without_sensor_of",
     "why_not_known_open",
@@ -281,6 +284,27 @@ class TogglesWithoutSensor(Protocol):
         ...
 
 
+@runtime_checkable
+class ClosesOntoThePart(Protocol):
+    """Capability extension: the hand closes until its fingers stop on the part, held there by its own force, and says it
+    did (a Robotiq's ``gOBJ``). A grasp sends it as far closed as it goes, and the stop is the grip: told the part's
+    measured width less a millimetre, the owner's Robotiq stopped at that width beside a part a little narrower than it
+    read and lifted nothing (2026-10-14), where the hand that toggles closed on one output had lifted it.
+
+    ``closes_onto_the_part`` is read as ``is True``, so a double that answers every attribute is not taken for one.
+    """
+
+    @property
+    def closes_onto_the_part(self) -> bool:
+        """``True`` where the hand stops on what it closes on, by its own force, and measures that it did."""
+        ...
+
+
+def closes_onto_the_part_of(gripper: object) -> bool:
+    """Whether ``gripper`` closes until its fingers stop on the part (:class:`ClosesOntoThePart`)."""
+    return isinstance(gripper, ClosesOntoThePart) and getattr(gripper, "closes_onto_the_part", False) is True
+
+
 def toggle_without_sensor_of(gripper: object) -> TogglesWithoutSensor | None:
     """``gripper`` where it is a hand that toggles with no sensor (:class:`TogglesWithoutSensor`), else ``None``."""
     if isinstance(gripper, TogglesWithoutSensor) and getattr(gripper, "toggles_without_sensor", False) is True:
@@ -320,6 +344,10 @@ def why_toggle_count_unknown(gripper: object) -> str:
 #: How near its widest a gripper that measures its width has to read to count as open, millimetres: the 2 mm the push
 #: reads its jaws open by (``grasping.recovery.push_motion.JAWS_OPEN_TOLERANCE_MM``).
 OPEN_WITHIN_MM = 2.0
+#: How much wider than the hand reads them back the guard holds the fingers of a hand that opens only as needed (lever
+#: G), millimetres: the Robotiq's position count is 0.2 mm a step over the Hand-E's stroke, and a reading never stands
+#: the fingers nearer the part than they are. The calculator holds a grasp's fingers this much wider than it plans them.
+FINGER_OPENING_SLACK_MM = 0.5
 
 
 def why_not_known_open(gripper: object) -> str:

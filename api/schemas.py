@@ -543,8 +543,9 @@ class TaskOptionsIn(BaseModel):
     blocker_into_the_place: bool | None = None
     #: Keep each pick's looks on disk. The console asks for them on every task it starts (the owner, 2026-10-08 night).
     record_views: bool = False
-    #: A camera place only: the air over the rim when the jaws open, 10-50 mm; null means 20.
-    rim_air_mm: float | None = Field(default=None, ge=10.0, le=50.0)
+    #: A camera place only: the air over the rim when the jaws open, 0-50 mm; null means the cell's
+    #: ``robot.place.rim_air_mm`` (20 as shipped).
+    rim_air_mm: float | None = Field(default=None, ge=0.0, le=50.0)
     #: A camera place found by a wrist camera only: how the part is carried to it (:data:`CarryName`), the owner's
     #: switch of 2026-10-08 night ("direkt über die Kante tragen"). Null: the cell's ``robot.place.carry``.
     carry: CarryName | None = None

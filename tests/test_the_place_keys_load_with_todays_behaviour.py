@@ -1,7 +1,7 @@
 """The ``robot.place`` keys load, are written down, and as shipped do what a task did before them (2026-10-08 night).
 
-Every key of the block defaults to today's place: the jaws open over a box's rim, the hang hangs from the declared
-support, every part goes to the one spot of a flat place, the part is carried via the bin's look. A cell turns each on
+Every key of the block defaults to today's place: the jaws open over a box's rim, 20 mm over it (``rim_air_mm``, the
+owner's 0 to 50 of 2026-10-14), every part goes to the one spot of a flat place, the part is carried via the bin's look. A cell turns each on
 for itself; the owner's ranges are refused at load where a cell writes past them. One key is on as shipped, the owner's
 word of 2026-10-09: a bin the check before a drop lost is looked for again (``relocate``); off, the part goes back and
 the task asks, as before.
@@ -24,7 +24,7 @@ class ThePlaceBlockTests(unittest.TestCase):
         self.assertEqual("over_the_rim", place.release_in_a_box)
         self.assertEqual(30.0, place.below_the_rim_mm)
         self.assertEqual(10.0, place.opening_margin_mm)
-        self.assertEqual("declared_support", place.part_bottom)
+        self.assertEqual(20.0, place.rim_air_mm)
         self.assertIs(False, place.side_by_side)
         self.assertEqual(20.0, place.spacing_margin_mm)
         self.assertEqual((3, 3, None), (place.grid.rows, place.grid.columns, place.grid.spacing_mm))
@@ -36,12 +36,12 @@ class ThePlaceBlockTests(unittest.TestCase):
         from src.config.schema.robot import RobotConfig
 
         robot = RobotConfig.model_validate({"place": {
-            "release_in_a_box": "below_the_rim", "below_the_rim_mm": 45.0, "part_bottom": "measured",
+            "release_in_a_box": "below_the_rim", "below_the_rim_mm": 45.0, "rim_air_mm": 0.0,
             "side_by_side": True, "grid": {"rows": 2, "columns": 4, "spacing_mm": 90.0}, "carry": "over_the_rim",
             "relocate": False}})
 
-        self.assertEqual(("below_the_rim", 45.0, "measured", True, "over_the_rim", False),
-                         (robot.place.release_in_a_box, robot.place.below_the_rim_mm, robot.place.part_bottom,
+        self.assertEqual(("below_the_rim", 45.0, 0.0, True, "over_the_rim", False),
+                         (robot.place.release_in_a_box, robot.place.below_the_rim_mm, robot.place.rim_air_mm,
                           robot.place.side_by_side, robot.place.carry, robot.place.relocate))
         self.assertEqual((2, 4, 90.0), (robot.place.grid.rows, robot.place.grid.columns, robot.place.grid.spacing_mm))
 
@@ -52,6 +52,9 @@ class ThePlaceBlockTests(unittest.TestCase):
 
         for name, place in (("9 mm under the rim", {"below_the_rim_mm": 9.0}),
                             ("51 mm under the rim", {"below_the_rim_mm": 51.0}),
+                            ("air under the rim", {"rim_air_mm": -1.0}),
+                            ("51 mm of air over the rim", {"rim_air_mm": 51.0}),
+                            ("the hang's switch it no longer has", {"part_bottom": "measured"}),
                             ("a release nobody knows", {"release_in_a_box": "into_the_floor"}),
                             ("a carry nobody knows", {"carry": "sideways"}),
                             ("a grid of no rows", {"grid": {"rows": 0}}),

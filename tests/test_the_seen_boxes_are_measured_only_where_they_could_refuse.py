@@ -211,5 +211,30 @@ class OnlyThePairsThatCouldRefuseAreMeasuredTests(unittest.TestCase):
         del hand, open_mm
 
 
+class AHandThatOpensAsNeededIsJudgedWhereItsFingersStandTests(unittest.TestCase):
+    """Lever G: a hand told a width comes down with its fingers that wide open, and the guard holds them there
+    (``FINGER_OPENING_SLACK_MM``). Asked at the opening the envelope stands open at, a narrow grasp's finger was judged
+    where it never stood: on the owner's Robotiq picks of the replay bank (2026-10-14) the guard refused the first try at
+    the part's own smeared edge, which the fully open finger cleared."""
+
+    def test_each_hand_is_judged_at_its_own_opening(self) -> None:
+        hand, open_mm = _hand()
+        finger = next(box for box in hand.collision_boxes(open_mm) if box.label.startswith("finger")
+                      and float(box.min_corner_mm[0]) > 0.0)
+        tip = CENTRE[2] - float(finger.max_corner_mm[2])
+        # Two thin posts by the part, one where the narrow finger comes down, one where the fully open one does.
+        narrow_post = _box(CENTRE + (17.0, 0.0, 0.0) + (0.0, 0.0, tip - CENTRE[2] + 4.0), (1.0, 3.0, 4.0))
+        open_post = _box(CENTRE + (32.0, 0.0, 0.0) + (0.0, 0.0, tip - CENTRE[2] + 4.0), (1.0, 3.0, 4.0))
+        down = np.array([[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]])
+        positions, rotations = np.stack([CENTRE, CENTRE]), np.stack([down, down])
+        for post, narrow_refused, open_refused in ((narrow_post, 1, 0), (open_post, 0, 1)):
+            envelope = _envelope([post])
+            with self.subTest(post=post.centre_mm[0] - CENTRE[0]):
+                self.assertEqual([narrow_refused, open_refused],
+                                 envelope.refuses_many(positions, rotations, np.array([30.0, open_mm])).tolist())
+                # Without openings every hand stands as wide as the envelope.
+                self.assertEqual([open_refused, open_refused], envelope.refuses_many(positions, rotations).tolist())
+
+
 if __name__ == "__main__":
     unittest.main()

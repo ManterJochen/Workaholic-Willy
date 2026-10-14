@@ -45,10 +45,13 @@ weights, no robot, and exits 0 after the frame or 1 with one sentence for an unk
 | `SetDown` | `located.set_down(i, grasp=, part_bottom_mm=scene.part_bottom_mm, air_mm=5.0)` | `pose`, `reason` | the place pose over the middle of object i's top: its top (95th percentile of the seen surface), plus the part's hang below the grasp, plus the air; `pose` is `None`, with the `reason`, where it cannot be measured |
 | `LocatedObject` | an entry of `located.objects` | | label, score, box, mask, points in BASE and their per-axis median centre |
 | `RealSenseVisionPerceptionSource` | `RealSenseVisionPerceptionSource(streamer=, backend=, prompt=)` | `acquire()` | one `PerceptionFrame` for the pick loop |
+| `CapturedFrame` | `capture(camera, robot)` (a wrist camera, the arm at rest) or `capture(camera)` (fixed), `locator.capture()` | `pixel_to_base(frame, u, v, plane=None)`, `pixels_to_base(frame, pixels)` | `PixelPoint`: a pixel of your own in BASE and in the TOOL frame, its viewing ray met with a plane fit robustly to the depth about it, never one pixel's depth, or with a plane named; its normal, the window's measured share and the plane's spread; `PixelRefused` with its `reason` where there is none (below) |
+| `PixelPoint` | an entry of what `pixels_to_base` returns | `tcp_above(point.base_mm, point.normal, offset_mm)` | a TCP pose proposed over it, square to its surface, the tool's +X along base -Y; nothing moves |
 
 The locator never opens or releases the camera the caller owns. `Locator`, `Located` and `LocatorRefused`
-come from `willy`, the rest from `src.robot.perception`. No orientation is estimated (`LocatedOrientation`
-says so), and an empty result reads the same as a failed detector, which `print(located)` says.
+come from `willy`, and so do `capture`, `CapturedFrame`, `pixel_to_base`, `pixels_to_base`, `PixelPoint`,
+`PixelRefused` and `tcp_above`; the rest from `src.robot.perception`. No orientation is estimated
+(`LocatedOrientation` says so), and an empty result reads the same as a failed detector, which `print(located)` says.
 
 **A class list in one locate** (the sorting package, 2026-10-09). A task that places into several bins finds them
 all in one detector call: `located = locator.locate(class_list_prompt(["yellow bin", "blue bin"]))`
@@ -132,6 +135,17 @@ Without a named axis, the cell's `robot.natural_closing_axis` turns every grasp 
 from the robot config handed in: `both_faces` judges the turned grasp, and its refusal names the jaw after
 the turn. Hand `look_around` and `located.scene` the same tree.
 
+### A pixel of your own in BASE
+
+[`pixel_to_base.py`](pixel_to_base.py) is for a program that finds its point in the colour image itself (a pen
+stroke, a mark, a marker's corner) and needs no detector: `capture(camera, robot)` takes the frame a pick takes
+(`Locator.capture()`, the backend grounding nothing), the arm's steady gate asked first, and keeps it whole;
+`pixel_to_base(frame, u, v)` meets the pixel's viewing ray with the surface the 15 x 15 window about it measured
+(the surface its own depth lies on, else the one more than half the window shows; every point judged along its own
+ray, the plane fit by least squares to a band that narrows to its points' deviation), or with `plane=` you name;
+`tcp_above` proposes the TCP over the point, moving nothing. The whole of it, the transforms the frame keeps, the
+cell lock and the numbers: [guide 03](../../../docs/guide/03-calibration.md), 4.5.
+
 ### The source a pick perceives through
 
 A real cell hands this source to its pick service; build one to read a `PerceptionFrame` yourself:
@@ -156,6 +170,7 @@ What `acquire()` does with a frame:
 | Step | Behaviour |
 |---|---|
 | Warm-up | discards `warmup_grabs` frames, 5 by default (`PICK_FRAME_WARMUP_GRABS`), so auto exposure settles |
+| Depth burst | the depth is the median of `burst_grabs` grabs after the warm-ups, 7 by default (`PICK_FRAME_BURST_GRABS`, `burst_depth`), kept where more than half of them read the pixel: a speck or an edge's flicker fewer read is out, a hole most read is filled; the colour is the last grab's, the stamp spans the burst, and one log line says what the median took out and filled and how long it took |
 | Lens | the device's own matrix; `intrinsics=` overrides it, and `source.intrinsics_source` says `factory` or `override` |
 | Depth | published as the sensor measured it, holes (0) included; where a grasp is anchored is set by `robot.grasping.geometry` |
 | Masks | used exactly as segmented; `mask_completion=` can fill them to a box (see below) |
@@ -275,6 +290,8 @@ on the cell's recorded frames and noted in the module.
 | `LocatorRefused` | `look_around` with a robot that keeps no robot section, or a hand that is not a parallel jaw | build the robot with `Robot.from_tree`; use `locate()` for another hand |
 | `LocatorRefused` from `scene(i)` or `set_down(i)` | the `Located` was refused: a look not reached, a stopped controller, or with `both_faces` a contact face no look saw | read `located.refused`; nothing is planned on it |
 | `PerceptionFrameMoved` | a wrist camera could not take a still frame within its attempts | keep the arm still at the shutter; the rig's `shutter_motion_tolerance_*` sets how still |
+| `LocatorRefused` from `capture` | a wrist camera and no robot, a robot with no robot section or not connected, an arm its steady gate says moves, a rig that does not align its depth to its colour | capture inside `with robot.connected():`, the arm standing still |
+| `PixelRefused` | a pixel off the image (`outside`), too little depth about it (`no_depth`), no one surface there (`no_surface`), a ray along the plane (`parallel`), a plane behind the camera (`behind`) | read `reason`; where the depth has none, name the plane (`plane=`) |
 | `ValueError` | `set_prompt("")`, or a source built with neither `backend=` nor `detector=` and `segmenter=` | pass a phrase, or a backend |
 | `RuntimeError` | `acquire()` on a device that reports no lens matrix, with no `intrinsics=` | open the camera first, or pass a calibrated matrix |
 
@@ -309,6 +326,7 @@ The legend is the guide's [evidence levels](../../../docs/guide/README.md#what-v
 | The live source, the locator and the wrist shutter check | measured on a real camera setup |
 | Prompt, detect, segment, masked cloud on the pick path | measured on a real camera setup |
 | Mask completion default `none` | measured on a real camera setup |
+| `capture`, `pixel_to_base`, `pixels_to_base`, `tcp_above` | pinned by tests on ray-cast frames (`tests/test_a_pixel_of_your_own_lands_in_base.py`): 1e-6 mm on exact depth, 0.5 mm on whole millimetres; never run on the cell, where example 18 is its check |
 | `look_around`: the fused looks, `both_faces`, the generated view, the held frames | pinned by tests with fake arms and cameras (`tests/test_a_located_part_is_looked_at_from_every_look.py`); never touched hardware |
 | The colour check and the label mapping | rule checked offline on 9 of the cell's recorded home views (142 sightings); pinned by tests on painted patches and a ray-cast mat (`tests/test_a_task_picks_the_grey_parts_and_ends_without_a_long_search.py`); not yet run on the cell (`colour_check: log` first) |
 | The clipped pixels left out (`colour_check_clipped: exclude`) | measured offline through `judge_colour` on the cell's 31 recorded looks of 2026-10-07 (orange 53 to 89 of 89, every other part as before); pinned by tests on painted patches (`tests/test_the_colour_check_leaves_clipped_pixels_out.py`); no red part measured; not yet run on the cell |
@@ -324,6 +342,7 @@ camera on a desk, pointed at the real parts, through the exerciser above.
 | File | Holds |
 |---|---|
 | [`locator.py`](locator.py) | `Locator`, `Located`, `LocatedObject`, `LocatedOrientation`, `LocatorRefused`, `SetDown`, `Measured` |
+| [`pixel_to_base.py`](pixel_to_base.py) | `capture`, `CapturedFrame`, `pixel_to_base`, `pixels_to_base`, `PixelPoint`, `PixelRefused`, `tcp_above`: a pixel of your own in BASE, and a TCP pose proposed over it |
 | [`realsense_source.py`](realsense_source.py) | `RealSenseVisionPerceptionSource`, the live camera source of a real cell; `kept_out_pixels` and `painted_copy`, the regions a task keeps out painted over the detector's copy of a frame |
 | [`colour_check.py`](colour_check.py) | `colour_named`, `judge_colour`, `ColourVerdict`, `ColourCheck`, `ColourClipped`, `CLIPPED_AT`, `ask_colour`, `refused_label`: the colour a phrase names against a part's pixels |
 | [`kept_scene.py`](kept_scene.py) | `KeptScene`, `KeptPart`, `Following`, `Accepted`: the parts a task kept, found again on a new frame with no detector, or why not |
@@ -340,6 +359,7 @@ camera on a desk, pointed at the real parts, through the exerciser above.
 - The simulated sources this mirrors: [`src/willy_sim/`](../../willy_sim/README.md). A physical cell:
   [`real_cell`](../execution/real_cell/README.md) and [the first pick](../../../docs/runbooks/real_cell_first_pick.md).
 - Tests: [`test_locator.py`](../../../tests/test_locator.py), [`test_perception_shutter_stamp.py`](../../../tests/test_perception_shutter_stamp.py),
+  [`test_a_pixel_of_your_own_lands_in_base.py`](../../../tests/test_a_pixel_of_your_own_lands_in_base.py),
   [`test_realsense_perception_source.py`](../../../tests/test_realsense_perception_source.py),
   [`test_a_part_of_another_colour_is_no_target.py`](../../../tests/test_a_part_of_another_colour_is_no_target.py),
   [`test_a_kept_scene_follows_only_what_stands_where_it_stood.py`](../../../tests/test_a_kept_scene_follows_only_what_stands_where_it_stood.py),

@@ -208,6 +208,7 @@ from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
 from src.robot.grasping.generation._support_footprint_stage import FINE_SEARCH_DEFERRED, FINE_SEARCH_KEY
 from src.robot.grasping.generation.calculator import GraspCalculator
 from src.robot.grasping.generation.parts_beside import LABEL as PART_BESIDE_LABEL
+from src.robot.grasping.generation.parts_beside import LEAST_ACROSS_MM as PART_BESIDE_LEAST_ACROSS_MM
 from src.robot.grasping.generation.parts_beside import parts_beside
 from src.robot.grasping.generation.support_footprint import JAW_SIDE_ROOM_MM
 from src.robot.grasping.types.perception import (
@@ -320,6 +321,9 @@ SURFACE_FLAT_MM = 20.0
 #: bench, 2026-10-06). Twelve until 2026-10-13: with the body's grasps ranked in beside SFE's, the twelve tried left out
 #: SFE grasps the guard admits, in 7 of the owner's Tuesday picks (the replay bank).
 GRASPS_TRIED_PER_ATTEMPT: int = 24
+#: How far over a part's top a point of something else over its outline stands for the part to lie under it,
+#: millimetres (:meth:`BinPickingOrchestrator._under_another`): over the depth's noise and a part's smeared rim.
+_UNDER_MM: float = 10.0
 #: How far a cuRobo plan to a grasp's standoff may swing a joint past its span while the first pass of the tries keeps the
 #: arm's branch, degrees (the owner's R2, 2026-10-08): a plan past it is a detour there, and its grasp waits for the
 #: grasps that keep the branch, as one whose standoff only another branch reaches does. Outside the first pass the
@@ -964,6 +968,9 @@ class _FrameContext:
     support_model: Any
     wall_cam: "np.ndarray | None"
     other_masks: tuple[Any, ...]
+    #: The pick's other looks (``scene_obstacles.SceneView``): what they show beside a part, which the guard holds too,
+    #: and what they saw past; () for a pick of one look.
+    scene_views: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -1282,19 +1289,16 @@ def segmentation_offer_from_frame(
     )
 
 
-#: Every how many millimetres a named part's surface is offered in BASE: the world's own thinning voxel's size.
-_NAMED_VOXEL_MM = 5.0
-
-
 def _named_points_base(
     frame: "PerceptionFrame", segmentations: "tuple[Any, ...]", target_index: "int | None",
     camera_to_base_mm: "np.ndarray | None",
 ) -> "tuple[tuple[str, np.ndarray], ...]":
-    """Every segmentation but the target, its label and its surface in BASE thinned to a :data:`_NAMED_VOXEL_MM` voxel,
-    and every part beside the named ones read off the depth (``PerceptionFrame.parts_beside``) under
-    ``parts_beside.LABEL``; none where the frame cannot be placed."""
+    """Every segmentation but the target, its label and its surface in BASE (``scene_obstacles.named_surface``), and
+    every part beside the named ones read off the depth (``PerceptionFrame.parts_beside``) under ``parts_beside.LABEL``;
+    none where the frame cannot be placed."""
     if camera_to_base_mm is None or not segmentations:
         return ()
+    from src.robot.grasping.generation.scene_obstacles import named_surface
     from src.robot.grasping.multiview.scene_geometry import to_base_mm
 
     surface = getattr(frame, "surface_depth_map", None)
@@ -1304,16 +1308,13 @@ def _named_points_base(
         mask = getattr(seg, "mask", None)
         if index == target_index or mask is None:
             continue
-        base = to_base_mm(np.asarray(mask).astype(bool), depth, frame.intrinsics, camera_to_base_mm)
-        if not base.shape[0]:
-            continue
-        _, first = np.unique(np.floor(base / _NAMED_VOXEL_MM).astype(np.int64), axis=0, return_index=True)
-        named.append((str(getattr(seg, "label", "") or f"object_{index}"), base[np.sort(first)]))
-    for mask in getattr(frame, "parts_beside", ()) or ():
-        base = to_base_mm(np.asarray(mask).astype(bool), depth, frame.intrinsics, camera_to_base_mm)
+        base = named_surface(to_base_mm(np.asarray(mask).astype(bool), depth, frame.intrinsics, camera_to_base_mm))
         if base.shape[0]:
-            _, first = np.unique(np.floor(base / _NAMED_VOXEL_MM).astype(np.int64), axis=0, return_index=True)
-            named.append((PART_BESIDE_LABEL, base[np.sort(first)]))
+            named.append((str(getattr(seg, "label", "") or f"object_{index}"), base))
+    for mask in getattr(frame, "parts_beside", ()) or ():
+        base = named_surface(to_base_mm(np.asarray(mask).astype(bool), depth, frame.intrinsics, camera_to_base_mm))
+        if base.shape[0]:
+            named.append((PART_BESIDE_LABEL, base))
     return tuple(named)
 
 
@@ -1613,9 +1614,8 @@ class BinPickingOrchestrator:
     #: selector (``target_ordering``), which ranks every part's result.
     lazy_objects: bool = False
     #: The score a part's best grasp needs for :attr:`lazy_objects` to take it at once
-    #: (``robot.grasping.good_part_score``): a full SFE result scores about 0.8 on the bench, one the fine search found
-    #: about 0.57.
-    accept_score: float = 0.75
+    #: (``robot.grasping.good_part_score``): the body's best grasp of a part scores about 0.67 on the replay bank.
+    accept_score: float = 0.6
     #: Whether SFE's fine search waits while another part may have a full result (``robot.grasping.fine_pass_waits``):
     #: a part is computed without it, except the last where no part has a full result yet, and a part whose coarse grid
     #: found few grasps waits; it gets the fine search only where no part has a full result. ``False``, the default,
@@ -5394,10 +5394,18 @@ class BinPickingOrchestrator:
     def _a_surface_not_a_part(
         self, frame: PerceptionFrame, index: int, points: "Maybe[np.ndarray | None]" = UNSET,
     ) -> str:
-        """Why segmentation ``index`` is a surface the parts lie on and no part, or ``""``: wider than
+        """Why segmentation ``index`` is a surface the parts lie on or stand against and no part, or ``""``: wider than
         :data:`SURFACE_SPAN_MM` across in BASE and flatter than :data:`SURFACE_FLAT_MM` (the spread of its heights,
-        10th to 90th percentile). No hand this stack carries grips across that span. ``points`` is its surface in BASE
-        where the caller read it already (:meth:`_surface_points_of`)."""
+        10th to 90th percentile), which no hand this stack carries grips across; or a strip hovering over the parts:
+        its lowest point (its 5th percentile) higher over the bench the camera world declares
+        (``support_plane_top_mm``; none where the arm holds no such world) than a part may stand
+        (``perceived.PART_SIZED_MM``) and its footprint thinner than a part (``parts_beside.LEAST_ACROSS_MM``), the
+        two rules a part beside is held to (``parts_beside.why_no_part_beside``). The deep crate of 2026-10-14: the
+        detector named two pieces of the crate's rim a cube, a 7 mm strip at 192 to 196 mm (14:04, every grasp of it
+        refused) and its 13 mm lip at 162 to 205 mm (14:08, the hand closed on the crate), each standing apart from
+        the parts, so each was computed first. Parts on a raised table stand as high (the industrial parts of
+        2026-10-13 at 13:11, 201 to 221 mm, 23 to 72 mm across) and are parts. ``points`` is its surface in BASE where
+        the caller read it already (:meth:`_surface_points_of`)."""
         if not chosen(points):
             points = self._surface_points_of(frame, index)
         if points is None or len(points) < 50:
@@ -5408,6 +5416,17 @@ class BinPickingOrchestrator:
         if span > SURFACE_SPAN_MM and flat < SURFACE_FLAT_MM:
             return (f"it is {span:.0f} mm across and {flat:.0f} mm high in its spread: a surface the parts lie on "
                     "(a mat, a table, a tray), not a part")
+        from src.robot.safety.planning.perceived import PART_SIZED_MM  # noqa: PLC0415 (the world's rule)
+
+        limits = getattr(getattr(self.arm, "live_planner_world", None), "limits", None)
+        bench = getattr(limits, "support_plane_top_mm", None)
+        low = float(np.percentile(pts[:, 2], 5))
+        if bench is not None and low - float(bench) > PART_SIZED_MM[1]:
+            narrow = _footprint_short_side_mm(pts, np.array([0.0, 0.0, 1.0]))
+            if narrow is not None and narrow < PART_BESIDE_LEAST_ACROSS_MM:
+                return (f"its lowest point stands {low - bench:.0f} mm over the bench, more than the "
+                        f"{PART_SIZED_MM[1]:.0f} mm a part stands, on a footprint {narrow:.0f} mm across: a strip "
+                        "hovering over the parts (a box's rim, a wall), not a part")
         return ""
 
     def _surface_points_of(self, frame: PerceptionFrame, index: int) -> "np.ndarray | None":
@@ -6504,7 +6523,7 @@ class BinPickingOrchestrator:
             getattr(frame, "parts_beside", ()) or ())
         ctx = _FrameContext(frame=frame, camera_to_base=camera_to_base, external_scene_cam=external_scene_cam,
                             fused_scene=fused_scene, support_model=support_model, wall_cam=wall_cam,
-                            other_masks=tuple(other_masks))
+                            other_masks=tuple(other_masks), scene_views=self._scene_views(frame))
         best_success: GraspResult | None = None
         best_index: int | None = None
         last_failure: GraspResult | None = None
@@ -6791,6 +6810,8 @@ class BinPickingOrchestrator:
         if self.sfe_workers is not None:
             # SFE's units on the cell's workers, for this call and every one that asks again of the same frame.
             extra_kwargs["sfe_workers"] = self.sfe_workers
+        if ctx.scene_views:
+            extra_kwargs["scene_views"] = ctx.scene_views
         with self._asking_more_along_the_axis(calculator) as cap, self._fine_search_waiting(calculator, not fine):
             result = calculator.compute_result(
                 seg,
@@ -6813,6 +6834,17 @@ class BinPickingOrchestrator:
         )
         self._results_by_object[idx] = ranked
         return ranked
+
+    def _scene_views(self, frame: Any) -> tuple[Any, ...]:
+        """The pick's looks other than the one of ``frame`` (``scene_obstacles.SceneView``), each its depth and
+        placement; the calculator leaves the part it grasps out of them as the guard does. Empty for a pick of one
+        look."""
+        from src.robot.grasping.generation.scene_obstacles import SceneView  # noqa: PLC0415
+
+        return tuple(SceneView(depth_mm=np.asarray(look.depth, dtype=np.float64), intrinsics=look.frame.intrinsics,
+                               camera_to_base=look.camera_to_base)
+                     for look in self._look_views
+                     if look.depth is not None and look.camera_to_base is not None and look.frame is not frame)
 
     def _lazy_choice(
         self, ctx: _FrameContext, scene: "list[Any] | tuple[Any, ...]", eligible: list[int],
@@ -6845,10 +6877,13 @@ class BinPickingOrchestrator:
                 supports[idx] = self._resolve_support(obj.segmentation, ctx.frame, ctx.camera_to_base,
                                                       self._looks_cloud_of(obj), ctx.support_model)
             keys = {idx: self._isolation_key(ctx, scene[idx], supports[idx], surfaces.get(idx), idx) for idx in order}
-            order.sort(key=keys.__getitem__)
+            # A part something stands on after the parts nothing stands on: taken first, it pulls the pile from under
+            # what lies on it.
+            under = {idx: self._under_another(ctx, scene[idx]) for idx in order}
+            order.sort(key=lambda idx: (keys[idx][0], under[idx], *keys[idx][1:]))
             _LOG.info("the parts are computed in the order they stand apart, the first good one taken: %s", "; ".join(
-                f"part {idx} ({'wider than the stroke' if keys[idx][0] else 'fits'}, crowded {keys[idx][1]:.1f})"
-                for idx in order))
+                f"part {idx} ({'wider than the stroke' if keys[idx][0] else 'fits'}"
+                f"{', under another' if under[idx] else ''}, crowded {keys[idx][1]:.1f})" for idx in order))
         waits = self.fine_search_waits
         deferred: list[int] = []
         held = False
@@ -6995,14 +7030,10 @@ class BinPickingOrchestrator:
         from src.robot.grasping.multiview.scene_geometry import to_base_mm  # noqa: PLC0415
 
         try:
-            mask = np.asarray(obj.segmentation.mask).astype(bool)
-            measured = getattr(ctx.frame, "surface_depth_map", None)
-            depth = np.asarray(obj.depth_map if obj.promoted or measured is None else measured, dtype=np.float64)
-            intrinsics = np.asarray(obj.intrinsics, dtype=np.float64).reshape(3, 3)
-            if mask.shape != depth.shape[:2]:
+            read = self._part_pixels(ctx, obj)
+            if read is None:
                 return 0.0
-            with np.errstate(invalid="ignore"):
-                valid = np.isfinite(depth) & (depth > 0.0)
+            mask, depth, intrinsics, valid = read
             rows, cols = np.nonzero(mask & valid)
             if not rows.size:
                 return 0.0
@@ -7019,6 +7050,50 @@ class BinPickingOrchestrator:
         if not points.shape[0]:
             return 0.0
         return float(np.mean(points[:, 2] > float(support_mm) + _CROWDING_OVER_MM))
+
+    @staticmethod
+    def _part_pixels(ctx: _FrameContext, obj: Any) -> "tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None":
+        """Object ``obj``'s mask, its camera's measured depth and intrinsics, and where that depth reads, as the part
+        order reads them (:meth:`_crowding`, :meth:`_under_another`); ``None`` where mask and depth do not fit."""
+        mask = np.asarray(obj.segmentation.mask).astype(bool)
+        measured = getattr(ctx.frame, "surface_depth_map", None)
+        depth = np.asarray(obj.depth_map if obj.promoted or measured is None else measured, dtype=np.float64)
+        if mask.shape != depth.shape[:2]:
+            return None
+        with np.errstate(invalid="ignore"):
+            valid = np.isfinite(depth) & (depth > 0.0)
+        return mask, depth, np.asarray(obj.intrinsics, dtype=np.float64).reshape(3, 3), valid
+
+    def _under_another(self, ctx: _FrameContext, obj: Any) -> bool:
+        """Whether something stands on object ``obj``: a point its camera saw in the window of its mask, not its own,
+        over its outline in the plane (the convex hull of its points) and :data:`_UNDER_MM` or more over its top (the
+        95th percentile of its points). ``False`` where nothing can be read."""
+        if ctx.camera_to_base is None:
+            return False
+        from scipy.spatial import ConvexHull  # noqa: PLC0415
+
+        from src.robot.grasping.multiview.scene_geometry import to_base_mm  # noqa: PLC0415
+
+        try:
+            read = self._part_pixels(ctx, obj)
+            if read is None:
+                return False
+            mask, depth, intrinsics, valid = read
+            rows, cols = np.nonzero(mask & valid)
+            if rows.size < 3:
+                return False
+            placed = np.asarray(obj.camera_to_base, dtype=np.float64)
+            own = to_base_mm(mask & valid, depth, intrinsics, placed)
+            window = np.zeros(mask.shape, dtype=bool)
+            window[int(rows.min()):int(rows.max()) + 1, int(cols.min()):int(cols.max()) + 1] = True
+            others = to_base_mm(window & ~mask & valid, depth, intrinsics, placed)
+            high = others[others[:, 2] >= float(np.percentile(own[:, 2], 95.0)) + _UNDER_MM]
+            if not high.shape[0]:
+                return False
+            hull = ConvexHull(own[:, :2])
+        except Exception:  # noqa: BLE001 (a part whose outline cannot be read stands free, as the order of before)
+            return False
+        return bool(np.any(np.all(high[:, :2] @ hull.equations[:, :2].T + hull.equations[:, 2] <= 0.0, axis=1)))
 
     def _looks_cloud_of(self, obj: Any) -> "np.ndarray | None":
         """The object's cloud fused over a wrist pick's looks, while a look is ranked and it has one: what its support
@@ -7308,9 +7383,10 @@ class BinPickingOrchestrator:
                     # A move back that failed once it was sent may have moved the arm: that is no refusal before sending.
                     return replace(ended, report=report, tries=tuple(tries),
                                    refused=refused_all and ended.moved_back is None)
-            _LOG.info("try %d of %d: %s (rank %d of the look's grasps)", number, len(queue),
+            _LOG.info("try %d of %d: %s (rank %d of the look's grasps), %.1f mm across", number, len(queue),
                       "the grasp the look ranked first" if number == 1 else "the next grasp of the same look" if keeps
-                      or not keeps_branches else "a grasp of the same look that waited for its change of branch", rank)
+                      or not keeps_branches else "a grasp of the same look that waited for its change of branch", rank,
+                      float(getattr(candidate, "grip_width_mm", float("nan"))))
             if refused_ahead_last:
                 # The grasp before was refused before anything was sent: this one's line down is judged first against the
                 # boxes that refused it, in the world its judgement built, with no new frame (the owner, 2026-10-12: the
@@ -7589,13 +7665,15 @@ def _named_share(points: np.ndarray, named: np.ndarray) -> float:
 
 
 def _seen_refusals(result: Any) -> int:
-    """How many of SFE's tries for a part met a neighbour the camera saw (``support_footprint_refused``, B.1's
-    ``seen_fingers`` and ``seen_corridor``); 0 where the result says nothing of them."""
+    """How many of the tries for a part met a neighbour the camera saw (``scene_obstacles.refusal_counts``, SFE's and the
+    body's, B.1's ``seen_fingers`` and ``seen_corridor``); 0 where the result says nothing of them."""
+    from src.robot.grasping.generation.scene_obstacles import refusal_counts  # noqa: PLC0415
+
     telemetry = getattr(result, "telemetry", None)
-    refused = telemetry.get("support_footprint_refused") if isinstance(telemetry, Mapping) else None
-    if not isinstance(refused, Mapping):
+    if not isinstance(telemetry, Mapping):
         return 0
-    return int(sum(int(refused.get(key, 0) or 0) for key in ("seen_fingers", "seen_corridor")))
+    refused = refusal_counts(telemetry)
+    return int(refused.get("seen_fingers", 0) + refused.get("seen_corridor", 0))
 
 
 def _without_points_near(points_camera_mm: Any, near_base_mm: np.ndarray, camera_to_base: Any,

@@ -68,14 +68,21 @@ def colliding_point_indices(
     points = _points(points_mm)
     if points.shape[0] == 0:
         return (), ()
-    local = points_to_grasp_frame(points, pose)
+    boxes = model.collision_boxes(pose.grip_width_mm)
+    # Only the points a box could hold: none stands farther from the grasp than the box's farthest corner, its margin
+    # with it. A scene of every look of a pick is a few hundred thousand points, of which the hand reaches a few hundred.
+    reach = max((float(np.linalg.norm(np.maximum(np.abs(box.min_corner_mm), np.abs(box.max_corner_mm)) + float(margin_mm)))
+                 for box in boxes), default=0.0) + 1e-6
+    offset = points - np.asarray(pose.position_mm, dtype=np.float64)
+    near = np.flatnonzero(np.einsum("ij,ij->i", offset, offset) <= reach * reach)
+    local = points_to_grasp_frame(points[near], pose)
     hit_mask = np.zeros(points.shape[0], dtype=bool)
     labels: set[str] = set()
-    for box in model.collision_boxes(pose.grip_width_mm):
+    for box in boxes:
         inside = box.contains_local_points(local, margin_mm=margin_mm)
         if np.any(inside):
             labels.add(box.label)
-            hit_mask |= inside
+            hit_mask[near[inside]] = True
     return tuple(int(index) for index in np.flatnonzero(hit_mask)), tuple(sorted(labels))
 
 

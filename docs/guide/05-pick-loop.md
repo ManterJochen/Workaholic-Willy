@@ -173,7 +173,7 @@ only through space a depth ray saw. The policy lifts every grasp straight up (BA
 `fine_pass_waits`, each on as shipped; the owner's "speed first", 2026-10-08). A look's parts were computed one
 after another in the camera's order and the best grasp taken. Now they are computed in the order they stand
 apart, the parts the hand closes across first and the less crowded first, and the first whose result is full,
-carries no rescan reason and scores `good_part_score` (0.75) or more is taken; the rest are not computed. None
+carries no rescan reason and scores `good_part_score` (0.6) or more is taken; the rest are not computed. None
 good, the best is taken, as before. SFE's fine search (the approach every 7.5 degrees, each face's closing axis
 rolled inside the friction cone), most of what a boxed-in part costs, waits while another part may have a full
 result: a part whose coarse grid found fewer than three grasps gets it only where no part has a full result
@@ -771,14 +771,14 @@ with cell.connected():
 print(report)   # task FINISHED, 1 part placed, the arm back home
 ```
 
-- **Where it goes.** `PlaceAt(pose=...)` is a taught pose, and it says where the part's **bottom** is let go:
-  the tool goes there raised by the part's hang, the grasp height over the declared support, so every error
-  goes toward more air; with no grasp pose, `safety.planning_world.payload.length_mm` stands in. With
-  `robot.place.part_bottom: measured` the hang, at a pose and over a bin alike, is measured from what the part
-  stood on, the lowest surface the pick's looks read under its cloud or the cloud's lowest point where that is
-  lower, and a taught pose keeps 5 mm of air over it; where the looks read no surface under the part, the
-  declared support stands. From the declared support a part off a 55 mm mat was let go 85 to 92 mm over the
-  rim on the owner's cell. With
+- **Where it goes.** `PlaceAt(pose=...)` is a taught pose. Where the cell declares how far its parts hang
+  (`safety.planning_world.payload.length_mm`), it says where the part's **bottom** is let go: you teach the
+  fingertips there, and the tool goes there raised by how far the part reaches past them. Where the cell
+  declares none, the tool goes to the taught pose itself and the part hangs from it (the owner, 2026-10-14).
+  The hang, at a pose and over a bin alike, is measured part by part from what the part stood on, the lowest
+  surface the pick's looks read under its cloud or the cloud's lowest point where that is lower; where the looks
+  read no surface under the part, the declared support stands, and with no grasp pose the declared length. From
+  the declared support alone a part off a 55 mm mat was let go 85 to 92 mm over the rim on the owner's cell. With
   `robot.place.side_by_side` the parts of a flat place lie side by side, not piled: each at a spot of its own, its
   reach and `spacing_margin_mm` (20) from the others, a spot the camera reads free first, else the next spot of
   `robot.place.grid` (3 by 3 about the taught pose, along its tool's heading, the nearest first) the task has not
@@ -788,7 +788,8 @@ print(report)   # task FINISHED, 1 part placed, the arm back home
   tops), grounding the bin alone, since the parts are the picks' to count. The console hands a task the bin its
   last task kept for the same phrase, while the same cell, connection and config stand: that bin is looked at
   first, from its look, and kept with one look at its rim where it stood still, every look surveyed otherwise. The
-  task then drops each part at rim + hang + air (20 mm, `air_mm=` 10 to 50); a grasp within 5 degrees of vertical
+  task then drops each part at rim + hang + air (`air_mm=` 0 to 50, else `robot.place.rim_air_mm`, 20: "genau auf
+  Höhe der Kante" is 0; the hang none where the cell declares no `payload.length_mm`); a grasp within 5 degrees of vertical
   is turned about the vertical along `robot.natural_closing_axis`. With `robot.place.release_in_a_box:
   below_the_rim` (the owner: 1 to 5 cm under the rim) the part is set down `below_the_rim_mm` (30) under the rim
   instead, never lower than 10 mm over what the check before the drop reads inside the box, its floor or the parts
@@ -993,7 +994,7 @@ third column is what the cell then runs, the fourth what was checked before.
 | `models.pipeline.zero_shot.vlm.stop_at_answer_end` | `true` | `true` | 98 calls on the cell's frames, byte-identical |
 | `models.pipeline.zero_shot.vlm.prompt_lookup_tokens`, `text_prompt_lookup_tokens` | `0`, `0` | `10`, `10` | the desk's 4B; not byte-identical, said above |
 | `models.pipeline.zero_shot.vlm.decode_graphs` | `auto` | `auto` | the desk's 4B, 90 calls byte-identical; the 8B at the cell |
-| `robot.grasping.first_good_part`, `good_part_score`, `fine_pass_waits` | `true`, `0.75`, `true` | the defaults | tests on stand-in calculators and a ray-cast bench |
+| `robot.grasping.first_good_part`, `good_part_score`, `fine_pass_waits` | `true`, `0.6`, `true` | the defaults | tests on stand-in calculators and a ray-cast bench |
 | `robot.grasping.colour_check` | `on` | `on` | nine home views of the cell, offline |
 | `robot.grasping.colour_check_clipped` | `exclude` | `exclude`, the owner's choice (2026-10-09) | the cell's 31 recorded looks through `judge_colour`, offline; no red part among them |
 | `robot.grasping.geometry.footprint_rim_mm` with `inflate_mm` | `2.0` with `0.0`, the visual hull beside the rim | the defaults (the owner, 2026-10-09 evening) | 23 of the cell's recorded cubes through the calculator, offline, with and without knocked-out depth; ray-cast tests |
@@ -1013,7 +1014,7 @@ third column is what the cell then runs, the fourth what was checked before.
 | `robot.safety.planned_motion.planning_spheres`, `finetune_passes` | `""`, `3` | `lean`, `0` | the desk's GPU A/B, 191 moves |
 | `robot.safety.planning_world.register_in_place` | `false` | `true` | two planners on the desk's GPU, 1,000 configurations |
 | `robot.place.carry` (`rim_floor_margin_mm`) | `via_the_look` (`15`) | `over_the_rim`, the owner's choice | desk doubles; at the cell |
-| `robot.place.release_in_a_box`, `below_the_rim_mm`, `part_bottom` | `over_the_rim`, `30`, `declared_support` | `below_the_rim`, `30`, `measured` | desk doubles; at the cell |
+| `robot.place.release_in_a_box`, `below_the_rim_mm`, `rim_air_mm` | `over_the_rim`, `30`, `20` | `below_the_rim`, `30`, the owner's 0 to 50 | desk doubles; at the cell |
 | `robot.place.side_by_side` (`spacing_margin_mm`, `grid`) | `false` (`20`, 3 by 3) | `true` | desk doubles; at the cell |
 | `robot.place.relocate` | `true` | `true`, the owner's choice (2026-10-09) | desk doubles and a ray-cast bench; at the cell |
 

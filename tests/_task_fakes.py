@@ -1114,3 +1114,29 @@ def run_sort(plan: Any, picks: "Iterable[Pick | str]" = (), *, hooks: "Recording
 
 
 __all__.extend(["OnePhraseLocator", "SortPick", "SortingService", "placing", "run_sort"])
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# A cell that declares how far its parts hang
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+def declaring(arm: TaskArm, length_mm: "float | None", **place: Any) -> TaskArm:
+    """``arm`` keeping a tree that declares how far its carried parts hang past the fingertips
+    (``safety.planning_world.payload.length_mm``; ``None`` declares none), the bench at 0 and no container floor, its
+    parts set down as ``robot.place`` says (``place``, every other key its default). It names no hand, so the fingertips
+    reach nothing past the TCP.
+
+    Declared, a place stands the part's bottom where it says and the tool higher by the part's hang; undeclared, the
+    tool stands there, as on the doubles' cell that keeps no tree (the owner, 2026-10-14)."""
+    from src.config.schema.robot.place_schema import RobotPlaceConfig  # noqa: PLC0415
+
+    arm.config = SimpleNamespace(  # type: ignore[attr-defined]
+        place=RobotPlaceConfig(**place),
+        safety=SimpleNamespace(planning_world=SimpleNamespace(payload=SimpleNamespace(length_mm=length_mm))),
+        grasping=SimpleNamespace(support=SimpleNamespace(height_mm=0.0, container=SimpleNamespace(
+            floor_height_mm=None))))
+    return arm
+
+
+__all__.append("declaring")

@@ -10,6 +10,10 @@ standoff. Anything that cannot be so carries the part via the look, as before: a
 frames again, a bin unsure on that frame, a way the looks did not see, a line refused before anything was sent. A line
 that failed once sent ends the task where the arm stands with the part, as a carry to the look does. As shipped, every
 part goes via the look.
+
+The cell here declares how far its parts hang (``safety.planning_world.payload.length_mm``), so the part's bottom keeps
+that height, its 20 mm hang under the tool; a cell that declares none hangs nothing below the tool, which keeps it (the
+owner, 2026-10-14).
 """
 
 from __future__ import annotations
@@ -53,16 +57,17 @@ def _key(joints: JointPositions) -> tuple[float, ...]:
 
 def _carry(scene: "BinScene | None" = None, *, carry: str = "over_the_rim", again: "bool | None" = True,
            refuse: Any = None, looks: "tuple[Any, ...]" = (L1, L2), options: Any = None,
-           hooks: "RecordingHooks | None" = None) -> Any:
+           hooks: "RecordingHooks | None" = None, length_mm: "float | None" = 60.0) -> Any:
     """A task into the yellow bin its wrist camera found from L1, the cell's carry ``carry``, the pick's looks seeing
-    the bench as it stands when the pick looks; ``again`` None is a world that cannot hold a pick's frames again."""
+    the bench as it stands when the pick looks; ``again`` None is a world that cannot hold a pick's frames again. The
+    cell declares its parts reach ``length_mm`` past the fingertips; ``None`` declares none."""
     from src.robot.execution.task import PlaceAt
 
     log: list[Any] = []
     arm = TaskArm(log, fk_table={_key(L1): AT_L1, _key(L2): AT_L2}, refuse=refuse)
     if again is not None:
         arm.live_planner_world = AgainWorld(log, again=again)
-    arm.config = hande_tree(carry=carry)  # type: ignore[attr-defined]
+    arm.config = hande_tree(carry=carry, length_mm=length_mm)  # type: ignore[attr-defined]
     scene = scene if scene is not None else BinScene()
     locator = MeasuringLocator(scene, arm=arm, log=log)
     tcps = {_key(L1): AT_L1, _key(L2): AT_L2}
@@ -138,6 +143,21 @@ class ACarryOverTheRimTests(unittest.TestCase):
 
         over = _carried(ran)[1]
         self.assertAlmostEqual(200.0 + AIR_MM + 15.0 + GRASP_Z_MM, over[1][2], delta=1.0)
+
+    def test_on_a_cell_that_declares_no_length_the_tool_clears_the_post_by_the_air_and_the_margin(self) -> None:
+        """The owner, 2026-10-14: the part hangs from the TCP where the cell declares no length. The tool clears the
+        post by the air and the margin, and the line in ends the air over the rim."""
+        from src.robot.execution.task import TaskStop
+
+        scene = BinScene(in_front=[((275.0, -475.0, 100.0), (15.0, 15.0, 100.0))])
+        ran = _carry(scene, length_mm=None)
+
+        self.assertIs(TaskStop.FINISHED, ran.report.stop, ran.report.sentence)
+        self.assertNotIn(("joints", _key(L1)), _carried(ran), "the part stopped at the bin's look")
+        self.assertAlmostEqual(200.0 + AIR_MM + 15.0, _carried(ran)[1][1][2], delta=1.0)
+        line_in = [m for m in motions(ran.after("task.place_started")) if m[0] == "move"][1]
+        self.assertAlmostEqual(BIN_RIM_MM + AIR_MM, line_in[1][2], delta=0.5)
+        self.assertEqual(0.0, ran.hooks.of("task.drop_planned")[0]["hang_mm"])
 
 
 class TheCarryGoesViaTheLookTests(unittest.TestCase):

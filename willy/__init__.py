@@ -90,6 +90,14 @@ _HOME: dict[str, str] = {
     "RigNotCalibrated": "src.camera",
     "SweepOptions": "src.robot.execution.hand_eye",
     "print_sweep_progress": "src.robot.execution.hand_eye",
+    # A pixel of your own in BASE, from one frame, and a TCP pose proposed over it: no detector, nothing moves.
+    "CapturedFrame": "src.robot.perception.pixel_to_base",
+    "PixelPoint": "src.robot.perception.pixel_to_base",
+    "PixelRefused": "src.robot.perception.pixel_to_base",
+    "capture": "src.robot.perception.pixel_to_base",
+    "pixel_to_base": "src.robot.perception.pixel_to_base",
+    "pixels_to_base": "src.robot.perception.pixel_to_base",
+    "tcp_above": "src.robot.perception.pixel_to_base",
     # Hands seen by a camera: MediaPipe, optional and standalone.
     "HandGesture": "src.models.handdetection",
     "build_palm_detector": "src.models.handdetection",
@@ -190,6 +198,8 @@ else:  # pragma: no cover (the names as mypy reads them, each from the module th
     from src.robot.grasping.motion.grasp_motion import GraspMotion
     from src.robot.grasping.replay.runs import RecordLog
     from src.robot.perception.locator import Located, Locator, LocatorRefused, SetDown
+    from src.robot.perception.pixel_to_base import (
+        CapturedFrame, PixelPoint, PixelRefused, capture, pixel_to_base, pixels_to_base, tcp_above)
     from src.willy_sim.run_eih_demo import record_demo
     from src.willy_sim.run_m1_pick import run_gate
     from datagen.api import DatasetBuild

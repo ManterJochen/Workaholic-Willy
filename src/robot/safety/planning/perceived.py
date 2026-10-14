@@ -118,6 +118,7 @@ __all__ = [
     "has_depth",
     "seen_part_boxes",
     "self_filter_padding",
+    "target_body_points",
     "target_keep_out_box",
     "voxel_grid_extent",
 ]
@@ -1713,6 +1714,29 @@ def has_depth(depth_mm: Any) -> np.ndarray:
     depth = np.asarray(depth_mm, dtype=np.float64)
     with np.errstate(invalid="ignore"):
         return np.isfinite(depth) & (depth > 0.0)
+
+
+def target_body_points(points_base_mm: Any, *, tuning: WorldBuildTuning | None = None) -> np.ndarray:
+    """The target's points the camera world holds out as the part (:func:`target_keep_out_box`): the largest cluster on
+    the ``cluster_voxel_mm`` grid, 26 neighbours, the finite points of ``points_base_mm``. A piece of something else the
+    mask ran onto stands apart: on the owner's crate (2026-10-13, 10:00) a sliver of the crate's rim 60 mm off the part
+    raised SFE's prism to the rim's 193 mm, and its grasps closed on air 80 mm over the part.
+
+    Args:
+        points_base_mm: The target's points, ``(N, 3)`` BASE millimetres.
+        tuning: The camera world's tuning, for its ``cluster_voxel_mm``; ``None`` for the default.
+
+    Returns:
+        np.ndarray: The points of the largest cluster, ``(M, 3)``; empty where none is finite.
+    """
+    tuning = tuning or WorldBuildTuning()
+    points = np.asarray(points_base_mm, dtype=np.float64).reshape(-1, 3)
+    points = points[np.all(np.isfinite(points), axis=1)]
+    if points.shape[0] == 0:
+        return points
+    labels = _cluster(points, float(tuning.cluster_voxel_mm))
+    ids, counts = np.unique(labels, return_counts=True)
+    return points[labels == ids[int(np.argmax(counts))]]
 
 
 def target_keep_out_box(

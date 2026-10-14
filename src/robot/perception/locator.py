@@ -37,7 +37,8 @@ and the segmenter load their weights once for the cell, not once per camera.
 frame, taken as a locate takes it but with no detector, and per point of BASE the depth it should read there, the depth
 the frame measured at its pixel and that pixel's colour (:class:`Measured`). It says what the frame reads where the
 points should stand, never what stands there: a task reads a kept bin's rim with it before it asks the detector again.
-``Located.measure(points, image)`` reads the same off the frame a locate placed.
+``Located.measure(points, image)`` reads the same off the frame a locate placed. ``Locator.capture()`` takes such a frame
+and keeps it whole, for a program that finds its own pixels in the image (``src.robot.perception.pixel_to_base``).
 
 ``Locator.locate("yellow bin | blue bin")`` grounds a class list (``src.models.vlm.qwen.class_list_prompt``) in one call:
 each object carries the description its box named, an object no one description claims is ``ambiguous``, and
@@ -77,6 +78,7 @@ from src.robot.grasping.geometry.closing_axis import (
 from src.robot.grasping.multiview.scene_geometry import to_base_mm
 from src.robot.grasping.scene import Scene
 from src.robot.perception.colour_check import ColourCheck
+from src.robot.perception.pixel_to_base import CapturedFrame
 from src.robot.perception.realsense_source import RealSenseVisionPerceptionSource
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
@@ -1095,6 +1097,37 @@ class Locator:
         return _measured(points_base_mm, camera=str(getattr(self._camera, "rig_id", "camera")),
                          captured_at_s=float(frame.timestamp if frame.timestamp is not None else float("nan")),
                          depth_mm=depth, intrinsics=frame.intrinsics, camera_to_base=camera_to_base, rgb=frame.rgb)
+
+    def capture(self) -> CapturedFrame:
+        """One new frame kept whole, with no detector: the frame ``pixel_to_base`` finds a pixel of in BASE.
+
+        The frame is taken as :meth:`measure` takes one, through the same source, the backend grounding nothing, and is
+        kept whole: its colour image, its depth aligned to it, its lens, where its camera stood at the shutter, and on
+        the wrist the tool pose stamped there and the calibration's CAMERA to TOOL. ``willy.capture(camera, robot)``
+        builds the locator for it and asks the arm's steady gate first.
+
+        Returns:
+            CapturedFrame: The frame (``src.robot.perception.pixel_to_base``).
+
+        Raises:
+            PerceptionFrameMoved: A camera on the wrist and the tool would not hold still.
+            LocatorRefused: The frame cannot be taken or placed, or it carries no colour image.
+        """
+        rig_id = str(getattr(self._camera, "rig_id", "camera"))
+        frame, camera_to_base, depth = self._take(_DetectsNothing(), _MEASURE_PROMPT)
+        if frame.rgb is None:
+            raise LocatorRefused(f"camera {rig_id!r} handed a frame with no colour image, so none of its pixels can be "
+                                 "named")
+        wrist = self._tool_pose is not None
+        return CapturedFrame(
+            camera=rig_id,
+            captured_at_s=float(frame.timestamp if frame.timestamp is not None else float("nan")),
+            mounting="eye_in_hand" if wrist else "eye_to_hand",
+            # The source publishes the frame's colour as RGB; a frame keeps it as BGR, as the camera hands it.
+            color=np.asarray(frame.rgb)[..., ::-1], depth_mm=depth, intrinsics=frame.intrinsics,
+            camera_to_base_mm=camera_to_base, tcp_pose=frame.tool_pose if wrist else None,
+            camera_to_tool_mm=self._calibration.camera_to_tool().to_matrix() if wrist else None,
+        )
 
     def look_around(self, prompt: str, looks: "Look | None" = None, *, robot: Any, both_faces: bool = False,
                     record_views: bool = False, closing_axis: "Maybe[ClosingAxisLike]" = UNSET) -> Located:

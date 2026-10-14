@@ -184,6 +184,16 @@ class TheCloseWaitsAndReportsWhatItHoldsTests(unittest.TestCase):
         gate was skipped for the one gripper this project ships."""
         self.assertTrue(issubclass(GripperController, ObjectDetectingGripper))
 
+    def test_the_controller_closes_onto_the_part(self) -> None:
+        """2026-10-14: its fingers stop on the part at the force asked and gOBJ says so, so a grasp closes it as far as
+        it goes (``core.gripper.ClosesOntoThePart``) instead of to the part's width less a millimetre, which left the
+        owner's part unlifted."""
+        from src.robot.core.gripper import closes_onto_the_part_of
+
+        cfg = GripperConfig(min_width_mm=5.0, max_width_mm=50.0, closed_width_mm=0.0)
+        self.assertTrue(closes_onto_the_part_of(GripperController(cfg, ip="127.0.0.1",
+                                                                  driver_factory=_RecordingDriver)))
+
     def test_at_position_is_not_a_grasp(self) -> None:
         """⛔ THE DISTINCTION THE WHOLE REGISTER EXISTS FOR. gOBJ 3 means the fingers REACHED the
         commanded width, which on a close means they met and are holding nothing."""

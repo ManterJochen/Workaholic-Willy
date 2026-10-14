@@ -37,13 +37,17 @@ from src.robot.grasping.generation._support_footprint_stage import (
 from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps
 from src.robot.grasping.generation.footprint_hull import hull_points, unread_pixels
 from src.robot.grasping.generation.footprint_rim import footprint_rim
+from src.robot.core.gripper import FINGER_OPENING_SLACK_MM
 from src.robot.grasping.generation.scene_obstacles import (
     NO_GRASP_SAID,
     SceneObstacleRules,
     SceneObstacles,
+    SceneView,
     SeenEnvelope,
+    SeenInAnyFrame,
     corridor_seen_in,
     envelope_verdicts,
+    named_surface,
     least_part_height_mm,
     scene_obstacle_points,
     why_no_grasp,
@@ -183,6 +187,14 @@ def _validate_camera_to_base_transform(
             )
         return validate_transform(value.to_matrix(), name=name)
     return validate_transform(np.asarray(value, dtype=np.float64), name=name)
+
+
+
+def _planned_opening_of(score: GraspScoreBreakdown) -> float | None:
+    """How wide the jaws open before they close for ``score``'s grasp, where it was planned for jaws that open only as
+    needed (``score_components["support_footprint"]["open_width_mm"]``, lever G), millimetres; ``None`` for fully."""
+    value = ((getattr(score, "components", None) or {}).get("support_footprint") or {}).get("open_width_mm")
+    return float(value) if isinstance(value, (int, float)) and float(value) > 0.0 else None
 
 
 class GraspCalculator:
@@ -423,6 +435,10 @@ class GraspCalculator:
         self.axis_end_frac = float(np.clip(axis_end_fraction, 0.05, 0.5))
         self.normal_radius_mm = float(normal_radius_mm)
         self.max_candidates = int(max_candidates)
+        #: The named parts' surfaces of the frame asked last (:meth:`_named_surface_of`), by the mask's identity.
+        self._named_surfaces: dict[int, tuple[Any, Any, tuple[float, bytes], np.ndarray]] = {}
+        #: The frame asked last as a scene view (:meth:`_frame_view`), with the depth it was made of and its placing.
+        self._held_frame: "tuple[Any, tuple[float, bytes, bytes], SceneView] | None" = None
         self.geometry_voxel_size_mm = float(geometry_voxel_size_mm)
         self.max_geometry_points = int(max_geometry_points)
         self.dense_runtime_budget_ms = float(dense_runtime_budget_ms)
@@ -794,6 +810,10 @@ class GraspCalculator:
         # eroded as :attr:`support_footprint_rim_mm` says, BASE. Read beside ``geometry_points_base_mm`` alone, and by SFE
         # alone, for the footprint it builds; everything else reads the fused cloud whole. None reads it whole.
         footprint_points_base_mm: np.ndarray | None = None,
+        # The pick's other looks (``scene_obstacles.SceneView``): what they show beside the part joins this frame's
+        # obstacles, as the guard holds the boxes of every look, and a point any look saw past counts as seen for a
+        # tilted approach and an open finger over the part's outline. () this frame alone.
+        scene_views: "Sequence[SceneView]" = (),
         support_plane: SupportPlane | None = None,
         workspace: WorkspaceBox | None = None,
         gripper_model: GripperGeometryStrategy | None = None,
@@ -1267,23 +1287,22 @@ class GraspCalculator:
                 scene_support_mm = self._scene_support_mm(
                     support_plane, support_model, cloud, geometry_points_base_mm, transform, telemetry)
                 # The other parts the detector named in this frame: a finger may come to their measured surface
-                # (the owner, 2026-10-05: "Finger dürfen streifen"), where the cell lets the fingers touch parts.
-                part_mask = None
-                part_owner = None
+                # (the owner, 2026-10-05: "Finger dürfen streifen"), where the cell lets the fingers touch parts. Their
+                # surfaces as the pick offers them to the camera world, each part its own owner, in every look.
+                named: list[np.ndarray] = []
                 if other_object_masks and float(self._scene_obstacles.part_soft_mm) > 0.0:
-                    part_mask = np.zeros(mask_bool.shape, dtype=bool)
-                    # Each named part its own owner: the fine world's boxes are a part's, never all of them one part's.
-                    part_owner = np.full(mask_bool.shape, -1, dtype=np.int64)
-                    for number, other in enumerate(other_object_masks):
-                        other_mask = np.asarray(other).astype(bool)
-                        if other_mask.shape == part_mask.shape:
-                            part_owner[other_mask & part_mask] = -1
-                            part_owner[other_mask & ~part_mask] = number
-                            part_mask |= other_mask
+                    for other in other_object_masks:
+                        if np.shape(other) == mask_bool.shape:
+                            named.append(self._named_surface_of(other, depth_map, scale, intrinsics, transform))
+                # What the pick's other looks show beside the part joins this frame's before a box is built: the
+                # guard holds the boxes of every look, and a grasp offered against this look's alone met a wall only
+                # another look saw (2026-10-13, T4).
                 scene = scene_obstacle_points(
                     depth_arr * scale, mask_bool, intrinsics, transform, rules=self._scene_obstacles,
-                    support_height_mm=scene_support_mm, support_model=support_model, part_mask=part_mask,
-                    part_owner=part_owner)
+                    support_height_mm=scene_support_mm, support_model=support_model, named=named, looks=scene_views,
+                    part_base_mm=geometry_points_base_mm, view=self._frame_view(depth_map, scale, intrinsics, transform))
+                if scene_views:
+                    telemetry["scene_views"] = len(scene_views)
                 telemetry["scene_obstacle_points"] = int(scene.points_base_mm.shape[0])
                 telemetry["scene_obstacle_clusters"] = int(scene.clusters)
                 telemetry["scene_obstacle_world_rule_points"] = int(scene.world_rule_base_mm.shape[0])
@@ -1440,11 +1459,13 @@ class GraspCalculator:
                 if hull_read is not None:
                     target_base = self._with_the_hull(
                         target_base, mask_bool, hull_read, intrinsics, transform, sfe_support_mm, telemetry)
-                # Only space this frame's depth saw counts as clear for a tilted approach (the fix plan's contract 5).
-                sfe_side: dict[str, Any] = {}
+                # Only space this frame's depth saw counts as clear for a tilted approach (the fix plan's contract 5), and
+                # for an open finger over the part's own outline, in a bore or a gap (``body_grasps``).
+                seen_here = corridor_seen_in(depth_arr * scale, intrinsics, transform)
+                sfe_side: dict[str, Any] = {"corridor_seen": SeenInAnyFrame(
+                    (seen_here, *(view.seen() for view in scene_views))) if scene_views else seen_here}
                 if self._side_approaches:
-                    sfe_side = {"side_approaches": True,
-                                "corridor_seen": corridor_seen_in(depth_arr * scale, intrinsics, transform)}
+                    sfe_side["side_approaches"] = True
                 sfe_ranked, sfe_telemetry = support_footprint_breakdowns(
                     target_base,
                     camera_to_base=transform,
@@ -1769,9 +1790,14 @@ class GraspCalculator:
         # Collision / table / workspace filtering (camera-frame; matches
         # the frame the candidates were planned in).
         if support_plane is not None or scene_points_mm is not None or workspace is not None:
+            # Where the calculator holds the guard's own boxes (``scene_obstacles``), they judge what the hand meets
+            # beside the part (``_keep_off_what_the_guard_holds``), the points only the table and the box: the points
+            # held a named neighbour the fingers may brush as whole, and on the deep crate of 2026-10-12 at 11:26
+            # refused both of the body's grasps, which the guard admits.
+            mirrored = self._scene_obstacles is not None and transform is not None
             ranked_all, stage_telemetry = self._apply_collision_filters(
                 ranked_all,
-                scene_points_mm=scene_points_mm,
+                scene_points_mm=None if mirrored else scene_points_mm,
                 support_plane=support_plane,
                 workspace=workspace,
                 gripper_model=gripper_model,
@@ -2199,6 +2225,36 @@ class GraspCalculator:
         reasons.append(GraspFailureReason.RESCAN_RECOMMENDED)
         return tuple(reasons)
 
+    def _frame_view(self, depth_map: Any, scale: float, intrinsics: Any, transform: np.ndarray) -> SceneView:
+        """The frame of ``depth_map`` as a ``scene_obstacles.SceneView``, the same one for each part of a frame the pick
+        asks the calculator of, so what the frame reads the same for each part is read once (``SceneView.reading``)."""
+        placed = (float(scale), np.asarray(transform, dtype=np.float64).tobytes(),
+                  np.asarray(intrinsics.to_matrix(), dtype=np.float64).tobytes())
+        held = self._held_frame
+        if held is None or held[0] is not depth_map or held[1] != placed:
+            held = (depth_map, placed, SceneView(depth_mm=np.asarray(depth_map, dtype=np.float64) * scale,
+                                                 intrinsics=intrinsics, camera_to_base=transform))
+            self._held_frame = held
+        return held[2]
+
+    def _named_surface_of(self, mask: Any, depth_map: Any, scale: float, intrinsics: Any,
+                          transform: np.ndarray) -> np.ndarray:
+        """The surface a named part ``mask`` covers in ``depth_map`` (``scene_obstacles.named_surface``), worked out once
+        a frame: the pick asks the calculator of each part of a frame in turn, every other part's mask the same object
+        each time, and on the deep crate of 2026-10-12 each of 52 parts read its 51 neighbours' surfaces again."""
+        from src.robot.grasping.multiview.scene_geometry import to_base_mm  # noqa: PLC0415
+
+        placed = (float(scale), np.asarray(transform, dtype=np.float64).tobytes())
+        held = self._named_surfaces.get(id(mask))
+        if held is not None and held[0] is mask and held[1] is depth_map and held[2] == placed:
+            return held[3]
+        if any(entry[1] is not depth_map for entry in self._named_surfaces.values()):
+            self._named_surfaces.clear()
+        surface = named_surface(to_base_mm(np.asarray(mask).astype(bool), np.asarray(depth_map, dtype=np.float64) * scale,
+                                           intrinsics.to_matrix(), transform))
+        self._named_surfaces[id(mask)] = (mask, depth_map, placed, surface)
+        return surface
+
     def _scene_support_mm(
         self,
         support_plane: SupportPlane | None,
@@ -2252,7 +2308,9 @@ class GraspCalculator:
         ``rejected_declared``; the nearest held solid and its distance are stamped for the sentence. A neighbour's box
         (``seen_boxes``, the boxes the camera world builds of what it saw beside the part) keeps
         ``perceived_min_distance_mm`` too, counted as ``rejected_collision``: a neighbour the camera saw, which a
-        blocker cleared or a push may free.
+        blocker cleared or a push may free. A candidate planned for jaws that open only as needed (lever G,
+        ``score_components["support_footprint"]["open_width_mm"]``) is judged with its fingers that wide open and
+        ``FINGER_OPENING_SLACK_MM``, where the guard holds them as it comes down; every other fully open.
         """
         rules = self._scene_obstacles
         assert rules is not None  # noqa: S101 (the caller checks)
@@ -2265,13 +2323,20 @@ class GraspCalculator:
         rotation_cb, translation_cb = transform[:3, :3], transform[:3, 3]
         poses = [(rotation_cb @ np.asarray(score.pose.position_mm, dtype=np.float64) + translation_cb,
                   rotation_cb @ np.asarray(score.pose.rotation_matrix, dtype=np.float64)) for score in ranked]
-        verdicts = envelope_verdicts(
-            poses, gripper_model=gripper_model if gripper_model is not None else ParallelJawGripperModel(),
-            open_width_mm=self.max_grip_mm, solids=held_solids, support_distance_mm=rules.support_distance_mm,
-            declared_boxes=rules.declared_boxes, declared_distance_mm=rules.declared_distance_mm,
-            seen_boxes=seen_boxes, seen_distance_mm=rules.support_distance_mm,
-            fingers_to_the_reading=bool(rules.fingers_to_the_reading),
-            finger_floor_drop_mm=float(rules.finger_floor_drop_mm))
+        openings = [self.max_grip_mm if planned is None else min(planned + FINGER_OPENING_SLACK_MM, self.max_grip_mm)
+                    for planned in (_planned_opening_of(score) for score in ranked)]
+        verdicts: list[Any] = [None] * len(ranked)
+        for opening in sorted(set(openings)):
+            at = [n for n, width in enumerate(openings) if width == opening]
+            for n, verdict in zip(at, envelope_verdicts(
+                    [poses[n] for n in at],
+                    gripper_model=gripper_model if gripper_model is not None else ParallelJawGripperModel(),
+                    open_width_mm=opening, solids=held_solids, support_distance_mm=rules.support_distance_mm,
+                    declared_boxes=rules.declared_boxes, declared_distance_mm=rules.declared_distance_mm,
+                    seen_boxes=seen_boxes, seen_distance_mm=rules.support_distance_mm,
+                    fingers_to_the_reading=bool(rules.fingers_to_the_reading),
+                    finger_floor_drop_mm=float(rules.finger_floor_drop_mm))):
+                verdicts[n] = verdict
         kept: list[GraspScoreBreakdown] = []
         for score, verdict in zip(ranked, verdicts):
             if verdict.refused == "declared":

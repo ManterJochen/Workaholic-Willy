@@ -1909,9 +1909,11 @@ class RobotGraspingConfig(StrictModel):
     #: is taken. A later look of a wrist pick computes only the part it keeps. Off, every part is computed and the best
     #: taken, as before. The clutter selector (``ordering``) always computes every part.
     first_good_part: bool = Field(default=True)
-    #: The score a part's best grasp needs for ``first_good_part`` to take it at once, 0 to 1. A full SFE result's best
-    #: grasp scored 0.80 at the median on the grasp bench (0.71 at the 10th percentile), one the fine search found 0.57.
-    good_part_score: float = Field(default=0.75, ge=0.0, le=1.0)
+    #: The score a part's best grasp needs for ``first_good_part`` to take it at once, 0 to 1. The body's best grasp
+    #: of a part scores 0.67 at the median on the replay bank (0.51 at the 10th percentile), and 0.6 takes as many
+    #: parts at once (63 to 79 %) as 0.75 took when SFE's grasps were ranked beside them (68 %). At 0.75, 12 % of
+    #: the parts of the owner's cell of 2026-10-14 were good, and a pick of 18 parts computed every one (45 s).
+    good_part_score: float = Field(default=0.6, ge=0.0, le=1.0)
     #: SFE's fine search waits while another part may have a full result.
     #:
     #: Where SFE's coarse grid finds fewer than three grasps it searches again on a fine grid, the most of what such a

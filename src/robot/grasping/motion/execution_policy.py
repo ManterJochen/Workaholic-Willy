@@ -121,9 +121,11 @@ from src.robot.core.arm_capabilities import (
 from src.robot.core.camera_world import weakest_camera_world
 from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.core.gripper import (
+    FINGER_OPENING_SLACK_MM,
     HoldEvidence,
     OpensAndCloses,
     ReportsHoldEvidence,
+    closes_onto_the_part_of,
     hold_evidence_of,
     toggle_without_sensor_of,
     width_is_measured_of,
@@ -874,10 +876,14 @@ class GraspExecutionPolicy:
         """Pick the jaw width to command at the grasp point."""
         if self.close_width_mm is not None:
             return float(self.close_width_mm)
-        # Adaptive: squeeze ``close_squeeze_mm`` below the predicted grip width, 1 mm by default, but
-        # never below the minimum opening of the gripper. A larger margin clamps thin objects firmly.
         gripper = self.gripper
         min_w = getattr(gripper, "min_width_mm", 0.0) or 0.0
+        if closes_onto_the_part_of(gripper):
+            # As far closed as the hand goes: its fingers stop on the part by their own force, and the stop is the grip
+            # (``ClosesOntoThePart``); a part a little narrower than it read is held all the same.
+            return float(min_w)
+        # Adaptive: squeeze ``close_squeeze_mm`` below the predicted grip width, 1 mm by default, but
+        # never below the minimum opening of the gripper. A larger margin clamps thin objects firmly.
         return float(max(min_w, float(grasp.grip_width_mm) - float(self.close_squeeze_mm)))
 
     def _build_waypoints(self, grasp: GraspPoint) -> tuple[Pose, ...]:
@@ -1055,15 +1061,10 @@ def _planned_opening(grasp: "GraspPoint") -> float | None:
     return float(value) if isinstance(value, (int, float)) and float(value) > 0.0 else None
 
 
-#: How much wider than the hand reads them back the guard holds the fingers, millimetres: the Robotiq's position count
-#: is 0.2 mm a step over the Hand-E's stroke, and a reading never stands the fingers nearer the part than they are.
-_OPENING_SLACK_MM = 0.5
-
-
 @contextmanager
 def _fingers_as_planned(arm: Any, grasp: "GraspPoint") -> "Iterator[None]":
     """The block in which ``arm``'s guard holds the fingers where ``grasp`` opens them, where it was planned for jaws that
-    open only as needed (lever G), and :data:`_OPENING_SLACK_MM` wider: a judgement ahead of the pre-open, with nothing
+    open only as needed (lever G), and ``FINGER_OPENING_SLACK_MM`` wider: a judgement ahead of the pre-open, with nothing
     moved. Elsewhere a block that changes nothing; after it the fingers stand fully open for the guard again."""
     planned = _planned_opening(grasp)
     if planned is None or not _the_guard_holds_the_fingers_at(arm, None, planned):
@@ -1077,7 +1078,7 @@ def _fingers_as_planned(arm: Any, grasp: "GraspPoint") -> "Iterator[None]":
 
 def _the_guard_holds_the_fingers_at(arm: Any, gripper: Any, commanded_mm: float | None) -> bool:
     """Tell ``arm``'s guard where the fingers stand: the wider of what was commanded and what the hand reads back, and
-    :data:`_OPENING_SLACK_MM`; ``None`` (``commanded_mm``) stands them fully open again. Whether the guard was told: an arm
+    ``FINGER_OPENING_SLACK_MM``; ``None`` (``commanded_mm``) stands them fully open again. Whether the guard was told: an arm
     that cannot say it judges the fingers fully open, as before, which is never nearer the part than they are."""
     setter = getattr(arm, "set_finger_opening", None)
     if not callable(setter):
@@ -1092,7 +1093,7 @@ def _the_guard_holds_the_fingers_at(arm: Any, gripper: Any, commanded_mm: float 
             reading = float(read())
         except Exception:  # noqa: BLE001 (a hand that cannot read back is held at its command and the slack)
             reading = None
-    width = max(float(commanded_mm), reading if reading is not None else float(commanded_mm)) + _OPENING_SLACK_MM
+    width = max(float(commanded_mm), reading if reading is not None else float(commanded_mm)) + FINGER_OPENING_SLACK_MM
     setter(width)
     return True
 

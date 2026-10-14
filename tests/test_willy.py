@@ -78,6 +78,7 @@ _RENDERED = {
     "src.robot.execution.wrist_bodies": ["WristBodies"],
     "src.robot.grasping.scene": ["SceneGrasps"],
     "src.robot.perception.locator": ["Located", "LocatedObject"],
+    "src.robot.perception.pixel_to_base": ["CapturedFrame", "PixelPoint"],
     "src.robot.safety.attestation": ["SafetyAttestation"],
     "src.calibration.rig_calibration": ["RigCalibration"],
     "src.models.perception_spec": ["PerceptionResolution"],

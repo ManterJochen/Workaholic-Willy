@@ -61,7 +61,7 @@ class _Streamer:
 
 def _source(streamer: _Streamer, *, warmup_grabs: int = 0) -> RealSenseVisionPerceptionSource:
     return RealSenseVisionPerceptionSource(streamer=streamer, backend=SimpleNamespace(perceive=lambda _b, _p: []),
-                                           prompt="a box", warmup_grabs=warmup_grabs)
+                                           prompt="a box", warmup_grabs=warmup_grabs, burst_grabs=1)
 
 
 class _Reader:

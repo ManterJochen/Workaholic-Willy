@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import unittest
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -35,9 +36,13 @@ from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 from src.robot.grasping.types.perception import PerceptionFrame
 from tests._helpers import _FakeArm, _FakePerception
+from tests._task_fakes import _World
 from tests._wrist_views import CUBE, K, Box, render
 
 NOTHING = (GraspFailureReason.NO_VALID_GRASP, GraspFailureReason.RESCAN_RECOMMENDED)
+#: The bar these parts are scored about. The cell's own (``good_part_score``, 0.6 since 2026-10-14) is pinned by
+#: ``test_the_speed_keys_load_and_reach_the_pick_loop``.
+BAR = 0.75
 
 
 @dataclass(eq=False)
@@ -104,6 +109,8 @@ class _Policy:
 
 def _pick(calculator: Any, frame: PerceptionFrame, **switches: Any) -> "tuple[BinPickingOrchestrator, _Policy]":
     policy = _Policy()
+    if switches.get("lazy_objects"):
+        switches.setdefault("accept_score", BAR)
     orchestrator = BinPickingOrchestrator(arm=_FakeArm(), calculator=calculator, perception=_FakePerception([frame]),
                                           policy=policy, max_attempts=1, **switches)  # type: ignore[arg-type]
     return orchestrator, policy
@@ -161,7 +168,7 @@ class TheFirstGoodPartIsTakenTests(unittest.TestCase):
         self.assertEqual(["a", "b", "c"], calculator.asked())
         self.assertEqual([("a", True), ("b", True), ("c", True)], calculator.calls)
         self.assertEqual("b", _taken(policy))
-        self.assertEqual((False, 0.75, False),
+        self.assertEqual((False, 0.6, False),
                          (orchestrator.lazy_objects, orchestrator.accept_score, orchestrator.fine_search_waits))
 
 
@@ -356,7 +363,7 @@ class ThePartsAreComputedInTheOrderTheyStandApartTests(unittest.TestCase):
         policy = _Policy()
         orchestrator = BinPickingOrchestrator(
             arm=_FakeArm(), calculator=calculator, perception=camera, policy=policy,  # type: ignore[arg-type]
-            max_attempts=1, target_label="part", lazy_objects=True,
+            max_attempts=1, target_label="part", lazy_objects=True, accept_score=BAR,
             frame_resolver=StaticCameraToBaseResolver(transform=Transform.from_matrix(
                 CAMERA, from_frame=Frame.CAMERA, to_frame=Frame.BASE)),
             support_config=GraspingSupportConfig(height_mm=0.0, refine_from_target=False))
@@ -376,6 +383,24 @@ class ThePartsAreComputedInTheOrderTheyStandApartTests(unittest.TestCase):
         self.assertEqual((True, False, False), (wide[0], crowded[0], alone[0]), keys)
         self.assertEqual(0.0, alone[1], keys)
         self.assertGreater(crowded[1], 0.0, keys)
+
+    def test_a_part_another_lies_on_goes_after_the_parts_nothing_lies_on(self) -> None:
+        """The clutter order (2026-10-13): taken first, a part under another pulls the pile from under it."""
+        calculator = _Parts({"under": 0.5, "on": 0.55, "free": 0.6})
+        camera = _BenchCamera({
+            "under": Box((-22.0, -722.0, 0.0), (22.0, -678.0, 40.0), "part"),
+            "on": Box((-10.0, -710.0, 40.0), (10.0, -690.0, 60.0), "part"),
+            "free": Box((-130.0, -715.0, 0.0), (-100.0, -685.0, 40.0), "part")})
+        orchestrator = BinPickingOrchestrator(
+            arm=_FakeArm(), calculator=calculator, perception=camera, policy=_Policy(),  # type: ignore[arg-type]
+            max_attempts=1, target_label="part", lazy_objects=True, accept_score=BAR,
+            frame_resolver=StaticCameraToBaseResolver(transform=Transform.from_matrix(
+                CAMERA, from_frame=Frame.CAMERA, to_frame=Frame.BASE)),
+            support_config=GraspingSupportConfig(height_mm=0.0, refine_from_target=False))
+
+        orchestrator.run()
+
+        self.assertEqual("under", calculator.asked()[-1], calculator.asked())
 
     def test_what_cannot_be_read_says_nothing_and_the_cameras_order_stands(self) -> None:
         calculator = _Parts({"a": 0.5, "b": 0.6, "c": 0.55})
@@ -443,6 +468,58 @@ class ALaterLookComputesOnlyThePinnedPartTests(unittest.TestCase):
             computed[lazy] = {label for number, label, _ in cell.calculator.calls if number == 1}
         self.assertEqual({"block"}, computed[False], "the second look was meant to see the block alone")
         self.assertEqual(set(), computed[True])
+
+
+
+class APieceOfABoxsRimIsNoPartTests(unittest.TestCase):
+    """The deep crate of 2026-10-14: the detector named two pieces of the crate's rim a cube, a 7 mm strip at 192 to
+    196 mm (14:04) and its lip at 162 to 205 mm (14:08). Each stood apart from the parts, so each was computed first,
+    and at 14:08 the hand closed on the crate. A named segmentation whose lowest point stands higher over the bench than
+    a part may stand (``perceived.PART_SIZED_MM``) on a footprint thinner than a part (``parts_beside.LEAST_ACROSS_MM``)
+    hovers over the parts and is no part, the rules a part beside is held to; a part on another part, and a part on a
+    raised table as the industrial parts of 2026-10-13 stood, are parts."""
+
+    def _taken_beside(self, rim: Box) -> "tuple[_Parts, _Policy, list[str]]":
+        calculator = _Parts({"rim": 0.9, "crowded": 0.8, "on": 0.8})
+        camera = _BenchCamera({"rim": rim, "crowded": CROWDED, "block": BLOCK,
+                               "on": Box((-140.0, -650.0, 40.0), (-110.0, -620.0, 80.0), "part"),
+                               "under": Box((-145.0, -655.0, 0.0), (-105.0, -615.0, 40.0), "block")})
+        policy = _Policy()
+        # The bench the cell's camera world declares, as a cell's arm holds it (the gate reads no other).
+        arm = _FakeArm()
+        world = _World([])
+        world.limits = SimpleNamespace(support_plane_top_mm=0.0)  # type: ignore[attr-defined]
+        arm.live_planner_world = world  # type: ignore[attr-defined]
+        orchestrator = BinPickingOrchestrator(
+            arm=arm, calculator=calculator, perception=camera, policy=policy,  # type: ignore[arg-type]
+            max_attempts=1, target_label="part", lazy_objects=True, accept_score=BAR,
+            frame_resolver=StaticCameraToBaseResolver(transform=Transform.from_matrix(
+                CAMERA, from_frame=Frame.CAMERA, to_frame=Frame.BASE)),
+            support_config=GraspingSupportConfig(height_mm=0.0, refine_from_target=False))
+        with self.assertLogs("src.robot.grasping.loop.pick_loop", level="INFO") as said:
+            orchestrator.run()
+        return calculator, policy, said.output
+
+    def test_a_strip_of_the_rim_and_its_lip_are_no_part_and_the_parts_are_computed(self) -> None:
+        for name, rim in (("the strip of 14:04", Box((60.0, -820.0, 192.0), (120.0, -813.0, 196.0), "part")),
+                          ("the lip of 14:08", Box((60.0, -820.0, 162.0), (120.0, -807.0, 205.0), "part"))):
+            with self.subTest(name):
+                calculator, policy, said = self._taken_beside(rim)
+
+                self.assertNotIn("rim", calculator.asked())
+                self.assertIn(_taken(policy), ("crowded", "on"))
+                self.assertTrue(any("is not taken as a part" in line and "hovering over the parts" in line
+                                    for line in said), said)
+
+    def test_a_part_on_another_part_or_on_a_raised_table_is_still_a_part(self) -> None:
+        """The gate reads every segmentation before a part is chosen: the part 40 mm up on the block is not held to
+        hover, nor a cube on the bench where the rim stood, nor a 40 mm cube on a table 200 mm up."""
+        for name, part in (("on the bench", Box((60.0, -820.0, 0.0), (90.0, -790.0, 40.0), "part")),
+                           ("on a raised table", Box((60.0, -820.0, 200.0), (100.0, -780.0, 240.0), "part"))):
+            with self.subTest(name):
+                _calculator, _policy, said = self._taken_beside(part)
+
+                self.assertFalse(any("is not taken as a part" in line for line in said), said)
 
 
 if __name__ == "__main__":

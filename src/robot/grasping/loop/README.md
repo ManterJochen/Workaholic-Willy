@@ -386,7 +386,7 @@ A look's parts are computed in the camera's order and the best grasp is taken, u
 first good part (`robot.grasping.first_good_part`, on in the shipped tree: the owner's "speed first" of
 2026-10-08). Then the parts are computed one at a time in the order they stand apart, those the hand
 closes across first and the less crowded first, and the first whose result is full, carries no rescan
-reason and scores `good_part_score` (0.75) or more is taken; the rest are not computed. None good, the
+reason and scores `good_part_score` (0.6) or more is taken; the rest are not computed. None good, the
 best is taken. With `fine_pass_waits` SFE's fine search waits while another part may have a full
 result: a part whose coarse grid found few grasps gets it only where no part has a full result with a
 grasp, and the choice is then the one of before. A frame with no grasp is computed whole and fails as it

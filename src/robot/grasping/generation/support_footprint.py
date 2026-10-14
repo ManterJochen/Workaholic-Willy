@@ -79,6 +79,7 @@ __all__ = [
     "DEFAULT_MAX_CANDIDATES",
     "FINE",
     "JAW_SIDE_ROOM_MM",
+    "NARROW_ROOM_MM",
     "FINE_SEARCH_DEFERRED",
     "REFUSAL_CAUSES",
     "ROBUST_ERROR_MM",
@@ -335,6 +336,11 @@ ROBUST_ERROR_MM: Final[float] = 4.0
 #: the hand closed on nothing. Every source of candidates reads this number: SFE twice over as its ``width_safety_mm``,
 #: the silhouette and antipodal paths as the widest span they offer, and the pick loop's lazy ranking.
 JAW_SIDE_ROOM_MM: Final[float] = 2.0
+#: How far beside each jaw a hand that opens only as needed (lever G, a Robotiq hand told a width) opens past the part
+#: before it comes down, millimetres: the stroke's spare and 5 mm more, 1 cm more in all. Opened 2 mm beside each jaw,
+#: the owner's Robotiq came down onto the parts it was to close on and many grasps broke (2026-10-14: "eine Marge von
+#: 1cm mehr"). A span this leaves no room for is grasped with the hand fully open.
+NARROW_ROOM_MM: Final[float] = JAW_SIDE_ROOM_MM + 5.0
 #: A candidate tilted this far off vertical or more is offered, with side approaches, only through space a depth ray saw.
 _SEEN_FROM_TILT_DEG: Final[float] = 15.0
 #: Scores this near the best of a run are equal by geometry, and the run is ranked vertical first. A face's normal read
@@ -497,6 +503,9 @@ class SupportFootprintCandidate:
     #: Whether the grasp still holds with the hand :data:`ROBUST_ERROR_MM` off it across the table (:func:`robust_to`):
     #: set where the search ranks it (:func:`rank_found`), which puts these first; ``False`` until then.
     robust: bool = False
+    #: How wide the jaws open before they close, millimetres, where the grasp was planned for jaws that open only as
+    #: needed (``body_grasps``, lever G); ``None`` for the whole stroke, as every grasp of SFE's.
+    open_width_mm: float | None = None
 
     def pose(self) -> Pose:
         """Where the tool goes for this grasp: the BASE pose ``Robot.pick`` takes, with
@@ -837,6 +846,11 @@ def closing_axes(prism: SupportPrism, *, radial: int = 6,
 # --------------------------------------------------------------------------- obstacles
 
 
+#: The most cells an obstacle grid is dilated on as a whole grid of its extent (:class:`_Obstacles`), a byte each;
+#: a larger one lists each cell's neighbours instead.
+_DENSE_CELLS_MOST: Final[int] = 1 << 25
+
+
 class _Obstacles:
     """Occupancy grid over the non-target points, dilated once by one 12 mm cell.
 
@@ -860,8 +874,26 @@ class _Obstacles:
         r = int(np.ceil(margin_mm / cell_mm))
         self.reach = r
         self.origin = p.min(axis=0) - cell_mm * (r + 1)
-        k = np.unique(np.floor((p - self.origin) / cell_mm).astype(np.int64), axis=0)
-        self.dims = k.max(axis=0) + r + 2
+        cells = np.floor((p - self.origin) / cell_mm).astype(np.int64)
+        self.dims = cells.max(axis=0) + r + 2
+        if int(np.prod(self.dims)) <= _DENSE_CELLS_MOST:
+            # On a grid of the whole extent, dilated axis by axis: the same cells as listing every cell's cube of
+            # neighbours (every one of them lies inside ``dims``), in the order of their keys. Listed, the 2 mm grid of
+            # a crate's 160,000 points took 0.2 s a build (2026-10-14).
+            grid = np.zeros(tuple(int(v) for v in self.dims), dtype=bool)
+            grid[cells[:, 0], cells[:, 1], cells[:, 2]] = True
+            for axis in range(3):
+                for _ in range(r):
+                    grown = grid.copy()
+                    lead = [slice(None)] * 3
+                    lag = [slice(None)] * 3
+                    lead[axis], lag[axis] = slice(1, None), slice(None, -1)
+                    grown[tuple(lead)] |= grid[tuple(lag)]
+                    grown[tuple(lag)] |= grid[tuple(lead)]
+                    grid = grown
+            self.keys = np.flatnonzero(grid)
+            return
+        k = np.unique(cells, axis=0)
         offs = np.array([(dx, dy, dz) for dx in range(-r, r + 1)
                          for dy in range(-r, r + 1) for dz in range(-r, r + 1)], dtype=np.int64)
         big = (k[:, None, :] + offs[None, :, :]).reshape(-1, 3)

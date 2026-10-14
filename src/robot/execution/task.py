@@ -66,7 +66,8 @@ the loop: a pick that looks fresh, a place, the return to the return pose. Its r
   the close and the place's release, and the place leaves its count OPEN for the next pick; twice more for each
   blocker the pick sets aside first (its close and its release, the pick loop's "clear the blocker"). A pick that
   failed with a part possibly in the jaws ends the task holding it.
-* **The place.** A taught pose says where the part's bottom is let go (``place_target.pose_drop``); a camera place goes
+* **The place.** A taught pose says where the part is let go (``place_target.pose_drop``): its bottom at the taught
+  fingertips where the cell declares ``payload.length_mm``, the tool there where it declares none; a camera place goes
   into the bin over its rim (``place_target.drop_plan``), carried to the look it was kept from, every frame held, the
   bin checked again first (against where the survey found it: its rim's depth and colour where it was last seen, the
   detector wherever that is unsure), and placed without a keep-out. Either drop keeps the tilt the tool gripped with,
@@ -81,8 +82,8 @@ the loop: a pick that looks fresh, a place, the return to the return pose. Its r
   (:func:`place_released`), its line out refused or not.
 * **Set down, not dropped, never piled** (the cell's ``robot.place``, each off as shipped; the owner, 2026-10-08
   night). Below a box's rim, from what the check read inside it, over the rim where the box reads full, the part or
-  the open hand would not stand clear of its walls, or the guard refuses the line in (``release_in_a_box``); the hang
-  from what the pick's looks read under the part (``part_bottom``); side by side on a flat place, a spot the camera
+  the open hand would not stand clear of its walls, or the guard refuses the line in (``release_in_a_box``); the air
+  over a rim (``rim_air_mm``), the hang always from what the pick's looks read under the part; side by side on a flat place, a spot the camera
   reads free first, else the next of the grid the task has not filled, none left putting the part back and asking
   ``part_does_not_fit`` (``side_by_side``), each part laid at a taught pose kept out of an "until empty" task's picks;
   and straight over the rim to a bin one of the pick's looks saw, checked on that look's frame and judged against it
@@ -370,15 +371,16 @@ class PlaceAt:
     ```
 
     Attributes:
-        pose (str | None): The name of a taught pose in the task's ``poses``: where the part's bottom is let go
+        pose (str | None): The name of a taught pose in the task's ``poses``: where the part is let go, its bottom at
+            the taught fingertips where the cell declares ``payload.length_mm``, the tool there where it declares none
             (default: None).
         camera (str | None): An English phrase the camera grounds, such as ``"blue bin"`` (default: None).
-        air_mm (float | None): For a camera target: the air over its rim when the jaws open, 10 to 50 mm; ``None`` is
-            the cell's own (``place_target.rim_clearance_mm``, 20 mm as shipped). A taught pose takes none (default:
-            None).
+        air_mm (float | None): For a camera target: the air over its rim when the jaws open, 0 to 50 mm, under the
+            part's bottom (the tool where the cell declares no ``payload.length_mm``); ``None`` is the cell's own
+            (``robot.place.rim_air_mm``, 20 mm as shipped). A taught pose takes none (default: None).
 
     Raises:
-        ValueError: Neither or both of ``pose`` and ``camera``, an empty one, or ``air_mm`` outside 10 to 50 mm, or
+        ValueError: Neither or both of ``pose`` and ``camera``, an empty one, or ``air_mm`` outside 0 to 50 mm, or
             given for a pose.
     """
 
@@ -394,11 +396,11 @@ class PlaceAt:
             raise ValueError("a place's pose name or camera phrase names nothing")
         if self.air_mm is not None:
             if self.camera is None:
-                raise ValueError("air_mm is the air over a camera target's rim; a taught pose says where the part's "
-                                 "bottom is let go and takes none")
+                raise ValueError("air_mm is the air over a camera target's rim; a taught pose says where the part is "
+                                 "let go and takes none")
             air = float(self.air_mm)
             if not (math.isfinite(air) and RIM_AIR_MIN_MM <= air <= RIM_AIR_MAX_MM):
-                raise ValueError(f"the air over a bin's rim is {RIM_AIR_MIN_MM:g} to {RIM_AIR_MAX_MM:g} mm (Q3), not "
+                raise ValueError(f"the air over a bin's rim is {RIM_AIR_MIN_MM:g} to {RIM_AIR_MAX_MM:g} mm, not "
                                  f"{self.air_mm!r}")
 
 
@@ -971,10 +973,11 @@ class _Task:
         self.tree = tree
         self.part_bottom_mm = _declared_support_mm(tree)
         self.length_mm = _declared_length_mm(tree)
-        # How far below the tool a part's bottom hangs at least (the fingertips' reach past the TCP), and at most where
-        # the cell declares its longest part's length past the fingertips.
+        # How far below the tool a part's bottom hangs at most: the fingertips' reach past the TCP and the length the
+        # cell declares its longest part has past them. Where it declares none the part hangs from the TCP (the owner,
+        # 2026-10-14: "Wenn kein Payloadlength angegeben ist, dann soll es am TCP hängen").
         self.fingertips_mm = _fingertips_past_the_tcp_mm(tree)
-        self.hang_mm = self.fingertips_mm + (self.length_mm or 0.0)
+        self.hang_mm = self.fingertips_mm + self.length_mm if self.length_mm is not None else 0.0
         self.locators: list[Any] = []
         # The places of the task's rules, each once (one for a task of one kind), and what the task keeps of each: the
         # bin a camera place's survey found and the sighting of it the drops go to now, where a taught pose puts the
@@ -1280,10 +1283,10 @@ class _Task:
                                                    f"{type(exc).__name__}: {exc}")
         else:
             place.tcp = at
-            # Where the tool stands for the longest part the cell declares: the taught pose raised by its hang below the
-            # tool (the fingertips' reach and the declared length past them), and the configuration the arm would choose
-            # for it (the place goes to a pose, not to the taught joints).
-            rise = self.hang_mm
+            # Where the tool stands for the longest part the cell declares: the taught pose raised by its declared
+            # length past the fingertips (none where it declares none), and the configuration the arm would choose for
+            # it (the place goes to a pose, not to the taught joints).
+            rise = self.length_mm or 0.0
             position = np.asarray(at.position_mm, dtype=np.float64) + np.array([0.0, 0.0, rise])
             raised = Pose(position_mm=position, quaternion_xyzw=np.asarray(at.quaternion_xyzw, dtype=np.float64),
                           frame=Frame.BASE, label=f"pose {name}, raised")
@@ -2102,22 +2105,19 @@ class _Task:
         """The drop into ``place``'s target (``place_target.drop_plan``), the hang from what the part stood on
         (:meth:`_part_bottom`): below a box's rim (``robot.place.release_in_a_box``) from what the last check read inside
         it (``inside``, the check's where given), at the next free spot of a flat top (``robot.place.side_by_side``);
-        straight down with the declared length where the pick reported no grasp; nothing set down blind with neither."""
+        straight down with the declared length where the pick reported no grasp. Where the cell declares no
+        ``payload.length_mm`` the tool, not the part's bottom, stands the air over the rim."""
         kept = place.kept
         assert kept is not None
         grasp = report.grasp_pose
         if grasp is None:
-            if self.length_mm is not None:
-                return nominal_drop(self.arm, kept, hang_mm=self.hang_mm, air_mm=place.air_mm,
-                                    standoff_mm=self.standoff_mm, natural_axis=self.natural)
-            return DropPlan(kind="camera", pose=None, standoff_mm=self.standoff_mm, rim_mm=kept.rim_mm,
-                            air_mm=place.air_mm, refusal="unreachable", reason=(
-                                "the pick reported no grasp pose and safety.planning_world.payload.length_mm is "
-                                "undeclared, so how far the part hangs is unknown and nothing is set down blind"))
+            return nominal_drop(self.arm, kept, hang_mm=self.hang_mm, air_mm=place.air_mm,
+                                standoff_mm=self.standoff_mm, natural_axis=self.natural)
         cloud = _judged_cloud(self.service)
         keywords: dict[str, Any] = {
             "part_bottom_mm": self._part_bottom(grasp).mm, "air_mm": place.air_mm, "standoff_mm": self.standoff_mm,
-            "natural_axis": self.natural, "part_cloud_mm": cloud}
+            "natural_axis": self.natural, "part_cloud_mm": cloud,
+            "hang_mm": None if self.length_mm is not None else 0.0}
         if self.rules.release_in_a_box == "below_the_rim":
             keywords.update(below_rim_mm=float(self.rules.below_the_rim_mm),
                             inside=place.inside if not chosen(inside) else inside,
@@ -2139,17 +2139,13 @@ class _Task:
 
     def _pose_drop(self, report: Any, place: _Place) -> DropPlan:
         """The drop at ``place``'s taught pose (``place_target.pose_drop``), the hang from what the part stood on
-        (:meth:`_part_bottom`, which keeps the set-down air over the taught point where it was measured): with
-        ``robot.place.side_by_side`` on, at the first spot of the place about the taught pose the camera reads free, or
-        where it reads none, that this task has not filled (:meth:`_at_a_spot`)."""
-        from src.robot.perception.locator import SET_DOWN_AIR_MM  # noqa: PLC0415
-
+        (:meth:`_part_bottom`): with ``robot.place.side_by_side`` on, at the first spot of the place about the taught
+        pose the camera reads free, or where it reads none, that this task has not filled (:meth:`_at_a_spot`)."""
         name = str(place.at.pose)
         grasp = report.grasp_pose
-        bottom = self._part_bottom(grasp)
         keywords: dict[str, Any] = {
-            "part_bottom_mm": bottom.mm, "length_mm": self.length_mm, "standoff_mm": self.standoff_mm,
-            "fingertips_mm": self.fingertips_mm, "air_mm": float(SET_DOWN_AIR_MM) if bottom.measured else 0.0}
+            "part_bottom_mm": self._part_bottom(grasp).mm, "length_mm": self.length_mm,
+            "standoff_mm": self.standoff_mm, "fingertips_mm": self.fingertips_mm}
         taught = self.poses[name]
         if not self.rules.side_by_side:
             return pose_drop(self.arm, taught, grasp, **keywords)
@@ -2208,13 +2204,13 @@ class _Task:
                         reason=f"{where} has no spot left the part lies on beside the others: {why}")
 
     def _part_bottom(self, grasp: "Pose | None") -> Any:
-        """What the part's hang below the tool is measured from (``robot.place.part_bottom``): the declared support, or
-        what the pick's own looks read under the part (``place_target.part_bottom``), where that stands below the
-        grasp."""
+        """What the part's hang below the tool is measured from, part by part (the owner, 2026-10-14): what the pick's
+        own looks read under the part (``place_target.part_bottom``), where that stands below the grasp, else the
+        declared support."""
         from src.robot.execution.place_target import PartBottom, part_bottom  # noqa: PLC0415
 
         declared = PartBottom(self.part_bottom_mm, False, f"the declared support at {self.part_bottom_mm:.1f} mm")
-        if self.rules.part_bottom != "measured" or grasp is None:
+        if grasp is None:
             return declared
         judged = getattr(getattr(self.service, "looked_around", None), "judged", None)
         bottom = part_bottom(getattr(judged, "target_cloud_base_mm", None), getattr(judged, "support_model", None),
@@ -2872,8 +2868,13 @@ def _drop_said(drop: DropPlan, label: str) -> str:
     spot = "" if drop.spot_xy is None else (f", at the spot ({drop.spot_xy[0]:.0f}, {drop.spot_xy[1]:.0f}) mm the "
                                             f"{drop.spot_by} chose beside the parts there")
     if drop.kind == "pose":
-        kept_air = "" if not drop.air_mm else f" and {drop.air_mm:.0f} mm of air"
-        return f"The drop stands {hang:.0f} mm above the taught pose: the part's hang{kept_air}{spot}."
+        rise = 0.0 if drop.rise_mm is None else drop.rise_mm
+        if rise <= 0.0:
+            why = ("the cell declares no payload.length_mm, so the part hangs from the TCP" if hang <= 0.0 else
+                   "the part reaches no further than the fingertips")
+            return f"The drop is at the taught pose itself: {why}{spot}."
+        return (f"The drop stands {rise:.0f} mm above the taught pose: its fingertips stood where the part's bottom "
+                f"goes, and the part reaches that far past them{spot}.")
     air = 0.0 if drop.air_mm is None else drop.air_mm
     rim = 0.0 if drop.rim_mm is None else drop.rim_mm
     turned = ", turned along the cell's natural closing axis" if drop.turned else ""

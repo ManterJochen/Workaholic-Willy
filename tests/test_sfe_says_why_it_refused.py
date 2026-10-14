@@ -11,7 +11,8 @@ its cause: ``seen_fingers`` / ``seen_corridor`` (points a caller handed as obser
 ``declared_corridor`` (points it handed as declared), ``own_fragments`` (the target's own low fragments the footprint
 left out), ``table``, ``span``, ``cone``, ``prism``, ``aperture``, and with side approaches ``unseen_corridor``.
 ``refusals=None`` is byte-identical to the generator before the counters, pinned here against digests taken on HEAD
-``1d91e3a``. The stage stamps the counts as ``support_footprint_refused``.
+``1d91e3a``. Since 2026-10-14 the calculator's stage no longer asks SFE (the part's own body alone); these pin the
+generator itself until its code goes.
 
 The scene builders here are shared with the side-approach tests.
 """
@@ -27,7 +28,6 @@ from typing import Any
 import numpy as np
 
 from src.robot.grasping.collision import ParallelJawGripperModel
-from src.robot.grasping.generation._support_footprint_stage import support_footprint_breakdowns
 from src.robot.grasping.generation.support_footprint import (
     SupportFootprintJaw,
     generate_support_footprint_grasps,
@@ -300,31 +300,6 @@ class NothingChangesWithoutTheCountersTests(unittest.TestCase):
         for name, candidates in runs.items():
             with self.subTest(name):
                 self.assertEqual(HEAD_DIGESTS[name], candidate_digest(candidates))
-
-
-class TheStageStampsTheCountsTests(unittest.TestCase):
-    def test_the_stage_stamps_support_footprint_refused(self) -> None:
-        bar, neighbours = boxed_in_bar()
-        breakdowns, telemetry = support_footprint_breakdowns(
-            bar, camera_to_base=np.eye(4), support_height_mm=MAT_MM, jaw=hande_jaw(),
-            obstacle_points_base_mm=neighbours, max_candidates=12)
-        self.assertEqual([], breakdowns)
-        refused = telemetry.get("support_footprint_refused")
-        self.assertIsInstance(refused, dict, telemetry)
-        assert isinstance(refused, dict)
-        for cause in CAUSES:
-            self.assertIn(cause, refused)
-        self.assertGreater(refused["seen_corridor"], 0)
-
-    def test_an_abstention_stamps_zero_counts(self) -> None:
-        """Too few points to reconstruct: nothing was built, so nothing was refused, and the counts say so."""
-        _breakdowns, telemetry = support_footprint_breakdowns(
-            top_face_cloud(50.0, step=12.0), camera_to_base=np.eye(4), support_height_mm=0.0, jaw=default_jaw(),
-            obstacle_points_base_mm=None, max_candidates=12)
-        refused = telemetry.get("support_footprint_refused")
-        self.assertIsInstance(refused, dict, telemetry)
-        assert isinstance(refused, dict)
-        self.assertEqual(0, sum(refused.values()))
 
 
 if __name__ == "__main__":  # pragma: no cover

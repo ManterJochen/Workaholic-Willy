@@ -29,12 +29,24 @@ import numpy as np
 from src.geometry import Frame, Pose
 from src.geometry.quaternion import angle_between
 
-__all__ = ["PICK_FRAME_WARMUP_GRABS", "ShutterMotion", "ShutterStamp", "StampedGrab", "camera_to_base_at_shutter"]
+__all__ = [
+    "PICK_FRAME_BURST_GRABS",
+    "PICK_FRAME_WARMUP_GRABS",
+    "ShutterMotion",
+    "ShutterStamp",
+    "StampedGrab",
+    "camera_to_base_at_shutter",
+]
 
 #: Frames a pick frame grabs and throws away before the frame it keeps (``RealSenseVisionPerceptionSource``'s
 #: ``warmup_grabs``), so a physical camera's auto-exposure has settled. On a camera the arm carries they come before
 #: the pose read, so a frame the device queued while the arm was still coming to rest is among them, not the one kept.
 PICK_FRAME_WARMUP_GRABS = 5
+#: Grabs after the warm-ups whose depth a pick frame keeps, pixel by pixel the median of those that read it, where more
+#: than half of them do (``RealSenseVisionPerceptionSource``'s ``burst_grabs``): a speck or an edge's flicker that fewer
+#: than half of them read is out, a hole most of them read is filled. Seven at 30 frames a second, about 0.3 s more a
+#: look with the median (the owner, 2026-10-13: up to 0.5 s more a look for what the cell can tell).
+PICK_FRAME_BURST_GRABS = 7
 
 
 @dataclass(frozen=True, slots=True)

@@ -423,6 +423,25 @@ class CloseWidthResolveTests(unittest.TestCase):
         p = GraspExecutionPolicy(arm=_FakeArm(), gripper=g, close_squeeze_mm=11.0)
         self.assertEqual(p._resolve_close_width(_grasp()), 35.0)  # max(35, 40-11=29) = 35
 
+    def test_a_hand_that_closes_onto_the_part_closes_as_far_as_it_goes(self) -> None:
+        """The owner's Robotiq (2026-10-14): told the part's width less a millimetre it stopped beside a part a little
+        narrower than it read and lifted nothing. A hand whose fingers stop on the part by their own force is closed as
+        far as it goes; a width the caller set still wins, and a double that answers every attribute is not one."""
+
+        class _ClosesOnto(_BasicGripper):
+            closes_onto_the_part = True
+
+        g = _ClosesOnto()
+        g.min_width_mm = 2.0
+        self.assertEqual(GraspExecutionPolicy(arm=_FakeArm(), gripper=g, close_squeeze_mm=11.0)
+                         ._resolve_close_width(_grasp()), 2.0)
+        self.assertEqual(GraspExecutionPolicy(arm=_FakeArm(), gripper=g, close_width_mm=25.0)
+                         ._resolve_close_width(_grasp()), 25.0)
+        from unittest import mock
+
+        anything = mock.MagicMock(min_width_mm=2.0)
+        self.assertEqual(GraspExecutionPolicy(arm=_FakeArm(), gripper=anything)._resolve_close_width(_grasp()), 39.0)
+
 
 class TheDriversKeepTheirLinesTests(unittest.TestCase):
     """A real dummy arm and a mock Isaac arm report TELEPORT, so a pick is a standoff, a line and a lift."""

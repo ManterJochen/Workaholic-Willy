@@ -30,6 +30,7 @@ Pure: numpy, and SciPy's image tools for the mask growth and the cluster count. 
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -37,8 +38,9 @@ from typing import TYPE_CHECKING, Any, Final
 
 import numpy as np
 
-from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps
+from src.robot.grasping.generation.depth_steps import DEPTH_STEP_RADIUS_PX, pixels_behind_depth_steps
 from src.robot.safety.planning.fine_world import (
+    FINE_LABEL_MM,
     FINE_MARGIN_MM,
     FINE_REACH_MM,
     FineRegion,
@@ -53,6 +55,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
 
 __all__ = [
     "MASK_GROWTH_MM",
+    "NAMED_VOXEL_MM",
     "NO_GRASP_SAID",
     "REACH_MM",
     "SEEN_TOLERANCE_MM",
@@ -62,12 +65,16 @@ __all__ = [
     "EnvelopeVerdict",
     "SceneObstacleRules",
     "SceneObstacles",
+    "SceneView",
     "SeenEnvelope",
+    "SeenInAnyFrame",
     "SeenInTheFrame",
     "corridor_seen_in",
     "envelope_verdicts",
     "least_part_height_mm",
+    "named_surface",
     "no_grasp_said",
+    "refusal_counts",
     "scene_obstacle_points",
     "seen_boxes",
     "why_no_grasp",
@@ -79,6 +86,9 @@ REACH_MM: Final[float] = 250.0
 #: How far the part's mask is grown before its neighbours are read, millimetres: the rim of a mask is the part's own
 #: edge, read through depth-to-colour misregistration. Turned into pixels at the part's depth.
 MASK_GROWTH_MM: Final[float] = 5.0
+#: Every how many millimetres a named part's surface is offered to the camera world in BASE (:func:`named_surface`):
+#: the world's own thinning voxel's size.
+NAMED_VOXEL_MM: Final[float] = 5.0
 #: How much nearer than a point its pixel's measured depth may lie for the point to count as seen, millimetres (the fix
 #: plan's contract 5): a depth ray that stops 5 mm short of a point has still looked at the space it stands in.
 SEEN_TOLERANCE_MM: Final[float] = 5.0
@@ -302,10 +312,12 @@ def scene_obstacle_points(
     rules: SceneObstacleRules,
     support_height_mm: float | None,
     support_model: Any = None,
-    part_mask: "np.ndarray | None" = None,
-    part_owner: "np.ndarray | None" = None,
+    named: "Sequence[np.ndarray]" = (),
+    looks: "Sequence[SceneView]" = (),
+    part_base_mm: "np.ndarray | None" = None,
+    view: "SceneView | None" = None,
 ) -> SceneObstacles:
-    """The obstacles one frame shows beside the part ``target_mask`` covers, by ``rules``.
+    """The obstacles one frame and the pick's other ``looks`` show beside the part ``target_mask`` covers, by ``rules``.
 
     ``depth_mm`` is the frame's depth, CAMERA millimetres; ``camera_to_base`` the 4x4 that places it.
     ``support_height_mm`` is the support the part stands on as the pick resolved it (BASE z); ``support_model`` the
@@ -315,16 +327,25 @@ def scene_obstacle_points(
     An empty answer where the mask holds no measured pixel: there is nothing to grow it from, and a frame read without
     the part left out would take the part for its own neighbour.
 
-    ``part_mask`` is the pixels of the other parts the detector named in the frame: their points are a neighbour part's,
-    which a finger may come to (``rules.part_soft_mm``), and their boxes are built apart, soft (``SeenBox.soft_mm``).
-    ``part_owner`` says which part each of those pixels is, an index per pixel and -1 for none: the fine world's boxes
-    (``rules.fine_reach_mm``) are a part's where most of their pixels are that part's, and soft where the part is no
-    larger than a part.
+    ``named`` is the surface of each other part the pick names, BASE millimetres, as it offers them to the camera world
+    (:func:`named_surface`): a pixel within :data:`fine_world.FINE_LABEL_MM` of one is that part's, the first part in
+    their order, as the guard names a camera on the wrist's pixels (``perceived._fine_guard_world``). A part's points a
+    finger may come to (``rules.part_soft_mm``), and their boxes are built apart, soft (``SeenBox.soft_mm``); the fine
+    world's boxes (``rules.fine_reach_mm``) are a part's where most of their pixels are that part's.
+
+    ``looks`` are the pick's other looks (:class:`SceneView`), read as this frame is, the part left out of each by the box
+    the world keeps out for it (``perceived.target_keep_out_box``) of ``part_base_mm``, the part's points over the looks,
+    or of this frame's where ``None``; every look's points join before a box is built, as the guard builds its world of
+    every look of the pick.
 
     Within ``rules.fine_reach_mm`` of the part the boxes are the fine world's the guard will hold there
     (``fine_world``, ``perceived._fine_guard_world``): every pixel the camera world's rule keeps, but for the box the
     world keeps out for the part, on a 2 mm grid grown by :data:`fine_world.FINE_MARGIN_MM`; beyond it the camera world's
     as before.
+
+    ``view`` is this frame as a :class:`SceneView` of ``depth_mm``, ``intrinsics`` and ``camera_to_base`` where the caller
+    holds one for every part of the frame: what the frame reads the same for each part is then read once
+    (:meth:`SceneView.reading`), as each other look's is.
     """
     depth = np.asarray(depth_mm, dtype=np.float64)
     mask = np.asarray(target_mask).astype(bool)
@@ -337,87 +358,63 @@ def scene_obstacle_points(
         return SceneObstacles.none()
     fx, fy, cx, cy = _matrix_of(intrinsics)
     transform = np.asarray(camera_to_base, dtype=np.float64).reshape(4, 4)
-    turn, shift = transform[:3, :3], transform[:3, 3]
-    part_depth = float(np.median(depth[under]))
-    grow = max(1, int(math.ceil(float(rules.mask_growth_mm) * fx / max(part_depth, 1.0))))
-    grown = _grown(mask, grow)
-    behind = pixels_behind_depth_steps(valid & ~grown, depth)
-
-    # Where the part is: the median of its own pixels in BASE.
     rows_t, cols_t = np.nonzero(under)
     z_t = depth[rows_t, cols_t]
-    part = np.column_stack(((cols_t - cx) * z_t / fx, (rows_t - cy) * z_t / fy, z_t)) @ turn.T + shift
+    # Where the part is: the median of its own pixels in BASE.
+    part = (np.column_stack(((cols_t - cx) * z_t / fx, (rows_t - cy) * z_t / fy, z_t)) @ transform[:3, :3].T
+            + transform[:3, 3])
     centre = np.median(part[:, :2], axis=0)
-
-    # Every measured pixel the part's own mask leaves, on the stride's grid in the order read: the frame as the camera
-    # world reads it (``perceived._project_view``). The band the mask was grown by is the part's own rim to the
-    # calculator's own reading, which takes no obstacle from it.
-    stride = max(1, int(rules.pixel_stride))
-    rows, cols = np.mgrid[0:depth.shape[0]:stride, 0:depth.shape[1]:stride]
-    take = (valid & ~mask)[rows, cols]
-    rows, cols = rows[take], cols[take]
-    z = depth[rows, cols]
-    camera = np.column_stack(((cols - cx) * z / fx, (rows - cy) * z / fy, z))
-    points = camera @ turn.T + shift
-    near = np.hypot(points[:, 0] - centre[0], points[:, 1] - centre[1]) < float(rules.reach_mm)
-    rows, cols, camera, points = rows[near], cols[near], camera[near], points[near]
-    rim, trimmed = grown[rows, cols], behind[rows, cols]
-    on_a_part = (np.zeros(points.shape[0], dtype=bool) if part_mask is None or float(rules.part_soft_mm) <= 0.0
-                 else np.asarray(part_mask).astype(bool)[rows, cols])
+    keep_out = _the_parts_keep_out(part if part_base_mm is None else np.asarray(part_base_mm, dtype=np.float64),
+                                   rules, support_height_mm)
+    this = view if view is not None else SceneView(depth_mm=depth, intrinsics=intrinsics, camera_to_base=transform)
+    reads = [_read(this, mask, rules, centre)]
+    if keep_out is not None:
+        reads += [_read(look, look.held_out(keep_out), rules, centre) for look in looks]
+    look_of = np.concatenate([np.full(r.points.shape[0], n, dtype=np.int64) for n, r in enumerate(reads)])
+    points = np.concatenate([r.points for r in reads])
+    camera = np.concatenate([r.camera for r in reads])
+    rim = np.concatenate([r.rim for r in reads])
+    trimmed = np.concatenate([r.trimmed for r in reads])
+    owner = (_named_owners(points, named) if float(rules.part_soft_mm) > 0.0
+             else np.full(points.shape[0], -1, dtype=np.int64))
+    on_a_part = owner >= 0
     counts: dict[str, int] = {"read": int(np.count_nonzero(~rim))}
 
     # The support rule (contract 7): a surface the model holds decides over its own pixels, the bench and the part's
     # support decide elsewhere.
     band = float(rules.band_mm)
-    covered = np.zeros(points.shape[0], dtype=bool)
-    surface = np.zeros(points.shape[0], dtype=bool)
-    if support_model is not None and points.shape[0]:
-        planes = support_model.local_plane_under(points[:, :2])
-        if planes is not None:
-            planes = np.asarray(planes, dtype=np.float64)
-            covered = np.isfinite(planes[:, 0])
-            reading = np.full(points.shape[0], np.inf)
-            nx, ny, nz, d = (planes[covered, i] for i in range(4))
-            reading[covered] = (d - nx * points[covered, 0] - ny * points[covered, 1]) / nz
-            own = np.asarray(support_model.is_support_point(points), dtype=bool)
-            surface = covered & (own | (points[:, 2] <= reading))
+    covered, surface, erased, declared = (np.concatenate(flags) for flags in zip(
+        *(r.reading.classified(r.index, rules, support_model) for r in reads)))
     floors = [float(v) for v in (rules.bench_top_mm, support_height_mm) if v is not None]
     floor = (max(floors) if floors else -math.inf) + band
     below = ~covered & (points[:, 2] <= floor)
     bench_floor = (float(rules.bench_top_mm) if rules.bench_top_mm is not None
                    else (float(support_height_mm) if support_height_mm is not None else -math.inf)) + band
     below_bench = ~covered & (points[:, 2] <= bench_floor)
-    declared = np.zeros(points.shape[0], dtype=bool)
-    for body in rules.declared:
-        declared |= np.asarray(body.distance_mm(points), dtype=np.float64) <= float(rules.declared_band_mm)
     counts["support"] = int((surface & ~rim).sum())
     counts["below"] = int((below & ~surface & ~rim).sum())
     counts["declared"] = int((declared & ~surface & ~below & ~rim).sum())
 
     world_rule_at = ~rim & ~surface & ~below_bench & ~declared
     world_rule, world_rule_part = points[world_rule_at], on_a_part[world_rule_at]
-    # What a support's solid holds up to its erasure top leaves the world as that support's, its noise with it.
-    erased = (np.asarray(support_model.erased_by_support(points), dtype=bool).reshape(-1)
-              if support_model is not None and hasattr(support_model, "erased_by_support") and points.shape[0]
-              else np.zeros(points.shape[0], dtype=bool))
+    # What a support's solid holds up to its erasure top leaves the world as that support's, its noise with it (erased).
     # The boxes of the neighbours: what stands over the support the part stands on and over what its solids erase, the
     # pixels behind a depth step left out as the obstacles leave them (a mixed pixel at the part's own rim is no
     # neighbour), thinned to one point a voxel as the world thins what it reads before it builds a box
-    # (``perceived._base_points``): the first pixel read in each cell of the camera's own frame.
-    beside = np.nonzero(~rim & ~surface & ~below & ~declared & ~trimmed & ~erased)[0]
-    first = beside[_first_in_each_voxel(camera[beside], float(rules.voxel_size_mm))]
-    # And the boxes the camera world builds of this frame, of every point it keeps, thinned in its order: in each cell
+    # (``perceived._base_points``): the first pixel read in each cell of each camera's own frame.
+    first = _first_in_each_voxel_of_each(camera, look_of, np.nonzero(~rim & ~surface & ~below & ~declared & ~trimmed
+                                                                  & ~erased)[0], float(rules.voxel_size_mm))
+    # And the boxes the camera world builds of these frames, of every point it keeps, thinned in its order: in each cell
     # the first pixel no support holds (``perceived._support_stage``), unless it stands within a declared body's band or
     # within the box the world keeps out for the part (``perceived.target_keep_out_box``). Thinned after the rim and
     # the depth steps were taken out alone, the side of a cube 15 mm off a cylinder lost the pixels of its face and its
     # box came 2.9 mm short of the world's (2026-10-09): the calculator offered grasps the guard refuses. The two sets
     # make their boxes apart, and both are held: clustered together, one look of the cell's (2026-10-07) bulged where
     # neither held a box and lost the three grasps the guard admits.
-    free = np.nonzero(~surface & ~below & ~erased)[0]
-    kept_by_the_world = free[_first_in_each_voxel(camera[free], float(rules.voxel_size_mm))]
+    kept_by_the_world = _first_in_each_voxel_of_each(camera, look_of, np.nonzero(~surface & ~below & ~erased)[0],
+                                                     float(rules.voxel_size_mm))
     kept_by_the_world = kept_by_the_world[~declared[kept_by_the_world]]
-    keep_out = _the_parts_keep_out(part, rules, support_height_mm) if kept_by_the_world.size else None
-    if keep_out is not None:
+    if keep_out is not None and kept_by_the_world.size:
         kept_by_the_world = kept_by_the_world[~np.asarray(keep_out.contains(points[kept_by_the_world]), dtype=bool)]
     cut_around = () if keep_out is None else (keep_out,)
     thinned, thinned_part = points[first], on_a_part[first]
@@ -439,8 +436,6 @@ def scene_obstacle_points(
         if keep_out is not None:
             within = np.nonzero(held)[0]
             held[within[np.asarray(keep_out.contains(points[within]), dtype=bool)]] = False
-        owner = (np.asarray(part_owner, dtype=np.int64)[rows, cols] if part_owner is not None and float(rules.part_soft_mm) > 0.0
-                 else np.full(points.shape[0], -1, dtype=np.int64))
         fine_boxes = _fine_boxes(points[held], owner[held], rules, support_model, cut_around)
     # A named neighbour's points make its own boxes, soft for the fingers; everything else makes the rest, whole.
     boxes = seen_boxes(thinned[~thinned_part], rules) + seen_boxes(worlds[~worlds_part], rules, cut_around=cut_around)
@@ -450,8 +445,192 @@ def scene_obstacle_points(
                                    float(rules.part_soft_mm))
     boxes = boxes + fine_boxes
     return SceneObstacles(points_base_mm=kept, world_rule_base_mm=world_rule, clusters=groups, counts=counts,
-                          grown_px=grow, boxes=boxes, part_points=kept_part,
+                          grown_px=reads[0].grown_px, boxes=boxes, part_points=kept_part,
                           world_rule_part=world_rule_part if bool(world_rule_part.any()) else None)
+
+
+@dataclass(frozen=True, eq=False)
+class _Reading:
+    """What one look reads the same whichever part is asked of it: its measured pixels on the stride's grid in the order
+    read, their CAMERA and BASE points, which of its pixels stand behind a depth step of the whole frame, and, as parts
+    ask for them, what the support model and the declared bodies make of each point (:meth:`classified`)."""
+
+    depth: np.ndarray
+    valid: np.ndarray
+    rows: np.ndarray
+    cols: np.ndarray
+    camera: np.ndarray
+    points: np.ndarray
+    behind: np.ndarray
+    _classes: dict[tuple[int, int], Any] = field(default_factory=dict, repr=False)
+
+    @classmethod
+    def of(cls, depth_mm: Any, intrinsics: Any, camera_to_base: Any, stride: int) -> "_Reading":
+        """The reading of a frame, the camera world's (``perceived._project_view``) on every ``stride``-th pixel."""
+        fx, fy, cx, cy = _matrix_of(intrinsics)
+        depth = np.asarray(depth_mm, dtype=np.float64)
+        transform = np.asarray(camera_to_base, dtype=np.float64).reshape(4, 4)
+        with np.errstate(invalid="ignore"):
+            valid = np.isfinite(depth) & (depth > 0.0)
+        rows, cols = np.mgrid[0:depth.shape[0]:stride, 0:depth.shape[1]:stride]
+        take = valid[rows, cols]
+        rows, cols = rows[take], cols[take]
+        z = depth[rows, cols]
+        camera = np.column_stack(((cols - cx) * z / fx, (rows - cy) * z / fy, z))
+        return cls(depth=depth, valid=valid, rows=rows, cols=cols, camera=camera,
+                   points=camera @ transform[:3, :3].T + transform[:3, 3], behind=pixels_behind_depth_steps(valid, depth))
+
+    def behind_beside(self, grown: np.ndarray) -> np.ndarray:
+        """``pixels_behind_depth_steps(valid & ~grown, depth)``, from the whole frame's: a pixel's answer changes only
+        where a pixel of ``grown`` lies within the rule's radius of it, and those are worked out again on a window that
+        holds the radius about each of them."""
+        rows, cols = np.nonzero(grown)
+        if rows.size == 0:
+            return self.behind
+        reach = DEPTH_STEP_RADIUS_PX
+        height, width = grown.shape
+        r0, r1 = max(int(rows.min()) - 2 * reach, 0), min(int(rows.max()) + 2 * reach + 1, height)
+        c0, c1 = max(int(cols.min()) - 2 * reach, 0), min(int(cols.max()) + 2 * reach + 1, width)
+        window = pixels_behind_depth_steps((self.valid & ~grown)[r0:r1, c0:c1], self.depth[r0:r1, c0:c1])
+        # The window's own edge sees nothing past it: what lies the radius inside it is kept, and the frame's edge.
+        i0, i1 = (0 if r0 == 0 else reach), (r1 - r0 if r1 == height else r1 - r0 - reach)
+        j0, j1 = (0 if c0 == 0 else reach), (c1 - c0 if c1 == width else c1 - c0 - reach)
+        out = self.behind.copy()
+        out[r0 + i0:r0 + i1, c0 + j0:c0 + j1] = window[i0:i1, j0:j1]
+        return out
+
+    def classified(self, index: np.ndarray, rules: SceneObstacleRules,
+                   support_model: Any) -> "tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]":
+        """Of the points at ``index``, which a support's surface covers, which it holds as its own (a support's reading
+        decides there, ``is_support_point``, never "inside a solid"), which a support's solid erases, and which stand in
+        a declared body's band (:func:`_classified`): each point asked once a frame, whichever part asks."""
+        key = (id(support_model), id(rules))
+        held = self._classes.get(key)
+        if held is None or held[0] is not support_model or held[1] is not rules:
+            count = self.points.shape[0]
+            held = (support_model, rules, np.zeros(count, dtype=bool),
+                    *(np.zeros(count, dtype=bool) for _ in range(4)))
+            self._classes[key] = held
+        done, flags = held[2], held[3:]
+        todo = index[~done[index]]
+        if todo.size:
+            for into, answer in zip(flags, _classified(self.points[todo], rules, support_model)):
+                into[todo] = answer
+            done[todo] = True
+        covered, surface, erased, declared = (flag[index] for flag in flags)
+        return covered, surface, erased, declared
+
+
+def _classified(points: np.ndarray, rules: SceneObstacleRules,
+                support_model: Any) -> "tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]":
+    """:meth:`_Reading.classified` of ``points``: the support rule (contract 7), a surface the model holds deciding over
+    its own pixels; the solids' erasure; the declared bodies' bands."""
+    count = points.shape[0]
+    covered = np.zeros(count, dtype=bool)
+    surface = np.zeros(count, dtype=bool)
+    if support_model is not None and count:
+        planes = support_model.local_plane_under(points[:, :2])
+        if planes is not None:
+            planes = np.asarray(planes, dtype=np.float64)
+            covered = np.isfinite(planes[:, 0])
+            reading = np.full(count, np.inf)
+            nx, ny, nz, d = (planes[covered, i] for i in range(4))
+            reading[covered] = (d - nx * points[covered, 0] - ny * points[covered, 1]) / nz
+            own = np.asarray(support_model.is_support_point(points), dtype=bool)
+            surface = covered & (own | (points[:, 2] <= reading))
+    erased = (np.asarray(support_model.erased_by_support(points), dtype=bool).reshape(-1)
+              if support_model is not None and hasattr(support_model, "erased_by_support") and count
+              else np.zeros(count, dtype=bool))
+    declared = np.zeros(count, dtype=bool)
+    for body in rules.declared:
+        declared |= np.asarray(body.distance_mm(points), dtype=np.float64) <= float(rules.declared_band_mm)
+    return covered, surface, erased, declared
+
+
+@dataclass(frozen=True, eq=False)
+class _Read:
+    """One look's pixels a scene is read from for one part: every measured pixel its part's pixels leave, on the stride's
+    grid in the order read, within the reach of the part (``index`` into its :class:`_Reading`), their CAMERA and BASE
+    points, which stand on the part's own rim (its pixels grown by ``rules.mask_growth_mm``) and which behind a depth
+    step."""
+
+    reading: _Reading
+    index: np.ndarray
+    points: np.ndarray
+    camera: np.ndarray
+    rim: np.ndarray
+    trimmed: np.ndarray
+    grown_px: int
+
+
+def _read(view: "SceneView", mask: np.ndarray, rules: SceneObstacleRules, centre: np.ndarray) -> _Read:
+    """One look's :class:`_Read` for the part ``mask`` covers in it: the frame as the camera world reads it
+    (``perceived._project_view``). The band the part's pixels are grown by is its own rim to the calculator's reading,
+    which takes no obstacle from it."""
+    reading = view.reading(max(1, int(rules.pixel_stride)))
+    fx = _matrix_of(view.intrinsics)[0]
+    depth, valid = reading.depth, reading.valid
+    under = mask & valid
+    part_depth = float(np.median(depth[under])) if under.any() else float(np.median(depth[valid])) if valid.any() else 1.0
+    grow = max(1, int(math.ceil(float(rules.mask_growth_mm) * fx / max(part_depth, 1.0))))
+    grown = _grown(mask, grow)
+    behind = reading.behind_beside(grown)
+    near = (~mask[reading.rows, reading.cols]
+            & (np.hypot(reading.points[:, 0] - centre[0], reading.points[:, 1] - centre[1]) < float(rules.reach_mm)))
+    index = np.nonzero(near)[0]
+    rows, cols = reading.rows[index], reading.cols[index]
+    return _Read(reading=reading, index=index, points=reading.points[index], camera=reading.camera[index],
+                 rim=grown[rows, cols], trimmed=behind[rows, cols], grown_px=grow)
+
+
+def _first_in_each_voxel_of_each(camera: np.ndarray, look_of: np.ndarray, among: np.ndarray,
+                                 voxel_mm: float) -> np.ndarray:
+    """Of the points ``among`` (indices), the first in each ``voxel_mm`` cell of its own look's camera frame
+    (:func:`_first_in_each_voxel`), look by look, in the order read."""
+    out = []
+    for look in np.unique(look_of[among]):
+        mine = among[look_of[among] == look]
+        out.append(mine[_first_in_each_voxel(camera[mine], voxel_mm)])
+    return np.concatenate(out) if out else np.zeros(0, dtype=np.int64)
+
+
+def named_surface(points_base_mm: Any) -> np.ndarray:
+    """A named part's surface as the pick offers it to the camera world: its first point in each :data:`NAMED_VOXEL_MM`
+    cell, in their order.
+
+    Args:
+        points_base_mm: The part's points, ``(N, 3)`` BASE millimetres.
+
+    Returns:
+        np.ndarray: The points kept, ``(M, 3)``.
+    """
+    base = np.asarray(points_base_mm, dtype=np.float64).reshape(-1, 3)
+    if not base.shape[0]:
+        return base
+    _, first = np.unique(np.floor(base / NAMED_VOXEL_MM).astype(np.int64), axis=0, return_index=True)
+    return base[np.sort(first)]
+
+
+def _named_owners(points: np.ndarray, named: "Sequence[np.ndarray]") -> np.ndarray:
+    """Per point, the named part it is, as the guard names a camera on the wrist's pixels: of the parts in their order,
+    the first with a point within :data:`fine_world.FINE_LABEL_MM`; -1 for none.
+
+    Each part's surface asks the points about it, the last part first, so a part earlier in the order is written over
+    the later ones where both reach a point: the guard's answer, asking each part of every point, at a part's few hundred
+    points against the scene's hundred thousands (on the deep crate of 2026-10-12, 2.1 s a part with 51 named beside it).
+    """
+    owner = np.full(points.shape[0], -1, dtype=np.int64)
+    surfaces = [np.asarray(surface, dtype=np.float64).reshape(-1, 3) for surface in named]
+    if not points.shape[0] or not any(surface.shape[0] for surface in surfaces):
+        return owner
+    from scipy.spatial import cKDTree  # noqa: PLC0415 (only a frame with named parts pays for it)
+
+    tree = cKDTree(points)
+    for part in range(len(surfaces) - 1, -1, -1):
+        if surfaces[part].shape[0]:
+            near = tree.query_ball_point(surfaces[part], FINE_LABEL_MM, return_sorted=False)
+            owner[np.fromiter(itertools.chain.from_iterable(near), dtype=np.int64)] = part
+    return owner
 
 
 def _fine_boxes(points_mm: np.ndarray, owners: np.ndarray, rules: SceneObstacleRules, support_model: Any,
@@ -628,6 +807,9 @@ class SeenEnvelope:
     way_in_mm: tuple[float, ...] = (0.0, 40.0, 80.0)
     #: Which of the hand's boxes are a finger, which may come to a soft box's measured surface (``SeenBox.soft_mm``).
     hand_fingers: "np.ndarray | None" = None
+    #: How wide the hand's boxes stand open, millimetres: what :meth:`refuses_many` moves a finger from where a hand opens
+    #: otherwise; ``None`` where nobody said.
+    open_width_mm: float | None = None
     #: What :meth:`refuses` reads, worked out once from the fields above (``__post_init__``) rather than on every build
     #: SFE asks about: the hand's boxes swept along the way in, their bounding spheres' radii and which are a finger;
     #: every box whole, its sphere and its soft; and the soft boxes as a finger meets them, their soft taken off.
@@ -693,7 +875,7 @@ class SeenEnvelope:
         halves = np.array([(np.asarray(b.max_corner_mm) - np.asarray(b.min_corner_mm)) / 2.0 for b in hand])
         fingers = np.array([str(getattr(b, "label", "")).startswith("finger") for b in hand], dtype=bool)
         return cls(boxes=tuple(boxes), hand_centres=centres, hand_halves=halves, distance_mm=float(distance_mm),
-                   way_in_mm=tuple(float(v) for v in way_in_mm), hand_fingers=fingers)
+                   way_in_mm=tuple(float(v) for v in way_in_mm), hand_fingers=fingers, open_width_mm=float(open_width_mm))
 
     def least_mm(self, position: np.ndarray, rotation: np.ndarray) -> float:
         """The open hand's least distance to the boxes, at ``position`` and back along the approach, millimetres: every
@@ -779,10 +961,14 @@ class SeenEnvelope:
                            self._soft_centres, self._soft_turns, self._soft_halves, self._soft_radii, None,
                            SOFT_SLACK_MM)
 
-    def refuses_many(self, positions: np.ndarray, rotations: np.ndarray) -> np.ndarray:
+    def refuses_many(self, positions: np.ndarray, rotations: np.ndarray,
+                     openings: "np.ndarray | None" = None) -> np.ndarray:
         """:meth:`refuses` for many hands at once: ``(N, 3)`` positions and ``(N, 3, 3)`` rotations in, one ``int8`` per
         hand out: 0 where it keeps its distance, 1 where it does not, 2 where a distance it measured lies within
-        :data:`_MANY_SURE` of its limit, which only :meth:`refuses` decides.
+        :data:`_MANY_SURE` of its limit, which only :meth:`refuses` decides. ``openings``, one a hand, stands each hand's
+        fingers that wide open instead of at :attr:`open_width_mm`, each moved along the closing axis by half the
+        difference: a hand that opens only as needed (lever G) comes down with its fingers beside the part, where the
+        guard holds them (``FINGER_OPENING_SLACK_MM``).
 
         Each hand is placed as :meth:`refuses` places it, by the same product one hand at a time (a stacked
         ``np.matmul``), so its boxes stand where they stand there to the bit. Of the pairs :meth:`refuses` measures it
@@ -798,6 +984,10 @@ class SeenEnvelope:
         turns = np.asarray(rotations, dtype=np.float64).reshape(-1, 3, 3)
         at = np.asarray(positions, dtype=np.float64).reshape(-1, 3)
         hands = at[:, None, :] + np.matmul(self._swept_centres[None], turns.transpose(0, 2, 1))
+        if openings is not None and self.open_width_mm is not None:
+            shift = (np.asarray(openings, dtype=np.float64).reshape(-1) - float(self.open_width_mm)) / 2.0
+            side = np.where(self._fingers, np.sign(self._swept_centres[:, 0]), 0.0)
+            hands = hands + (shift[:, None] * side[None, :])[:, :, None] * turns[:, None, :, 0]
         # The face normals bound a distance only where both boxes' axes are square: the camera's boxes and each hand.
         square = (np.abs(np.matmul(turns.transpose(0, 2, 1), turns) - np.eye(3)).max(axis=(1, 2)) <= 1e-9
                   if self._square else np.zeros(at.shape[0], dtype=bool))
@@ -853,12 +1043,30 @@ def _nearer_many(hands: np.ndarray, turns: np.ndarray, hand_halves: np.ndarray, 
     out = np.zeros(hands.shape[0], dtype=np.int8)
     if not hands.shape[0] or not hands.shape[1] or not box_centres.shape[0]:
         return out
-    gaps = (np.linalg.norm(hands[:, :, None, :] - box_centres[None, None, :, :], axis=3)
-            - hand_radii[None, :, None] - box_radii[None, None, :])
-    near = gaps < float(limit_mm) + _SPHERE_SLACK_MM
+    # Each box and each hand's box square with BASE: a swept hand's box is long along the approach, its sphere far wider
+    # than it. A box apart from every hand's by the limit along one of BASE's axes is apart from each: left out first.
+    room = float(limit_mm) + _SPHERE_SLACK_MM
+    hand_reach = np.einsum("nij,hj->nhi", np.abs(turns), hand_halves)
+    box_reach = np.einsum("bij,bj->bi", np.abs(box_turns), box_halves)
+    low = (hands - hand_reach).min(axis=(0, 1)) - room - _SPHERE_SLACK_MM
+    high = (hands + hand_reach).max(axis=(0, 1)) + room + _SPHERE_SLACK_MM
+    kept = np.nonzero(np.all((box_centres + box_reach >= low) & (box_centres - box_reach <= high), axis=1))[0]
+    if not kept.size:
+        return out
+    box_centres, box_turns, box_halves, box_radii, box_reach = (
+        a[kept] for a in (box_centres, box_turns, box_halves, box_radii, box_reach))
+    # Then pair by pair, an axis at a time, and the bounding spheres of the pairs left.
+    near = (np.abs(hands[:, :, None, 0] - box_centres[None, None, :, 0])
+            <= hand_reach[:, :, None, 0] + box_reach[None, None, :, 0] + room)
     if pairs is not None:
-        near &= pairs[None, :, :]
+        near &= pairs[None, :, kept]
     which, hand, box = np.nonzero(near)
+    for axis in (1, 2):
+        close = (np.abs(hands[which, hand, axis] - box_centres[box, axis])
+                 <= hand_reach[which, hand, axis] + box_reach[box, axis] + room)
+        which, hand, box = which[close], hand[close], box[close]
+    spheres = (np.linalg.norm(hands[which, hand] - box_centres[box], axis=1) - hand_radii[hand] - box_radii[box]) < room
+    which, hand, box = which[spheres], hand[spheres], box[spheres]
     if not which.size:
         return out
     culled = square[which]
@@ -994,6 +1202,93 @@ class SeenInTheFrame:
             unsure[index] |= read & (np.abs(measured - (z[index] - slack)) < _MANY_SURE)
         out[owner[unsure]] = 2
         out[owner[~seen & ~unsure]] = 1
+        return out
+
+
+@dataclass(frozen=True, eq=False)
+class SceneView:
+    """Another look of the pick at the scene the calculator plans in: its depth, CAMERA millimetres, its intrinsics and
+    the 4x4 that places it. The guard holds the boxes of every look of a pick, the target's keep-out box left out of each
+    and a part's pixels the ones near the points the pick names it by; the calculator, given these, holds them too
+    (``calculator.compute(scene_views=...)``, :meth:`held_out`, ``scene_obstacle_points(named=...)``)."""
+
+    depth_mm: np.ndarray
+    intrinsics: Any
+    camera_to_base: np.ndarray
+    _readings: dict[int, _Reading] = field(default_factory=dict, init=False, repr=False)
+
+    def reading(self, stride: int) -> _Reading:
+        """What this look reads the same whichever part is asked of it (:class:`_Reading`), read once."""
+        held = self._readings.get(int(stride))
+        if held is None:
+            held = _Reading.of(self.depth_mm, self.intrinsics, self.camera_to_base, int(stride))
+            self._readings[int(stride)] = held
+        return held
+
+    def seen(self) -> "SeenInTheFrame":
+        """Whether this look's rays reached a point (:func:`corridor_seen_in`)."""
+        return corridor_seen_in(self.depth_mm, self.intrinsics, self.camera_to_base)
+
+    def held_out(self, box: Any) -> np.ndarray:
+        """The pixels of this look whose points stand in ``box``, the box the world keeps out for the target
+        (``perceived.target_keep_out_box``): what the guard leaves out of this look with the target, its faces only this
+        look saw among them."""
+        depth = np.asarray(self.depth_mm, dtype=np.float64)
+        height, width = int(depth.shape[0]), int(depth.shape[1])
+        mask = np.zeros((height, width), dtype=bool)
+        matrix = np.asarray(self.camera_to_base, dtype=np.float64).reshape(4, 4)
+        fx, fy, cx, cy = _matrix_of(self.intrinsics)
+        # Only the pixels the box's corners span, where every corner stands in front of the camera.
+        corners = np.asarray(box.matrix(), dtype=np.float64)[:3, :3] @ (
+            np.array([[x, y, z] for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)], dtype=np.float64)
+            * np.asarray(box.half_extents_mm, dtype=np.float64)).T
+        corners = corners.T + np.asarray(box.matrix(), dtype=np.float64)[:3, 3]
+        local = (corners - matrix[:3, 3]) @ matrix[:3, :3]
+        rows, cols = slice(0, height), slice(0, width)
+        if bool(np.all(local[:, 2] > 1e-6)):
+            u, v = fx * local[:, 0] / local[:, 2] + cx, fy * local[:, 1] / local[:, 2] + cy
+            rows = slice(max(int(np.floor(v.min())), 0), max(min(int(np.ceil(v.max())) + 1, height), 0))
+            cols = slice(max(int(np.floor(u.min())), 0), max(min(int(np.ceil(u.max())) + 1, width), 0))
+        window = depth[rows, cols]
+        with np.errstate(invalid="ignore"):
+            valid = np.isfinite(window) & (window > 0.0)
+        r, c = np.nonzero(valid)
+        if r.size == 0:
+            return mask
+        z = window[r, c]
+        camera = np.column_stack([(c + cols.start - cx) * z / fx, (r + rows.start - cy) * z / fy, z])
+        inside = np.asarray(box.contains(camera @ matrix[:3, :3].T + matrix[:3, 3]), dtype=bool)
+        mask[r[inside] + rows.start, c[inside] + cols.start] = True
+        return mask
+
+
+@dataclass(frozen=True, eq=False)
+class SeenInAnyFrame:
+    """Who says whether a depth ray of any of several frames reached a point: the looks of one wrist pick, each a
+    :class:`SeenInTheFrame`. A point one look saw past is seen, whichever look it was: a bore one look sees only the near
+    wall of, the next looks into (2026-10-13). A value, so it pickles as each frame does."""
+
+    frames: tuple[SeenInTheFrame, ...]
+
+    def __call__(self, points_base_mm: np.ndarray) -> np.ndarray:
+        points = np.asarray(points_base_mm, dtype=np.float64).reshape(-1, 3)
+        out = np.zeros(points.shape[0], dtype=bool)
+        for frame in self.frames:
+            missed = np.nonzero(~out)[0]
+            if not missed.size:
+                break
+            out[missed] = frame(points[missed])
+        return out
+
+    def unseen_many(self, points_base_mm: np.ndarray, asked: np.ndarray) -> np.ndarray:
+        """:meth:`SeenInTheFrame.unseen_many` over the frames, point by point as :meth:`__call__` answers: 0 where every
+        point asked of a build one frame or another saw, 1 where one no frame saw; never 2, nothing to ask again."""
+        points = np.asarray(points_base_mm, dtype=np.float64)
+        out = np.zeros(points.shape[0], dtype=np.int8)
+        owner = np.nonzero(asked)[0]
+        flat = points[asked]
+        if flat.shape[0]:
+            out[np.unique(owner[~self(flat)])] = 1
         return out
 
 
@@ -1159,17 +1454,33 @@ def envelope_verdicts(
     out: list[EnvelopeVerdict] = []
     if not held:
         return [EnvelopeVerdict("", "", math.inf) for _ in poses]
-    n_hand, n_held = len(boxes), len(held)
+    every = held
+    every_centres = np.array([h[2] for h in every])
+    every_turns = np.array([h[3] for h in every])
+    every_halves = np.array([h[4] for h in every])
+    every_radii = np.linalg.norm(every_halves, axis=1)
+    hand_radii = np.linalg.norm(local_halves, axis=1)
+    # Only a box of the hand and a held box whose bounding spheres come within the farthest distance are measured exactly:
+    # a pair beyond it keeps every distance, so a verdict is the same; on the cell's four looks of a crate, 4000 boxes a
+    # grasp were, each against all ten boxes of the hand.
+    farthest = max(h[5] for h in every) + SOFT_SLACK_MM + 1.0
+    n_hand = len(boxes)
     for position, rotation in poses:
         turn = np.asarray(rotation, dtype=np.float64).reshape(3, 3)
         centres = np.asarray(position, dtype=np.float64).reshape(3) + local_centres @ turn.T
-        ca = np.repeat(centres, n_held, axis=0)
-        ra = np.repeat(turn[None, :, :], n_hand * n_held, axis=0)
-        ha = np.repeat(local_halves, n_held, axis=0)
-        cb = np.tile(np.array([h[2] for h in held]), (n_hand, 1))
-        rb = np.tile(np.array([h[3] for h in held]), (n_hand, 1, 1))
-        hb = np.tile(np.array([h[4] for h in held]), (n_hand, 1))
-        matrix = box_distances_mm(ca, ra, ha, cb, rb, hb).reshape(n_hand, n_held)
+        pairs = (np.linalg.norm(centres[:, None, :] - every_centres[None, :, :], axis=2) - hand_radii[:, None]
+                 - every_radii[None, :] <= farthest)
+        within = np.nonzero(pairs.any(axis=0))[0]
+        if not within.size:
+            out.append(EnvelopeVerdict("", "", math.inf))
+            continue
+        held = [every[int(i)] for i in within]
+        n_held = len(held)
+        hand_at, held_at = np.nonzero(pairs[:, within])
+        matrix = np.full((n_hand, n_held), np.inf)
+        matrix[hand_at, held_at] = box_distances_mm(
+            centres[hand_at], np.repeat(turn[None, :, :], hand_at.size, axis=0), local_halves[hand_at],
+            every_centres[within][held_at], every_turns[within][held_at], every_halves[within][held_at])
         limits = np.array([h[5] for h in held])
         softs = np.array([h[6] for h in held])
         soft = softs > 0.0
@@ -1274,6 +1585,26 @@ def least_part_height_mm(jaw: Any) -> float:
     return min(float(jaw.table_clearance_mm + need.min() + _SFE_TOP_SLACK_MM), body_least_height_mm(jaw))
 
 
+def refusal_counts(telemetry: Mapping[str, Any]) -> dict[str, int]:
+    """Why the grasps of a part were refused, by cause, both stages' together: SFE's builds
+    (``support_footprint_refused``) and the body's grasps (``body_refused``), which count under SFE's causes. A part the
+    body alone searched (its prism switched off, or offering nothing) says what met it as SFE's would.
+
+    Args:
+        telemetry: A calculator result's telemetry.
+
+    Returns:
+        dict[str, int]: The refusals by cause; empty where neither stage counted any.
+    """
+    out: dict[str, int] = {}
+    for key in ("support_footprint_refused", "body_refused"):
+        counts = telemetry.get(key)
+        if isinstance(counts, Mapping):
+            for cause, value in counts.items():
+                out[str(cause)] = out.get(str(cause), 0) + int(value or 0)
+    return out
+
+
 def why_no_grasp(telemetry: Mapping[str, Any]) -> "tuple[tuple[GraspFailureReason, ...], str]":
     """The reasons and the sentence for a calculator result with no candidate, read off its telemetry.
 
@@ -1288,12 +1619,12 @@ def why_no_grasp(telemetry: Mapping[str, Any]) -> "tuple[tuple[GraspFailureReaso
       any tilt or on its body (:func:`least_part_height_mm`), that it is too short for this hand;
     * the part's own low fragments alone: ``NO_VALID_GRASP``.
 
+    The refusals are both stages' (:func:`refusal_counts`): a part whose body met a neighbour is boxed in too.
     ``RESCAN_RECOMMENDED`` comes last on every one, as before.
     """
     from src.robot.grasping.types.feedback import GraspFailureReason as R  # noqa: PLC0415, N817
 
-    refused = telemetry.get("support_footprint_refused")
-    counts: Mapping[str, Any] = refused if isinstance(refused, Mapping) else {}
+    counts = refusal_counts(telemetry)
 
     def count(*names: str) -> int:
         return int(sum(int(counts.get(name, 0) or 0) for name in names))

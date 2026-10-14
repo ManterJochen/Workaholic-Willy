@@ -7,8 +7,9 @@ everything after that arrives on the run's event stream in the order of 1.3.3. W
 * on console_dummy, a task with a pose place ends ``finished`` after one part, and "until empty" places two parts of a
   scene that then empties and ends ``nothing_left``, each in the documented event order;
 * on the scripted cell, whose arm knows where a pose puts the tool, the drop stands the part's hang above the taught
-  pose, and "until empty" into a pose whose drop area holds the only parts left ends ``nothing_left`` and returns,
-  never ``failed_in_a_row`` (scenario 3);
+  pose where the cell declares how far its parts hang, and "until empty" into a pose whose drop area holds the only
+  parts left ends ``nothing_left`` and returns, never ``failed_in_a_row`` (scenario 3); the rehearsal cell declares no
+  length, and its part hangs from the tool at the taught pose (the owner, 2026-10-14);
 * "stop after this part" lets the part in hand be placed and the arm return, and ends ``stopped_after_part``;
 * every refusal of 1.3.2 answers its code and status, moves nothing and starts no run, and the cell's state is refused
   before the request's; a refusal the library itself meets inside the run moves nothing and writes no record, and a
@@ -92,13 +93,16 @@ class ATaskOnTheRehearsalCellTests(ConsoleCase):
 
     def test_the_dummy_s_pose_drop_is_planned_and_said(self) -> None:
         """Where the drop stands is pinned on the scripted cell (``test_the_drop_stands_the_hang_above_the_taught_pose``):
-        the dummy's fk answers where the arm stands, not where a pose puts the tool."""
+        the dummy's fk answers where the arm stands, not where a pose puts the tool. The rehearsal cell declares no
+        ``payload.length_mm``, so its part hangs from the tool, which goes to the taught pose itself (the owner,
+        2026-10-14: "Wenn kein Payloadlength angegeben ist, dann soll es am TCP hängen")."""
         self.build_dummy()
         run = self.task(object="")
         self.finished(run["id"])
         drop = wait_for_event(self.cell, run["id"], "task.drop_planned").data
         self.assertEqual("pose", drop["kind"])
-        self.assertGreater(drop["hang_mm"], 0.0, "the part was let go at the taught pose itself, not over it")
+        self.assertEqual(0.0, drop["hang_mm"], "the tool was raised over the taught pose on a cell that declares no "
+                                               "length")
 
     def test_the_pick_result_says_the_part_the_pick_and_what_the_look_came_to(self) -> None:
         self.build_dummy()
@@ -149,11 +153,14 @@ class AScriptedTaskTests(ConsoleCase):
     """The owner's cell in miniature: the task tests' arm double, the real toggle hand on tool DO0, the scripted service."""
 
     def test_the_drop_stands_the_hang_above_the_taught_pose(self) -> None:
-        """Build plan item 7: the taught pose says where the part's bottom is let go, so the tool goes to it raised by
-        the part's hang (the scripted arm's fk puts ``drop_left`` at 300, -400, 150 mm)."""
-        from tests._task_fakes import PLACE_TCP
+        """Build plan item 7: where the cell declares how far its parts hang (``payload.length_mm``), the taught pose
+        says where the part's bottom is let go, so the tool goes to it raised by the part's reach past the fingertips,
+        here its whole hang: the scripted cell names no hand (the scripted arm's fk puts ``drop_left`` at 300, -400,
+        150 mm)."""
+        from tests._task_fakes import PLACE_TCP, declaring
 
         cell = self.scripted([Scripted("part")])
+        declaring(cell.arm, 60.0)
         run = self.task(object="green cube")
         self.assertEqual("finished", self.finished(run["id"])["stop_code"])
         drop = wait_for_event(self.cell, run["id"], "task.drop_planned").data

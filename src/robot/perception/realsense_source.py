@@ -37,7 +37,7 @@ import numpy as np
 
 from src.robot.constants import create_robot_logger
 from src.robot.core.errors import PerceptionFrameMoved
-from src.robot.core.shutter_motion import PICK_FRAME_WARMUP_GRABS, ShutterStamp
+from src.robot.core.shutter_motion import PICK_FRAME_BURST_GRABS, PICK_FRAME_WARMUP_GRABS, ShutterStamp
 from src.robot.grasping.types.perception import PerceptionFrame
 from src.robot.perception.colour_check import (
     ColourCheck,
@@ -68,7 +68,7 @@ if TYPE_CHECKING:
     #: shutter, it answers the pixels to paint (:func:`kept_out_pixels`), ``None`` for none.
     Hide = Callable[[np.ndarray, np.ndarray, "Pose | None"], "np.ndarray | None"]
 
-__all__ = ["RealSenseVisionPerceptionSource", "kept_out_pixels", "painted_copy"]
+__all__ = ["RealSenseVisionPerceptionSource", "burst_depth", "kept_out_pixels", "painted_copy"]
 
 #: The source's own lines, to the robot log and ``perception_source.log``: what the colour check made of each part,
 #: and what the detector called it.
@@ -143,6 +143,10 @@ class RealSenseVisionPerceptionSource:
     warmup_grabs
         Throwaway grabs before the real one, so a physical camera's auto-exposure / auto-white-balance
         has settled. A real RealSense needs a handful; a fake ignores it.
+    burst_grabs
+        The grabs after the warm-ups the frame is made of: the last one's colour, and the depth of them all
+        (:func:`burst_depth`), so a speck or an edge's flicker that fewer than half of them read is out. 1 keeps one
+        grab as it came; a camera that hands the same depth every grab keeps its last frame as it came.
     mask_completion
         Which mask-completion policy to apply; the default is ``DEFAULT_MASK_COMPLETION``, which is
         ``NONE``. :mod:`mask_completion` carries the measurement behind that default.
@@ -168,6 +172,7 @@ class RealSenseVisionPerceptionSource:
         object_labels: tuple[str, ...] = (),
         intrinsics: np.ndarray | None = None,
         warmup_grabs: int = PICK_FRAME_WARMUP_GRABS,
+        burst_grabs: int = PICK_FRAME_BURST_GRABS,
         mask_completion: MaskCompletion = DEFAULT_MASK_COMPLETION,
         colour_check: ColourCheck | str = ColourCheck.ON,
         colour_check_clipped: ColourClipped | str = ColourClipped.EXCLUDE,
@@ -193,6 +198,7 @@ class RealSenseVisionPerceptionSource:
         self._kind = ""
         self._intrinsics_override = None if intrinsics is None else np.asarray(intrinsics, dtype=np.float64)
         self._warmup_grabs = max(0, int(warmup_grabs))
+        self._burst_grabs = max(1, int(burst_grabs))
         #: What to do with a mask that underfills its detection box. `mask_completion.py` carries
         #: the measurement behind the default and the reason this is a lever.
         self._mask_completion = MaskCompletion(mask_completion)
@@ -427,14 +433,15 @@ class RealSenseVisionPerceptionSource:
 
         The capture time is the one the camera owner read before its grab when the frame carries
         it, else a clock read here just before the grab, never after: age decides whether a frame
-        may still be planned against.
+        may still be planned against. The grab is the whole burst (:meth:`_burst`): on a wrist the
+        tool holds still across all of it, or all of it is taken again.
         """
         stamp = self._stamp
         if stamp is None:
             before_grab = time.time()
-            rgbd = self._streamer.grab()
+            rgbd = self._burst()
             return rgbd, None, _captured_at(rgbd, before_grab)
-        grabbed = stamp.grab(self._streamer.grab)
+        grabbed = stamp.grab(self._burst)
         if grabbed.tool_pose is None:
             raise PerceptionFrameMoved(
                 camera=str(getattr(self._streamer, "rig_id", "") or "camera"), attempts=grabbed.grabs,
@@ -442,6 +449,21 @@ class RealSenseVisionPerceptionSource:
                 tolerance_mm=stamp.tolerance_mm, tolerance_deg=stamp.tolerance_deg,
             )
         return grabbed.frame, grabbed.tool_pose, _captured_at(grabbed.frame, grabbed.before_grab_s)
+
+    def _burst(self) -> Any:
+        """The frame kept: ``burst_grabs`` grabs back to back, the last one with the depth of them all (:func:`burst_depth`)
+        and the first one's capture time; the last grab as it came where every grab handed the same depth."""
+        started = time.monotonic()
+        frames = [self._streamer.grab() for _ in range(self._burst_grabs)]
+        last = frames[-1]
+        if all(np.array_equal(frame.depth, last.depth) for frame in frames[:-1]):
+            return last
+        depth = burst_depth([frame.depth for frame in frames])
+        single = np.asarray(last.depth) > 0
+        _LOG.info("the pick frame's depth is the median of %d grabs (%.2f s): %d pixels out that fewer than half of them "
+                  "read, %d holes of the last one filled", len(frames), time.monotonic() - started,
+                  int(np.count_nonzero(single & (depth == 0))), int(np.count_nonzero(~single & (depth > 0))))
+        return replace(last, depth=depth, captured_at_s=frames[0].captured_at_s)
 
     def acquire(self, follow: "Follow | None" = None, hide: "Hide | None" = None) -> PerceptionFrame:
         """One frame, its parts grounded by the backend; or, handed ``follow``, found again with no detector where the
@@ -650,6 +672,31 @@ class RealSenseVisionPerceptionSource:
         _LOG.info("%d pixel(s) of the regions the task keeps out (%.1f %% of the frame) are painted over in the "
                   "detector's copy; the segmenter reads the real frame", count, 100.0 * count / hidden.size)
         return painted_copy(bgr, hidden)
+
+
+def burst_depth(depths: "Sequence[np.ndarray]") -> np.ndarray:
+    """The depth of a burst of grabs from a camera standing still, pixel by pixel: the median of the grabs that read the
+    pixel, the nearer of the middle two for an even count, where more than half of them read it, and 0 elsewhere.
+
+    A speck, or an edge that flickers between the part and what lies behind it, read by fewer than half of the grabs is
+    out; a hole most of them read is filled. The temporal filter of a RealSense passes neither: a value that jumps past
+    its delta is taken as it comes.
+
+    Args:
+        depths: The grabs' depths, one shape, millimetres; 0 or not finite where nothing was measured.
+
+    Returns:
+        np.ndarray: The burst's depth, the grabs' dtype and shape.
+    """
+    stack = np.stack([np.asarray(depth) for depth in depths])
+    with np.errstate(invalid="ignore"):
+        valid = np.isfinite(stack) & (stack > 0)
+    hole = np.inf if np.issubdtype(stack.dtype, np.floating) else np.iinfo(stack.dtype).max
+    count = valid.sum(axis=0)
+    ordered = np.sort(np.where(valid, stack, hole), axis=0)
+    out = np.take_along_axis(ordered, (np.maximum(count, 1) - 1)[None] // 2, axis=0)[0]
+    out[2 * count <= stack.shape[0]] = 0
+    return out
 
 
 def _captured_at(frame: Any, before_grab: float) -> float:

@@ -285,7 +285,7 @@ class WarmupTests(unittest.TestCase):
         st = _FakeStreamer(_color(), np.full((64, 64), 500, np.uint16), _K)
         s = RealSenseVisionPerceptionSource(
             streamer=st, detector=_FakeDetector([]), segmenter=_FakeSegmenter(),
-            prompt="x", warmup_grabs=3)
+            prompt="x", warmup_grabs=3, burst_grabs=1)
         s.acquire()
         self.assertEqual(st.grabs, 4)   # 3 warmup + 1 real
 
@@ -311,7 +311,8 @@ class AWristSourceStampsTheToolPoseTests(unittest.TestCase):
 
         streamer.grab = logged_grab  # type: ignore[method-assign]
         s = RealSenseVisionPerceptionSource(
-            streamer=streamer, detector=_FakeDetector([]), segmenter=_FakeSegmenter(), prompt="x", warmup_grabs=2)
+            streamer=streamer, detector=_FakeDetector([]), segmenter=_FakeSegmenter(), prompt="x", warmup_grabs=2,
+            burst_grabs=1)
         s.stamp_tool_pose_with(reader, motion_tolerance=(1.0, 0.5), attempts=1)
         frame = s.acquire()
 

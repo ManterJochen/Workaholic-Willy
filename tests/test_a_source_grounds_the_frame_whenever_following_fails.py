@@ -92,7 +92,7 @@ def _source(shot: Shot, **keywords: Any) -> "tuple[RealSenseVisionPerceptionSour
     grounder = _Grounder(camera)
     segmenter = _Segmenter(camera, **keywords)
     source = RealSenseVisionPerceptionSource(streamer=camera, detector=grounder, segmenter=segmenter, prompt=PROMPT,
-                                             object_labels=("grey cube",), warmup_grabs=2)
+                                             object_labels=("grey cube",), warmup_grabs=2, burst_grabs=1)
     return source, camera, grounder, segmenter
 
 
@@ -207,7 +207,7 @@ class AFollowThatFailsGroundsTheSameFrameTests(unittest.TestCase):
                 return TwoStageBackend(detector=grounder, segmenter=_Segmenter(camera)).perceive(bgr, prompt)
 
         source = RealSenseVisionPerceptionSource(streamer=camera, backend=_NoBoxes(), prompt=PROMPT,
-                                                 object_labels=("grey cube",), warmup_grabs=2)
+                                                 object_labels=("grey cube",), warmup_grabs=2, burst_grabs=1)
 
         why = self._grounded(source, camera, grounder, source.acquire(follow=_follow(kept_of(shoot(scene)))))
 

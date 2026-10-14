@@ -13,6 +13,7 @@ one-directional: nothing here imports the service.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Optional
 
 from src.contracts import UNSET, Maybe, chosen
@@ -23,6 +24,7 @@ from src.robot.grasping.collision import (
     ParallelJawGripperModel,
     SuctionCupGripperModel,
 )
+from src.robot.grasping.collision.gripper_model import HandSteps
 from src.robot.grasping.decision import DecisionEngine, DecisionPolicy
 from src.robot.grasping.motion.grasp_motion import (
     GraspMotion,
@@ -90,6 +92,7 @@ def build_gripper_geometry(
     *,
     past_the_tcp_mm: float = 0.0,
     palm_thickness_mm: float | None = None,
+    hand_steps: "HandSteps | None" = None,
 ) -> GripperGeometryStrategy:
     """Map the ``grasping.gripper_geometry`` config block onto a collision envelope for the calculator.
 
@@ -103,7 +106,8 @@ def build_gripper_geometry(
     and pad further ahead of the TCP and its palm nearer, so the calculator plans the hand where the guard judges it.
     0.0, the default, is the jaw as the registry describes it. ``palm_thickness_mm`` is the registry's housing along
     the closing axis (``ParallelJawGripperModel.palm_thickness_mm``); ``None`` keeps the palm as wide as the open
-    fingers.
+    fingers. ``hand_steps`` are the fingers and the housing as the hand's guard bundle measures them about the grasp
+    centre (``gripper_model.hand_steps_of``), placed with the jaw ``past_the_tcp_mm`` on; ``None`` keeps each one box.
     """
     if config.kind == "suction":
         s = config.suction
@@ -131,6 +135,9 @@ def build_gripper_geometry(
         palm_width_mm=j.palm_width_mm,
         outer_margin_mm=config.outer_margin_mm,
         palm_thickness_mm=palm_thickness_mm,
+        hand_steps=None if hand_steps is None else HandSteps(
+            finger=tuple(replace(step, z_mm=(step.z_mm[0] + past, step.z_mm[1] + past)) for step in hand_steps.finger),
+            housing=tuple(replace(step, z_mm=(step.z_mm[0] + past, step.z_mm[1] + past)) for step in hand_steps.housing)),
     )
 
 
@@ -791,6 +798,9 @@ def apply_orchestrator_overlays(
     hand_past_the_tcp_mm: float = 0.0,
     #: The registry's housing along the closing axis (``build_gripper_geometry``); ``None`` where it says none.
     palm_thickness_mm: float | None = None,
+    #: The fingers and the housing as the hand's guard bundle measures them (``build_gripper_geometry``); ``None`` where
+    #: none was measured.
+    hand_steps: "HandSteps | None" = None,
 ) -> None:
     """Apply the orchestrator overlays in place.
 
@@ -812,7 +822,8 @@ def apply_orchestrator_overlays(
     # end effector or its own table is wrong regardless of which advanced block is enabled.
     runtime.orchestrator.gripper_model = build_gripper_geometry(grasping_cfg.gripper_geometry,
                                                                 past_the_tcp_mm=hand_past_the_tcp_mm,
-                                                                palm_thickness_mm=palm_thickness_mm)
+                                                                palm_thickness_mm=palm_thickness_mm,
+                                                                hand_steps=hand_steps)
     if hand_past_the_tcp_mm > 0.0:
         logger.info("the guard holds the jaw's grasp centre %.2f mm past the declared TCP: the calculator plans the hand "
                     "there too (the preflight's grasp centre row names the difference)", float(hand_past_the_tcp_mm))

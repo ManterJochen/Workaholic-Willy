@@ -8,13 +8,19 @@ and the pick ended with no typed reason. Replayed here the way the pick loop cal
 replay, ``pick_loop.py:4264-4384``): the owner's Hand-E, the dense mode of that profile, the support the single view
 resolved.
 
-With ``robot.grasping.scene_obstacles`` SFE's prism offers nothing on both looks, with the support model of the look
-and without it: every one of its builds meets a neighbour the camera saw. On all five of the owner's recorded looks (P1-P5,
-``cellfix/ae/work/replay_zollstock.out``): today 3 of 3 grasps with an open finger in a neighbour, after 0 grasps.
+With ``robot.grasping.scene_obstacles`` SFE's prism offered nothing on both looks, with the support model of the look
+and without it: every one of its builds met a neighbour the camera saw. On all five of the owner's recorded looks (P1-P5,
+``cellfix/ae/work/replay_zollstock.out``): then 3 of 3 grasps with an open finger in a neighbour, after 0 grasps.
 
-Since 2026-10-13 the part's own body is searched beside the prism (``body_grasps``, lever A) on the fine world's boxes
-(``fine_world``): it holds the folded Zollstock across its 20 mm, and no open finger of any grasp it offers stands on a
-point the camera world keeps.
+Since 2026-10-13 the part's own body is searched (``body_grasps``, lever A; since 2026-10-14 alone, the prism no longer
+asked) on the fine world's boxes (``fine_world``): its builds that meet a neighbour the camera saw are refused, it holds
+the folded Zollstock across its 20 mm, and no open finger of any grasp it offers stands on a
+point the camera world keeps beside the part, inside one of the boxes it builds (a cluster it takes for sensor noise is
+in none, and the guard keeps no distance from it), the fingers open as wide as the grasp opens them (one planned for a
+hand that opens only as needed as wide as that and the guard's slack). The Zollstock's own points are not beside it:
+within the box the world keeps out for it, or up to ``fine_world.FINE_TARGET_FRINGE_MM`` past it, they are the part to the guard, and the fingers
+that close on it may come to them (since 2026-10-14 a grasp of the body stands its finger 9 mm over the support on two
+of them, inside that box).
 """
 
 from __future__ import annotations
@@ -100,16 +106,47 @@ def _compute(recorded: Any, *, scene: bool, model: Any = None) -> Any:
         **({"support_model": model} if model is not None else {}))
 
 
+def _beside(recorded: Any, points: np.ndarray) -> np.ndarray:
+    """``points`` less the Zollstock's own: those in the box the world keeps out for it, of its points over the support
+    the single view resolved, or within ``fine_world.FINE_TARGET_FRINGE_MM`` past it (``fine_world.fringe_of``)."""
+    from src.robot.grasping.generation.scene_obstacles import _the_parts_keep_out
+    from src.robot.grasping.multiview.scene_geometry import to_base_mm
+    from src.robot.safety.planning.fine_world import fringe_of
+
+    part = to_base_mm(recorded.target_mask & (recorded.depth_mm > 0), recorded.depth_mm, recorded.intrinsics,
+                      recorded.camera_to_base)
+    box = _the_parts_keep_out(part, _rules(), float(_support(recorded).plane.offset_mm))
+    points = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    return points if box is None else points[~fringe_of(points, [box])]
+
+
+def _held(points: np.ndarray, boxes: Any) -> np.ndarray:
+    """``points`` the camera world holds: inside one of the boxes it builds of what it saw (the guard's, as the
+    calculator holds them, ``scene_seen_boxes``). A point of a cluster it takes for sensor noise is in none, and the
+    guard keeps no distance from it."""
+    inside = np.zeros(points.shape[0], dtype=bool)
+    for box in boxes:
+        local = (points - np.asarray(box.centre_mm, dtype=np.float64)) @ np.asarray(box.rotation, dtype=np.float64)
+        inside |= np.all(np.abs(local) <= np.asarray(box.half_extents_mm, dtype=np.float64) + 1e-6, axis=1)
+    return points[inside]
+
+
 def _in_open_fingers(grasp: Any, points: np.ndarray) -> int:
-    """How many ``points`` stand inside the open Hand-E fingers of a BASE grasp."""
+    """How many ``points`` stand inside the Hand-E's fingers of a BASE grasp, open as wide as the grasp opens them: a
+    grasp planned for a hand that opens only as needed (lever G) as wide as its opening and the slack the guard holds it
+    at (``core.gripper.FINGER_OPENING_SLACK_MM``), every other fully."""
+    from src.robot.core.gripper import FINGER_OPENING_SLACK_MM
     from src.robot.execution.autonomous_grasp.builders import build_gripper_geometry
 
     cfg = _cell()
+    widest = float(cfg.gripper.max_width_mm)
+    planned = ((grasp.metadata.get("score_components") or {}).get("support_footprint") or {}).get("open_width_mm")
+    opening = widest if planned is None else min(float(planned) + FINGER_OPENING_SLACK_MM, widest)
     turn = np.column_stack([grasp.axis, np.cross(grasp.approach, grasp.axis), grasp.approach])
     local = (np.asarray(points, dtype=np.float64) - grasp.position) @ turn
     return int(sum(int(box.contains_local_points(local).sum())
-                   for box in build_gripper_geometry(cfg.grasping.gripper_geometry).collision_boxes(
-                       float(cfg.gripper.max_width_mm)) if box.label.startswith("finger")))
+                   for box in build_gripper_geometry(cfg.grasping.gripper_geometry).collision_boxes(opening)
+                   if box.label.startswith("finger")))
 
 
 class ARecordedZollstockLookIsBoxedInTests(unittest.TestCase):
@@ -138,14 +175,16 @@ class ARecordedZollstockLookIsBoxedInTests(unittest.TestCase):
             for label, model in (("without the support model", None), ("with it", _model(recorded))):
                 with self.subTest(look=name, model=label):
                     after = _compute(recorded, scene=True, model=model)
-                    # SFE's prism: every build meets a neighbour the camera saw.
-                    self.assertEqual(after.telemetry["support_footprint_candidates"], 0)
-                    self.assertGreater(after.telemetry["support_footprint_refused"]["seen_corridor"], 0)
+                    # Builds that met a neighbour the camera saw, refused.
+                    self.assertGreater(after.telemetry["body_refused"].get("seen_corridor", 0)
+                                       + after.telemetry["body_refused"].get("seen_fingers", 0), 0)
                     # The body's grasps: none with an open finger on what the camera world keeps beside the part.
                     stages = {(grasp.metadata.get("score_components") or {}).get("support_footprint", {}).get("stage")
                               for grasp in after.candidates}
                     self.assertLessEqual(stages, {"body"})
-                    world = after.metadata["scene_points_world_rule_base_mm"]
+                    world = _held(_beside(recorded, after.metadata["scene_points_world_rule_base_mm"]),
+                                  after.metadata["scene_seen_boxes"])
+                    self.assertGreater(world.shape[0], 1000)
                     held = [_in_open_fingers(grasp, world) for grasp in after.candidates]
                     self.assertTrue(all(n == 0 for n in held), held)
 

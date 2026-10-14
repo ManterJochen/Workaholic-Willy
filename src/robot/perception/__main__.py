@@ -270,9 +270,10 @@ def main(argv: list[str] | None = None) -> int:
     backend_note = _backend_note(rig)
     detector = build_object_detector(cfg.models)
     segmenter = build_segmenter(cfg.models)
+    # One grab, not a pick frame's burst: the holes counted are the tap's, one grab's depth.
     source = RealSenseVisionPerceptionSource(
         streamer=tap, detector=detector, segmenter=segmenter,
-        prompt=args.prompt, warmup_grabs=args.warmup,
+        prompt=args.prompt, warmup_grabs=args.warmup, burst_grabs=1,
     )
 
     print(f"opening rig {rig.rig_id!r} ...", flush=True)

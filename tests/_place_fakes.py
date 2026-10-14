@@ -95,15 +95,24 @@ def pick_view(scene: BinScene, tcp: Pose, label: str, *, rig: str = "wrist", sta
     return SimpleNamespace(label=label, name=f"{rig}@{label}", frame=frame, camera_to_base=camera_to_base, depth=depth)
 
 
-def hande_tree(**place: Any) -> Any:
-    """The robot tree of the repository's Hand-E profile, its ``robot.place`` set as ``place`` says."""
+def hande_tree(*, length_mm: "float | None" = None, **place: Any) -> Any:
+    """The robot tree of the repository's Hand-E profile, its ``robot.place`` set as ``place`` says.
+
+    The profile declares no carried part, so a place stands the tool where it says; with ``length_mm`` the tree declares
+    how far its parts hang past the fingertips (``safety.planning_world.payload.length_mm``), and a place stands the
+    part's bottom there (the owner, 2026-10-14)."""
     from src.config import load_tree
     from src.config.schema.robot.place_schema import RobotPlaceConfig
 
     loaded = load_tree("hande")
     assert loaded.ok, loaded
-    robot = loaded.robot
-    return robot.model_copy(update={"place": RobotPlaceConfig(**place)})
+    robot = loaded.robot.model_copy(update={"place": RobotPlaceConfig(**place)})
+    if length_mm is None:
+        return robot
+    world = robot.safety.planning_world
+    payload = world.payload.model_copy(update={"length_mm": float(length_mm)})
+    safety = robot.safety.model_copy(update={"planning_world": world.model_copy(update={"payload": payload})})
+    return robot.model_copy(update={"safety": safety})
 
 
 class AgainWorld:

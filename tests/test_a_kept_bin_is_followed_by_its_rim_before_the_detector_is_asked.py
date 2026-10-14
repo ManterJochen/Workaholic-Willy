@@ -34,7 +34,6 @@ from tests._task_fakes import (
     BIN_CENTRE,
     BIN_RIM_MM,
     BLUE,
-    GRASP_Z_MM,
     BinScene,
     MeasuringLocator,
     Pick,
@@ -98,7 +97,8 @@ class ABinThatStoodStillTests(unittest.TestCase):
         self.assertEqual(1, len(ran.locator.measured))
         self.assertIn("the detector was not asked", ran.hooks.said[ran.names().index("task.target_checked")])
         np.testing.assert_allclose(BIN_CENTRE, _line_in(ran)[1][:2], atol=10.0)
-        self.assertAlmostEqual(BIN_RIM_MM + GRASP_Z_MM + 20.0, _line_in(ran)[1][2], delta=0.5)
+        # The doubles' cell declares no payload.length_mm: the tool stands the rim air over the rim.
+        self.assertAlmostEqual(BIN_RIM_MM + 20.0, _line_in(ran)[1][2], delta=0.5)
         self.assertEqual(2, do0_changes(ran.log))
 
     def test_the_rim_is_read_at_the_bins_look_with_every_frame_held(self) -> None:

@@ -22,9 +22,13 @@ from src.robot.grasping.planning import GraspPose
 
 __all__ = [
     "CollisionBox",
+    "FingerStep",
     "GripperGeometryStrategy",
+    "HandSteps",
+    "HousingStep",
     "ParallelJawGripperModel",
     "SuctionCupGripperModel",
+    "hand_steps_of",
     "points_to_grasp_frame",
 ]
 
@@ -99,6 +103,111 @@ class CollisionBox:
 
 
 @dataclass(frozen=True, slots=True)
+class FingerStep:
+    """A stretch of the finger on +X along the approach, in the grasp frame: from ``z_mm[0]`` to ``z_mm[1]`` (the tip
+    positive), ``thickness_mm`` out from its jaw face along the closing axis, across the binormal from ``y_mm[0]`` to
+    ``y_mm[1]``. The finger on -X is its half turn about the approach. Measured off the hand's guard bundle
+    (:func:`hand_steps_of`)."""
+
+    z_mm: tuple[float, float]
+    thickness_mm: float
+    y_mm: tuple[float, float]
+
+
+@dataclass(frozen=True, slots=True)
+class HousingStep:
+    """A stretch of a hand's housing along the approach, in the grasp frame: from ``z_mm[0]`` to ``z_mm[1]``, across the
+    closing axis from ``x_mm[0]`` to ``x_mm[1]`` and the binormal from ``y_mm[0]`` to ``y_mm[1]``."""
+
+    z_mm: tuple[float, float]
+    x_mm: tuple[float, float]
+    y_mm: tuple[float, float]
+
+
+@dataclass(frozen=True, slots=True)
+class HandSteps:
+    """A parallel jaw as its guard bundle holds it, in steps along the approach (:func:`hand_steps_of`)."""
+
+    finger: tuple[FingerStep, ...]
+    housing: tuple[HousingStep, ...]
+
+
+def _stepped(vertices: np.ndarray, faces: np.ndarray, centre: float, z_from: float, z_to: float, slice_mm: float,
+             most: int, x_from: float | None = None) -> list[list[float]]:
+    """One mesh in at most ``most`` steps along the approach (bundle +Y) from ``z_from`` to ``z_to`` about ``centre``,
+    each step ``[z0, z1, x0, x1, y0, y1]``: every ``slice_mm`` of it the box of the triangles crossing it, then the two
+    neighbouring steps whose joint box adds the least volume joined until ``most`` are left, a step the box of its
+    slices. ``x_from`` holds every step's near side along X there (a finger's jaw face), so only its far side counts."""
+    corners = vertices[faces]                                     # (F, 3, 3): bundle x, approach, binormal
+    z_lo, z_hi = corners[:, :, 1].min(axis=1) - centre, corners[:, :, 1].max(axis=1) - centre
+    x_lo, x_hi = corners[:, :, 0].min(axis=1), corners[:, :, 0].max(axis=1)
+    y_lo, y_hi = corners[:, :, 2].min(axis=1), corners[:, :, 2].max(axis=1)
+    edges = np.arange(z_from, z_to + 1e-9, slice_mm)
+    edges = np.append(edges[edges < z_to - 1e-9], z_to)
+    steps: list[list[float]] = []
+    for low, high in zip(edges[:-1], edges[1:]):
+        crossing = (z_hi >= low) & (z_lo <= high)
+        if crossing.any():
+            steps.append([low, high, float(x_lo[crossing].min()) if x_from is None else x_from,
+                          float(x_hi[crossing].max()), float(y_lo[crossing].min()), float(y_hi[crossing].max())])
+
+    def volume(step: list[float]) -> float:
+        return (step[1] - step[0]) * (step[3] - step[2]) * (step[5] - step[4])
+
+    def joined(a: list[float], b: list[float]) -> list[float]:
+        return [a[0], b[1], min(a[2], b[2]), max(a[3], b[3]), min(a[4], b[4]), max(a[5], b[5])]
+
+    while len(steps) > most:
+        costs = [volume(joined(a, b)) - volume(a) - volume(b) for a, b in zip(steps[:-1], steps[1:])]
+        n = int(np.argmin(costs))
+        steps[n:n + 2] = [joined(steps[n], steps[n + 1])]
+    return steps
+
+
+def hand_steps_of(bundle_path: Any, *, aperture_mm: float, finger_ahead_mm: float, finger_length_mm: float,
+                  slice_mm: float = 1.0, finger_steps: int = 3, housing_steps: int = 4) -> HandSteps:
+    """A parallel jaw's fingers and housing in steps along the approach, as its guard bundle holds them.
+
+    The bundle's frame is ``scripts/grippers/measure_jaw_from_bundle.py``'s: approach +Y, closing X, binormal Z, the
+    fingers open to ``aperture_mm``; the grasp centre stands ``finger_ahead_mm`` behind the fingertip. The finger on +X
+    is read from ``finger_length_mm`` behind the centre, where it leaves the housing, to its tip, its thickness out from
+    the jaw face; the housing over the whole of its mesh behind that. Every ``slice_mm`` is the box of the triangles
+    crossing it, so a slice holds every point of the surface in it, not only the vertices; the slices join into
+    ``finger_steps`` steps of the finger and ``housing_steps`` of the housing, the neighbours whose joint box adds the
+    least volume first, and a step is the box of its slices: every box the calculator holds of the hand holds the mesh
+    the guard judges in it.
+
+    Args:
+        bundle_path: The hand's ``{hand}_hand_meshes.npz`` (``safety.planning.environment.hand_mesh_bundle``).
+        aperture_mm: How far apart the jaw faces stand in the bundle.
+        finger_ahead_mm: How far the fingertip stands past the grasp centre.
+        finger_length_mm: How far behind the grasp centre the finger leaves the housing.
+        slice_mm: How thick a slice is.
+        finger_steps: How many steps the finger is held in.
+        housing_steps: How many steps the housing is held in.
+
+    Returns:
+        HandSteps: The finger's steps and the housing's, nearest the housing's back first.
+    """
+    with np.load(bundle_path) as data:
+        finger_v = np.asarray(data["rfinger__v"], dtype=np.float64)
+        finger_f = np.asarray(data["rfinger__f"], dtype=np.int64)
+        housing_v = np.asarray(data["gripper__v"], dtype=np.float64)
+        housing_f = np.asarray(data["gripper__f"], dtype=np.int64)
+    centre = float(finger_v[:, 1].max()) - float(finger_ahead_mm)
+    face = 0.5 * float(aperture_mm)
+    finger = _stepped(finger_v, finger_f, centre, -float(finger_length_mm), float(finger_ahead_mm), slice_mm,
+                      finger_steps, x_from=face)
+    housing = _stepped(housing_v, housing_f, centre, float(housing_v[:, 1].min()) - centre, -float(finger_length_mm),
+                       slice_mm, housing_steps)
+    return HandSteps(
+        finger=tuple(FingerStep(z_mm=(z0, z1), thickness_mm=x1 - face, y_mm=(y0, y1))
+                     for z0, z1, _x0, x1, y0, y1 in finger),
+        housing=tuple(HousingStep(z_mm=(z0, z1), x_mm=(x0, x1), y_mm=(y0, y1))
+                      for z0, z1, x0, x1, y0, y1 in housing))
+
+
+@dataclass(frozen=True, slots=True)
 class ParallelJawGripperModel:
     """Conservative box model in the local grasp frame, where X closes between the contacts, Y is the binormal and Z is the approach."""
 
@@ -131,6 +240,11 @@ class ParallelJawGripperModel:
     #: it always was. The Hand-E's housing is 75.0 mm across, its open fingers 71.6, and the guard held it 1.7 mm past the
     #: box on either side (the grasp bench, 2026-10-06).
     palm_thickness_mm: float | None = None
+    #: The fingers and the housing in steps along the approach where the hand's guard bundle measured them
+    #: (:func:`hand_steps_of`), in this model's frame; ``None`` holds each as one box, as it always was. A Hand-E's tip,
+    #: where its pad sits, is 6.5 mm thick and 21 mm across, and its housing 62 mm across the binormal where it meets
+    #: the fingers: the boxes stood 4.8 and 6.5 mm past them.
+    hand_steps: "HandSteps | None" = None
 
     def __post_init__(self) -> None:
         if self.palm_thickness_mm is not None:
@@ -166,17 +280,33 @@ class ParallelJawGripperModel:
         z_max = self.fingertip_depth_mm
         margin = self.outer_margin_mm
 
-        negative_finger = CollisionBox(
-            "finger_negative_x",
-            cast(np.ndarray, [-half_gap - self.finger_thickness_mm - margin, -y_finger - margin, z_min - margin]),
-            cast(np.ndarray, [-half_gap + self.finger_pad_overlap_mm + margin, y_finger + margin, z_max + margin]),
-        )
-        positive_finger = CollisionBox(
-            "finger_positive_x",
-            cast(np.ndarray, [half_gap - self.finger_pad_overlap_mm - margin, -y_finger - margin, z_min - margin]),
-            cast(np.ndarray, [half_gap + self.finger_thickness_mm + margin, y_finger + margin, z_max + margin]),
-        )
+        steps = (self.hand_steps.finger if self.hand_steps is not None and self.hand_steps.finger
+                 else (FingerStep(z_mm=(z_min, z_max), thickness_mm=self.finger_thickness_mm, y_mm=(-y_finger, y_finger)),))
+        fingers = []
+        overlap = self.finger_pad_overlap_mm
+        for step in steps:
+            (z0, z1), (y0, y1), thick = step.z_mm, step.y_mm, step.thickness_mm
+            fingers.append(CollisionBox(
+                "finger_negative_x",
+                cast(np.ndarray, [-half_gap - thick - margin, -y1 - margin, z0 - margin]),
+                cast(np.ndarray, [-half_gap + overlap + margin, -y0 + margin, z1 + margin]),
+            ))
+            fingers.append(CollisionBox(
+                "finger_positive_x",
+                cast(np.ndarray, [half_gap - overlap - margin, y0 - margin, z0 - margin]),
+                cast(np.ndarray, [half_gap + thick + margin, y1 + margin, z1 + margin]),
+            ))
 
+        if self.hand_steps is not None and self.hand_steps.housing:
+            # The housing as measured, every step at least as wide as the open fingers' outer faces, which the fingers'
+            # carriages reach inside it.
+            outer = half_gap + self.finger_thickness_mm
+            palms = tuple(CollisionBox(
+                "palm",
+                cast(np.ndarray, [min(step.x_mm[0], -outer) - margin, step.y_mm[0] - margin, step.z_mm[0] - margin]),
+                cast(np.ndarray, [max(step.x_mm[1], outer) + margin, step.y_mm[1] + margin, step.z_mm[1] + margin]),
+            ) for step in self.hand_steps.housing)
+            return (*fingers, *palms)
         outer_half_x = max(half_gap + self.finger_thickness_mm, 0.5 * float(self.palm_thickness_mm or 0.0))
         palm_half_y = 0.5 * self.palm_width_mm
         palm = CollisionBox(
@@ -187,7 +317,7 @@ class ParallelJawGripperModel:
             ),
             cast(np.ndarray, [outer_half_x + margin, palm_half_y + margin, -self.finger_length_mm + margin]),
         )
-        return negative_finger, positive_finger, palm
+        return (*fingers, palm)
 
     def pad_boxes(self, grip_width_mm: float) -> tuple[CollisionBox, ...]:
         """The contact patches alone: where the gripper touches, not where its housing is.

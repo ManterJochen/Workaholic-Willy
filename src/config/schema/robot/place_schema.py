@@ -16,9 +16,10 @@ Three choices, each a cell's own, every default what a task did before the block
   frame and the part goes straight over to it, its bottom kept ``rim_floor_margin_mm`` and the rim air over the rim
   and over everything the pick's looks saw on the way; a carry that cannot be so goes via the look.
 
-``part_bottom`` says what a part's hang below the tool is measured from: ``declared_support``, the support the cell
-declares (a lower bound, so the error goes toward more air: on the owner's cell the drop stood 85 to 92 mm over the
-rim, the part's 55 mm mat under it), or ``measured``, what the pick's own looks read under the part.
+``rim_air_mm`` is how far over a box's rim the jaws open (the owner, 2026-10-14: "genau auf Höhe der Kante" is 0, "20 mm
+über der Kante" 20): the part's bottom stands that far over it where the cell declares how far its parts hang
+(``safety.planning_world.payload.length_mm``), the hang measured part by part from what the pick's looks read under
+the part; the tool where it declares none. A task's own air (``PlaceAt.air_mm``) goes before it.
 
 ``relocate`` says what a task does with a bin the check before a drop lost (not seen, moved too far, another size where
 it stood), on as shipped (the owner, 2026-10-09: "wenn sie dies nicht mehr tut, dann kann er seine Ablage nochmal neu
@@ -62,8 +63,9 @@ class RobotPlaceConfig(StrictModel):
     #: How far inside a box's opening the part and the open hand keep, on every side, before the part goes below the
     #: rim, mm. The guard judges the hand on the line in; the part is not modelled, so this keeps it off the walls.
     opening_margin_mm: float = Field(default=10.0, ge=0.0, le=50.0)
-    #: What a part's hang below the tool is measured from: ``declared_support`` (as before) or ``measured``.
-    part_bottom: Literal["declared_support", "measured"] = "declared_support"
+    #: How far over a box's rim the jaws open, mm: under the part's bottom where the cell declares
+    #: ``payload.length_mm``, under the tool where it declares none.
+    rim_air_mm: float = Field(default=20.0, ge=0.0, le=50.0)
     #: Whether the parts on a flat place lie side by side rather than at the one spot.
     side_by_side: bool = False
     #: How far apart two parts lie side by side beyond their footprints, mm.

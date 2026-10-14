@@ -39,9 +39,16 @@ class FakeURCap(threading.Thread):
     daemon = True
 
     def __init__(
-        self, *, split_replies: bool = False, silent: bool = False, lying: bool = False
+        self, *, split_replies: bool = False, silent: bool = False, lying: bool = False, takes_reads: int = 0
     ) -> None:
         super().__init__()
+        #: How many reads of `PRE` a written target takes to reach the gripper, as on the owner's Hand-E behind the
+        #: URCap daemon (2026-10-14): until then `PRE` and `OBJ` say what they said before the command; then the
+        #: fingers move for two reads of `OBJ` and stop on a part. 0 is the gripper of before, which takes it at once.
+        self._takes_reads = takes_reads
+        self._pending: int | None = None
+        self._left = 0
+        self._moving = 0
         self.vars: dict[str, int] = {
             "ACT": 0, "ATR": 0, "GTO": 0, "SPE": 0, "FOR": 0,
             "STA": 0, "OBJ": 0, "FLT": 0,
@@ -98,6 +105,15 @@ class FakeURCap(threading.Thread):
         if parts[0] == "GET":
             name = parts[1]
             answered = "SOMETHING_ELSE" if self._lying else name
+            if name == "PRE" and self._pending is not None:
+                if self._left > 0:
+                    self._left -= 1
+                else:
+                    self.vars["PRE"], self._pending, self._moving = self._pending, None, 2
+            if name == "OBJ" and self._pending is None and self._moving > 0:
+                self._moving -= 1
+                self.vars["OBJ"] = (int(ObjectStatus.MOVING) if self._moving
+                                    else int(ObjectStatus.STOPPED_CLOSING))
             return f"{answered} {self.vars.get(name, 0)}".encode()
         if parts[0] == "SET":
             pairs = parts[1:]
@@ -109,7 +125,10 @@ class FakeURCap(threading.Thread):
                     # target -- so the fake modelled AWAY the exact trap the test below exists for,
                     # and that test failed against the fake rather than against the client. A fake
                     # that gets the system wrong proves nothing about the code under it.
-                    self.vars["PRE"] = int(value)
+                    if self._takes_reads:
+                        self._pending, self._left = int(value), self._takes_reads
+                    else:
+                        self.vars["PRE"] = int(value)
                     continue
                 self.vars[name] = int(value)
                 if name == "ACT" and int(value) == 1:
@@ -303,6 +322,33 @@ class ProbeTests(_Served):
         self.assertIs(self.client.object_status(), ObjectStatus.AT_POSITION)
         self.server.vars["OBJ"] = int(ObjectStatus.STOPPED_CLOSING)
         self.assertIs(self.client.object_status(), ObjectStatus.STOPPED_CLOSING)
+
+
+class AGripperThatTakesItsTargetLateTests(unittest.TestCase):
+    """The owner's Hand-E behind the URCap daemon (2026-10-14): a written target reaches the gripper some reads later,
+    and until then `OBJ` still says why the motion before ended. A wait that read it at once took the open fingers'
+    AT_POSITION for the close's, and every close ended before the fingers moved."""
+
+    def setUp(self) -> None:
+        self.server = FakeURCap(takes_reads=3)
+        self.server.vars["OBJ"] = int(ObjectStatus.AT_POSITION)
+        self.server.start()
+        self.addCleanup(self.server.close)
+        self.client = RobotiqSocket(timeout_s=1.0)
+        self.client.connect("127.0.0.1", self.server.port)
+        self.addCleanup(self.client.disconnect)
+
+    def test_the_wait_takes_the_echo_of_the_target_before_it_reads_why_the_fingers_stopped(self) -> None:
+        self.client.move(56, 255, 128)
+        self.assertIs(self.client.wait_for_motion(timeout_s=1.0), ObjectStatus.STOPPED_CLOSING)
+        self.assertEqual(56, self.client.get_requested_position())
+
+    def test_a_target_the_gripper_never_takes_is_a_typed_refusal_that_names_it(self) -> None:
+        self.server._takes_reads = 10 ** 6  # noqa: SLF001 (the fake's own lag, set past the deadline)
+        self.client.move(56, 255, 128)
+        with self.assertRaises(RobotiqSocketError) as caught:
+            self.client.wait_for_motion(timeout_s=0.2)
+        self.assertIn("did not take the position 56", str(caught.exception))
 
 
 class ConnectionTests(unittest.TestCase):

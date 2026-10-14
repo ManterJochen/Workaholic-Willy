@@ -296,11 +296,22 @@ class APlanThatIsNoPlanTests(unittest.TestCase):
         from src.robot.execution.task import PlaceAt
 
         for build in (lambda: PlaceAt(), lambda: PlaceAt(pose="drop_left", camera="blue bin"),
-                      lambda: PlaceAt(camera=" "), lambda: PlaceAt(pose="drop_left", air_mm=20.0),
-                      lambda: PlaceAt(camera="blue bin", air_mm=5.0), lambda: PlaceAt(camera="blue bin", air_mm=60.0)):
+                      lambda: PlaceAt(camera=" "), lambda: PlaceAt(pose="drop_left", air_mm=20.0)):
             with self.subTest(), self.assertRaises(ValueError):
                 build()
         self.assertEqual(20.0, PlaceAt(camera="blue bin", air_mm=20.0).air_mm)
+
+    def test_the_air_over_a_rim_is_0_to_50_mm(self) -> None:
+        """The owner, 2026-10-14: 0 is "genau auf Höhe der Kante", and 5 mm is air too; under the rim, past 50 mm or
+        no number at all is no air over it."""
+        from src.robot.execution.task import PlaceAt
+
+        for air_mm in (-1.0, 51.0, 60.0, float("nan"), float("inf")):
+            with self.subTest(air_mm=air_mm), self.assertRaises(ValueError):
+                PlaceAt(camera="blue bin", air_mm=air_mm)
+        for air_mm in (0.0, 5.0, 20.0, 50.0):
+            with self.subTest(air_mm=air_mm):
+                self.assertEqual(air_mm, PlaceAt(camera="blue bin", air_mm=air_mm).air_mm)
 
     def test_a_plan_with_a_scope_or_a_limit_it_cannot_keep_is_refused(self) -> None:
         from src.robot.execution.task import PlaceAt, TaskPlan

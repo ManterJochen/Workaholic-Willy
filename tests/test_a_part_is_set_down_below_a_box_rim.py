@@ -4,7 +4,9 @@
 open ``below_the_rim_mm`` (30 mm unless the cell says 10 to 50) under the rim, never lower than 10 mm over what the camera
 reads inside the box: its floor, or the parts already in it, read again on the frame of every check before a drop
 (``recheck(..., inside=True)``), one measure with the rim band, so no extra frame and no detector. Where that leaves less
-than 10 mm under the rim, the box reads full and the part goes over the rim.
+than 10 mm under the rim, the box reads full and the part goes over the rim. The part's bottom goes that far under the
+rim where the cell declares how far its parts hang (``safety.planning_world.payload.length_mm``, as the cell of the task
+tests here does), the tool where it declares none (the owner, 2026-10-14).
 
 Where the opening is too narrow for the open hand and the part, the drop is today's, over the rim: the part as it hangs
 (its cloud from the pick, turned only about the vertical) and the open hand wherever its fingertips go below the rim
@@ -107,6 +109,19 @@ class TheDepthRuleTests(unittest.TestCase):
         self.assertAlmostEqual(BIN_RIM_MM + 20.0 + GRASP_Z_MM, float(plan.instead.position_mm[2]), delta=0.5)
         np.testing.assert_allclose(plan.instead.position_mm[:2], plan.pose.position_mm[:2])
         np.testing.assert_allclose(plan.instead.quaternion_xyzw, plan.pose.quaternion_xyzw)
+
+    def test_on_a_cell_that_declares_no_length_the_tool_goes_30_mm_under_the_rim(self) -> None:
+        """The owner, 2026-10-14: the part hangs from the TCP where the cell declares no length (``hang_mm=0``), so the
+        tool goes the depth under the rim, and stands the air over it where the line in is refused."""
+        plan = _plan(hang_mm=0.0)
+
+        self.assertTrue(plan.ok, plan.reason)
+        self.assertEqual("below_the_rim", plan.release, plan.over_the_rim_why)
+        self.assertEqual(0.0, plan.hang_mm)
+        self.assertAlmostEqual(BIN_RIM_MM - 30.0, float(plan.pose.position_mm[2]), delta=0.5)
+        self.assertAlmostEqual(30.0, plan.below_rim_mm, delta=0.5)
+        assert plan.instead is not None
+        self.assertAlmostEqual(BIN_RIM_MM + 20.0, float(plan.instead.position_mm[2]), delta=0.5)
 
     def test_the_depth_is_the_cells_choice_from_10_to_50_mm(self) -> None:
         for depth in (10.0, 50.0):
@@ -339,12 +354,14 @@ class AnInsideSeenAtASlantTests(unittest.TestCase):
 
 
 def _below_task(picks: Any = ("part",), *, scene: "BinScene | None" = None, refuse: Any = None,
-                release: str = "below_the_rim", **keywords: Any) -> Any:
+                release: str = "below_the_rim", length_mm: "float | None" = 60.0, **keywords: Any) -> Any:
+    """A task into the yellow bin on a Hand-E cell that releases ``release`` and declares its parts reach ``length_mm``
+    past the fingertips (``None``: declares none), each part gripped 20 mm over the bench."""
     from src.robot.execution.task import PlaceAt
 
     log: list[Any] = []
     arm = TaskArm(log, fk_table={_key(L1): AT_L1, _key(L2): AT_L2}, refuse=refuse)
-    arm.config = hande_tree(release_in_a_box=release)  # type: ignore[attr-defined]
+    arm.config = hande_tree(release_in_a_box=release, length_mm=length_mm)  # type: ignore[attr-defined]
     scene = scene if scene is not None else BinScene()
     locator = MeasuringLocator(scene, arm=arm, log=log)
     picks = tuple(Pick(p, cloud=cube_cloud()) if isinstance(p, str) else p for p in picks)
@@ -376,6 +393,24 @@ class ATaskSetsItsPartDownBelowTheRimTests(unittest.TestCase):
         self.assertIs(True, ran.hooks.of("task.placed")[0]["below_the_rim"])
         self.assertEqual(2, do0_changes(ran.log))
         self.assertEqual(1, len(ran.locator.measured), "the inside cost a frame of its own")
+        self.assertEqual(("home",), motions(ran.log)[-1])
+
+    def test_on_a_cell_that_declares_no_length_the_tool_goes_30_mm_under_the_rim_and_the_arm_returns(self) -> None:
+        """The owner, 2026-10-14: the part hangs from the TCP where the cell declares no length."""
+        from src.robot.execution.task import TaskStop
+
+        ran = _below_task(length_mm=None)
+
+        self.assertIs(TaskStop.FINISHED, ran.report.stop, ran.report.sentence)
+        standoff, line_in, line_out = _place_moves(ran)[:3]
+        np.testing.assert_allclose(BIN_CENTRE, line_in[1][:2], atol=10.0)
+        self.assertAlmostEqual(BIN_RIM_MM - 30.0, line_in[1][2], delta=0.5)
+        self.assertAlmostEqual(BIN_RIM_MM + 20.0 + 80.0, standoff[1][2], delta=0.5,
+                               msg="the part did not come to the box as it always did")
+        self.assertEqual(standoff[1], line_out[1])
+        drop = ran.hooks.of("task.drop_planned")[0]
+        self.assertEqual(("below_the_rim", 30.0, 0.0), (drop["release"], round(drop["below_rim_mm"]), drop["hang_mm"]))
+        self.assertEqual(2, do0_changes(ran.log))
         self.assertEqual(("home",), motions(ran.log)[-1])
 
     def test_a_box_a_tall_part_fills_takes_the_next_part_over_its_rim(self) -> None:

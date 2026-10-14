@@ -234,6 +234,8 @@ class RobotiqSocket:
         self._lock = threading.Lock()
         #: 2.0 s matches the SDU client socket timeout. The protocol documents none.
         self._timeout_s = float(timeout_s)
+        #: The position the last :meth:`move` asked for, in counts: what `PRE` echoes once the gripper took it.
+        self._requested: int | None = None
 
     # --- lifecycle -----------------------------------------------------------------------------
 
@@ -413,12 +415,14 @@ class RobotiqSocket:
         a separate line would mean a window in which the gripper moves to a stale
         target.
         """
+        target = max(POS_OPEN, min(POS_CLOSED, int(position)))
         self.set(
-            POS=max(POS_OPEN, min(POS_CLOSED, int(position))),
+            POS=target,
             SPE=max(0, min(255, int(speed))),
             FOR=max(0, min(255, int(force))),
             GTO=1,
         )
+        self._requested = target
 
     def stop(self) -> None:
         """Clear `GTO`. It is the only way to halt a move, and `SPE 0` does not do it."""
@@ -488,6 +492,21 @@ class RobotiqSocket:
         a caller that cannot learn why the fingers stopped has no grasp evidence at all.
         """
         deadline = time.monotonic() + float(timeout_s)
+        # ⛔ THE GRIPPER'S ECHO OF THE TARGET FIRST. Until `PRE` shows the position :meth:`move` asked for, the gripper
+        # has not taken it, and `OBJ` still says why the motion BEFORE ended: right after a close of open fingers it reads
+        # AT_POSITION. Read then, every close returned at once with the fingers at 49.4 mm and nothing held, and the
+        # release that followed opened them before they moved (the owner's Hand-E, 2026-10-14). The SDU reference client
+        # waits for the echo the same way (``move_and_wait_for_pos``).
+        while self._requested is not None and self.get(str(_Var.PRE)) != self._requested:
+            fault = self.fault_text()
+            if fault:
+                raise RobotiqSocketError(f"the gripper reports a fault while moving: {fault}")
+            if time.monotonic() >= deadline:
+                raise RobotiqSocketError(
+                    f"the gripper did not take the position {self._requested} within {timeout_s}s (gPR "
+                    f"{self._quiet_get(_Var.PRE)}): the daemon answered the command, the fingers never got it. Check "
+                    f"that the gripper is activated (gSTA 3) and that no program on the pendant drives it as well.")
+            time.sleep(0.005)
         last = ObjectStatus.MOVING
         while time.monotonic() < deadline:
             fault = self.fault_text()

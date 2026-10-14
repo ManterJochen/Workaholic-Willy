@@ -26,7 +26,9 @@ a footprint within :data:`FOOTPRINT_TOLERANCE` of the kept one, side for side, a
 of the kept one's; anything else is the target lost, so a bin removed or swapped is never mistaken for it. The kept one
 is the bin the survey found, never a later sighting, so a bin that creeps is not followed further and further. The drop
 (:func:`drop_plan`) is ``SetDown.onto`` the bin, then four rules in order: the air over the rim is the task's rim air
-(Q3: :func:`rim_clearance_mm`, 20 mm as shipped, the operator's choice of 10 to 50); a grasp within
+(:func:`rim_clearance_mm`, ``robot.place.rim_air_mm``, 20 mm as shipped, 0 to 50: the owner's "genau auf Höhe der
+Kante" is 0), what the part's bottom keeps over the rim, or the tool where the cell declares no ``payload.length_mm``
+(*The hang*, below); a grasp within
 :data:`VERTICAL_WITHIN_DEG` of vertical is turned about the vertical until it closes along the cell's natural closing
 axis (``robot.natural_closing_axis``), any other keeps its own turn; the arm is asked where it would stand
 (``nearest_configuration``) and the exact guard and the planner screen that (``screen_configuration``), and no
@@ -43,11 +45,18 @@ decides. A check of one place replaces only its own keep-out region (``Exclusion
 detector looks at one place of several, at a check or a search, it grounds every place in one locate (``together``)
 and takes only what it labels that place's phrase, so a second bin in view is never taken for it.
 
-**A taught pose** (the build plan's item 7). The person teaches a place pose with empty jaws, the fingertips where the
-part's BOTTOM is to be let go; each part hangs below the tool by its own amount, so the tool goes to the taught pose
-raised in BASE Z by the part's hang (:func:`pose_drop`): the grasp's Z less the part's declared support, an upper bound,
-so every error goes toward more air, or the declared ``payload.length_mm`` where the pick reports no grasp. The raised
-drop is screened the same way.
+**A taught pose** (the build plan's item 7). The person teaches a place pose with empty jaws. Where the cell declares
+how far its parts hang (``safety.planning_world.payload.length_mm``), the fingertips stand where the part's BOTTOM is
+to be let go; each part hangs below them by its own amount, so the tool goes to the taught pose raised in BASE Z by
+that much (:func:`pose_drop`): the part's hang below the tool, measured part by part, less the fingertips' reach, or
+the declared length where the pick reports no grasp. Where the cell declares none, the tool goes to the taught pose
+itself and the part hangs from it. The drop is screened the same way.
+
+**The hang** (the owner, 2026-10-14: "Wenn kein Payloadlength angegeben ist, dann soll es am TCP hängen"). A place
+names a height: a bin's rim and the air over it, a taught pose. Where the cell declares ``payload.length_mm`` the
+part's bottom stands there, the tool higher by how far the part hangs below it, measured part by part: the grasp's Z
+less what the pick's looks read under the part (:func:`part_bottom`), a lower bound on its bottom, so every error goes
+toward more air. Where it declares none, the tool stands there.
 
 **The tilt is the grasp's** (both drops). The hang bounds how far the part reaches below the tool only while the part
 hangs as it was gripped: a turn about a level axis swings a part held off its middle further down by as much as it
@@ -64,9 +73,8 @@ taught turn whole only where the pick reports no grasp, with the declared length
   fingertips go below the rim, keep a margin inside the opening, judged here because nothing models the part and the
   guard judges the hand closed on it; the drop over the rim rides along (``DropPlan.instead``) for a line in the guard
   refuses. Anything else lets the part go over the rim, and the plan says why.
-* *The hang from what the part stood on* (:func:`part_bottom`): the lowest reading of a surface the pick's looks found
-  under the part's cloud, or the cloud's lowest point where that is lower, never the declared support where the looks
-  read one.
+* *The part's bottom* (:func:`part_bottom`): the lowest reading of a surface the pick's looks found under the part's
+  cloud, or the cloud's lowest point where that is lower, never the declared support where the looks read one.
 * *Side by side on a flat place* (:class:`Spot`): the spots of a grid about a taught pose (:func:`grid_spots`) or over a
   target's top (:func:`top_spots`), the camera's reading first (:func:`views_spot_reader` from the pick's looks,
   :func:`top_spot_reader` from the check), then the spots the task has not filled (:func:`choose_spot`).
@@ -181,11 +189,12 @@ OPENING_MIN_MM = 20.0
 #: A grasp whose approach is within this many degrees of straight down is dropped along the cell's natural closing axis
 #: (the build plan's item 6); any other keeps its own turn, so the part hangs as it was gripped.
 VERTICAL_WITHIN_DEG = 5.0
-#: The air over a bin's rim a task leaves when the operator chose none (Q3): ``SET_DOWN_AIR_MM`` and the perceived
-#: world's margin as shipped (5 + 15 mm), the clearance the planner keeps about what the camera saw of the rim.
+#: The air over a bin's rim a task leaves where neither the operator nor the cell's tree chose one
+#: (``robot.place.rim_air_mm``): the owner's 20 mm.
 RIM_AIR_DEFAULT_MM = 20.0
-#: The owner's bounds on the air over a bin's rim (Q3: 10 to 50 mm): the operator's choice, and the cell's own.
-RIM_AIR_MIN_MM = 10.0
+#: The owner's bounds on the air over a bin's rim, the operator's choice and the cell's own: 0, the part's bottom at the
+#: rim ("genau auf Höhe der Kante", 2026-10-14), to 50 mm.
+RIM_AIR_MIN_MM = 0.0
 RIM_AIR_MAX_MM = 50.0
 #: How far a kept bin may have moved, at most, and still be followed (Q13 (b)); half its footprint's diagonal where that
 #: is less.
@@ -2022,18 +2031,13 @@ def relocate(locators: "Sequence[Any]", surveyed: KeptTarget, *, looks: "Sequenc
 
 
 def rim_clearance_mm(robot_config: Any) -> float:
-    """The air a task leaves over a bin's rim when the operator chose none (Q3): ``SET_DOWN_AIR_MM`` (5 mm) and the
-    perceived world's margin (``safety.planning_world.perceived.margin_mm``, 15 mm as shipped), 20 mm in all, so the
-    carried part's bottom clears what the planner keeps about the rim it saw; held to the owner's
-    :data:`RIM_AIR_MIN_MM` to :data:`RIM_AIR_MAX_MM` whatever the margin (the schema allows 0 to 500 mm). A tree that says
-    nothing gets the owner's 20 mm."""
-    from src.robot.perception.locator import SET_DOWN_AIR_MM  # noqa: PLC0415
-
-    margin = getattr(getattr(getattr(getattr(robot_config, "safety", None), "planning_world", None), "perceived", None),
-                     "margin_mm", None)
-    if not isinstance(margin, (int, float)) or isinstance(margin, bool) or not math.isfinite(float(margin)):
+    """The air a task leaves over a bin's rim when the operator chose none: the cell's ``robot.place.rim_air_mm``
+    (:data:`RIM_AIR_MIN_MM` to :data:`RIM_AIR_MAX_MM`), what the part's bottom keeps over the rim, or the tool where the
+    cell declares no ``payload.length_mm``. A tree that says nothing gets the owner's :data:`RIM_AIR_DEFAULT_MM`."""
+    air = getattr(getattr(robot_config, "place", None), "rim_air_mm", None)
+    if not isinstance(air, (int, float)) or isinstance(air, bool) or not math.isfinite(float(air)):
         return RIM_AIR_DEFAULT_MM
-    return min(RIM_AIR_MAX_MM, max(RIM_AIR_MIN_MM, float(SET_DOWN_AIR_MM) + float(margin)))
+    return min(RIM_AIR_MAX_MM, max(RIM_AIR_MIN_MM, float(air)))
 
 
 #: How far over what the camera reads inside a box the part's bottom stays when the jaws open below its rim, mm: the
@@ -2109,8 +2113,8 @@ class PartBottom:
 
 
 def part_bottom(cloud_mm: Any, support_model: Any, *, declared_mm: float) -> PartBottom:
-    """Where the part a pick gripped stood, a LOWER bound on its bottom, as ``robot.place.part_bottom: measured`` takes
-    it: the lowest reading of a surface the pick's looks found under its cloud (``SupportModel.local_plane_under``,
+    """Where the part a pick gripped stood, a LOWER bound on its bottom, as every drop of a cell that declares
+    ``payload.length_mm`` takes it: the lowest reading of a surface the pick's looks found under its cloud (``SupportModel.local_plane_under``,
     what the part stood on), or the cloud's own lowest point where that is lower (a camera never sees below a part's
     bottom, so its lowest point is at or over it, and a reading of what it stands on is at or under it).
 
@@ -2365,6 +2369,8 @@ class DropPlan:
     rim_mm: "float | None" = None
     hang_mm: "float | None" = None
     air_mm: "float | None" = None
+    #: How far a drop at a taught pose stands over it, the air included, millimetres; ``None`` over a target.
+    rise_mm: "float | None" = None
     verdict: str = "unscreened"
     detail: str = ""
     joints: "JointPositions | None" = None
@@ -2534,15 +2540,17 @@ def _fit(kept: KeptTarget, part_cloud_mm: Any, grasp: Pose, drop: Pose) -> tuple
 
 
 def drop_plan(arm: Any, kept: KeptTarget, grasp: Pose, *, part_bottom_mm: float, air_mm: float,
-              standoff_mm: float = 80.0, natural_axis: "ClosingAxis | None" = None,
+              hang_mm: "float | None" = None, standoff_mm: float = 80.0, natural_axis: "ClosingAxis | None" = None,
               part_cloud_mm: Any = None, below_rim_mm: "float | None" = None, inside: "InsideRead | None" = None,
               opening_margin_mm: float = OPENING_MARGIN_MM, hand: "OpenHand | None" = None,
               spot: "Spot | None" = None) -> DropPlan:
     """Where the part the tool gripped at ``grasp`` goes into ``kept``: over the middle of its rim, at its rim plus the
-    part's hang plus ``air_mm``.
+    part's hang plus ``air_mm``. ``hang_mm``, where given, is how far the part hangs below the tool in place of the one
+    measured from ``part_bottom_mm``: 0 for a cell that declares no ``payload.length_mm``, whose tool stands at the
+    height (the module's *The hang*).
 
-    ``SetDown.onto`` measures it (the hang from ``part_bottom_mm``, the declared support, a lower bound on where the
-    part stood, so every error goes toward more air), turned as the grasp was; then a grasp within
+    ``SetDown.onto`` measures it (the hang from ``part_bottom_mm``, a lower bound on where the part stood, so every
+    error goes toward more air), turned as the grasp was; then a grasp within
     :data:`VERTICAL_WITHIN_DEG` of vertical is turned about the vertical to close along ``natural_axis``, its tilt kept
     (so the hang still bounds the part); then the arm is asked where it would stand and that is screened
     (:func:`screen_pose`), no configuration or an ERROR being ``unreachable``; then the part, from ``part_cloud_mm`` (its
@@ -2562,6 +2570,13 @@ def drop_plan(arm: Any, kept: KeptTarget, grasp: Pose, *, part_bottom_mm: float,
         return DropPlan(kind="camera", pose=None, standoff_mm=float(standoff_mm), rim_mm=set_down.top_mm,
                         hang_mm=set_down.hang_mm, air_mm=float(air_mm), refusal="unreachable", reason=set_down.reason)
     over = set_down.pose
+    hang = set_down.hang_mm if hang_mm is None else float(hang_mm)
+    if hang_mm is not None:
+        assert set_down.top_mm is not None  # a set-down with a pose read the target's top
+        over = Pose(position_mm=np.array([float(over.position_mm[0]), float(over.position_mm[1]),
+                                          float(set_down.top_mm) + float(air_mm) + hang]),
+                    quaternion_xyzw=np.asarray(over.quaternion_xyzw, dtype=np.float64), frame=Frame.BASE,
+                    label=over.label)
     if spot is not None and kept.opening_mm is None:
         over = Pose(position_mm=np.array([spot.xy[0], spot.xy[1], float(over.position_mm[2])]),
                     quaternion_xyzw=np.asarray(over.quaternion_xyzw, dtype=np.float64), frame=Frame.BASE,
@@ -2569,7 +2584,7 @@ def drop_plan(arm: Any, kept: KeptTarget, grasp: Pose, *, part_bottom_mm: float,
     pose, turned = _turned_along(over, grasp, natural_axis)
     screen = screen_pose(arm, pose)
     plan = DropPlan(kind="camera", pose=pose, standoff_mm=float(standoff_mm), rim_mm=set_down.top_mm,
-                    hang_mm=set_down.hang_mm, air_mm=float(air_mm), verdict=screen.verdict, detail=screen.detail,
+                    hang_mm=hang, air_mm=float(air_mm), verdict=screen.verdict, detail=screen.detail,
                     joints=screen.joints, nearby_deg=screen.nearby_deg, turned=turned, release="over_the_rim")
     if spot is not None and kept.opening_mm is None:
         plan = replace(plan, spot_xy=spot.xy, spot_by=spot.by)
@@ -2582,17 +2597,18 @@ def drop_plan(arm: Any, kept: KeptTarget, grasp: Pose, *, part_bottom_mm: float,
     plan = replace(plan, fit=fit, reason=said)
     if below_rim_mm is None or kept.opening_mm is None:
         return plan
-    return _below_the_rim(arm, kept, grasp, plan, part_bottom_mm=float(part_bottom_mm), below_rim_mm=float(below_rim_mm),
+    return _below_the_rim(arm, kept, grasp, plan, below_rim_mm=float(below_rim_mm),
                           inside=inside, margin_mm=float(opening_margin_mm), hand=hand, part_cloud_mm=part_cloud_mm)
 
 
-def _below_the_rim(arm: Any, kept: KeptTarget, grasp: Pose, over: DropPlan, *, part_bottom_mm: float,
+def _below_the_rim(arm: Any, kept: KeptTarget, grasp: Pose, over: DropPlan, *,
                    below_rim_mm: float, inside: "InsideRead | None", margin_mm: float, hand: "OpenHand | None",
                    part_cloud_mm: Any) -> DropPlan:
     """The part set down below the rim of the box ``kept`` rather than let go over it (``over``, the drop over its rim,
     which stands, with why, wherever this cannot be): the owner's "1-5 cm unter dem Kistenrand" (2026-10-08 night).
 
-    The part's bottom goes ``below_rim_mm`` under the rim, never lower than :data:`INSIDE_AIR_MM` over the highest the
+    The part's bottom goes ``below_rim_mm`` under the rim (the tool, by the hang ``over`` holds: none where the cell
+    declares no ``payload.length_mm``), never lower than :data:`INSIDE_AIR_MM` over the highest the
     check read anything inside (``inside``: the floor, or the parts already in it), and at least
     :data:`BELOW_RIM_LEAST_MM` under the rim, or the box reads too full and the part goes over the rim. The tool stands
     over the same middle, turned as over the rim. Only a grasp within :data:`VERTICAL_WITHIN_DEG` of vertical goes
@@ -2621,7 +2637,7 @@ def _below_the_rim(arm: Any, kept: KeptTarget, grasp: Pose, over: DropPlan, *, p
     if depth < BELOW_RIM_LEAST_MM:
         return stays_over(f"the camera reads the box full to {float(inside.top_mm):.0f} mm, {rim - float(inside.top_mm):.0f} "
                           f"mm under its rim, and a part set down in it keeps {INSIDE_AIR_MM:g} mm over that")
-    hang = float(grasp.position_mm[2]) - float(part_bottom_mm)
+    hang = float(over.hang_mm or 0.0)
     x, y, _z = (float(v) for v in over.pose.position_mm)
     pose = Pose(position_mm=np.array([x, y, bottom + hang]), quaternion_xyzw=np.asarray(over.pose.quaternion_xyzw,
                                                                                        dtype=np.float64),
@@ -2688,9 +2704,9 @@ def _outside_the_opening(kept: KeptTarget, drop: Pose, grasp: Pose, part_cloud_m
 
 
 #: How much higher than its lowest a drop over a bin is screened where the lowest is refused (:func:`nominal_drop`). The
-#: real drop hangs the part from the declared support, which no part stood below, and stood 85 to 92 mm over the rim on
-#: the owner's cell (2026-10-07: "er ist immer Minimum 5cm darüber"), while the lowest put the open fingers among the
-#: boxes the camera grew about the bin's walls and ended nine tasks before their first pick.
+#: real drop of 2026-10-07 hung the part from the declared support, which no part stood below, and stood 85 to 92 mm
+#: over the rim on the owner's cell ("er ist immer Minimum 5cm darüber"), while the lowest put the open fingers among
+#: the boxes the camera grew about the bin's walls and ended nine tasks before their first pick.
 NOMINAL_RAISE_MM = 50.0
 
 
@@ -2737,20 +2753,21 @@ def nominal_drop(arm: Any, kept: KeptTarget, *, hang_mm: float, air_mm: float, s
 def pose_drop(arm: Any, taught: "JointPositions", grasp: "Pose | None", *, part_bottom_mm: float,
               length_mm: "float | None", standoff_mm: float = 80.0, fingertips_mm: float = 0.0,
               air_mm: float = 0.0, spot: "Spot | None" = None) -> DropPlan:
-    """Where the part the tool gripped at ``grasp`` is let go at the pose ``taught``, which says where the part's bottom
-    is let go: the tool at ``taught`` (``arm.fk``) raised in BASE Z by the part's hang.
+    """Where the part the tool gripped at ``grasp`` is let go at the pose ``taught`` (the module's *The hang*).
 
-    The hang is the grasp's Z less ``part_bottom_mm`` (the declared support, which no part stood below, so the hang is
-    an upper bound and every error goes toward more air); where the pick reported no grasp pose, ``length_mm``, the
-    declared ``payload.length_mm``, past the fingertips, which reach ``fingertips_mm`` below the tool. With neither
-    nothing is set down blind. The drop is turned about the vertical as
+    Where the cell declares ``length_mm`` (``payload.length_mm``, how far its longest part hangs past the fingertips),
+    the taught pose is where the fingertips stood when the part's bottom is let go there: the tool at ``taught``
+    (``arm.fk``) raised in BASE Z by how far the part reaches past the fingertips, which reach ``fingertips_mm`` below
+    the tool: the part's hang below the tool, the grasp's Z less ``part_bottom_mm`` (what the pick's looks read under
+    the part, a lower bound on its bottom, so every error goes toward more air), less ``fingertips_mm``; the declared
+    length where the pick reported no grasp pose. Where it declares none, the tool goes to ``taught`` itself and the
+    part hangs from it. The drop is turned about the vertical as
     taught and tilted as the grasp was: the hang bounds the part only while it hangs as it was gripped, and a taught
     tilt the grasp did not have would swing a part held off its middle below the taught point (``SetDown``'s rule, its
     heading the taught one). Where the pick reported no grasp pose the taught turn is taken whole. The raised drop is
     screened (:func:`screen_pose`): no configuration or an ERROR is ``unreachable``.
 
-    ``air_mm`` raises the drop over the taught point by that much more (a hang measured from the pick, not the declared
-    support, keeps the set-down air: ``robot.place.part_bottom: measured``). ``spot`` lays the part on a spot of the
+    ``air_mm`` raises the drop over the taught point by that much more. ``spot`` lays the part on a spot of the
     place about the taught pose (``robot.place.side_by_side``, :func:`choose_spot`): the tool over the spot's middle,
     raised by as much as its support reads higher than the taught pose's, turned and tilted as at the taught pose.
     """
@@ -2760,22 +2777,24 @@ def pose_drop(arm: Any, taught: "JointPositions", grasp: "Pose | None", *, part_
         return DropPlan(kind="pose", pose=None, standoff_mm=float(standoff_mm), refusal="unreachable",
                         reason=f"the arm could not say where the taught pose puts the tool: {type(exc).__name__}: "
                                f"{exc}")
-    if grasp is not None:
+    fingertips = max(0.0, float(fingertips_mm))
+    if length_mm is None or not math.isfinite(float(length_mm)) or float(length_mm) <= 0.0:
+        hang = 0.0
+        rise = 0.0
+    elif grasp is not None:
         hang = float(grasp.position_mm[2]) - float(part_bottom_mm)
         if hang <= 0.0:
             return DropPlan(kind="pose", pose=None, standoff_mm=float(standoff_mm), hang_mm=hang,
                             refusal="unreachable",
                             reason=f"the grasp at Z {float(grasp.position_mm[2]):.1f} mm does not stand above the "
                                    f"part's bottom ({float(part_bottom_mm):.1f} mm), so its hang is unknown")
-    elif length_mm is not None and math.isfinite(float(length_mm)) and float(length_mm) > 0.0:
-        hang = max(0.0, float(fingertips_mm)) + float(length_mm)
+        # A part gripped by its foot reaches no further than the fingertips: they go to the taught point.
+        rise = max(0.0, hang - fingertips)
     else:
-        return DropPlan(kind="pose", pose=None, standoff_mm=float(standoff_mm), refusal="unreachable",
-                        reason="the pick reported no grasp pose and safety.planning_world.payload.length_mm is "
-                               "undeclared, so how far the part hangs below the tool is unknown and nothing is set "
-                               "down blind")
+        rise = float(length_mm)
+        hang = fingertips + rise
     air = max(0.0, float(air_mm)) + (max(0.0, float(spot.rise_mm)) if spot is not None else 0.0)
-    position = np.asarray(at.position_mm, dtype=np.float64) + np.array([0.0, 0.0, hang + air])
+    position = np.asarray(at.position_mm, dtype=np.float64) + np.array([0.0, 0.0, rise + air])
     if spot is not None:
         position[:2] = np.asarray(spot.xy, dtype=np.float64)
     pose = Pose(position_mm=position, quaternion_xyzw=np.asarray(at.quaternion_xyzw, dtype=np.float64),
@@ -2789,7 +2808,8 @@ def pose_drop(arm: Any, taught: "JointPositions", grasp: "Pose | None", *, part_
         turned = _turned_to(as_gripped, heading) if heading is not None else None
         pose = turned if turned is not None else as_gripped
     screen = screen_pose(arm, pose)
-    plan = DropPlan(kind="pose", pose=pose, standoff_mm=float(standoff_mm), hang_mm=hang, verdict=screen.verdict,
+    plan = DropPlan(kind="pose", pose=pose, standoff_mm=float(standoff_mm), hang_mm=hang, rise_mm=rise + air,
+                    verdict=screen.verdict,
                     detail=screen.detail, joints=screen.joints, nearby_deg=screen.nearby_deg, release="at_the_pose",
                     air_mm=air if air > 0.0 else None, spot_xy=None if spot is None else spot.xy,
                     spot_by="" if spot is None else spot.by)

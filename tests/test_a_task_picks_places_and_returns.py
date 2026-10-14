@@ -40,6 +40,7 @@ from tests._task_fakes import (
     Pick,
     RecordingHooks,
     TaskArm,
+    declaring,
     do0_changes,
     motions,
     run,
@@ -78,7 +79,10 @@ class OncePartTests(unittest.TestCase):
         self.assertEqual("", ran.jaws.why_jaws_unknown())
 
     def test_the_part_is_let_go_where_its_bottom_meets_the_taught_pose(self) -> None:
-        ran = run(["part"])
+        """On a cell that declares how far its parts hang (``payload.length_mm``) and names no hand: the part gripped
+        20 mm over the bench, the tool 20 mm over the taught pose. A cell that declares none lets it go with the tool
+        there (``tests/test_a_task_sets_a_part_down_at_a_taught_pose.py``)."""
+        ran = run(["part"], arm=declaring(TaskArm([]), 60.0))
 
         line_in = [entry for entry in motions(ran.after("task.place_started")) if entry[0] == "move"][1]
         np.testing.assert_allclose(PLACE_TCP.position_mm + (0.0, 0.0, GRASP_Z_MM), line_in[1], atol=1e-6)

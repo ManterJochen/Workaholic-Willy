@@ -150,8 +150,9 @@ refused at load. Layers merge a pose key by key, so a task screens every pose ag
 
 `robot.place` ([`schema/robot/place_schema.py`](schema/robot/place_schema.py)) says how a task sets its parts down,
 every key but one as shipped what a task did before it: `release_in_a_box` (`over_the_rim`, or `below_the_rim` by
-`below_the_rim_mm`, 10 to 50, and `opening_margin_mm` clear of the walls), `part_bottom` (`declared_support`, or
-`measured` from what the pick's looks read under the part), `side_by_side` with `spacing_margin_mm` and the `grid`
+`below_the_rim_mm`, 10 to 50, and `opening_margin_mm` clear of the walls), `rim_air_mm` (20, 0 to 50: how far over
+a box's rim the jaws open, under the part's bottom where the cell declares `payload.length_mm`, under the tool
+where it declares none), `side_by_side` with `spacing_margin_mm` and the `grid`
 about a taught pose (`rows`, `columns`, `spacing_mm`), and `carry` (`via_the_look`, or `over_the_rim` with
 `rim_floor_margin_mm`). The one key on as shipped is `relocate` (the owner, 2026-10-09): a bin the check before a drop
 no longer finds where it stood is looked for again from the task's looks and the drop planned anew over it, and only a

@@ -22,7 +22,6 @@ import numpy as np
 from src.geometry import Pose
 from tests._place_fakes import FlatSupport, cube_cloud, hande_tree, pick_view, run_placing, what_the_looks_saw
 from tests._task_fakes import (
-    GRASP_Z_MM,
     PLACE_TCP,
     BinScene,
     ScriptedLocator,
@@ -178,7 +177,8 @@ class ATaskLaysItsPartsSideBySideTests(unittest.TestCase):
         np.testing.assert_allclose(TAUGHT_XY, ins[0][:2], atol=1e-6)
         reach = max(26.0, 38.0)
         for a in range(3):
-            self.assertAlmostEqual(float(PLACE_TCP.position_mm[2]) + GRASP_Z_MM, ins[a][2], delta=0.5)
+            # The Hand-E profile declares no payload.length_mm: the tool goes to the taught height at every spot.
+            self.assertAlmostEqual(float(PLACE_TCP.position_mm[2]), ins[a][2], delta=0.5)
             for b in range(a + 1, 3):
                 self.assertGreaterEqual(float(np.hypot(*(ins[a][:2] - ins[b][:2]))), 2.0 * reach + 20.0)
         said = [event["spot_by"] for event in ran.hooks.of("task.drop_planned")]

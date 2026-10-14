@@ -2,7 +2,8 @@
 
 This page is for reasoning about a calibration result, not only producing one: why the problem is
 `AX = XB`, what the two mounting cases solve for, what the residual measures (it is not
-millimetres), how the CAMERA to BASE transform reaches a grasp, and how each failure shows itself.
+millimetres), how the CAMERA to BASE transform reaches a grasp and a pixel of your own, and how
+each failure shows itself.
 
 A calibration is run by `HandEyeCalibration`, one camera at a time:
 
@@ -293,6 +294,13 @@ on the wrist). It needs 20 shared points, speaks once per pick and changes nothi
 cannot see a slide along a surface, so a quiet check is no proof. A WARNING is your cue for the physical
 check above.
 
+**And a fourth that moves nothing: the marker's corners, clicked in one frame.**
+[`examples/real_robot/18_find_clicked_pixels_in_base.py`](../../examples/real_robot/18_find_clicked_pixels_in_base.py)
+captures one frame of the wrist camera with the arm standing still, and finds each corner you click in
+BASE from the depth about it (section 4.5). The corners' middle should lie a few millimetres from where
+the marker lies, about the size of the calibration's own error, and each edge should measure the
+printed edge. Measure where the marker lies by other means than this camera, or the check is circular.
+
 ---
 
 ## 4. How the transform reaches a pick
@@ -440,6 +448,80 @@ One case is **not** fail-closed: `fusion.enabled: false` with second cameras nam
 `fusion.cameras` and calibrated on their rigs. The primary's resolver loads and the others never do,
 so the pick runs single-view. Nothing refuses. With `fusion.geometry.enabled` on, the loop warns on
 every pick that each other camera's view was dropped; with it off, nothing asks for the map.
+
+### 4.5 A pixel of your own, in BASE
+
+The same composition places one pixel for a program of your own, with no detector and no console: a
+program that finds its point in the colour image itself (a pen stroke on paper, a mark, a marker's
+corner) takes one frame and asks where its pixels lie in the robot's base frame.
+[`src/robot/perception/pixel_to_base.py`](../../src/robot/perception/pixel_to_base.py) holds it, and
+[`examples/real_robot/18_find_clicked_pixels_in_base.py`](../../examples/real_robot/18_find_clicked_pixels_in_base.py)
+runs it at the cell.
+
+```python
+from willy import Camera, PixelRefused, Robot, capture, load_tree, pixel_to_base, pixels_to_base, tcp_above
+
+tree = load_tree()
+robot = Robot.from_tree(tree, gripper=None)          # the arm alone: no hand is built, nothing is said to it
+with Camera.from_tree(tree) as camera, robot.connected():
+    frame = capture(camera, robot)                   # one frame, the arm at rest; nothing moves
+try:
+    point = pixel_to_base(frame, 412.0, 233.5)       # column, row: a pixel's centre at its whole index
+except PixelRefused as refused:                      # never a silent 0: refused.reason says why
+    if refused.reason != "no_depth":
+        raise
+    point = pixel_to_base(frame, 412.0, 233.5, plane=50.0)   # no depth there: the ray on the mat, BASE z 50 mm
+print(point)                                         # base_mm, tool_mm, normal, source, valid_share, spread_mm
+stroke = pixels_to_base(frame, [(400, 230), (401, 231), (402, 233)])   # every pixel, or the first that failed
+above = tcp_above(point.base_mm, point.normal, 20.0) # the TCP 20 mm over it, square to its surface: proposed only
+```
+
+- **The frame.** `capture` takes the frame a pick takes, through the `Locator`'s own source with no
+  detector (`Locator.capture()`): the warm-ups, the median of a burst of grabs as the depth, the rig's
+  mixed pixels taken out, and on the wrist the TCP read before and after the burst, held to the rig's
+  `shutter_motion_tolerance_*`. Before the burst the arm's steady gate is asked whether it stands still
+  (`wait_until_steady` waiting for nothing: on a UR whose `safety.dwell.steady_signal` is `joint_speeds`,
+  every joint under 0.01 rad/s on three reads in a row), and a moving arm is refused (`LocatorRefused`)
+  with nothing grabbed. The frame keeps the colour image (BGR), the depth aligned to it, the lens, the TCP
+  the arm read at the shutter (`frame.tcp_pose`), and three transforms, each a 4 x 4 that maps
+  a point of the first frame into the second: `camera_to_tool_mm`, the rig's eye-in-hand artifact as
+  `camera.calibration()` loads it (section 4.1), `tool_to_base_mm`, the TCP at the shutter, and
+  `camera_to_base_mm`, their product. A fixed camera is `capture(camera)`, placed by its own calibration,
+  and asks no arm.
+- **The pixel.** Never one pixel's depth: the pixel's viewing ray meets a plane fit to the depth in the
+  15 x 15 pixel window about it, so a stroke the camera measured nothing on stands on the paper. Where the
+  pixel measured a depth of its own, the plane is the surface that depth lies on, which has to hold a
+  quarter of the window; otherwise the surface that holds more than half of what the window measured.
+  Each is found among planes through three of the window's points, judged by every point's distance
+  from the plane along its own ray, as the camera measures, and fit again by least squares to a band that
+  narrows to its own points' deviation: a pixel 1 mm from a part's edge still gives the face it shows, not
+  a bevel across the edge. `plane=` meets the ray with a plane you name instead: a number is the
+  horizontal plane at that BASE z, a pair `(point, normal)` any plane.
+- **What it is worth.** On a ray-cast bench the point comes back within 1e-6 mm, and a BASE point goes
+  to its pixel and back within 0.1 mm; on depth rounded to whole millimetres, as a RealSense reads it,
+  within 0.5 mm, the most where the surface faces the camera square
+  ([test](../../tests/test_a_pixel_of_your_own_lands_in_base.py)). At the cell what is left is the
+  calibration's own error, and example 18 measures it on the marker (section 3.4).
+- **What it refuses.** `PixelRefused`, its `reason` one of `outside` (the pixel lies off the image),
+  `no_depth` (the camera measured less than a quarter of the window: name a plane), `no_surface` (an
+  edge, a step, a stray reading), `parallel` (the ray meets the plane at under a degree) and `behind`.
+  Never a silent 0. `pixels_to_base` gives every pixel or names the first that failed, by `index`.
+- **The pose.** `tcp_above(point, normal, offset_mm)` stands the TCP `offset_mm` above the point along
+  its normal, its +Z onto the surface and its +X as near base -Y as a pose square to the surface allows
+  (`closing_axis="-y"`, as the owner's poses stand; over a level surface it is
+  `Pose.tool_down(..., closing_axis="-y")`). The TCP is the one `robot.move` places and
+  `robot.arm.get_tcp_pose` reads, the controller's active TCP on a `polyscope` tool frame;
+  `fingertips_of=tree.robot` stands the hand's fingertips there instead. It only proposes: nothing is sent to the arm, and a program that wants it there drives it
+  through `robot.move` and its guards, once a person said so.
+- **Without the console, and beside it.** All of it is a plain script (`load_tree`, `Camera`, `Robot`),
+  with no API server and no frontend. A capture on the wrist connects the arm as every connect does (on a
+  UR its RTDE control link, the payload the tree declares and the tool frame's check), with no hand built
+  and no motion, and `robot.connected()` takes the cell's lock first (`CellLock`, the one the operator
+  console, `Cell` and the command line runner take). While another process holds the cell, the console
+  connected among them, the connect raises `CellBusy` naming that process before the arm is touched, and
+  nothing is captured. The console also keeps its camera open from its build until it builds again or
+  stops. So a capture runs with the console stopped, and gives the lock and the camera back as its `with`
+  block ends.
 
 ---
 

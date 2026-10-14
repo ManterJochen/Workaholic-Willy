@@ -106,7 +106,8 @@ def _pick(
     del log[:]
     calculator = _Seeing(mat)
     source = RealSenseVisionPerceptionSource(streamer=mat, detector=grounder(mat, log), segmenter=segmenter(mat),
-                                             prompt=prompt, object_labels=("grey cube",), warmup_grabs=0)
+                                             prompt=prompt, object_labels=("grey cube",), warmup_grabs=0,
+                                             burst_grabs=1)
     source.set_prompt(prompt, object_labels=("grey cube",), kind=kind)
     policy = GraspExecutionPolicy(arm=arm, gripper=jaws, pre_open_width_mm=49.99,  # type: ignore[arg-type]
                                   require_steady_before_motion=True)

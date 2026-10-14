@@ -130,6 +130,26 @@ Every noun that describes a cell is built from a loaded config tree, `X.from_tre
 | `SetDown` | Where the tool sets a held part down on a located object, measured: the target's top (95th percentile of its surface), the part's hang below the grasp from `scene.part_bottom_mm` (the declared table, lowered only where two or more looks measured the part's foot below it, never raised: a foot the camera missed never presses the part in, and a part off a raised block drops further), at least 5 mm of air; `pose` for `robot.place`, `None` with a `reason` when it cannot be measured | `real_robot/13_pick_and_place_with_the_camera.py` |
 | `LocatorRefused` | Raised when a locator cannot place what its camera sees, before it grabs or on a frame; by `look_around` for a hand that is not a parallel jaw; by `scene(i)` or `set_down(i)` of a refused `Located` | `Locator.from_tree(...)`, `locate()` |
 
+### A pixel of your own in BASE, and a pose over it
+
+No detector and no console: a program that finds its point in the camera image itself (a pen stroke on
+paper, a mark, a marker's corner) takes one frame, asks where its pixels lie in the robot's base frame,
+and gets a TCP pose proposed over the point. Nothing moves, and nothing is sent to the arm but its connect:
+a program that wants the arm at the pose drives it with `robot.move`, through its guards. A capture on the
+wrist connects the arm, so it takes the cell's lock: while another process holds the cell, the operator
+console among them, `robot.connected()` raises `CellBusy`, and the console keeps its camera open from its
+build until it builds again or stops. Stop the console first ([guide 03](../docs/guide/03-calibration.md), 4.5).
+
+| Name | What it is | Shown in |
+|---|---|---|
+| `capture` | One frame of an open camera kept whole: `capture(camera, robot)` inside `with robot.connected():` for a camera on the wrist, the arm's steady gate asked first and a moving arm refused (`LocatorRefused`), nothing grabbed; `capture(camera)` for a fixed one. The frame a pick takes (the warm-ups, the median of a burst of grabs, the TCP read at the shutter), with no detector | `real_robot/18_find_clicked_pixels_in_base.py` |
+| `CapturedFrame` | What `capture` returns: `color` (BGR), `depth_mm` aligned to it (0 where nothing was measured), `intrinsics`, `tcp_pose` (the TCP at the shutter, BASE), and `camera_to_tool_mm` (the hand-eye calibration), `tool_to_base_mm` and `camera_to_base_mm`, each a 4 x 4 that maps a point of the first frame into the second | `real_robot/18_find_clicked_pixels_in_base.py` |
+| `pixel_to_base` | Where one pixel lies in BASE: `pixel_to_base(frame, u, v)` meets its viewing ray with a plane fit robustly to the depth in the 15 x 15 pixel window about it, never one pixel's depth, so a stroke with no depth of its own stands on the paper; `plane=50.0` (a BASE z) or `plane=(point, normal)` meets it with that plane instead and reads no depth | `real_robot/18_find_clicked_pixels_in_base.py` |
+| `pixels_to_base` | The same for many pixels at once, in order, a stroke or an OpenCV contour: every pixel, or a `PixelRefused` naming the first that failed | [`src/robot/perception/`](../src/robot/perception/README.md) |
+| `PixelPoint` | One pixel found: `base_mm`, `tool_mm` (the point in the TOOL frame at the shutter), `normal` (toward the camera), `source` (`"depth"` or `"plane"`), `valid_share` and `spread_mm` (how much of the window was measured, how far its points lie off the plane), `camera_to_base_mm` | `real_robot/18_find_clicked_pixels_in_base.py` |
+| `PixelRefused` | Raised for a pixel that cannot be found, never a silent 0: `reason` is `outside`, `no_depth`, `no_surface`, `parallel` (the ray runs along the plane) or `behind`; `pixel`, and `index` in a list | `real_robot/18_find_clicked_pixels_in_base.py` |
+| `tcp_above` | A TCP pose proposed over a point, moving nothing: `tcp_above(point, normal, offset_mm)`, square to the surface, the tool's +X along base -Y by default (`closing_axis="-y"`), over a level surface `Pose.tool_down`; `fingertips_of=tree.robot` stands the hand's fingertips there instead of the TCP | `real_robot/18_find_clicked_pixels_in_base.py` |
+
 ### Hands seen by a camera
 
 MediaPipe, optional and standalone: nothing in the grasp pipeline imports it, and each builder needs

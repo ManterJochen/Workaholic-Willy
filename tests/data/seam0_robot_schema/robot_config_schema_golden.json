@@ -2781,7 +2781,7 @@
           "description": "Which stage proposes grasp candidates. Default 'support_footprint', measured 43.50 % top-1 against the silhouette stage's 24.29 % through the real calculator."
         },
         "good_part_score": {
-          "default": 0.75,
+          "default": 0.6,
           "maximum": 1.0,
           "minimum": 0.0,
           "title": "Good Part Score",
@@ -2958,15 +2958,6 @@
           "title": "Opening Margin Mm",
           "type": "number"
         },
-        "part_bottom": {
-          "default": "declared_support",
-          "enum": [
-            "declared_support",
-            "measured"
-          ],
-          "title": "Part Bottom",
-          "type": "string"
-        },
         "release_in_a_box": {
           "default": "over_the_rim",
           "enum": [
@@ -2980,6 +2971,13 @@
           "default": true,
           "title": "Relocate",
           "type": "boolean"
+        },
+        "rim_air_mm": {
+          "default": 20.0,
+          "maximum": 50.0,
+          "minimum": 0.0,
+          "title": "Rim Air Mm",
+          "type": "number"
         },
         "rim_floor_margin_mm": {
           "default": 15.0,

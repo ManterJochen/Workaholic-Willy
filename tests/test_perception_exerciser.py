@@ -81,7 +81,7 @@ def _source(streamer, *, warmup=0, mask=None):
             return (PerceivedObject(detection=det, segmentation=seg),)
 
     return RealSenseVisionPerceptionSource(
-        streamer=streamer, backend=_Backend(), prompt="cube", warmup_grabs=warmup,
+        streamer=streamer, backend=_Backend(), prompt="cube", warmup_grabs=warmup, burst_grabs=1,
     )
 
 

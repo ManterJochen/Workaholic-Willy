@@ -1,8 +1,8 @@
 """A Robotiq hand opens only as wide as a grasp needs, and the guard holds its fingers there (lever G, 2026-10-13).
 
-The owner's "Option 1 aber nur wenn Robotiq genutzt wird": the jaws open to the span and 2 mm beside each jaw
-(``support_footprint.JAW_SIDE_ROOM_MM``), not to the whole 49.99 mm stroke, and only on a Robotiq cell. Pinned on the
-owner's cell (``tests/_cell_2026_10_01``, the Hand-E on the UR10, its exact guard):
+The owner's "Option 1 aber nur wenn Robotiq genutzt wird": the jaws open to the span and 7 mm beside each jaw
+(``support_footprint.NARROW_ROOM_MM``; 2 mm until the owner's Robotiq came down onto the parts, 2026-10-14), not to
+the whole 49.99 mm stroke, and only on a Robotiq cell. Pinned on the owner's cell (``tests/_cell_2026_10_01``, the Hand-E on the UR10, its exact guard):
 
 * only a Robotiq cell plans so (``calculator_factory.opens_as_needed``);
 * the guard told a width holds both fingers moved in by half of what the stroke is wider, and fully open again when told
@@ -119,6 +119,7 @@ class TheExecutionTellsTheGuard(unittest.TestCase):
             return self.reads
 
     def test_open_to_the_plan_tell_the_wider_reading_then_none(self) -> None:
+        from src.robot.core.gripper import FINGER_OPENING_SLACK_MM
         from src.robot.grasping.motion import execution_policy as policy
 
         told: list[Any] = []
@@ -127,9 +128,9 @@ class TheExecutionTellsTheGuard(unittest.TestCase):
         grasp = SimpleNamespace(metadata={"score_components": {"support_footprint": {"open_width_mm": 24.0}}})
         self.assertEqual(policy._planned_opening(grasp), 24.0)  # noqa: SLF001
         self.assertTrue(policy._the_guard_holds_the_fingers_at(arm, hand, 24.0))  # noqa: SLF001
-        self.assertAlmostEqual(told[-1], 24.3 + policy._OPENING_SLACK_MM)  # noqa: SLF001
+        self.assertAlmostEqual(told[-1], 24.3 + FINGER_OPENING_SLACK_MM)
         with policy._fingers_as_planned(arm, grasp):  # noqa: SLF001
-            self.assertAlmostEqual(told[-1], 24.0 + policy._OPENING_SLACK_MM)  # noqa: SLF001
+            self.assertAlmostEqual(told[-1], 24.0 + FINGER_OPENING_SLACK_MM)
         self.assertIsNone(told[-1])
         unplanned = SimpleNamespace(metadata={"score_components": {"support_footprint": {"stage": "prism"}}})
         self.assertIsNone(policy._planned_opening(unplanned))  # noqa: SLF001

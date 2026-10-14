@@ -790,6 +790,7 @@ class AutonomousGraspService:
             primary_camera_id=primary_camera_id, camera=camera,
             hand_past_the_tcp_mm=hand_past_the_tcp_mm(robot_cfg),
             palm_thickness_mm=_registry_palm_thickness_mm(robot_cfg),
+            hand_steps=_registry_hand_steps(robot_cfg),
         )
 
         # The half of multi-camera fusion that config cannot carry. The overlays above wire
@@ -3162,6 +3163,28 @@ def _push_cell_of(robot_cfg: Any, grasping_cfg: Any) -> "PushCell | PushRefusal 
     from src.robot.grasping.recovery.push_gate import PushCell  # noqa: PLC0415
 
     return PushCell.from_robot_config(robot_cfg)
+
+
+def _registry_hand_steps(robot_cfg: Any) -> Any:
+    """The fingers and the housing of the registry hand ``robot.gripper.model`` in steps, measured off its guard bundle
+    as the guard holds them (``gripper_model.hand_steps_of``); ``None`` where no registry hand with a bundle is named,
+    which keeps each the registry's one box."""
+    model = str(getattr(getattr(robot_cfg, "gripper", None), "model", "") or "")
+    if not model:
+        return None
+    from src.config.grippers import load_gripper  # noqa: PLC0415 (config is read only when a cell is built)
+    from src.robot.grasping.collision.gripper_model import hand_steps_of  # noqa: PLC0415
+    from src.robot.safety.planning.environment import hand_mesh_bundle  # noqa: PLC0415
+
+    try:
+        jaw = load_gripper(model, aliases=False).jaw
+        bundle = hand_mesh_bundle(model)
+        if not bundle.is_file():
+            return None
+        return hand_steps_of(bundle, aperture_mm=float(jaw.aperture_mm), finger_ahead_mm=float(jaw.finger_ahead_mm),
+                             finger_length_mm=float(jaw.finger_length_mm))
+    except Exception:  # noqa: BLE001 (a hand the registry or the bundles do not hold keeps its one box each)
+        return None
 
 
 def _registry_palm_thickness_mm(robot_cfg: Any) -> "float | None":

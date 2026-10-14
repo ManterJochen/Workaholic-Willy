@@ -2,10 +2,9 @@
 
 The owner's cell, 2026-10-08: one boxed-in cube took 24 of a look's 30 s. SFE's units now run on worker processes the
 cell starts once (``src/robot/grasping/workers.py``, ``robot.grasping.workers``), handed to the calculator by the pick
-loop with every ranking. The answer is the one process's, to the bit: the recorded Zollstock looks of 2026-10-01 get
-the same candidates, reasons, refusal counts and telemetry from a pool of two as from the cell's own process, and a
-frame of several parts ranked by the pick loop chooses the same part with the same support telemetry and the same
-overlay. A pool whose worker raises, dies or does not answer has that part searched in the cell's process, from the
+loop with every ranking. The answer is the one process's, to the bit: a frame of several parts ranked by the pick
+loop chooses the same part with the same support telemetry and the same overlay. Since 2026-10-14 the calculator's stage
+no longer asks SFE (the part's own body alone); the pool is pinned here until its code goes. A pool whose worker raises, dies or does not answer has that part searched in the cell's process, from the
 start, said in one log line; one that breaks again is given up. A worker writes no log line, and one BLAS thread or
 four give the same grasps.
 """
@@ -103,16 +102,6 @@ def _zollstock(name: str, *, workers: "SfeWorkers | None") -> Any:
         support_plane=_support(recorded).plane, min_table_clearance_mm=cfg.grasping.support.min_clearance_mm,
         gripper_model=build_gripper_geometry(cfg.grasping.gripper_geometry), support_model=_model(recorded),
         sfe_workers=workers)
-
-
-class TheRecordedLooksTests(unittest.TestCase):
-    def test_the_zollstock_looks_get_the_one_processs_answer_from_a_pool(self) -> None:
-        for name in ("P1", "P5"):
-            with self.subTest(look=name):
-                here = _zollstock(name, workers=None)
-                pooled = _zollstock(name, workers=_pool())
-                self.assertIn("support_footprint_refused", here.telemetry)
-                self.assertEqual(_result(here), _result(pooled))
 
 
 # ---------------------------------------------------------------------------------------------------------------------
