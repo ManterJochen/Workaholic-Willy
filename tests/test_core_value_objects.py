@@ -38,23 +38,43 @@ class TestVendorEnums:
 
 class TestRobotCapabilities:
     def test_valid_construct(self) -> None:
-        cap = RobotCapabilities(vendor="ur", dof=6)
+        cap = RobotCapabilities(vendor="ur", dof=6, controller=None, owns_a_controller=True)
         assert cap.vendor == "ur"
         assert cap.dof == 6
 
     def test_empty_vendor_raises(self) -> None:
         with pytest.raises(ValueError):
-            RobotCapabilities(vendor="")
+            RobotCapabilities(vendor="", dof=6, controller=None, owns_a_controller=True)
 
     def test_non_lowercase_or_spaced_vendor_raises(self) -> None:
         with pytest.raises(ValueError):
-            RobotCapabilities(vendor="UR")
+            RobotCapabilities(vendor="UR", dof=6, controller=None, owns_a_controller=True)
         with pytest.raises(ValueError):
-            RobotCapabilities(vendor="my vendor")
+            RobotCapabilities(vendor="my vendor", dof=6, controller=None, owns_a_controller=True)
+
+    def test_non_lowercase_or_spaced_model_raises(self) -> None:
+        """P0g R4: the arm registry and the planner envelope take a model by its exact lowercase name while the DH
+        chain lowercases it, so 'UR10' found IK solutions and then raised a raw ConfigError at the planner. The model is
+        held to the vendor's rule here, once, for every driver; the dummy's 'dummy-6dof' passes."""
+        with pytest.raises(ValueError):
+            RobotCapabilities(vendor="ur", model="UR10", dof=6, controller=None, owns_a_controller=True)
+        with pytest.raises(ValueError):
+            RobotCapabilities(vendor="ur", model="ur 10", dof=6, controller=None, owns_a_controller=True)
+        RobotCapabilities(vendor="dummy", model="dummy-6dof", dof=6, controller=None, owns_a_controller=False)
 
     def test_non_positive_dof_raises(self) -> None:
         with pytest.raises(ValueError):
-            RobotCapabilities(vendor="ur", dof=0)
+            RobotCapabilities(vendor="ur", dof=0, controller=None, owns_a_controller=True)
+
+    def test_the_identity_is_built_by_keyword_only(self) -> None:
+        """The field order is not part of the contract.
+
+        This value is the arm's identity: since P0e it carries the controller address the cell lock reads, and
+        ``dof`` has no default because the arm descriptions carry it. A positional construction would make a
+        field added later a silent re-binding of the argument beside it, on a driver nobody re-read.
+        """
+        with pytest.raises(TypeError):
+            RobotCapabilities("ur", "ur5e", dof=6, controller=None, owns_a_controller=True)  # type: ignore[misc]
 
 
 class TestRobotErrorHierarchy:

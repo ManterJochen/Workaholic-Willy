@@ -15,7 +15,8 @@ It provides:
     - the low-level move wrappers ``moveJ`` and ``moveL``;
     - the halt latch ("halt now"), and with ``robot.ur.brake_on_halt`` the watched move a halt brakes;
     - the hand-guiding primitives, teach mode, the RTDE watchdog and a fresh control
-      program, which :mod:`.freedrive` puts together into a session.
+      program, which ``URTransport`` offers as ``ControllerFreedrive`` and
+      :mod:`src.robot.drivers.planned.freedrive` puts together into a session.
 """
 
 from __future__ import annotations
@@ -27,12 +28,11 @@ import socket
 import struct
 import threading
 import time
-from enum import StrEnum
 from typing import TYPE_CHECKING
 
 from ...constants import UR_CONNECTION_LOG_FILE, create_robot_logger
 from ...core import RobotConnectionError
-from ...core.arm_capabilities import ArmHalted, HaltState, halted_refusal
+from ...core.arm_capabilities import ArmHalted, HaltState, MoveEnd, halted_refusal
 
 def _absent(exc: Exception) -> str:
     """The SDK is not on this machine. Installing it is the fix."""
@@ -68,7 +68,7 @@ def _unloadable(exc: Exception) -> str:
         f"({type(exc).__name__}: {exc}). This is NOT a missing package and reinstalling will not "
         f"help. On Windows this is usually Smart App Control or an application-control policy "
         f"refusing an unsigned extension; elsewhere it is a missing system library or an ABI "
-        f"mismatch. Check the CodeIntegrity event log before changing anything."
+        f"mismatch. On Windows, check the CodeIntegrity event log before changing anything."
     )
 
 
@@ -346,35 +346,6 @@ if TYPE_CHECKING:  # pragma: no cover (import only for static analysis)
     from rtde_receive import RTDEReceiveInterface
 
 
-class MoveEnd(StrEnum):
-    """How the last move a connection was asked for ended, for the sentence a refused verb says.
-
-    Read by the thread that asked for the move, right after it returned, never across threads.
-    """
-
-    #: No move was asked for yet.
-    NONE = "none"
-    #: The move was sent as it always was, and the answer is ur_rtde's own (brakes off, or a caller's asynchronous move).
-    SENT = "sent"
-    #: A watched move stood at its target: joints within 2e-3 rad, a line's TCP within 1 mm and 2e-3 rad.
-    ARRIVED = "arrived"
-    #: The halt latch was set: nothing was sent.
-    REFUSED_HALTED = "refused_halted"
-    #: The halt braked the move in flight (stopJ or stopL) and the arm stood still.
-    BRAKED = "braked"
-    #: The halt's brake was sent and the arm was not seen to stand still, or the brake itself failed.
-    BRAKE_UNCONFIRMED = "brake_unconfirmed"
-    #: A watched move ended away from its target with nobody braking it.
-    ENDED_SHORT = "ended_short"
-    #: A protective or emergency stop, or the end of the control program, ended a watched move.
-    STOPPED = "stopped"
-    #: The controller refused to start the move, or never showed it running; a move it never showed was stopped.
-    NOT_STARTED = "not_started"
-
-
-#: The ends of a move the halt explains: a verb that meets one answers CANCELLED, not a controller refusal.
-HALT_ENDS: frozenset[MoveEnd] = frozenset({MoveEnd.REFUSED_HALTED, MoveEnd.BRAKED, MoveEnd.BRAKE_UNCONFIRMED})
-
 _JOINT, _LINE = "moveJ", "moveL"
 #: How often a watched move is read: one RTDE cycle of a CB3, which publishes at 125 Hz.
 _POLL_S = 0.008
@@ -631,6 +602,9 @@ class URConnection:
         if self.is_connected:
             self.logger.debug("connect() called but already connected; ignored.")
             return
+        if self.is_watching:
+            # A watch holds a receive interface and the dashboard of its own; a connection opens both again.
+            self._safe_teardown()
         self._tcp_offset_cache = None
         self._forget_the_kinematics()
         self.logger.info("Connecting to UR robot at %s ...", self.ip)
@@ -761,6 +735,39 @@ class URConnection:
     def is_connected(self) -> bool:
         return self._ctrl is not None and self._recv is not None
 
+    @property
+    def is_watching(self) -> bool:
+        """A watch is open: the receive interface and the dashboard, and no control interface (P0i)."""
+        return self._ctrl is None and self._recv is not None and self._dashboard is not None
+
+    def connect_watch(self) -> None:
+        """Open what reads the controller's state and releases a protective stop, and never the control interface.
+
+        P0i, owner 2026-09-26. Measured on URSim the same day: ``connect()`` builds the control interface first, whose
+        constructor uploads a control script, and a controller in a protective stop starts no external control
+        program, so a person could not reach the one release there is from software. The robot and safety modes and the
+        stop flags come from the receive interface, the safety text and the release from the dashboard; neither needs
+        a program. The dashboard is required here, not best effort as in ``connect()``: a watch that cannot release a
+        stop is no watch the fault door can use. A no-op while connected or already watching; a failure leaves nothing
+        open.
+        """
+        if rtde_receive is None:
+            raise ImportError(_CORE_UNAVAILABLE or _absent(ImportError("ur_rtde")))
+        if dashboard_client is None:
+            raise ImportError(_DASHBOARD_UNAVAILABLE or _absent(ImportError("ur_rtde dashboard_client")))
+        if self.is_connected or self.is_watching:
+            return
+        self.logger.info("Watching the UR controller at %s (receive + dashboard, no control program) ...", self.ip)
+        try:
+            self._recv = rtde_receive.RTDEReceiveInterface(self.ip)
+            dashboard = dashboard_client.DashboardClient(self.ip)
+            dashboard.connect()
+            self._dashboard = dashboard
+        except Exception as exc:  # noqa: BLE001 - roll back a partial watch, then say what refused it
+            self._safe_teardown()
+            raise RobotConnectionError(
+                f"could not watch the UR controller at {self.ip} (receive interface and dashboard): {exc}") from exc
+
     # ------------------------------------------------------------------
     # State queries
     # ------------------------------------------------------------------
@@ -886,7 +893,13 @@ class URConnection:
         tcp_pose: list[float],
         q_near: list[float] | None = None,
     ) -> list[float]:
-        """Inverse kinematics from a TCP pose to joint angles.
+        """Inverse kinematics from a TCP pose to joint angles, or ``[]`` where the controller finds no solution.
+
+        It asks ``getInverseKinematicsHasSolution`` first, with the same pose and seed (P0e E14). Measured on URSim
+        (UR3e, URSoftware 5.26.1, ur_rtde 1.6.5, 2026-09-22): ``getInverseKinematics`` for a pose with no solution
+        returned ``[]`` and stopped the RTDE control script, so the controller took no motion command until the arm was
+        connected again; ``getInverseKinematicsHasSolution`` answered False for the same poses and the script ran on.
+        One more round trip per solve, against one unreachable candidate stopping the cell.
 
         Parameters:
             tcp_pose: ``[x, y, z, rx, ry, rz]``
@@ -895,7 +908,11 @@ class URConnection:
         self._require_connected()
         assert self._ctrl is not None  # guaranteed by _require_connected()
         if q_near is not None:
+            if not self._ctrl.getInverseKinematicsHasSolution(tcp_pose, q_near):
+                return []
             return self._ctrl.getInverseKinematics(tcp_pose, q_near)
+        if not self._ctrl.getInverseKinematicsHasSolution(tcp_pose):
+            return []
         return self._ctrl.getInverseKinematics(tcp_pose)
 
     def controller_kinematics(self) -> ControllerKinematics | None:
@@ -1333,6 +1350,11 @@ class URConnection:
         bool
             ``True`` where the robot became steady before the timeout, and ``False``
             where the timeout fired first.
+
+        Raises
+        ------
+        RobotConnectionError
+            Where the control script is not running, so ``isSteady()`` cannot say (:meth:`_refuse_without_program`).
         """
         import time as _time
 
@@ -1345,13 +1367,17 @@ class URConnection:
                 return steady
 
         if timeout_s <= 0:
-            return bool(self._ctrl.isSteady())
+            if self._ctrl.isSteady():
+                return True
+            self._refuse_without_program()
+            return False
 
         interval = max(1e-3, min(poll_interval_s, timeout_s))
         deadline = _time.monotonic() + float(timeout_s)
         while True:
             if self._ctrl.isSteady():
                 return True
+            self._refuse_without_program()
             if _time.monotonic() >= deadline:
                 self.logger.warning(
                     "wait_until_steady timed out after %.2fs.", timeout_s,
@@ -1412,51 +1438,52 @@ class URConnection:
     # ``_global_din_id`` bridges that asymmetry.
     _PORT_BASE = {"standard": 0, "configurable": 8, "tool": 16}
 
-    def set_digital_out(self, pin: int, value: bool, port: str = "standard") -> None:
-        """Drive a digital output pin (bank ``port``) to ``value``. Refused with ``ArmHalted`` while halted.
+    def set_digital_out(self, pin: int, value: bool, port: str = "standard") -> bool:
+        """Drive a digital output pin (bank ``port``) to ``value``; ``False`` where the controller did not take it.
+        Refused with ``ArmHalted`` while halted.
 
         A toggle hand on the owner's tool DO0 moves its jaws at every change of the output, so a halted arm switches
-        none: nothing is sent, and the refusal says why.
+        none: nothing is sent, and the refusal says why. ur_rtde's setters answer whether they delivered the write, and
+        that answer is returned, so a gripper's belief does not move on a write that never happened (P0g io1).
         """
         self._refuse_output_while_halted(f"{port} digital output {pin}")
-        self._write_digital_out(pin, value, port)
+        return self._write_digital_out(pin, value, port)
 
-    def end_output_pulse(self, pin: int, port: str = "standard") -> None:
+    def end_output_pulse(self, pin: int, port: str = "standard") -> bool:
         """Drive ``pin`` low to end a pulse that began before a halt: the one output write a halted arm makes.
 
         A bistable valve's coil, or a vacuum blow-off, is pulsed high and must go back low: a coil left energised until
         the cell is cleared is what cooks it. A halt that lands inside the pulse refuses every other write, so the pulse's
         own end comes through here, and only ever as low. Never for a toggle hand, whose every change of the output moves
         the jaws: its writes go through :meth:`set_digital_out` and are refused while halted. Unhalted it is the plain
-        write of low.
+        write of low. ``False`` where the controller did not take it.
         """
         state = self._halt_state
         if state is not None:
             self.logger.warning("%s digital output %d driven low to end a pulse that began before the halt (%s).", port,
                                 pin, state.reason)
-        self._write_digital_out(pin, False, port)
+        return self._write_digital_out(pin, False, port)
 
-    def _write_digital_out(self, pin: int, value: bool, port: str) -> None:
+    def _write_digital_out(self, pin: int, value: bool, port: str) -> bool:
         self._require_io()
         assert self._io is not None  # guaranteed by _require_io()
         if port == "standard":
-            self._io.setStandardDigitalOut(pin, value)
-        elif port == "configurable":
-            self._io.setConfigurableDigitalOut(pin, value)
-        elif port == "tool":
-            self._io.setToolDigitalOut(pin, value)
-        else:
-            raise ValueError(f"set_digital_out: unknown port {port!r}")
+            return bool(self._io.setStandardDigitalOut(pin, value))
+        if port == "configurable":
+            return bool(self._io.setConfigurableDigitalOut(pin, value))
+        if port == "tool":
+            return bool(self._io.setToolDigitalOut(pin, value))
+        raise ValueError(f"set_digital_out: unknown port {port!r}")
 
-    def set_analog_out(self, pin: int, value: float, current: bool = False) -> None:
-        """Set an analog output: voltage (V) unless ``current=True`` (A). Refused with ``ArmHalted`` while halted."""
+    def set_analog_out(self, pin: int, value: float, current: bool = False) -> bool:
+        """Set an analog output: voltage (V) unless ``current=True`` (A); ``False`` where the controller did not take it.
+        Refused with ``ArmHalted`` while halted."""
         self._refuse_output_while_halted(f"analog output {pin}")
         self._require_io()
         assert self._io is not None  # guaranteed by _require_io()
         if current:
-            self._io.setAnalogOutputCurrent(pin, value)
-        else:
-            self._io.setAnalogOutputVoltage(pin, value)
+            return bool(self._io.setAnalogOutputCurrent(pin, value))
+        return bool(self._io.setAnalogOutputVoltage(pin, value))
 
     def get_digital_in(self, pin: int, port: str = "standard") -> bool:
         """Read a digital input pin's level (bank ``port``)."""
@@ -1498,30 +1525,25 @@ class URConnection:
 
     def get_robot_mode(self) -> int:
         """The raw UR robot-mode integer. The driver holds the RobotMode mapping."""
-        self._require_connected()
-        assert self._recv is not None  # guaranteed by _require_connected()
+        self._require_receive()
+        assert self._recv is not None  # guaranteed by _require_receive()
         return int(self._recv.getRobotMode())
 
     def get_safety_mode(self) -> int:
         """The raw UR safety-mode integer. The driver holds the SafetyMode mapping."""
-        self._require_connected()
-        assert self._recv is not None  # guaranteed by _require_connected()
+        self._require_receive()
+        assert self._recv is not None  # guaranteed by _require_receive()
         return int(self._recv.getSafetyMode())
 
     def is_protective_stopped(self) -> bool:
-        self._require_connected()
-        assert self._recv is not None  # guaranteed by _require_connected()
+        self._require_receive()
+        assert self._recv is not None  # guaranteed by _require_receive()
         return bool(self._recv.isProtectiveStopped())
 
     def is_emergency_stopped(self) -> bool:
-        self._require_connected()
-        assert self._recv is not None  # guaranteed by _require_connected()
+        self._require_receive()
+        assert self._recv is not None  # guaranteed by _require_receive()
         return bool(self._recv.isEmergencyStopped())
-
-    def get_safety_status_bits(self) -> int:
-        self._require_connected()
-        assert self._recv is not None  # guaranteed by _require_connected()
-        return int(self._recv.getSafetyStatusBits())
 
     def dashboard_safety_status(self) -> str:
         """The controller safety text an operator reads, empty where the dashboard is unavailable."""
@@ -1730,8 +1752,8 @@ class URConnection:
     # ------------------------------------------------------------------
     # Hand guiding: teach mode, the RTDE watchdog, the control script
     # ------------------------------------------------------------------
-    # The primitives :class:`~.freedrive.URFreedriveSession` is made of; the order they run in, and
-    # why, is that module's. Read from the installed ur_rtde 1.6.5 and measured on the CB3 URSim
+    # The primitives the hand-guiding session (``drivers/planned/freedrive.py``) is made of, through
+    # ``URTransport``'s ``ControllerFreedrive`` verbs; the order they run in, and why, is that module's. Read from the installed ur_rtde 1.6.5 and measured on the CB3 URSim
     # (PolyScope 3.15.8 in Docker under WSL, 2026-09-24):
     #
     # * ``teachMode``/``endTeachMode`` and not ``freedriveMode``. The control script ur_rtde uploads
@@ -1813,6 +1835,21 @@ class URConnection:
         assert self._ctrl is not None  # guaranteed by _require_connected()
         return bool(self._ctrl.isProgramRunning())
 
+    def _refuse_without_program(self) -> None:
+        """Raise where ``isSteady()`` cannot answer, because the control script that answers it is gone (P0e E13).
+
+        Measured on URSim, 2026-09-22: after a singular IK request stopped the script, ``isSteady()`` stayed False for
+        as long as it was polled while the largest joint speed read 0.000000 rad/s. A False from it then says nothing
+        about rest, so it is not waited on. Asked only after ``isSteady()`` said False: a steady arm pays nothing, and
+        a script that stops during a wait ends the wait.
+        """
+        assert self._ctrl is not None  # the callers hold _require_connected()
+        if not self._ctrl.isProgramRunning():
+            raise RobotConnectionError(
+                f"the RTDE control script is not running on the UR controller at {self.ip} (isProgramRunning() is "
+                f"False): the controller takes no motion command, and isSteady() cannot say whether the arm is at rest"
+            )
+
     def get_joint_speeds(self) -> list[float]:
         """The actual joint speeds ``[qd0 ... qd5]`` in rad/s (``getActualQd``).
 
@@ -1851,6 +1888,12 @@ class URConnection:
         if not self.is_connected:
             raise RuntimeError("Not connected: call connect() first.")
 
+    def _require_receive(self) -> None:
+        """The receive interface, which a connection and a watch both open (P0i): the status reads need nothing more.
+        Where neither is open, the same refusal as :meth:`_require_connected`."""
+        if self._recv is None:
+            raise RuntimeError("Not connected — call connect() first.")
+
     def _require_io(self) -> None:
         if self._io is None:
             # The recorded import reason answers the first half of that question
@@ -1859,4 +1902,11 @@ class URConnection:
             raise RuntimeError(
                 "Digital/analog I/O unavailable: the RTDEIOInterface did not come up "
                 f"(is ur_rtde's rtde_io present + the controller reachable?).{why}"
+            )
+        if not self._io.isConnected():
+            # Asked before a write rather than read off a failed one: an IO link that went down while the arm planned
+            # and moved is the case the owner's toggle cell raised (P0g io1), and nothing is sent on it.
+            raise RuntimeError(
+                "Digital/analog I/O unavailable: the RTDEIOInterface reports it is not connected, so the write was "
+                "not sent. Reconnect the arm before driving an output."
             )

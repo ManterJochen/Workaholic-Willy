@@ -50,7 +50,5 @@ robot:
     z: 274.5
 
   safety:
-    self_collision:
-      kinematics_model: "ur3"
     payload:
       max_mass_kg: 3.0      # UR3 datasheet

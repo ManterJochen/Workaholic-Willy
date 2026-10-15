@@ -20,9 +20,9 @@ failure mode this module is named after.
 It attests and it does not enforce. Nothing here can stop a motion.
 `SafetyPreflight` is consulted inside each driver's own motion verbs, which are the only
 places that can refuse a command. `tests/test_ungated_motion_surfaces.py` holds a chosen
-set of verbs per driver to that, not every verb of every driver, and the raw transports
-some drivers expose (`URRobotArm.connection` and `.motion`, `KukaRobotArm.eki_client`)
-reach the controller below the pipeline. This says what is in the pipeline, so a run that
+set of verbs per driver to that, not every verb of every driver; the UR driver's raw
+transports are private since P0e deleted its `connection` and `motion` properties, and they
+still reach the controller below the pipeline. This says what is in the pipeline, so a run that
 enforced nothing cannot be mistaken for one that enforced everything.
 """
 
@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from src.robot.core.camera_world import plans_motions
 from src.robot.safety.preflight import SafetyPreflight
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
@@ -163,7 +164,8 @@ class SafetyAttestation:
             # look at. A key answering this can stand at false on a cell that plans every
             # move, and the attestation then reads as endpoints only for a cell about to
             # execute a whole trajectory.
-            trajectories = bool(getattr(arm, "plans_paths", False))
+            planner = plans_motions(arm)
+            trajectories = bool(planner is not None and planner.plans_paths)
             # `getattr` with a default, because a caller can supply any object with a
             # `safety_preflight`, and an attestation that raised on an unfamiliar one
             # would fail exactly where it is asked whether it is safe to start.

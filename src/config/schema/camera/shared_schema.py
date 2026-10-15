@@ -136,7 +136,7 @@ class RigExtrinsicsConfig(StrictModel):
     #: How far, in millimetres, the flange to TCP a wrist camera's calibration recorded may lie from the
     #: one the cell has now before the rig is refused, because its body and its pick frame were placed
     #: from a tool frame the arm no longer holds. Required on a rig that declares a ``body``, with no
-    #: default: on a ``polyscope`` cell the frame is derived from the controller at connect, and how much
+    #: default: on a ``controller`` cell the frame is derived from the controller at connect, and how much
     #: that derivation moves is measured on the cell. On a ``willy`` cell the record is written from the
     #: declared numbers and compared exactly.
     record_tolerance_mm: float | None = Field(default=None, gt=0.0)

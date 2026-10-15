@@ -33,6 +33,7 @@ from typing import Any
 import numpy as np
 from pydantic import ValidationError
 
+from src.config.arms import load_arm
 from src.config.schema.robot.safety_schema import FixtureBoxConfig, RobotSafetyConfig, SelfCollisionSafetyConfig
 from src.robot.core import JointPositions, MotionCommand
 from src.robot.safety._capsule import AxisAlignedBox
@@ -45,6 +46,10 @@ from src.robot.safety.planning.world import planner_cuboid
 from src.robot.safety.preflight import SafetyPreflight
 from src.robot.safety.self_collision import SelfCollisionGuard
 from tests._seen_scenes import K, LIMITS, Solid, looking_down, open_bin, render
+from tests._ur_transport import over
+
+#: The controller's joint order as the ur5e description states it; the planner is handed it since P0e E4.
+_UR_JOINT_NAMES = tuple(joint.name for joint in load_arm("ur5e").joints)
 
 _ARM = SimpleNamespace(capabilities=SimpleNamespace(vendor="ur", model="ur10"))
 #: The investigation's pose: the upper arm's shoulder housing hangs along base -Y, 86 to 263 mm out, 52 mm up.
@@ -107,7 +112,7 @@ def _guard(**config: Any) -> SelfCollisionGuard:
     """A UR10 guard. Its seen-box distance is the 5 mm these cases were measured at unless a case asks another; the
     owner ships 3 mm since 2026-10-05."""
     config.setdefault("perceived_min_distance_mm", 5.0)
-    return SelfCollisionGuard(SelfCollisionSafetyConfig(kinematics_model="ur10", **config))
+    return SelfCollisionGuard(SelfCollisionSafetyConfig(**config))
 
 
 def _needs_the_engine(test: unittest.TestCase, guard: SelfCollisionGuard) -> None:
@@ -183,8 +188,8 @@ class TheGuardAndThePlannerHoldOneListTests(unittest.TestCase):
     def test_the_ur_planner_hands_the_same_boxes_to_the_sidecar_and_to_the_path_guard(self) -> None:
         """Through the UR glue: the sidecar gets them in its own base, half a turn about Z, and the guard in the
         controller's."""
-        from src.robot.drivers.ur.curobo_motion import UR_ARM_JOINT_NAMES, CuroboUrPlanner
-        from src.robot.drivers.ur.planner_frame import planner_pose
+        from src.robot.drivers.planned.curobo_motion import CuroboPlanner
+        from src.robot.drivers.planned.planner_frame import planner_pose
 
         camera = looking_down(0.0, -430.0)
         depth = render(camera, self._SCENE)
@@ -194,7 +199,7 @@ class TheGuardAndThePlannerHoldOneListTests(unittest.TestCase):
                 return DepthSnapshot(depth_mm=depth, intrinsics=K, timestamp=__import__("time").time())
 
         class _Sidecar(_Recording):
-            joint_names = list(UR_ARM_JOINT_NAMES)
+            joint_names = list(_UR_JOINT_NAMES)
 
             def start(self) -> None:
                 return None
@@ -214,8 +219,8 @@ class TheGuardAndThePlannerHoldOneListTests(unittest.TestCase):
         frames = yawed_link_transforms_mm("ur10", np.asarray(_Q), 0.0)
         capsules = arm_capsules("ur10")
         assert frames is not None and capsules is not None
-        planner = CuroboUrPlanner(
-            _Connection(), client_factory=lambda: sidecar, live_world=world,  # type: ignore[arg-type]
+        planner = CuroboPlanner(
+            over(_Connection()), joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180, client_factory=lambda: sidecar, live_world=world,
             self_envelope=lambda: SelfEnvelope(frames_mm=tuple(frames), capsules=capsules),
             on_perceived_obstacles=told.append,
         )
@@ -332,8 +337,7 @@ class TheGuardKeepsItsOwnDistanceFromWhatACameraSawTests(unittest.TestCase):
 
     def test_the_capsule_fallback_keeps_the_enclosure_at_the_guards_distance(self) -> None:
         """A guard that cannot turn a box holds the box around it, which is never smaller: the safe side."""
-        guard = SelfCollisionGuard(SelfCollisionSafetyConfig(backend="capsule", kinematics_model="ur10",
-                                                             min_distance_mm=10.0))
+        guard = SelfCollisionGuard(SelfCollisionSafetyConfig(backend="capsule", min_distance_mm=10.0))
         # A bar turned 45 degrees 160 mm out along base -Y: its own faces stay 23 mm from the 80 mm base column, its
         # enclosure 2 mm.
         bar = _seen_box(centre=(0.0, -160.0, 50.0), half=(100.0, 10.0, 50.0), yaw_deg=45.0)
@@ -503,6 +507,7 @@ class TheRealSurfaceStaysClearBetweenSamplesTests(unittest.TestCase):
         preflight = SafetyPreflight.from_safety_config(
             RobotSafetyConfig.model_validate({"self_collision": {"backend": "capsule"}}),
             SimpleNamespace(x_min=-1000.0, x_max=1000.0, y_min=-1000.0, y_max=1000.0, z_min=-100.0, z_max=1000.0),  # type: ignore[arg-type]
+            arm_model=None,
         )
         self.assertEqual(preflight.path_step_mm, config.self_collision.min_distance_mm)
 
@@ -518,7 +523,7 @@ class TheRealSurfaceStaysClearBetweenSamplesTests(unittest.TestCase):
         self.assertEqual(WorldBuildTuning().max_boxes, 64)
         # The planner reserves a slot for every box the world may send: the bench, and the 64.
         cell = RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"model": "ur10", "motion_planner": "curobo"}, "gripper": {"model": "robotiq_hande"},
+            "vendor": "ur", "ur": {"model": "ur10"}, "motion": {"planner": "curobo"}, "gripper": {"model": "robotiq_hande"},
             "safety": {"self_collision": {"planner_margin_mm": 4.0}, "planning_world": {
                 "enabled": True, "support_plane": {"height_mm": 0.0}}},
         })

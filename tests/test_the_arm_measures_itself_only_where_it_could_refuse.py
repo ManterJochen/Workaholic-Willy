@@ -27,8 +27,9 @@ from typing import Any
 
 import numpy as np
 
+from src.config.arms import available_arms
 from src.robot.safety._fcl_self_collision import _first_flagged, _moved_mm
-from src.robot.safety._ur_kinematics import UR_DH_TABLES_M, ur_link_transforms_mm, ur_link_transforms_mm_many
+from src.robot.safety._ur_kinematics import ur_link_transforms_mm, ur_link_transforms_mm_many
 from src.robot.safety.path_samples import waypoint_path_samples
 from tests import _owner_guard as owner
 from tests.test_a_faster_camera_world_builds_the_same_world import frame
@@ -164,7 +165,7 @@ class TheWalkTests(unittest.TestCase):
 class TheChainOfManyIsTheChainOfEachTests(unittest.TestCase):
     def test_every_frame_of_20000_configurations_is_bit_for_bit_the_frame_of_each(self) -> None:
         rng = np.random.default_rng(20261009)
-        for model in UR_DH_TABLES_M:
+        for model in available_arms():
             count = 20_000 if model == "ur10" else 2_000
             configs = rng.uniform(-2.0 * math.pi, 2.0 * math.pi, (count, 6))
             many = ur_link_transforms_mm_many(model, configs)

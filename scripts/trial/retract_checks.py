@@ -28,7 +28,7 @@ from typing import Any
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
-for entry in (str(REPO / "scripts" / "curobo"), str(REPO)):
+for entry in (str(REPO / "scripts" / "arms"), str(REPO)):
     if entry not in sys.path:
         sys.path.insert(0, entry)
 
@@ -164,7 +164,7 @@ def guard_agree(*, arm: str, hand: str, reference: str, coupling_mm: float, rota
     placement = HandPlacement.from_quaternion_xyzw(rotation_xyzw)
     key = f"{placement.approach}{placement.closing}"
     retract = read_retract(arm, reference, float(coupling_mm), float(planner_margin_mm), placement=key)
-    poses, _ = pose_set(list(retract),
+    poses, _ = pose_set(list(retract), arm=arm,
                         random_n=RANDOM_POSES if random_n is None else int(random_n))
     ours = ExactJudge(arm, hand, float(coupling_mm), placement)
     theirs = ExactJudge(arm, reference, float(coupling_mm), placement)

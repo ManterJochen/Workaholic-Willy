@@ -1,7 +1,7 @@
 """The build log said the camera world is read before every plan. On an `ik` cell nothing plans.
 
 `_wire_live_planner_world` hands the arm a world and logged "refreshed before every plan" whatever the
-planner. The UR arm reads that world only inside its cuRobo planner, so on `motion_planner: ik` the line
+planner. The UR arm reads that world only inside its cuRobo planner, so on `motion.planner: ik` the line
 announced a protection that never runs, which is exactly the kind of sentence this library may not print.
 
 A stereo rig is told at the same place (Step 4e). It has no depth of its own, so a world built on it would
@@ -25,13 +25,30 @@ from src.config.schema.robot import RobotConfig
 from src.camera.setup.image_taking.frames import StereoFrame
 from src.geometry import Frame, Transform
 from src.robot.execution.autonomous_grasp import cells
+from tests._helpers import PlansItsMotions
+
+
+class _PlanningArm(PlansItsMotions):
+    """An arm that plans its motions and records the world it is handed (the wiring's only question)."""
+
+    def __init__(self, *, tcp: object = None) -> None:
+        super().__init__(None)
+        self.set_live_planner_world = MagicMock(side_effect=self._record)  # type: ignore[method-assign]
+        self._tcp = tcp
+
+    def _record(self, world: object) -> None:
+        self._live_world = world
+
+    def get_tcp_pose(self) -> object:
+        return self._tcp
+
 
 _RIG = "realsense_d435"
 
 
 def _cell(planner: str) -> RobotConfig:
     return RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"motion_planner": planner},
+        "vendor": "ur", "motion": {"planner": planner},
         "safety": {"payload": {"enforce": False}, "planning_world": {
             "enabled": True,
             "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
@@ -58,7 +75,7 @@ class _Owner:
 
 class TheWiringLogNamesThePlannerTests(unittest.TestCase):
     def _wire(self, planner: str, *, frame: object = None) -> tuple[str, SimpleNamespace]:
-        arm = SimpleNamespace(set_live_planner_world=MagicMock())
+        arm = _PlanningArm()
         service = SimpleNamespace(runtime=SimpleNamespace(orchestrator=SimpleNamespace(arm=arm)))
         # An RGB-D rig: the wiring grabs one frame to tell a stereo pair from a camera with depth.
         owner = _Owner(SimpleNamespace(depth=np.ones((4, 4))) if frame is None else frame)

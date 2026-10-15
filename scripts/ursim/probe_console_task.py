@@ -276,8 +276,8 @@ class Bed:
         (self.tree / "robot" / "robot.consoleprobe.yaml").write_text(_LAYER.format(model=model), encoding="utf-8")
         self.chain = f"ursim,{model},ursim_curobo,consoleprobe"
         cfg = load_robot_config(self.tree, profile=self.chain)
-        if cfg.ur.ip not in ("127.0.0.1", "localhost", "::1"):
-            raise SystemExit(f"profile ur.ip is {cfg.ur.ip!r}: this probe moves the arm and runs on the loopback")
+        if cfg.arm.controller not in ("127.0.0.1", "localhost", "::1"):
+            raise SystemExit(f"profile ur.ip is {cfg.arm.controller!r}: this probe moves the arm and runs on the loopback")
         self.hub = EventHub()
         self.console = Console(root=self.tree, profile=self.chain, hub=self.hub)
         self.console.record_log_path = self.tmp / "grasp_records.jsonl"
@@ -610,7 +610,7 @@ def c4(bed: Bed, w: Watcher, check: Check) -> None:
     check.results["arm_moved_before_the_stop"] = _moving_after(bed, w, run_id, "pick.executing", 0.3) is not None
     # The controller's own protective stop, through the console's connection from this thread, as probe_halt.py M7
     # does on its own: a CB3's IK refuses the on-axis pose probe_protective_stop.py drives through.
-    bed.console.session.arm.connection._ctrl.triggerProtectiveStop()
+    bed.console.session.arm._conn._ctrl.triggerProtectiveStop()
     stopped = bed.finished(run_id)
     check.results["stopped"] = {key: stopped[key] for key in ("stop_code", "stop_class", "holding", "error")}
     check.results["record"] = bed.recovery()
@@ -627,7 +627,7 @@ def c4(bed: Bed, w: Watcher, check: Check) -> None:
         if "NORMAL" in dash("safetystatus")[0].upper():
             break
         time.sleep(1.0)
-    running = bed.console.session.arm.connection.is_program_running()
+    running = bed.console.session.arm._conn.is_program_running()
     check.results["control_script_running_after_the_release"] = running
     if not running:
         # The controller ended the control script with the stop: the way back is Disconnect and Connect, which the

@@ -31,7 +31,7 @@ class TheDirectoryHoldsMeasurements(unittest.TestCase):
         self.assertTrue(
             _FILES,
             f"{EVIDENCE_DIR} holds no combination evidence. Measure the matrix with "
-            f"scripts/curobo/matrix_sweep.py --write and commit what it writes; until then no cell may plan.",
+            f"scripts/arms/sweep.py --write and commit what it writes; until then no cell may plan.",
         )
 
     def test_every_file_reads_back_as_a_record(self) -> None:
@@ -89,7 +89,9 @@ class TheCellsThisRepositoryShipsAreMeasured(unittest.TestCase):
         placement = hand.placement
         assert chosen(placement), f"the {profile} profile places no hand: {hand.placement_refusal}"
         return {
-            "arm": str(getattr(cfg.safety.self_collision, "kinematics_model", None) or cfg.ur.model),
+            # The arm the tree selects, from the block its vendor names: ur.model on a UR tree, sim.robot_model on the
+            # sim tree, where the Isaac arm reports it and the guard judges it (P0d D5).
+            "arm": cfg.arm.model,
             "hand": hand.model, "coupling_mm": hand.coupling_mm,
             "approach": placement.approach, "closing": placement.closing,
             "planner_margin_mm": float(cfg.safety.self_collision.planner_margin_mm or 0.0),

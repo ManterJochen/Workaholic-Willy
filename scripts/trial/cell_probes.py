@@ -91,7 +91,7 @@ def build_arm(profile: str, *, data_dir: "str | None" = None) -> "tuple[int, str
         return 1, f"{profile}: REFUSED at build: {exc}"
     guard = arm.safety_preflight
     hand = guard.planner_hand(arm) if guard is not None else None
-    return 0, (f"{profile}: built {type(arm).__name__} for {cfg.ur.model}, hand {getattr(hand, 'model', hand)}, "
+    return 0, (f"{profile}: built {type(arm).__name__} for {cfg.arm.model}, hand {getattr(hand, 'model', hand)}, "
                f"self collision backend {cfg.safety.self_collision.backend}, not connected")
 
 

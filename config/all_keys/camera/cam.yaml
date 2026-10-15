@@ -578,7 +578,7 @@ cameras:
       #     # calibration recorded may lie from the one the cell holds now before the rig is refused,
       #     # because its body and its pick frame were placed from a tool frame the arm no longer has.
       #     # Required and above 0 on a rig that declares a body, with no default; refused on an
-      #     # eye_to_hand rig. On a polyscope cell the frame is derived from the controller at connect,
+      #     # eye_to_hand rig. On a controller cell the frame is derived from the controller at connect,
       #     # so the value is measured on the cell; on a willy cell the comparison is exact. Too small
       #     # refuses a cell over the derivation's noise; too large lets a stale body and pick frame
       #     # through.

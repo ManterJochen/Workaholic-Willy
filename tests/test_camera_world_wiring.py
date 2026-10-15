@@ -25,7 +25,6 @@ from src.geometry import Frame, Pose, Transform
 from src.robot.core import JointPositions
 from src.robot.core.camera_world import CameraWorldUse
 from src.robot.core.errors import CameraWorldUnavailable
-from src.robot.drivers.ur.curobo_motion import UR_ARM_JOINT_NAMES
 from src.robot.execution.autonomous_grasp import cells
 from src.robot.execution.autonomous_grasp.cells import CellBuildRefused
 from src.robot.execution.autonomous_grasp.service import AutonomousGraspService
@@ -34,9 +33,37 @@ from src.robot.execution.lifecycle import release_perception
 from src.robot.safety.planning.depth_source import RigDepthSource
 from src.robot.safety.planning.live_world import refresh_planner_world
 from src.robot.safety.planning.perceived import LinkCapsule, SelfEnvelope
-from tests.test_every_verb_meets_the_camera_world import _THERE, _Client, _mesh_backend_available, _pose, _sim, _ur
+from tests.test_every_verb_meets_the_camera_world import (
+    _THERE,
+    _Client,
+    _mesh_backend_available,
+    _planned,
+    _pose,
+    _sim,
+)
 from tests.test_robot import _ROBOT_MUST_NOT_LOAD
 from tests.test_robot_parts import _loaded_after
+from tests._helpers import PlansItsMotions
+
+from src.config.arms import load_arm
+
+#: The controller's joint order as the ur5e description states it; the planner is handed it since P0e.
+_UR_JOINT_NAMES = tuple(joint.name for joint in load_arm("ur5e").joints)
+
+class _PlanningArm(PlansItsMotions):
+    """An arm that plans its motions and records the world it is handed (the wiring's only question)."""
+
+    def __init__(self, *, tcp: object = None) -> None:
+        super().__init__(None)
+        self.set_live_planner_world = MagicMock(side_effect=self._record)  # type: ignore[method-assign]
+        self._tcp = tcp
+
+    def _record(self, world: object) -> None:
+        self._live_world = world
+
+    def get_tcp_pose(self) -> object:
+        return self._tcp
+
 
 _MODULE = "src.robot.execution.camera_world_wiring"
 _K = np.array([[500.0, 0.0, 20.0], [0.0, 500.0, 20.0], [0.0, 0.0, 1.0]])
@@ -65,7 +92,7 @@ def _cell(*, world: bool = True, perceived: bool = True, planner: str = "curobo"
             "perceived": {"enabled": perceived, "voxel_field_mm": 0.0, "max_age_ms": 5000.0},
         }
     return RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"motion_planner": planner}, "safety": safety,
+        "vendor": "ur", "motion": {"planner": planner}, "safety": safety,
         "grasping": {"fusion": {"cameras": {cam_id: {"enabled": False} for cam_id in fused_off}}},
     })
 
@@ -148,7 +175,7 @@ def _wire(cfg: RobotConfig, app: SimpleNamespace, owners: dict[str, _Owner], *, 
           extras: tuple[str, ...] = ()) -> tuple[SimpleNamespace, object]:
     """`_wire_live_planner_world` on a built service whose primary, and any fused extras, are open already."""
     if arm is None:
-        arm = SimpleNamespace(set_live_planner_world=MagicMock(), get_tcp_pose=lambda: _TCP)
+        arm = _PlanningArm(tcp=_TCP)
     sources = {rig_id: SimpleNamespace(streamer=SimpleNamespace(camera=owners[rig_id])) for rig_id in extras}
     orchestrator = SimpleNamespace(arm=arm, frame_resolver=None, planner_world_cameras=None,
                                    multi_camera_perception=SimpleNamespace(sources=sources) if extras else None)
@@ -350,7 +377,7 @@ class OneCameraThatCannotAnswerStopsTheWorldTests(unittest.TestCase):
     def test_a_blind_second_rig_stops_every_planned_motion(self) -> None:
         arms = {"sim": lambda: _sim(client=_Client())}
         if _mesh_backend_available():
-            arms["ur"] = lambda: _ur(None, _Client(joint_names=UR_ARM_JOINT_NAMES), [])  # type: ignore[arg-type]
+            arms["planned"] = lambda: _planned(None, _Client(joint_names=_UR_JOINT_NAMES), [])  # type: ignore[arg-type]
         verbs = {
             "move": lambda arm: arm.move(_pose()),
             "move_to_joints": lambda arm: arm.move_to_joints(JointPositions(_THERE)),
@@ -373,9 +400,9 @@ class APlannedStampNamesEveryWorldCameraTests(unittest.TestCase):
                 ("sim", "move_to_joints"): (lambda: _sim(client=_Client()),
                                             lambda arm: arm.move_to_joints(JointPositions(_THERE)))}
         if _mesh_backend_available():
-            rows[("ur", "move")] = (lambda: _ur(None, _Client(joint_names=UR_ARM_JOINT_NAMES), []),  # type: ignore[arg-type]
+            rows[("planned", "move")] = (lambda: _planned(None, _Client(joint_names=_UR_JOINT_NAMES), []),  # type: ignore[arg-type]
                                     lambda arm: arm.move(_pose()))
-            rows[("ur", "move_to_joints")] = (lambda: _ur(None, _Client(joint_names=UR_ARM_JOINT_NAMES), []),  # type: ignore[arg-type]
+            rows[("planned", "move_to_joints")] = (lambda: _planned(None, _Client(joint_names=_UR_JOINT_NAMES), []),  # type: ignore[arg-type]
                                               lambda arm: arm.move_to_joints(JointPositions(_THERE)))
         for (arm_name, verb), (build, motion) in rows.items():
             with self.subTest(arm=arm_name, verb=verb):
@@ -422,7 +449,7 @@ class AWorldCameraThatCannotOpenRefusesTheBuildTests(unittest.TestCase):
         perception = SimpleNamespace(streamer=SimpleNamespace(camera=owners["overhead"]), close=MagicMock())
         multi = SimpleNamespace(sources={"fused": SimpleNamespace(streamer=SimpleNamespace(camera=owners["fused"]))},
                                 close=MagicMock())
-        arm = SimpleNamespace(set_live_planner_world=MagicMock(), get_tcp_pose=lambda: _TCP)
+        arm = _PlanningArm(tcp=_TCP)
         orchestrator = SimpleNamespace(arm=arm, frame_resolver=None, multi_camera_perception=multi,
                                        planner_world_cameras=None)
         service = SimpleNamespace(runtime=SimpleNamespace(orchestrator=orchestrator))

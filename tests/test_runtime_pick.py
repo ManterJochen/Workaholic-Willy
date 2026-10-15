@@ -51,26 +51,19 @@ _REAL_UR_CAPS = RobotCapabilities(
     vendor="ur",
     model="ur5e",
     dof=6,
-    supports_joint_move=True,
-    supports_linear_move=True,
-    supports_async_move=False,
     has_native_fk=True,
-    has_native_ik=True,
-    has_force_control=False,
     is_simulated=False,
+    controller=None, owns_a_controller=True,
 )
 
+# What the Isaac arm reports in mock mode: the UR it drives, and no native kinematics (P0d D5).
 _SIM_CAPS = RobotCapabilities(
     vendor="sim",
-    model="isaac-sim",
+    model="ur5e",
     dof=6,
-    supports_joint_move=True,
-    supports_linear_move=True,
-    supports_async_move=False,
     has_native_fk=False,
-    has_native_ik=False,
-    has_force_control=False,
     is_simulated=True,
+    controller=None, owns_a_controller=False,
 )
 
 
@@ -99,26 +92,6 @@ class _TypedFakeArm:
         if pose.frame == Frame.BASE:
             self._tcp = pose
         return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
-
-
-class _LegacyFakeArm:
-    """Fake arm without the typed ``move`` surface and without capabilities."""
-
-    def __init__(self) -> None:
-        self._tcp = Pose(
-            position_mm=np.zeros(3),
-            quaternion_xyzw=np.array([0.0, 0.0, 0.0, 1.0]),
-            frame=Frame.BASE,
-        )
-        self.move_to_calls: list[Pose] = []
-
-    def get_tcp_pose(self) -> Pose:
-        return self._tcp
-
-    def move_to(self, pose: Pose, **_: object) -> None:
-        self.move_to_calls.append(pose)
-        if pose.frame == Frame.BASE:
-            self._tcp = pose
 
 
 class _FakePerception:
@@ -249,25 +222,6 @@ class RuntimePickServiceTests(unittest.TestCase):
 
         self.assertEqual(report.robot_vendor, "sim")
         self.assertTrue(report.is_simulated)
-
-    def test_legacy_arm_yields_empty_motion_chain_but_still_executes(self) -> None:
-        # Drivers that predate the Phase N typed contract still work
-        # through the legacy ``move_to`` path. The facade must not
-        # invent a fake MotionStatus in that case.
-        arm = _LegacyFakeArm()
-        service = RuntimePickService.from_components(
-            arm=arm,  # type: ignore[arg-type]
-            calculator=_ScriptedCalculator([_success_result()]),  # type: ignore[arg-type]
-            perception=_FakePerception([_perception_frame()]),
-            max_attempts=2,
-        )
-
-        report = service.run_attempt()
-
-        self.assertIs(report.outcome, PickOutcome.EXECUTED)
-        self.assertEqual(report.motion_status_chain, ())
-        self.assertEqual(report.robot_vendor, "unknown")
-        self.assertFalse(report.is_simulated)
 
     def test_no_perception_outcome_propagates_without_motion(self) -> None:
         arm = _TypedFakeArm()

@@ -223,19 +223,24 @@ class TheReloadsLeaveTheDriverAsItWasTests(unittest.TestCase):
     """
 
     def test_every_name_the_driver_package_imported_still_is_the_module_own(self) -> None:
-        from src.robot.drivers.ur import arm, connection, curobo_motion, motion
+        """The halt's vocabulary lives in ``robot.core`` since P0e E7, which no reload here touches: every importer
+        reads the one enum and the one set, the connection among them."""
+        from src.robot.core import arm_capabilities
+        from src.robot.drivers.planned import arm as planned, curobo_motion
+        from src.robot.drivers.ur import arm, connection, motion
 
-        before = {name: getattr(connection, name) for name in ("MoveEnd", "HALT_ENDS", "URConnection")}
+        before = connection.URConnection
         result = unittest.TestResult()
         unittest.defaultTestLoader.loadTestsFromTestCase(TheDriverDegradesInsteadOfDyingTests).run(result)
         self.assertTrue(result.wasSuccessful(), result.errors + result.failures)
-        for name, value in before.items():
-            with self.subTest(name=name):
-                self.assertIs(getattr(connection, name), value)
-        self.assertIs(arm.HALT_ENDS, connection.HALT_ENDS)
-        self.assertIs(arm.MoveEnd, connection.MoveEnd)
-        self.assertIs(curobo_motion.MoveEnd, connection.MoveEnd)
-        self.assertIs(motion.HALT_ENDS, connection.HALT_ENDS)
+        self.assertIs(connection.URConnection, before)
+        for module in (connection, planned, curobo_motion):
+            with self.subTest(module=module.__name__):
+                self.assertIs(module.MoveEnd, arm_capabilities.MoveEnd)
+        self.assertIn(planned.PlannedArm, arm.URRobotArm.__mro__, "the UR arm stands on the module's own planned arm")
+        for module in (planned, motion):
+            with self.subTest(module=module.__name__):
+                self.assertIs(module.HALT_ENDS, arm_capabilities.HALT_ENDS)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -40,8 +40,10 @@ from pathlib import Path
 from types import TracebackType
 
 from src.robot.constants import CELL_LOCK_LOG_FILE, create_robot_logger
+from src.robot.core.capabilities import RobotCapabilities
 
-__all__ = ["CellBusy", "CellLock", "LockHolder", "cell_lock_key", "lock_path_for", "peek"]
+__all__ = ["CellBusy", "CellLock", "LockHolder", "LockKeyRequired", "arm_lock_key", "cell_lock_key", "lock_path_for",
+           "peek"]
 
 # The holder record lives in a file the OS reclaims when the process dies, so it leaves no history.
 # This log is the history: who took the cell, when, and when they gave it back. A refusal is not
@@ -57,6 +59,17 @@ _INFO_OFFSET = 1
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
+class LockKeyRequired(ValueError):
+    """A cell that drives a controller was built, and no key names the resource it would contend for.
+
+    The key is the controller address: :func:`cell_lock_key` reads it from the cell's tree
+    (``RobotConfig.arm.controller``) and :func:`arm_lock_key` from the arm's own identity
+    (``RobotCapabilities.controller``). A tree or an arm that drives a controller and names no address yields none, and
+    a robot that took no lock there would let a second process command the same arm. Declaring the address resolves
+    it, and ``lock_key=None`` on ``Robot.from_parts`` states that no lock is taken on purpose.
+    """
+
+
 def lock_path_for(key: str) -> Path:
     """Where the lock for ``key`` lives.
 
@@ -70,20 +83,67 @@ def lock_path_for(key: str) -> Path:
 def cell_lock_key(robot_config: object) -> str | None:
     """The lockable resource this config drives, or ``None`` when there is nothing to contend for.
 
-    A simulated or dummy cell owns no controller, so it yields ``None`` and two rehearsals can run
-    at once. Only a vendor with a real controller address produces a key.
+    ``None`` means one thing: this cell drives no controller of its own. A simulated or dummy cell is that, so two
+    rehearsals run at once; locking them would turn a free, hardware-less check into a queue for no reason.
+
+    A cell that does drive a controller and names no address is refused here with :class:`LockKeyRequired`, rather
+    than answering ``None`` and being read as the harmless case (aurora's P0c, 2026-10-13). Until then the key was a
+    ladder of one vendor, and every other vendor fell through to ``None``: another vendor's arm would have driven with
+    no lock at all. The key is built from the tree's own selection (``RobotConfig.arm``), so a vendor added later needs
+    no branch here, only an address.
+
+    Args:
+        robot_config (object): A robot tree, or anything else (a stand-in, or ``None``), which locks nothing.
+
+    Returns:
+        str | None: ``<vendor>@<controller>``, or ``None`` where the cell drives no controller.
+
+    Raises:
+        LockKeyRequired: Where the tree drives a controller and declares no address for it.
     """
-    vendor = str(getattr(robot_config, "vendor", "") or "")
-    if vendor == "ur":
-        ip = getattr(getattr(robot_config, "ur", None), "ip", None)
-        return f"ur@{ip}" if ip else None
-    if vendor == "kuka":
-        ip = getattr(getattr(robot_config, "kuka", None), "controller_ip", None)
-        return f"kuka@{ip}" if ip else None
-    # sim / dummy / anything unrecognised: no exclusive physical resource is being claimed. An
-    # unknown vendor returns None rather than a guess; a key invented for a driver this function
-    # does not describe would lock something arbitrary and protect nothing.
-    return None
+    selected = getattr(robot_config, "arm", None)
+    if selected is None:
+        # Not a robot tree at all (a stand-in, or nothing): nothing to lock and nothing to refuse.
+        return None
+    if not selected.owns_a_controller:
+        return None
+    if not selected.controller:
+        raise LockKeyRequired(
+            f"this cell drives a {selected.vendor} controller and no address is declared for it, so nothing names the "
+            f"resource two processes would contend for. Declare the controller address in the cell's own tree (for a "
+            f"UR, robot.ur.ip), or run a cell whose vendor drives no controller."
+        )
+    return f"{selected.vendor}@{selected.controller}"
+
+
+def arm_lock_key(capabilities: RobotCapabilities, *, arm_name: str) -> str | None:
+    """The lock key an arm's own identity names, by the rule :func:`cell_lock_key` applies to a tree.
+
+    ``None`` means one thing here too: the arm drives no controller of its own. An arm that drives one and names no
+    address is refused with :class:`LockKeyRequired`, because taking no lock on it would let a second process drive the
+    same controller. Read from ``RobotCapabilities`` since P0e, where the tree the arm keeps answered before: a driver
+    built from a tree that names another vendor kept no address to find, and an adapter that keeps no tree could not
+    be locked at all.
+
+    Args:
+        capabilities (RobotCapabilities): What the arm says about itself.
+        arm_name (str): The arm's class name, for the refusal.
+
+    Returns:
+        str | None: ``<vendor>@<controller>``, or ``None`` where the arm drives no controller.
+
+    Raises:
+        LockKeyRequired: Where the arm drives a controller of its own and names no address for it.
+    """
+    if not capabilities.owns_a_controller:
+        return None
+    if not capabilities.controller:
+        raise LockKeyRequired(
+            f"the arm in hand ({arm_name}) reports vendor {capabilities.vendor!r}, which drives a controller of its "
+            f"own, and names no controller address (capabilities.controller is None). State lock_key as the "
+            f"controller it drives (for a UR, 'ur@<ip>'), or pass lock_key=None to take no lock on purpose."
+        )
+    return f"{capabilities.vendor}@{capabilities.controller}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,7 +183,7 @@ class CellLock:
     Not reentrant and not blocking: a contended acquire raises :class:`CellBusy` naming the holder
     rather than waiting an unbounded time.
 
-        with CellLock(config.ur.ip, owner="operator console"):
+        with CellLock(cell_lock_key(config), owner="operator console"):
             arm.connect()
             ...
     """

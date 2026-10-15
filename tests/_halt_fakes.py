@@ -26,6 +26,10 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 import numpy as np
+from src.config.arms import load_arm
+
+#: The controller's joint order as the ur5e description states it; the planner is handed it since P0e E4.
+_UR_JOINT_NAMES = tuple(joint.name for joint in load_arm("ur5e").joints)
 
 # ------------------------------------------------------------------------------------------------------------------
 # A UR arm on a double controller
@@ -56,7 +60,7 @@ def ur_config(planner: str = "ik", **ur: Any) -> Any:
 
     return RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"motion_planner": planner, **ur},
+        "ur": dict(ur), "motion": {"planner": planner},
         "gripper": {"model": "robotiq_2f85", "tool_frame": {
             "source": "willy", "offset_mm": [0.0, 0.0, 132.0], "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
         "workspace_limits": {"x_min": -2000.0, "x_max": 2000.0, "y_min": -2000.0, "y_max": 2000.0,
@@ -72,17 +76,17 @@ def no_client() -> Any:
 def ur_arm_on(controller: Any, planner: str = "ik", **ur: Any) -> Any:
     """A ur5e on ``planner`` whose controller is ``controller`` (any double with ``attach``), every gate accepting.
 
-    On cuRobo its planner glue is the real ``CuroboUrPlanner`` on the arm's own connection, built with no client: a
+    On cuRobo its planner glue is the real ``CuroboPlanner`` on the arm's own connection, built with no client: a
     judged path runs without starting a planner.
     """
     from src.robot.drivers.ur.arm import URRobotArm
-    from src.robot.drivers.ur.curobo_motion import CuroboUrPlanner
+    from src.robot.drivers.planned.curobo_motion import CuroboPlanner
 
     arm = URRobotArm(ur_config(planner, **ur))
     controller.attach(arm._conn)
     arm._preflight = AcceptingPreflight()
     if planner == "curobo":
-        arm._curobo_ur = CuroboUrPlanner(arm._conn, client_factory=no_client,
+        arm._curobo = CuroboPlanner(arm._transport, joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180, client_factory=no_client,
                                          vel=arm.config.motion_limits.max_velocity,
                                          acc=arm.config.motion_limits.max_acceleration)
     return arm
@@ -168,6 +172,7 @@ class RecordingRtde:
             "stopJ": None,
             "stopL": None,
             "getInverseKinematics": lambda *a: [float(v) for v in ik],
+            "getInverseKinematicsHasSolution": True,
             "getForwardKinematics": lambda *a: self.flange(a[0]) if a else list(flange),
             "getTCPOffset": [0.0] * 6,
             "isSteady": True,
@@ -189,6 +194,7 @@ class RecordingRtde:
             "disconnect": None,
         }
         io: dict[str, Any] = {
+            "isConnected": True,
             "setToolDigitalOut": True,
             "setStandardDigitalOut": True,
             "setConfigurableDigitalOut": True,
@@ -536,6 +542,11 @@ class SimulatedUr:
         self.update()
         return not self._running()
 
+    def getInverseKinematicsHasSolution(self, tcp: Sequence[float], *_rest: Any) -> bool:  # noqa: N802 (ur_rtde's name)
+        """Every pose has one here, as :meth:`getInverseKinematics` answers every pose."""
+        self._log("ctrl", "getInverseKinematicsHasSolution", [tcp, *_rest])
+        return True
+
     def getInverseKinematics(self, tcp: Sequence[float], *_rest: Any) -> list[float]:  # noqa: N802 (ur_rtde's name)
         """A configuration near :attr:`ik_base` for every pose: lower poses bend the shoulder and the elbow further."""
         self._log("ctrl", "getInverseKinematics", [tcp, *_rest])
@@ -605,6 +616,11 @@ class SimulatedUr:
 
     # -- the I/O interface --------------------------------------------------------------------------------------
 
+    def isConnected(self) -> bool:  # noqa: N802 (ur_rtde's name)
+        """Whether the IO link is up, which every output write asks first since P0g io1."""
+        self._log("io", "isConnected", [])
+        return True
+
     def setToolDigitalOut(self, pin: int, value: bool) -> bool:  # noqa: N802 (ur_rtde's name)
         self._log("io", "setToolDigitalOut", [pin, value])
         self.outputs[16 + int(pin)] = bool(value)
@@ -635,10 +651,11 @@ class _Bound:
 
     _METHODS = {
         "ctrl": {"moveJ", "moveL", "stopJ", "stopL", "getAsyncOperationProgressEx", "isProgramRunning", "isSteady",
-                 "stopScript", "disconnect", "getInverseKinematics", "getForwardKinematics", "getTCPOffset"},
+                 "stopScript", "disconnect", "getInverseKinematics", "getInverseKinematicsHasSolution",
+                 "getForwardKinematics", "getTCPOffset"},
         "recv": {"getActualQ", "getActualQd", "getActualTCPPose", "isProtectiveStopped", "isEmergencyStopped",
                  "getRobotMode", "getSafetyMode", "getDigitalOutState", "disconnect"},
-        "io": {"setToolDigitalOut", "setStandardDigitalOut", "setAnalogOutputVoltage", "disconnect"},
+        "io": {"isConnected", "setToolDigitalOut", "setStandardDigitalOut", "setAnalogOutputVoltage", "disconnect"},
         "dash": {"safetystatus", "disconnect"},
     }
 

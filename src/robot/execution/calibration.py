@@ -83,8 +83,8 @@ moved: a planner or a gate said no. It stops, and raises
 somewhere nobody judged or cannot be commanded at all: a move that ended
 ``CONNECTION_ERROR``, a ``CONTROLLER_REJECTED`` whose message says the
 command had been sent (or that says nothing), and any failed move after
-which the arm reports a stopped state (``get_robot_status``, else
-``raise_if_stopped``, read best effort). A protective stop therefore ends
+which the arm reports a stopped state (``get_robot_status``, read best
+effort). A protective stop therefore ends
 the sweep at the pose it happened on, instead of every pose after it being
 tried and refused.
 
@@ -155,9 +155,9 @@ from src.robot.constants import ROBOT_LOG_DIR, ROBOT_LOG_FILE
 from src.robot.core import (
     CameraWorldDecline,
     CameraWorldStamp,
+    MotionSent,
     MotionStatus,
     RobotArm,
-    RobotEmergencyStop,
 )
 from src.robot.core.camera_world import without_camera_world
 from src.robot.core.freedrive import FreedriveSample, SupportsFreedrive
@@ -178,6 +178,7 @@ from src.robot.execution.pose_provider import (
     Station,
     StationScreen,
     load_stations,
+    rated_joints_deg,
     station_record,
     write_stations,
 )
@@ -569,14 +570,16 @@ class CalibrationRoutine:
         """Run a calibration using pre-planned stations from a JSON file, in the order it lists them.
 
         The records may be poses or joint stations (:mod:`pose_provider`), and every record is checked
-        before anything moves. Each station is screened as the sweep reaches it: one whose grasp centre is
-        outside the workspace box, or too close to a station kept before it, is reported with its label and
-        reason (``outside_workspace``, ``too_similar``) and never moved to. ``adjust`` and
+        before anything moves, a joint against the range the arm's description rates it for. Each station is
+        screened as the sweep reaches it: one whose grasp centre is outside the workspace box, or too close to a
+        station kept before it, is reported with its label and reason (``outside_workspace``, ``too_similar``)
+        and never moved to. ``adjust`` and
         ``stations_save_path`` are :meth:`run_with_poses`'s, except that ``poses_path`` is never written over: a
         ``stations_save_path`` naming that same file writes ``<name>.adjusted.json`` beside it instead, says so
         on the guide's console and in the log, and the result's ``stations_path`` names where the stations went.
         """
-        stations = load_stations(poses_path)
+        model = getattr(getattr(self.arm, "capabilities", None), "model", "")
+        stations = load_stations(poses_path, rated_deg=rated_joints_deg(str(model or "")))
         self.logger.info("Loaded %d stations from %s.", len(stations), poses_path)
         # The file read is never the file written: a run begins its stations file afresh and writes it after every
         # pose counted, so a replay finished partway would leave one station of the many it was given.
@@ -1193,7 +1196,7 @@ class CalibrationRoutine:
         The arm's own forward kinematics first, ``RobotArm.fk``: on a UR that is the controller's FK
         with its TCP offset passed explicitly, times the declared tool frame where this code owns it,
         which is how the home gate boxes home. Where that raises, the arm's DH chain times the tool
-        frame (``_tcp_at_joints_mm``) when the driver has one. A station neither can place is not
+        frame (``tcp_at_joints_mm``) when the driver has one. A station neither can place is not
         moved to: a joint move skips the box, and a station the box never saw is what this stops.
         """
         failures: list[str] = []
@@ -1206,7 +1209,7 @@ class CalibrationRoutine:
                 failures.append(f"fk gave {type(pose).__name__}, not a BASE pose")
             except Exception as exc:  # noqa: BLE001 (an FK that cannot be read refuses the station below)
                 failures.append(f"fk raised {type(exc).__name__}: {exc}")
-        chain = getattr(self.arm, "_tcp_at_joints_mm", None)
+        chain = getattr(self.arm, "tcp_at_joints_mm", None)
         if callable(chain):
             try:
                 matrix = chain(station.joints)
@@ -1224,15 +1227,24 @@ class CalibrationRoutine:
         """Why a refused move ends the sweep, in one clause, or ``None`` when the sweep may go on.
 
         It stops where the controller cannot be reached (``CONNECTION_ERROR``), where the
-        controller refused a command it had been sent (``CONTROLLER_REJECTED`` whose message says
-        it was sent, or says nothing, which is how the UR driver's ik path reports a ``moveJ`` that
-        returned ``False``), and where the arm reports a stopped state. Everything else is a planner
-        or a gate refusing before anything moved, and the next station is tried.
+        controller refused a command it had been sent, and where the arm reports a stopped state.
+        Whether a command had been sent is the result's ``sent`` field where the driver says
+        (P0g R2), whatever its status and wording; where it does not (``UNSTATED``, the sim's and
+        the dummy's results), a ``CONTROLLER_REJECTED`` whose message says it was sent, or says
+        nothing, counts as sent. Everything else is a planner or a gate refusing before anything
+        moved, and the next station is tried.
         """
         status = getattr(move, "status", None)
         message = str(getattr(move, "message", "") or "")
         if status is MotionStatus.CONNECTION_ERROR:
             return "the move ended connection_error, so the controller cannot be commanded"
+        # The field before the wording (P0g R2): a driver that says whether anything was sent is taken at its word,
+        # whatever its message and its status, a range refusal after part of the path ran among them.
+        sent = getattr(move, "sent", MotionSent.UNSTATED)
+        if sent is MotionSent.SENT:
+            return "the controller refused the move after it was sent, so the arm may stand part of the way along it"
+        if sent is MotionSent.NOTHING:
+            return self._stopped_state()
         if status is MotionStatus.CONTROLLER_REJECTED and (not message.strip() or _SENT.search(message)):
             return ("the controller refused the move after it was sent, so the arm may stand part of the way along "
                     "it" if message.strip() else
@@ -1242,9 +1254,9 @@ class CalibrationRoutine:
     def _stopped_state(self) -> str | None:
         """Why the arm counts as stopped, read best effort, or ``None`` when it is not or cannot say.
 
-        ``get_robot_status`` first (a protective or emergency stop, or a stop safety mode), then
-        ``raise_if_stopped`` for an arm that offers only that. A read that fails is no answer, never
-        a second fault.
+        ``get_robot_status`` says it (a protective or emergency stop, or a stop safety mode). A read
+        that fails is no answer, never a second fault. An arm that offered only ``raise_if_stopped`` was
+        read too until P0e E1 deleted the UR driver's, the last arm that had one.
         """
         read = getattr(self.arm, "get_robot_status", None)
         if callable(read):
@@ -1258,14 +1270,6 @@ class CalibrationRoutine:
                     text = str(getattr(status, "message", "") or "").strip()
                     return f"the controller reports it is stopped (safety mode {mode}{': ' + text if text else ''})"
                 return None
-        check = getattr(self.arm, "raise_if_stopped", None)
-        if callable(check):
-            try:
-                check()
-            except RobotEmergencyStop as exc:
-                return f"the controller reports it is stopped ({exc})"
-            except Exception:  # noqa: BLE001 (best effort after a failure)
-                self.logger.debug("raise_if_stopped raised after a failed move", exc_info=True)
         return None
 
     def _stop(self, idx: int, total: int, label: str, reason: str, detail: str, why: str, **extra: Any) -> SweepStopped:

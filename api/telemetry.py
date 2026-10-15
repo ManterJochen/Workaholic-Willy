@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from api.constants import API_LOG_DIR, TELEMETRY_LOG_FILE
+from src.robot.core import ControllerProvenance, ReportsControllerProvenance
 from src.utility.log_cfg import create_logger
 
 __all__ = ["CellTelemetry", "read_telemetry"]
@@ -65,6 +66,12 @@ class CellTelemetry:
     protective_stopped: bool | None = None
     emergency_stopped: bool | None = None
     controller_message: str | None = None
+    #: The fault that state describes (``ArmFault.render``), with what a person does about it and whether software
+    #: can clear it at all; ``None`` where the arm can move or the state was not read. Shown, never cleared here
+    #: (owner, 2026-09-19 and 2026-09-26): a person clears it at the cell, with ``src.robot.faults``.
+    fault: str | None = None
+    fault_what_to_do: str | None = None
+    fault_acknowledgeable: bool | None = None
 
     #: Three-valued, and never ``False``. ``True`` means this console can prove the thing on the other
     #: end is a simulator; ``None`` means it cannot tell, which is not the same as "physical".
@@ -152,6 +159,13 @@ def read_telemetry(arm: Any, *, include_controller_state: bool = False) -> CellT
             snapshot["protective_stopped"] = bool(status.protective_stopped)
             snapshot["emergency_stopped"] = bool(status.emergency_stopped)
             snapshot["controller_message"] = status.message
+            from src.robot.core import ArmFault
+
+            fault = ArmFault.from_status(status)
+            if fault is not None:
+                snapshot["fault"] = fault.render()
+                snapshot["fault_what_to_do"] = fault.what_to_do()
+                snapshot["fault_acknowledgeable"] = fault.acknowledgeable
         except Exception as exc:  # noqa: BLE001
             unavailable["controller_state"] = f"{type(exc).__name__}: {exc}"
 
@@ -206,37 +220,25 @@ def _log_changes(snapshot: dict[str, Any], unavailable: dict[str, str]) -> None:
 def _add_simulator_evidence(arm: Any, snapshot: dict[str, Any]) -> None:
     """Fill ``controller_is_simulator`` / ``controller_serial`` / ``controller_host`` where provable.
 
-    Best-effort and never-raising: a driver with no dashboard, a controller that will not answer, or
+    Best-effort and never-raising: a driver without the capability, a controller that will not answer, or
     any exception leaves all three ``None``, which the UI must render as "cannot tell" rather than as
-    either verdict. Costs one dashboard round trip and is therefore only attempted on a driver that
-    advertises the reads.
+    either verdict. The proof rule is the controller's and lives in its driver
+    (:class:`ReportsControllerProvenance`); until 2026-09-20 this function reached into ``arm._conn``, a UR
+    attribute, so a second vendor would have rendered "cannot tell" forever with nothing saying why.
     """
-    conn = getattr(arm, "_conn", None)
-    if conn is None or not hasattr(conn, "controller_serial"):
+    if not isinstance(arm, ReportsControllerProvenance):
         return
     try:
-        serial = conn.controller_serial()
-        host = str(getattr(conn, "ip", "") or "") or None
+        provenance = arm.controller_provenance()
     except Exception as exc:  # noqa: BLE001 (evidence gathering must never break a status panel)
         # Debug, and therefore silent at the default level: this is on the polled path, so a
         # controller whose dashboard will not answer would write one line per tick. It is here at all
         # because "cannot tell" and "never asked" render identically, and this says which one it was.
         logger.debug("No provenance evidence this tick: %s: %s", type(exc).__name__, exc)
         return
-    snapshot["controller_serial"] = serial
-    snapshot["controller_host"] = host
-    loopback = host in {"127.0.0.1", "::1", "localhost"} if host else False
-    if _is_placeholder_serial(serial) and loopback:
+    if not isinstance(provenance, ControllerProvenance) or provenance.says_nothing():
+        return
+    snapshot["controller_serial"] = provenance.serial
+    snapshot["controller_host"] = provenance.host
+    if provenance.is_simulator:
         snapshot["controller_is_simulator"] = True
-
-
-def _is_placeholder_serial(serial: str | None) -> bool:
-    """URSim's serial: 10 digits ending 9999 or 11 ending 99999, and nothing else (the owner's rule of 2026-10-02).
-
-    MEASURED: URSim CB3 (PolyScope 3.15.8) answers ``2018309999`` over the dashboard's "get serial number", URSim
-    e-Series ``20195399999``. A real controller's serial could end the same way only by chance, which is why the
-    loopback address is the other half of the proof.
-    """
-    if not serial or not serial.isdigit():
-        return False
-    return (len(serial) == 10 and serial.endswith("9999")) or (len(serial) == 11 and serial.endswith("99999"))

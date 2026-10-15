@@ -9,8 +9,8 @@ So this puts a synthetic tetrahedron at the rendered mesh origin, runs it throug
 through the builder's, and requires the identity. No mesh file, no Isaac and no GPU: the chain is arithmetic over the
 URDF the renderer writes.
 
-The three controls each break one link of that chain and must fail: the base yaw that reconciles Isaac's cell with the
-DH chain, a reflection, and a DH table that disagrees with the description it was derived from.
+The three controls each break one link of that chain and must fail: the half turn from the URDF's root to the frame
+the DH chain starts in, a reflection, and a DH table that disagrees with the description it was derived from.
 """
 
 from __future__ import annotations
@@ -19,6 +19,7 @@ import importlib.util
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
@@ -33,21 +34,19 @@ def _load(name: str, path: Path):
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     sys.path.insert(0, str(path.parent))
-    sys.path.insert(0, str(_SCRIPTS / "curobo"))
     try:
         spec.loader.exec_module(module)
     finally:
-        sys.path.remove(str(_SCRIPTS / "curobo"))
         sys.path.remove(str(path.parent))
     return module
 
 
 def _bake():
-    return _load("bake_ur_meshes_from_urdf_under_test", _SCRIPTS / "isaac" / "bake_ur_meshes_from_urdf.py")
+    return _load("bake_under_test", _SCRIPTS / "arms" / "bake.py")
 
 
 def _description():
-    return _load("_ur_description_under_test", _SCRIPTS / "curobo" / "_ur_description.py")
+    return _load("_ur_description_under_test", _SCRIPTS / "arms" / "_ur_description.py")
 
 
 #: Four points that span three dimensions, so a reflection cannot be undone by a rotation.
@@ -89,9 +88,9 @@ class TheBakeAndThePlacementAreInversesTests(unittest.TestCase):
         raise AssertionError(f"{link} has no mesh in the rendered URDF")
 
     def test_a_point_survives_the_round_trip_for_every_link_of_every_model(self) -> None:
-        for model in sorted(self.bake.UR_DH):
+        for model in self.bake.bakeable():
             urdf = self.description.render_urdf(model)
-            for key, (link, frame) in self.bake.LINKS.items():
+            for key, link, frame in self.bake._arm_file.collision_links(model):  # noqa: SLF001
                 with self.subTest(model=model, link=key):
                     v_mm, faces, reported = self.bake.to_dh_frame(_TETRAHEDRON, _FACES, model, key, urdf)
                     self.assertEqual(reported, frame)
@@ -106,15 +105,11 @@ class TheBakeAndThePlacementAreInversesTests(unittest.TestCase):
                     np.testing.assert_allclose(returned, expected, atol=1e-9)
 
     def test_the_base_yaw_is_load_bearing(self) -> None:
-        """⭐ THE CONTROL. 180 degrees is what reconciles the Isaac cell with the DH chain. At 0 the whole arm is
-        rotated half a turn about its own base, and the round trip above stops closing."""
+        """⭐ THE CONTROL. 180 degrees is UR's turn from base_link to base_link_inertia, where the DH chain starts. At
+        0 the whole arm is rotated half a turn about its own base, and the round trip above stops closing."""
         urdf = self.description.render_urdf("ur5e")
-        original = self.bake.BASE_YAW_DEG
-        try:
-            self.bake.BASE_YAW_DEG = 0.0
+        with mock.patch.object(self.bake._arm_file, "chain_yaw_deg", return_value=0):  # noqa: SLF001
             v_mm, _, _ = self.bake.to_dh_frame(_TETRAHEDRON, _FACES, "ur5e", "upper_arm", urdf)
-        finally:
-            self.bake.BASE_YAW_DEG = original
         turned, _, _ = self.bake.to_dh_frame(_TETRAHEDRON, _FACES, "ur5e", "upper_arm", urdf)
         self.assertGreater(float(np.max(np.abs(np.asarray(v_mm) - np.asarray(turned)))), 1.0)
 
@@ -141,19 +136,15 @@ class TheBakeAndThePlacementAreInversesTests(unittest.TestCase):
             self.bake.dh_frames = original
 
     def test_a_dh_table_that_disagrees_with_the_description_is_caught_before_a_mesh_is_read(self) -> None:
-        """⭐ THE CONTROL. The bake keeps its own inlined DH copy. A copy that drifted from UR's own numbers places
-        every vertex of every link, so it is checked against the description before anything is transformed."""
+        """⭐ THE CONTROL. The bake reads the arm description's DH rows. Rows that drifted from UR's own numbers place
+        every vertex of every link, so they are checked against UR's description before anything is transformed."""
         urdf = self.description.render_urdf("ur5e")
-        original = self.bake.UR_DH["ur5e"]
-        drifted = list(original)
+        drifted = list(self.bake._arm_file.dh_rows("ur5e"))  # noqa: SLF001
         a, d, alpha = drifted[3]
         drifted[3] = (a, d + 1e-6, alpha)
-        try:
-            self.bake.UR_DH["ur5e"] = tuple(drifted)
+        with mock.patch.object(self.bake._arm_file, "dh_rows", return_value=drifted):  # noqa: SLF001
             with self.assertRaises(AssertionError):
                 self.bake.to_dh_frame(_TETRAHEDRON, _FACES, "ur5e", "upper_arm", urdf)
-        finally:
-            self.bake.UR_DH["ur5e"] = original
 
 
 if __name__ == "__main__":

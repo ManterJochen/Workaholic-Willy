@@ -416,8 +416,10 @@ class EveryPathKeyIsReadByTheRuleTests(unittest.TestCase):
 
 
 class AMissingFileSaysHowThePathWasReadTests(_TreeOutsideTheRepository):
+    """A refusal that cannot find a file names the value as the tree wrote it and the rule that placed it, so a
+    relative path read against the config folder does not read as one read against the working directory."""
 
-    def test_the_refusal_names_the_value_as_written_the_resolved_path_and_the_rule(self) -> None:
+    def test_a_missing_calibration_names_the_value_as_written_the_resolved_path_and_the_rule(self) -> None:
         self._declare_the_calibration("calibration/eth_realsense_d435.json")
         rig = self._rig()
         with self.assertRaises(RigArtifactMissing) as caught:
@@ -429,13 +431,59 @@ class AMissingFileSaysHowThePathWasReadTests(_TreeOutsideTheRepository):
                       message)
         self.assertNotIn("working directory", message)
 
+    def _missing_model(self, key: str, written: str) -> str:
+        """The model path as a tree gives it, written relatively and pointing at nothing."""
+        stt = self.root / "models" / "stt.yaml"
+        original = stt.read_text(encoding="utf-8").replace("\r\n", "\n")
+        line = next(ln for ln in original.splitlines() if ln.strip().startswith(f"{key}:"))
+        _write(stt, original.replace(line, f"  {key}: {written}"))
+        return getattr(load_speech_section(self.root, profile=None), key)
+
+    def test_a_missing_speech_model_says_how_its_path_was_read(self) -> None:
+        from src.models.speech.engine import SpeechModelMissing
+
+        path = self._missing_model("model_path", "weights/whisper")
+        message = str(SpeechModelMissing(key="models.stt.model_path", path=path, kind="directory",
+                                          fetch="fetch it"))
+        self.assertIn(f"The config gives it as weights/whisper, and a relative path in a config is read against "
+                      f"the config folder, {self.root.as_posix()}", message)
+
+    def test_a_missing_mediapipe_bundle_says_how_its_path_was_read(self) -> None:
+        from src.models.handdetection.model_files import resolve_model_file
+
+        hand = self.root / "models" / "hand.yaml"
+        text = hand.read_text(encoding="utf-8").replace("\r\n", "\n")
+        line = next(ln for ln in text.splitlines() if ln.strip().startswith("model_path:"))
+        _write(hand, text.replace(line, "  model_path: weights/hand.task", 1))
+        path = load_config(self.root, profile=None).models.handdetect.model_path
+        with self.assertRaises(FileNotFoundError) as caught:
+            resolve_model_file(path, config_key="models.handdetect.model_path", download_url="https://x")
+        self.assertIn("The config gives it as weights/hand.task", str(caught.exception))
+
+    def test_a_missing_local_detector_says_how_its_path_was_read(self) -> None:
+        from src.models.detection.zero_shot.detector import GroundingDinoObjectDetector
+
+        obj = self.root / "models" / "object.yaml"
+        text = obj.read_text(encoding="utf-8").replace("\r\n", "\n")
+        line = next(ln for ln in text.splitlines() if ln.startswith("  model_path:"))
+        _write(obj, text.replace(line, "  model_path: weights/dino", 1))
+        detector = load_config(self.root, profile=None).models.objectdetector
+        self.assertTrue(detector.local, "the premise: the shipped detector loads its weights offline")
+        config = mock.MagicMock(local=True, model_path=detector.model_path, model_id="", threshold=0.4)
+        with self.assertRaises(FileNotFoundError) as caught:
+            GroundingDinoObjectDetector(config)
+        self.assertIn("The config gives it as weights/dino", str(caught.exception))
+
+
+class APathNoteSaysHowThePathWasReadTests(unittest.TestCase):
+
     def test_an_anchored_path_names_the_repository(self) -> None:
         note = path_note(resolve_config_path(f"{PROJECT_ROOT_ANCHOR}/assets/nothing.bin", None))
         self.assertIn(f"The config gives it as {PROJECT_ROOT_ANCHOR}/assets/nothing.bin", note)
         self.assertIn(f"is the repository, {repository_root().as_posix()}", note)
 
     def test_a_path_no_tree_resolved_adds_nothing(self) -> None:
-        self.assertEqual(path_note((self.outside / "never-loaded.json").as_posix()), "")
+        self.assertEqual(path_note((_REPO / "never-loaded.json").as_posix()), "")
 
 
 class AModelBuiltInCodeHasNoFolderTests(unittest.TestCase):

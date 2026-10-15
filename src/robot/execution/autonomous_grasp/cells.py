@@ -183,7 +183,7 @@ def build_real_components(robot_cfg: "RobotConfig", prompt: str, *,
     from src.robot.grasping.calculator_factory import build_calculator
     from src.robot.perception import RealSenseVisionPerceptionSource
 
-    app_cfg = app_config if chosen(app_config) else load_config()
+    app_cfg = app_config if chosen(app_config) else load_config(data_dir)
     # The cell's camera is named, not inferred. This took the first rig with `source: rgbd` by list
     # position and did not consult `enabled`, while the schema's own two-camera serial check used
     # `source == "rgbd" and enabled` and this file's fusion guard used a third rule. Three predicates
@@ -460,37 +460,39 @@ def build_real_cell(robot_cfg: "RobotConfig", *, prompt: str = "object",
     that needs a mode, a policy or a live device handle still has one.
 
     ``app_config`` is the camera half's tree, and it must be the tree ``robot_cfg`` came from. See
-    :func:`build_real_components` for what happened while the two could disagree.
+    :func:`build_real_components` for what happened while the two could disagree. Left unset, the
+    tree at ``data_dir`` is read, as ``Cell.preflight`` and ``Cell.abilities`` read it.
 
     ``data_dir`` is that tree's root, whose gripper registry answers for the cell's hand; ``None``
     is the repository's tree. A tree that describes the named hand differently from the
     repository's registry is refused first, before a camera opens.
     """
     from src.config import load_config
+    from src.robot.execution.abilities import Ability, AbilityStatus, row_of
+    from src.robot.execution.wrist_bodies import WristBodies
 
     from .service import AutonomousGraspService
-
-    _refuse_a_tree_hand(robot_cfg, data_dir)
 
     # Resolved once, here, and handed to both readers below. It used to be read here a second time
     # with a comment explaining that the loader caches, so the two reads return the same object.
     # That comment was true and it was not about the right thing: two calls agreeing with each
     # other says nothing about whether either is the tree the caller asked for, and they were not.
-    app_cfg = app_config if chosen(app_config) else load_config()
-    # The wrist cameras the arm carries, resolved before any camera opens: a body this cell cannot
-    # place is a refusal that has no device to give back.
-    from src.robot.execution.wrist_bodies import WristBodies, WristBodyRequired
-
-    try:
-        wrist = WristBodies.from_config(robot_cfg, app_cfg.camera, data_dir=data_dir)
-    except WristBodyRequired as exc:
-        raise CellBuildRefused(str(exc)) from exc
-    # A calibrated camera makes the world mandatory, refused before any camera opens: a cuRobo UR
-    # cell whose calibrated rig yields no world would refuse every motion, and the pick service
-    # declines none.
-    refusal = _world_refusal(robot_cfg, app_cfg)
-    if refusal is not None:
-        raise CellBuildRefused(refusal)
+    # Left unset, the camera half of the tree at `data_dir`, the one the desk's rows and the checklist read
+    # (`Cell.abilities`, `Cell.preflight`): the build asks the same pick row they ask, so reading another tree's
+    # cameras here let the two answer differently (review of P0i i3). The chain is still the environment's.
+    app_cfg = app_config if chosen(app_config) else load_config(data_dir)
+    # What the desk's pick row reads refuses the build before any camera opens, in the row's words (P0i i3): a
+    # tree that describes the named hand differently from the repository's registry, a wrist camera body this
+    # cell cannot place, and on a cell that plans with cuRobo a calibrated camera that yields no live world,
+    # since the pick service declines nothing and every motion would be refused. A refusal here is one nobody
+    # has to give a device back for.
+    row = row_of(Ability.PICK, arm=None, gripper=None, robot_config=robot_cfg, camera=app_cfg.camera,
+                 data_dir=data_dir)
+    if row.status is AbilityStatus.REFUSED:
+        # The chain the refusal was read from, where there was one: a wrist body's calibration error, for the log.
+        raise CellBuildRefused(row.reason) from row.cause
+    # The wrist cameras the arm carries, which the row has just placed.
+    wrist = WristBodies.from_config(robot_cfg, app_cfg.camera, data_dir=data_dir)
     calculator, perception, resolver, multi_camera, calculators = build_real_components(
         robot_cfg, prompt, app_config=app_cfg, data_dir=data_dir)
     rig_id = app_cfg.camera.cameras.primary_rig_id
@@ -551,25 +553,13 @@ def _start_the_pick_writers(robot_cfg: Any, service: Any) -> None:
 
 
 def _plans_with_curobo(robot_cfg: Any) -> bool:
-    """Whether this is a UR tree whose planner is cuRobo, where every motion needs a world or a decline.
+    """Whether this tree's planner is cuRobo, where every motion needs a world or a decline.
 
-    Read off the tree as ``hand.wrist_body_reader`` reads it, because the schema defaults
-    ``motion_planner`` to curobo for every vendor and a dummy or KUKA tree would otherwise count.
+    Read off the tree's selection (``RobotConfig.arm``), which answers the planner only for a vendor whose driver reads
+    ``robot.motion.planner``, so a dummy or a sim tree never counts.
     """
-    return (str(getattr(robot_cfg, "vendor", "") or "") == "ur"
-            and getattr(getattr(robot_cfg, "ur", None), "motion_planner", None) == "curobo")
-
-
-def _world_refusal(robot_cfg: Any, app_cfg: Any) -> "str | None":
-    """Why this cell may not build without a world (``CameraWorldPlan.refusal``), or ``None``. Opens nothing."""
-    from src.robot.execution.camera_world_wiring import CameraWorldPlan
-
-    section = getattr(getattr(app_cfg, "camera", None), "cameras", None)
-    rigs = getattr(section, "rigs", None)
-    if not _plans_with_curobo(robot_cfg) or rigs is None:
-        return None
-    plan = CameraWorldPlan.from_config(robot_cfg, rigs, primary_rig_id=str(getattr(section, "primary_rig_id", "")))
-    return plan.refusal()
+    selected = getattr(robot_cfg, "arm", None)
+    return selected is not None and selected.planner == "curobo"
 
 
 def _wire_wrist_bodies(service: Any, wrist: Any) -> None:
@@ -643,13 +633,16 @@ def _wire_live_planner_world(robot_cfg: "RobotConfig", service: Any, perception:
     """
     from src.camera.orchestration.camera import Camera
     from src.robot.constants import create_robot_logger
+    from src.robot.core.camera_world import holds_a_planner_world
     from src.robot.execution.camera_world_wiring import CameraWorldPlan, CameraWorldWiring, OpenedCameras
 
     log = create_robot_logger(__name__, "grasp_cells.log")
     orchestrator: Any = getattr(getattr(service, "runtime", None), "orchestrator", None)
     arm = getattr(orchestrator, "arm", None)
-    setter = getattr(arm, "set_live_planner_world", None)
-    if not callable(setter):
+    # An arm that can hold a live world is the one to hand it to; a world handed to anything else is a world nobody
+    # refreshes.
+    holder = holds_a_planner_world(arm)
+    if holder is None:
         return
     section = app_cfg.camera.cameras
     plan = CameraWorldPlan.from_config(robot_cfg, section.rigs, primary_rig_id=section.primary_rig_id)
@@ -698,7 +691,7 @@ def _wire_live_planner_world(robot_cfg: "RobotConfig", service: Any, perception:
         return
     if opened:
         orchestrator.planner_world_cameras = OpenedCameras(tuple(opened))
-    setter(wiring.world)
+    holder.set_live_planner_world(wiring.world)
     if wiring.planner == "curobo":
         log.info("%s", wiring.render())
     else:
@@ -722,7 +715,7 @@ def _give_back(*holders: Any) -> None:
 
 
 def build_rehearsal_cell(robot_cfg: "RobotConfig", *, data_dir: "str | Path | None" = None,
-                         **overrides: Any) -> "AutonomousGraspService":
+                         app_config: "Maybe[AppConfig]" = UNSET, **overrides: Any) -> "AutonomousGraspService":
     """A complete cell for a desk rehearsal: no camera, no models, and a dummy arm.
 
     The same wiring the real cell gets: `from_robot_config`, the connect order, the pick loop,
@@ -740,15 +733,24 @@ def build_rehearsal_cell(robot_cfg: "RobotConfig", *, data_dir: "str | Path | No
 
     A tree that describes the named hand differently from the repository's registry is refused
     first, with the same sentence the real cell and the desk give.
+
+    ``app_config`` is the camera half of the same tree, which a caller holding both halves hands in (the CLI
+    and the console do). A rehearsal opens no camera, and still reads the calibrations its grasping block
+    names: a cell that fuses two cameras was refused at this build because no camera section reached it
+    (found 2026-09-26 on ``eth2``), so handed its camera half, its rehearsal builds on the calibrations its rigs
+    declare, or is refused naming the one that does not load, and runs single view on the synthetic scene,
+    saying so. Left unset, no camera half is read: ``robot_cfg`` does not say which chain it came from, and a
+    second load here would read another tree's cameras.
     """
     from .service import AutonomousGraspService
 
     _refuse_a_tree_hand(robot_cfg, data_dir)
 
+    camera: dict[str, Any] = {"camera": app_config.camera} if chosen(app_config) else {}
     robot_cfg = robot_cfg.model_copy(update={"vendor": "dummy"})
     calculator, perception, resolver, _no_cameras, _one_lens = (
         build_rehearsal_components(robot_cfg, data_dir=data_dir))
     return AutonomousGraspService.from_robot_config(
         robot_cfg, calculator=calculator, perception=perception, frame_resolver=resolver,
-        **overrides,
+        **camera, **overrides,
     )

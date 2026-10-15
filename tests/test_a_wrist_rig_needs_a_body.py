@@ -64,7 +64,7 @@ class TheResolutionTests(unittest.TestCase):
     def test_a_placed_body_resolves(self) -> None:
         wrist = WristBodies.from_config(wrist_cell(), camera_section(self._rig(self._artifact())))
         self.assertEqual([body.link_name for body in wrist.bodies], ["wrist_camera_wrist"])
-        self.assertEqual(wrist.reader, "robot.ur.motion_planner is curobo")
+        self.assertEqual(wrist.reader, "robot.motion.planner is curobo")
         self.assertIn("wrist camera wrist_camera_wrist: realsense_d435", wrist.line())
 
     def test_an_enabled_wrist_rig_without_a_body_is_refused_naming_the_key(self) -> None:
@@ -128,7 +128,7 @@ class TheResolutionTests(unittest.TestCase):
         with self.assertRaises(WristBodyRequired) as caught:
             wrist.hand_to(DummyRobotArm())
         self.assertIn("takes no wrist bodies", str(caught.exception))
-        WristBodies(bodies=(), reader="robot.ur.motion_planner is curobo").hand_to(DummyRobotArm())
+        WristBodies(bodies=(), reader="robot.motion.planner is curobo").hand_to(DummyRobotArm())
 
 
 class TheRobotTests(unittest.TestCase):

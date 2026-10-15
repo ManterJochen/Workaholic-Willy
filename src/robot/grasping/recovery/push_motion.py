@@ -64,7 +64,7 @@ any point after P0 (the end of the up leg included), and a toggle's count nobody
 or once the up leg ended (DO0 switched at the pendant while the push drives) stop the push where the arm is, with no
 further call to any motion verb and no planned escape: ``unsafe_recovery_refused``, or
 ``controller_not_operational`` where the controller says it cannot move (a protective stop). A stop is cleared by a
-person: ``recover_from_protective_stop`` is never called, and the campaign ends. A camera world that cannot vouch
+person: ``acknowledge_fault`` is never called, and the campaign ends. A camera world that cannot vouch
 for the cell (``CameraWorldUnavailable``) is raised out, as every motion of a pick raises it: nothing more was
 commanded, and the campaign stops on it.
 
@@ -98,6 +98,7 @@ from src.robot.core.arm_capabilities import (
     halted_refusal,
     line_motion_of,
 )
+from src.robot.core.camera_world import live_planner_world_of
 from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.core.gripper import toggle_without_sensor_of, why_toggle_count_unknown, width_is_measured_of
 from src.robot.core.keep_out import SegmentationOffer, keeping_out
@@ -590,7 +591,7 @@ def _before_motion(
         return _refused(PushOutcomeCode.REFUSED_LINES_NOT_JUDGED,
                         f"The arm {said}; the push's contact legs run only as lines judged sample by sample before "
                         "they move, so nothing is pushed.", plan=plan)
-    if getattr(arm, "live_planner_world", None) is None:
+    if live_planner_world_of(arm) is None:
         return _refused(PushOutcomeCode.REFUSED_NO_LIVE_WORLD,
                         "The arm has no live camera world, so the part could not be kept out of it along its push "
                         "and nothing is pushed.", plan=plan)

@@ -66,7 +66,7 @@ class WhatCannotBeJudgedTests(unittest.TestCase):
         done = run(["ur5e", *_Z], maps=maps)
         self.assertEqual(done.code, 0, done.out)
         self.assertIn("robotiq_hande", done.out)
-        self.assertIn("scripts/curobo/fit_cover_spheres.py", done.out)
+        self.assertIn("scripts/arms/fit.py", done.out)
         self.assertEqual(sorted({hand for _, hand, _ in done.judges_built}), ["robotiq_2f85"])
         after = {_key(row) for row in _table(done.table)["retracts"]}
         self.assertIn(("ur5e", "robotiq_hande", 20.0, 4.0, "+Z+X"), after)
@@ -79,7 +79,7 @@ class WhatCannotBeJudgedTests(unittest.TestCase):
         maps = Path(self.enterContext(tempfile.TemporaryDirectory()))
         done = run(["ur5e", "--hand", "robotiq_hande", *_Z], maps=maps)
         self.assertEqual(done.code, 2, done.out)
-        self.assertIn("fit_cover_spheres.py --hand robotiq_hande --write", done.out)
+        self.assertIn("scripts/arms/fit.py --hand robotiq_hande --write", done.out)
         self.assertEqual(done.judges_built, [])
 
     def test_a_pair_the_planner_cannot_be_asked_about_keeps_its_row_through_the_chooser(self) -> None:

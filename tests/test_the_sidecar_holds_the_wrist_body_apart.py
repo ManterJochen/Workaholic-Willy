@@ -38,7 +38,7 @@ _SERVER = Path(__file__).resolve().parents[1] / "src/robot/safety/planning/curob
 
 
 def _arm() -> dict:
-    """The per arm descriptor: the hand-carrying fixture with its hand stripped, as build_ur_config.py writes an arm."""
+    """The per arm descriptor: the hand-carrying fixture with its hand stripped, as descriptor.py writes an arm."""
     config = copy.deepcopy(_descriptor())
     config.pop("_provenance")
     del config["robot_cfg"]["kinematics"]["collision_spheres"]["tool0"]
@@ -70,7 +70,7 @@ class TheEvidenceConfigIsTheCameraFreeConfigTests(unittest.TestCase):
         self.assertIs(loaded, evidence)
 
     def test_with_a_camera_the_loaded_config_without_it_is_the_evidence_config(self) -> None:
-        wrist = wrist_body().link()
+        wrist = wrist_body().link(arm="ur5e")
         for margin, attach in ((0.0, 0), (10.0, 16)):
             with self.subTest(margin=margin, attach=attach):
                 loaded, evidence, _, _, links = compose_for_cell(
@@ -83,7 +83,7 @@ class TheEvidenceConfigIsTheCameraFreeConfigTests(unittest.TestCase):
                 self.assertNotEqual(canonical_sha256(loaded), canonical_sha256(evidence))
 
     def test_the_camera_takes_the_guards_half_margin_and_stays_checked_against_the_part_and_the_wrist(self) -> None:
-        loaded, _, _, _, _ = compose_for_cell(_arm(), bodies=[_hand()], wrist_bodies=[wrist_body().link()],
+        loaded, _, _, _, _ = compose_for_cell(_arm(), bodies=[_hand()], wrist_bodies=[wrist_body().link(arm="ur5e")],
                                               margin_mm=10.0, attach_spheres=16)
         kinematics = loaded["robot_cfg"]["kinematics"]
         self.assertAlmostEqual(kinematics["self_collision_buffer"]["wrist_camera_wrist"], 0.005)
@@ -105,24 +105,24 @@ class TheEvidenceConfigIsTheCameraFreeConfigTests(unittest.TestCase):
 
         with mock.patch("src.robot.safety.planning._curobo_body_links.apply_body_links", leaky):
             with self.assertRaises(BodyLinkError) as caught:
-                compose_for_cell(_arm(), bodies=[_hand()], wrist_bodies=[wrist_body().link()], margin_mm=10.0)
+                compose_for_cell(_arm(), bodies=[_hand()], wrist_bodies=[wrist_body().link(arm="ur5e")], margin_mm=10.0)
         self.assertIn("changed the config outside its own links, at", str(caught.exception))
         self.assertIn("self_collision_ignore.hand", str(caught.exception))
 
     def test_a_camera_sent_as_an_evidence_body_and_a_stranger_sent_as_a_camera_are_refused(self) -> None:
         with self.assertRaises(BodyLinkError) as caught:
-            compose_for_cell(_arm(), bodies=[_hand(), wrist_body().link()])
+            compose_for_cell(_arm(), bodies=[_hand(), wrist_body().link(arm="ur5e")])
         self.assertIn("so the evidence stays keyed without it", str(caught.exception))
         with self.assertRaises(BodyLinkError):
-            compose_for_cell(_arm(), bodies=[_hand()], wrist_bodies=[{**wrist_body().link(), "link": "camera"}])
+            compose_for_cell(_arm(), bodies=[_hand()], wrist_bodies=[{**wrist_body().link(arm="ur5e"), "link": "camera"}])
 
     def test_a_camera_blind_to_the_wrist_or_hung_elsewhere_is_refused(self) -> None:
         for blind in ("wrist_1_link", "wrist_2_link"):
-            link = {**wrist_body().link(), "ignore": [*wrist_body().link()["ignore"], blind]}
+            link = {**wrist_body().link(arm="ur5e"), "ignore": [*wrist_body().link(arm="ur5e")["ignore"], blind]}
             with self.subTest(blind=blind), self.assertRaises(BodyLinkError) as caught:
                 apply_body_links(_arm(), [_hand(), link])
             self.assertIn("the arm links a camera on the flange can hit", str(caught.exception))
-        hung = {**wrist_body().link(), "parent": "hand", "ignore": ["hand", "tool0", "wrist_3_link"]}
+        hung = {**wrist_body().link(arm="ur5e"), "parent": "hand", "ignore": ["hand", "tool0", "wrist_3_link"]}
         with self.assertRaises(BodyLinkError) as caught:
             apply_body_links(_arm(), [_hand(), hung])
         self.assertIn("is placed on the flange by its calibration, so it hangs from the tool frame", str(caught.exception))
@@ -147,7 +147,7 @@ class TheServerHashesTheEvidenceConfigTests(unittest.TestCase):
 
 class TheClientSendsAndReadsTheCameraTests(unittest.TestCase):
     def test_the_camera_travels_in_its_own_variable(self) -> None:
-        link = wrist_body().link()
+        link = wrist_body().link(arm="ur5e")
         with mock.patch.dict("os.environ", {ENV_WRIST_BODY_LINKS: "[\"inherited\"]"}):
             env = CuroboPlanClient(body_links=[_hand()], wrist_body_links=[link])._sidecar_env()
             self.assertIn("wrist_camera_wrist", env[ENV_WRIST_BODY_LINKS])
@@ -156,7 +156,7 @@ class TheClientSendsAndReadsTheCameraTests(unittest.TestCase):
             self.assertNotIn(ENV_WRIST_BODY_LINKS, plain, "an inherited camera would load a housing nobody sent")
 
     def test_an_identity_reads_the_wrist_rows_and_says_nothing_when_they_are_absent(self) -> None:
-        _, rows = _loaded_rows(wrist_body().link())
+        _, rows = _loaded_rows(wrist_body().link(arm="ur5e"))
         identity = SidecarIdentity.from_ready({"wrist_bodies": rows, "wrist_bodies_sha256": canonical_sha256(rows)})
         self.assertEqual(identity.wrist_bodies, tuple(rows))
         self.assertIn("wrist cameras: wrist_camera_wrist (realsense_d435)", identity.render())
@@ -172,7 +172,7 @@ class ThePlannerStartProvesTheCameraTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.body = wrist_body()
-        _, self.rows = _loaded_rows(self.body.link())
+        _, self.rows = _loaded_rows(self.body.link(arm="ur5e"))
 
     def _identity(self, rows: object = "same", sha: object = "matching") -> SidecarIdentity:
         held = self.rows if rows == "same" else rows
@@ -182,21 +182,21 @@ class ThePlannerStartProvesTheCameraTests(unittest.TestCase):
         return SidecarIdentity.from_ready({"wrist_bodies": held, "wrist_bodies_sha256": digest})
 
     def test_the_sidecar_that_loaded_this_camera_passes(self) -> None:
-        self.assertIsNone(wrist_body_refusal(self._identity(), [self.body]))
+        self.assertIsNone(wrist_body_refusal(self._identity(), [self.body], arm="ur5e"))
 
     def test_a_camera_free_cell_passes_a_camera_free_sidecar_and_refuses_one_with_a_camera(self) -> None:
-        self.assertIsNone(wrist_body_refusal(SidecarIdentity.from_ready({}), []))
-        refusal = wrist_body_refusal(self._identity(), [])
+        self.assertIsNone(wrist_body_refusal(SidecarIdentity.from_ready({}), [], arm="ur5e"))
+        refusal = wrist_body_refusal(self._identity(), [], arm="ur5e")
         assert refusal is not None
         self.assertIn("this cell carries none", refusal)
 
     def test_a_sidecar_that_reports_no_wrist_bodies_is_refused(self) -> None:
-        refusal = wrist_body_refusal(self._identity(rows=None), [self.body])
+        refusal = wrist_body_refusal(self._identity(rows=None), [self.body], arm="ur5e")
         assert refusal is not None
         self.assertIn("the sidecar reported no wrist bodies", refusal)
 
     def test_rows_that_do_not_hash_to_the_reported_hash_are_refused(self) -> None:
-        refusal = wrist_body_refusal(self._identity(sha="0" * 64), [self.body])
+        refusal = wrist_body_refusal(self._identity(sha="0" * 64), [self.body], arm="ur5e")
         assert refusal is not None
         self.assertIn("do not hash to the wrist_bodies_sha256 it reported", refusal)
 
@@ -212,13 +212,13 @@ class ThePlannerStartProvesTheCameraTests(unittest.TestCase):
         for field, (change, said) in cases.items():
             with self.subTest(field=field):
                 rows = [{**self.rows[0], **change}]
-                refusal = wrist_body_refusal(self._identity(rows=rows), [self.body])
+                refusal = wrist_body_refusal(self._identity(rows=rows), [self.body], arm="ur5e")
                 assert refusal is not None
                 self.assertIn(said, refusal)
 
     def test_a_body_whose_own_fill_leaves_a_hole_is_refused_as_a_defect(self) -> None:
         with mock.patch.object(type(self.body), "cover_refusal", return_value="'x' has cell (0, 0, 0) with a hole"):
-            refusal = wrist_body_refusal(self._identity(), [self.body])
+            refusal = wrist_body_refusal(self._identity(), [self.body], arm="ur5e")
         assert refusal is not None
         self.assertIn("this is a defect, not a cell setting", refusal)
 

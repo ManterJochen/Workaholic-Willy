@@ -39,13 +39,15 @@ robot:
     # translates it to -1.0 at the driver boundary. Past that translation the rate does not
     # decide whether the control interface connects, so there is nothing to tune here.
     rtde_frequency: 0.0
+
+  motion:
     # Not the base tree's "curobo": the sidecar runs on the machine driving the cell rather
     # than in the container, spawned from the cuRobo environment under `ext_deps/`. Where that
     # is missing the UR path is fail-closed: it refuses every move with CONTROLLER_REJECTED and
     # never degrades to blind IK. This profile exercises the driver against a real controller,
     # not the planner, and the container's missing GPU never enters into it. Layer
     # `ursim_curobo` on top to run the same bed with the planner on.
-    motion_planner: "ik"
+    planner: "ik"
 
   gripper:
     vendor: "none"          # no end-effector on the container; a no-op gripper stands in
@@ -62,7 +64,7 @@ robot:
     tool_frame:
       # `willy` means the controller runs a bare flange and this driver composes the
       # transform, which is what URSim is: no tool is configured on it. Declaring
-      # `polyscope` instead makes the frame the driver derives from the controller
+      # `controller` instead makes the frame the driver derives from the controller
       # disagree with this declaration, and the driver then refuses to connect.
       source: "willy"
       offset_mm: [0.0, 0.0, 132.0]

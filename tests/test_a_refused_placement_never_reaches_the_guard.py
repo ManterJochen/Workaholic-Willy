@@ -30,14 +30,14 @@ _CLOCKED_45 = _clocked(_SIM, 0.5)
 def _cell(quaternion: "tuple[float, float, float, float]", planner: str = "ik") -> RobotConfig:
     return RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": "ur5e", "motion_planner": planner},
+        "ur": {"model": "ur5e"}, "motion": {"planner": planner},
         "gripper": {
             "model": "robotiq_hande",
             "coupling_plates": [{"name": "plate", "thickness_mm": 20.0}],
             "tool_frame": {"source": "willy", "offset_mm": [0.0, 132.0, 0.0],
                            "rotation_quat_xyzw": list(quaternion)},
         },
-        "safety": {"self_collision": {"enforce": True, "backend": "fcl", "kinematics_model": "ur5e"}},
+        "safety": {"self_collision": {"enforce": True, "backend": "fcl"}},
     })
 
 

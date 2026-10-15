@@ -171,7 +171,7 @@ _SEAM_WORDS = {"where": frozenset(_WHERE_CHOICES), "open_now": frozenset((*_OPEN
 
 #: How often an output is read back after a write: one CB3 controller cycle, 125 Hz. The output goes out over RTDE
 #: and its state comes back on the receive stream, so a read straight after a write reports the level before it
-#: (measured on URSim 5.26.0, ``drivers/ur/io_bench.set_output``).
+#: (measured on URSim 5.26.0, ``execution/io_bench/pins.set_output``).
 _READ_BACK_POLL_S = 0.008
 #: The shortest a read-back waits, whatever the pulse: several controller cycles. A driver built directly, as the
 #: tests build it, may pulse for 0 s; the config refuses a pulse under 0.05 s.
@@ -996,7 +996,7 @@ class JawIOGripper:
 
         A write that returns says the controller accepted the command, not that the pin moved: a
         wrong bank, a pin the controller reserves and a write that never reached the pin all look
-        like success from here, which is why ``drivers/ur/io_bench.set_output`` reads back too.
+        like success from here, which is why ``execution/io_bench/pins.set_output`` reads back too.
         The state comes back on the RTDE receive stream a cycle or two after the write, so a first
         read that disagrees is read again every :data:`_READ_BACK_POLL_S` until the bound. The
         bound counts the waits asked of ``sleep``, so a test's sleep drives it exactly and a real
@@ -1498,3 +1498,172 @@ class JawIOGripper:
                 )
                 return state
             self._sleep(0.02)
+
+
+# ---- the driver as the stack reads it (P0g slice 8, grippers/spec.py) -----------------------------------------------
+def _refuse(robot_cfg: Any, facts: Any) -> Any:
+    """Parallel jaws wired to the controller switch its digital I/O, as suction does, and an arm that does not
+    advertise ``SupportsDigitalIO`` cannot carry them. A Robotiq is jaws too and is not this: it speaks a socket the
+    URCap opens, which is why it has its own driver and its own failure mode."""
+    from .null import SubstitutionReason
+    from .spec import Refusal
+
+    if facts.has_digital_io:
+        return None
+    return Refusal(
+        SubstitutionReason.JAW_IO_NEEDS_DIGITAL_IO,
+        f"gripper.vendor='jaw_io' but the arm in hand reports vendor "
+        f"{facts.vendor!r} and does not advertise SupportsDigitalIO. A solenoid "
+        f"jaw switches the controller's digital I/O, which only the real UR driver "
+        f"exposes.",
+        "Set robot.vendor: ur for a real I/O jaw cell, or gripper.vendor: none.",
+    )
+
+
+def _build(robot_cfg: Any, arm: Any, facts: Any) -> Any:
+    from src.robot.core import GripperVendor
+
+    from .registry import create_gripper
+
+    # Same lifecycle contract as suction: arm.connect() before gripper.connect(), because the driver touches the
+    # controller's I/O as soon as it connects.
+    gripper_cfg = robot_cfg.gripper
+    jaw = gripper_cfg.jaw_io
+    return create_gripper(
+        GripperVendor.JAW_IO,
+        io=arm,
+        config=gripper_cfg,
+        actuation=jaw.actuation,
+        close_output_pin=jaw.close_output_pin,
+        open_output_pin=jaw.open_output_pin,
+        pulse_s=jaw.pulse_s,
+        part_present_input_pin=jaw.part_present_input_pin,
+        closed_confirm_input_pin=jaw.closed_confirm_input_pin,
+        open_confirm_input_pin=jaw.open_confirm_input_pin,
+        io_port=jaw.io_port,
+        close_timeout_s=jaw.close_timeout_s,
+        close_settle_s=jaw.close_settle_s,
+        closed_below_mm=jaw.closed_below_mm,
+        open_on_connect_without_feedback=jaw.open_on_connect_without_feedback,
+        # A toggle asks at connect where its jaws stand, at the terminal the program runs in; with none, the connect
+        # is refused (owner's decision, 2026-09-24).
+        confirm_open_at_start=jaw.confirm_open_at_start,
+        min_width_mm=gripper_cfg.min_width_mm,
+        max_width_mm=gripper_cfg.max_width_mm,
+    )
+
+
+def _wiring(robot_cfg: Any) -> Any:
+    from .spec import Row
+
+    jaw = robot_cfg.gripper.jaw_io
+    fix = "confirm physically, pin by pin; a swapped pair opens the jaws on a grip command"
+    if jaw.open_output_pin is not None:
+        opens = f"open output {jaw.open_output_pin}"
+    elif jaw.actuation == "single_toggle":
+        opens = f"open by the next change of close output {jaw.close_output_pin}"
+        # Nothing is read back: the program counts its own changes from a person's answer at connect.
+        fix = ("confirm physically: each change of the output, switched on or off, moves the jaws once and "
+               "nothing reads them back, so every program asks at its connect, before anything moves, whether "
+               "they stand open, and counts its own changes from the answer; run it from a terminal, and look at "
+               "the jaws before you answer")
+    else:
+        opens = f"open by dropping close output {jaw.close_output_pin}"
+    return Row("bench",
+               f"the jaw solenoid ({jaw.actuation}) on {jaw.io_port} close output {jaw.close_output_pin}, {opens}, "
+               f"and its 24 V supply",
+               fix)
+
+
+def _travel_time(robot_cfg: Any) -> Any:
+    """Whether the travel time was measured where it is the only wait the driver has.
+
+    With no feedback a close waits ``close_settle_s`` and nothing else, and with no open switch so does an open, which
+    a place backs out on a line right after; a toggle, which reads nothing, waits it after every change. The schema
+    default, 0.3 s, is a small cylinder's stroke: a Hand-E on its I/O coupling takes up to about 2 s, so a default
+    left standing lifts before the jaws have met the part and drags the part a place has just set down.
+    """
+    from .spec import Row
+
+    jaw = robot_cfg.gripper.jaw_io
+    settle = float(jaw.close_settle_s)
+    if jaw.open_confirm_input_pin is None:
+        ways = "both ways: a close and an open each wait it and nothing else"
+    else:
+        return Row("ok", f"close_settle_s {settle:.1f} s; the open switch says when the jaws stand open")
+    if settle != type(jaw).model_fields["close_settle_s"].default:
+        return Row("ok", f"close_settle_s {settle:.1f} s, the only wait {ways}")
+    return Row(
+        "warn",
+        f"robot.gripper.jaw_io.close_settle_s is the schema default {settle:.1f} s, and the settle time is the only "
+        f"wait {ways}. The arm moves on that long after the command, whether the jaws have arrived or not",
+        "time the full stroke, open and closed, at the coupling's preset, by stopwatch or video (a Hand-E can take "
+        "about 2 s), and set close_settle_s to the longer with a margin; it must cover the stroke",
+    )
+
+
+def _hazards(robot_cfg: Any, gripper: Any, asked: str) -> Any:
+    """What connecting moves, read off the built gripper: the one vendor whose connect depends on the wiring.
+
+    ``JawIOGripper.connect()`` opens the jaws whenever the state reads empty, and unconditionally when there is no
+    feedback and the operator opted in. With feedback wired the driver refuses to drop a held part, and without it the
+    behaviour is whatever the operator opted into: a flat "the jaws will open" would be false half the time, and a
+    warning that is false half the time is one an operator learns to skip.
+    """
+    from src.robot.core.gripper import toggle_without_sensor_of
+
+    from .spec import Hazard
+
+    has_feedback = bool(getattr(gripper, "has_feedback", False))
+    opts_in = bool(getattr(gripper, "_open_on_connect_without_feedback", False))
+    # A toggle is the one jaw cell whose connect always depends on a PERSON: nothing reads its jaws back, so the driver
+    # asks where they stand before anything moves, and counts its own changes from the answer. A solenoid asks too
+    # where it opted in (confirm_open_at_start), and then connects by its feedback as below. `asked` is where the
+    # reader asks and what it does with no answer; a question nobody answers is never taken for "open".
+    toggle = toggle_without_sensor_of(gripper) is not None
+    hazards: list[Hazard] = []
+    if not toggle and getattr(gripper, "asks_at_connect", False) is True:
+        hazards.append(Hazard(
+            what=f"Connecting first ASKS whether the jaws stand open (confirm_open_at_start), {asked}",
+            precaution="Look at the jaws before you answer. If they stand closed you are offered to OPEN them, "
+                       "which releases anything between them where the arm stands; choose abort instead.",
+        ))
+    if toggle:
+        hazards.append(Hazard(
+            what=f"Connecting first ASKS where the jaws stand, {asked} The hand is a toggle on one output with no "
+                 "sensor, so every change of the output, on or off, moves the jaws, and only a person can say "
+                 "where the program's count of its changes starts.",
+            precaution="Look at the jaws before you answer. If they stand closed you are offered ONE CHANGE "
+                       "of the output to open them, which releases anything between them where the arm stands, "
+                       "and goes out only while the controller says it can move; choose abort instead.",
+        ))
+    elif has_feedback:
+        hazards.append(Hazard(
+            what="Connecting the jaws reads the end-stop switches first. If they report EMPTY the "
+                 "jaws are opened immediately; if they report a part, the driver holds it and "
+                 "warns instead of dropping it.",
+            precaution="Keep hands clear of the jaws. If the switches are miswired an empty "
+                       "reading is what a held part looks like.",
+        ))
+    elif opts_in:
+        hazards.append(Hazard(
+            what="Connecting OPENS THE JAWS UNCONDITIONALLY. This cell has no end-stop feedback "
+                 "wired and open_on_connect_without_feedback is set, so the driver cannot check "
+                 "whether anything is held first.",
+            precaution="Anything between the jaws WILL BE DROPPED where the arm is standing. "
+                       "Clear the tool before connecting.",
+        ))
+    return tuple(hazards)
+
+
+def _driver() -> Any:
+    from src.robot.core import GripperVendor
+
+    from .spec import GripperDriver
+
+    # No SDK: a solenoid jaw is one or two output pins and, optionally, switches; a toggle is one output pin.
+    return GripperDriver(vendor=GripperVendor.JAW_IO, refuse=_refuse, build=_build, wiring=_wiring,
+                         hazards=_hazards, travel_time=_travel_time, drives_jaws_over_io=True)
+
+
+DRIVER = _driver()

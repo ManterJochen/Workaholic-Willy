@@ -141,7 +141,7 @@ def record_demo(*, out_path: str = DEFAULT_OUT, headless: bool = True, fps: int 
             session.step(render=True)
 
     # Start at the usual home pose (the raw post-boot articulation pose is not the config home).
-    arm.move_joint(JointPositions(home_q))
+    arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
     arm.session.step_n(10)
     z_before = float(np.asarray(obj.get_world_pose()[0])[2])
     state["on"] = True
@@ -150,7 +150,7 @@ def record_demo(*, out_path: str = DEFAULT_OUT, headless: bool = True, fps: int 
     # --- perceive the true object-top geometry (park + near-clip) -----------
     _park = getattr(sim, "park_joint_positions", None)
     park_q = np.asarray(_park if _park is not None else sim.home_joint_positions, dtype=np.float64)
-    arm.move_joint(JointPositions(park_q))
+    arm.move_to_joints(JointPositions(park_q)).raise_unless_executed()
     arm.session.step_n(15)
     try:
         handles.camera.set_clipping_range(0.05, 1.0e6)
@@ -190,7 +190,7 @@ def record_demo(*, out_path: str = DEFAULT_OUT, headless: bool = True, fps: int 
     quat = _quaternion_from_axes(closing, approach)
 
     # --- approach: home, standoff, contact (filmed, carry off) --------------
-    arm.move_joint(JointPositions(home_q))
+    arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
     arm.session.step_n(10)
     for label, gap in (("standoff", 60.0), ("contact", 22.0)):
         arm.move(Pose(position_mm=pos - approach * gap, quaternion_xyzw=quat, frame=Frame.BASE,

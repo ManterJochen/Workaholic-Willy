@@ -19,7 +19,7 @@ rows.
   flange and refused on the controller's;
 * the UR driver vouches for its controller's rows at connect, where they put the flange where the controller says it
   stands, and keeps the nominal table where they or its TCP cannot be read or the rows put it elsewhere; a disconnect
-  forgets them.
+  forgets them, and so does a refused reconnect.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from src.config.schema.robot import RobotConfig
-from src.robot.core import JointPositions, MotionCommand
+from src.robot.core import JointPositions, MotionCommand, RobotConnectionError
 from src.robot.core.arm_capabilities import KnowsItsFlange, controller_flanges_of
 from src.robot.drivers.ur.arm import URRobotArm
 from src.robot.drivers.ur.connection import ControllerKinematics
@@ -39,10 +39,10 @@ from src.robot.drivers.ur.pose import URPose
 from src.robot.safety import SafetyContext
 from src.robot.safety._capsule import AxisAlignedBox
 from src.robot.safety._ur_kinematics import (
-    UR_DH_TABLES_M,
     URDhChain,
     arm_link_transforms_mm,
     arm_link_transforms_mm_many,
+    ur_dh_rows,
     ur_link_transforms_mm,
     ur_link_transforms_mm_many,
 )
@@ -58,7 +58,8 @@ _TCP_MM = 155.75
 
 def _controller(model: str = "ur10", *, a2_off_m: float = 0.0) -> ControllerKinematics:
     """The kinematics info of a controller of ``model`` calibrated by ``_TWICE``; ``a2_off_m`` added to its a2."""
-    table = UR_DH_TABLES_M[model]
+    table = ur_dh_rows(model)
+    assert table is not None, f"no arm description for {model}"
     a = [row.a_m + da for row, da in zip(table, _TWICE["a_m"])]
     a[1] += a2_off_m
     return ControllerKinematics(
@@ -215,7 +216,7 @@ def _connected(rows: "ControllerKinematics | None", *, fk_rows: "ControllerKinem
     """The owner-like UR10 connected to a controller whose FK runs on ``fk_rows`` (``rows`` where not given) with a bare
     tool register, which reports ``rows`` as its kinematics info and ``tcp`` as its active TCP."""
     arm = URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": "ur10"},
+        "vendor": "ur", "ur": {"ip": "127.0.0.1", "model": "ur10"},
         "safety": {"payload": {"enforce": False}},
         "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}],
                     "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, _TCP_MM],
@@ -242,6 +243,17 @@ class TheURDriverVouchesForItsControllersRowsTests(unittest.TestCase):
         self.assertTrue(np.array_equal(arm.controller_flanges_mm(configs), _chain().flanges_mm(configs)))
         self.assertIsInstance(arm, KnowsItsFlange)
         arm.disconnect()
+        self.assertIsNone(arm.controller_flanges_mm(configs))
+
+    def test_a_refused_reconnect_forgets_the_rows_the_last_connect_vouched_for(self) -> None:
+        """As a disconnect does (aurora's ``a8af5963`` for the tool frame): the rollback disconnects the controller,
+        and rows vouched for on a controller the arm is no longer connected to are not where its flange stands."""
+        arm = _connected(_controller())
+        configs = _configs(5, seed=4)
+        self.assertIsNotNone(arm.controller_flanges_mm(configs), "the first connect vouched for no rows")
+        arm._conn.is_steady.return_value = False
+        with self.assertRaises(RobotConnectionError):
+            arm.connect()
         self.assertIsNone(arm.controller_flanges_mm(configs))
 
     def test_rows_that_cannot_be_read_or_put_the_flange_elsewhere_keep_the_nominal_table(self) -> None:

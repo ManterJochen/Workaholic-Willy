@@ -6,7 +6,7 @@ Both are thin callers of the library (`Cell`, `PickRun`, `HandEyeCalibration`), 
 print are the library's and the exit codes cannot disagree with it.
 
 ```bash
-python -m src.robot.execution.real_cell --check                  # the desk checklist; touches nothing
+python -m src.robot.execution.real_cell --check                  # the desk checklist, then the abilities
 python -m src.robot.execution.real_cell --start-planner          # does the planner start? no controller
 python -m src.robot.execution.real_cell --rehearse --runs 3 --profile console_dummy   # a dummy arm
 python -m src.robot.execution.real_cell --dry-run                # build the cell, stop before the connect
@@ -100,6 +100,21 @@ The other rows:
 The checklist does not refuse a connect; the driver's own checks do. Code that connects past a
 blocking checklist can bring up a cell that then refuses every motion, which reads as a broken robot.
 
+### What each function can do
+
+After the rows `--check` prints `=== ABILITIES ===`: one row per operator function (move, hand,
+handle, pick, calibrate, calibrate by hand, teach, io bench, planner start, acknowledge fault), asked
+of the arm this tree builds, never connected, through the Protocols it implements (P0i). A row is
+`ok`, `no` with the function's own refusal and its fix, or `bench` where only the cell answers. Each
+function asks the same row before it commands anything, so a `no` here is the sentence the function
+refuses with. The rows never change the exit code, which stays the checklist's. `Cell.abilities()`
+returns them from Python, and the console answers them at `GET /v1/abilities`.
+
+Measured on 2026-10-14: on the shipped base tree, `ur10` and `ur3e` the arm does not build, since no
+hand is named, so every row refuses "as move" with that reason; `ursim` has 3 available (teach, io
+bench, acknowledge fault), 5 refused and 2 at the bench (pick, planner start); `console_dummy` has 3
+available (move, hand, handle), 6 refused and 1 at the bench.
+
 ## The rehearsal
 
 `--rehearse` sets `robot.vendor` to `dummy` on your own tree and puts a synthetic scene (one box on
@@ -165,7 +180,7 @@ The rig being calibrated is another matter when switched off: it is refused at `
 key.
 
 An eye in hand sweep records the flange to TCP the arm applied while it swept, when
-`robot.gripper.tool_frame.source` is `willy` or `polyscope`; on an `undeclared` frame the cell and the
+`robot.gripper.tool_frame.source` is `willy` or `controller`; on an `undeclared` frame the cell and the
 `Locator` refuse the artifact for a wrist camera.
 
 Writing the artifact is half the job. The command prints the rig block to paste under

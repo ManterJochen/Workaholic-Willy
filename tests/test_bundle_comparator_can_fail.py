@@ -24,6 +24,8 @@ from pathlib import Path
 
 import numpy as np
 
+from src.config.arms import load_arm
+
 _ROOT = Path(__file__).resolve().parents[1]
 _DATA = _ROOT / "src" / "robot" / "safety" / "data"
 
@@ -32,13 +34,17 @@ _ISAAC_ARMS = ("ur3", "ur3e", "ur5", "ur5e", "ur10e")
 
 
 def _compare():
-    path = _ROOT / "scripts" / "isaac" / "_bundle_compare.py"
+    path = _ROOT / "scripts" / "arms" / "_bundle_compare.py"
     spec = importlib.util.spec_from_file_location("_bundle_compare_under_test", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+#: Every UR's bundle parts base to flange, as the descriptions name them; the comparator takes them from its caller.
+_PARTS = tuple(part for part, _link, _frame in load_arm("ur5e").collision_links)
 
 
 def _arrays(model: str) -> dict:
@@ -53,8 +59,8 @@ class TheComparatorIsOrderFreeTests(unittest.TestCase):
     def test_a_bundle_against_itself_is_zero(self) -> None:
         for model in _ISAAC_ARMS:
             with self.subTest(model=model):
-                difference = self.compare.compare(_arrays(model), _arrays(model))
-                self.assertEqual(len(difference.links), len(self.compare.LINKS))
+                difference = self.compare.compare(_arrays(model), _arrays(model), links=_PARTS)
+                self.assertEqual(len(difference.links), len(_PARTS))
                 for link in difference.links:
                     self.assertEqual((link.centroid_mm, link.p99_mm, link.max_mm), (0.0, 0.0, 0.0))
                 self.assertTrue(difference.agrees(self.compare.CEILINGS))
@@ -64,11 +70,11 @@ class TheComparatorIsOrderFreeTests(unittest.TestCase):
         report every honest re-bake as a frame error."""
         rng = np.random.default_rng(20260916)
         shuffled = _arrays("ur5e")
-        for key in (f"{link}__v" for link in self.compare.LINKS):
+        for key in (f"{link}__v" for link in _PARTS):
             vertices = shuffled[key]
             shuffled[key] = vertices[rng.permutation(len(vertices))]
 
-        difference = self.compare.compare(_arrays("ur5e"), shuffled)
+        difference = self.compare.compare(_arrays("ur5e"), shuffled, links=_PARTS)
         self.assertTrue(difference.agrees(self.compare.CEILINGS), difference.render())
         self.assertEqual(max(link.max_mm for link in difference.links), 0.0)
 
@@ -77,11 +83,11 @@ class TheComparatorIsOrderFreeTests(unittest.TestCase):
         self.assertLessEqual(self.compare.CEILINGS.centroid_mm, 1.0,
                              "a centroid ceiling above 1 mm would let the case below pass")
         for model in _ISAAC_ARMS:
-            for link in self.compare.LINKS:
+            for link in _PARTS:
                 with self.subTest(model=model, link=link):
                     moved = _arrays(model)
                     moved[f"{link}__v"] = moved[f"{link}__v"] + np.array([1.0, 0.0, 0.0], dtype=np.float32)
-                    difference = self.compare.compare(_arrays(model), moved)
+                    difference = self.compare.compare(_arrays(model), moved, links=_PARTS)
                     self.assertFalse(difference.agrees(self.compare.CEILINGS))
                     row = next(row for row in difference.links if row.link == link)
                     self.assertGreater(row.centroid_mm, self.compare.CEILINGS.centroid_mm)
@@ -94,7 +100,7 @@ class TheComparatorIsOrderFreeTests(unittest.TestCase):
         assumed, and every link must be caught by at least one axis.
         """
         for model in _ISAAC_ARMS:
-            for link in self.compare.LINKS:
+            for link in _PARTS:
                 caught = []
                 for axis in range(3):
                     sign = np.ones(3, dtype=np.float32)
@@ -102,7 +108,7 @@ class TheComparatorIsOrderFreeTests(unittest.TestCase):
                     mirrored = _arrays(model)
                     mirrored[f"{link}__v"] = mirrored[f"{link}__v"] * sign
 
-                    difference = self.compare.compare(_arrays(model), mirrored)
+                    difference = self.compare.compare(_arrays(model), mirrored, links=_PARTS)
                     row = next(row for row in difference.links if row.link == link)
                     if row.max_mm <= self.compare.CEILINGS.max_mm:
                         continue  # this link IS its own mirror across this plane
@@ -114,7 +120,7 @@ class TheComparatorIsOrderFreeTests(unittest.TestCase):
     def test_the_report_names_the_link_and_the_numbers(self) -> None:
         moved = _arrays("ur5e")
         moved["wrist_2__v"] = moved["wrist_2__v"] + np.array([0.0, 2.0, 0.0], dtype=np.float32)
-        difference = self.compare.compare(_arrays("ur5e"), moved)
+        difference = self.compare.compare(_arrays("ur5e"), moved, links=_PARTS)
 
         text = difference.render()
         self.assertIn("wrist_2", text)
@@ -126,7 +132,7 @@ class TheComparatorIsOrderFreeTests(unittest.TestCase):
         short = _arrays("ur5e")
         del short["forearm__v"]
         with self.assertRaises(KeyError):
-            self.compare.compare(_arrays("ur5e"), short)
+            self.compare.compare(_arrays("ur5e"), short, links=_PARTS)
 
 
 if __name__ == "__main__":

@@ -157,7 +157,7 @@ def run_fused_gate(runs: int = 10, *, headless: bool = True, data_dir: str | Non
     for i in range(runs):
         # Reset: release jaw, move to the scan pose (home for GT / park for vision), re-place + settle.
         gripper.open()
-        arm.move_joint(JointPositions(scan_q))
+        arm.move_to_joints(JointPositions(scan_q)).raise_unless_executed()
         obj.set_world_pose(position=np.asarray(home_pos), orientation=np.asarray(home_quat))
         try:
             obj.set_linear_velocity(np.zeros(3))
@@ -180,7 +180,7 @@ def run_fused_gate(runs: int = 10, *, headless: bool = True, data_dir: str | Non
 
         # Phases 2 and 3: handoff to the wrist view pose, then the existing EIH refine and grasp.
         if coarse == "vision":
-            arm.move_joint(JointPositions(home_q))  # via home: reachable approach to the view pose
+            arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()  # via home: reachable approach to the view pose
         arm.move(topdown_view_pose(coarse_c, p_cam_tool, view_height_mm))
         z0 = float(np.asarray(obj.get_world_pose()[0])[2])
         report = service.pick()
@@ -258,7 +258,7 @@ def run_clutter_gate(runs: int = 10, *, headless: bool = True, data_dir: str | N
             fn()
         except Exception:  # noqa: BLE001
             pass
-    arm.move_joint(JointPositions(park_q))  # clean overhead view for the calib load / live fit + coarse scans
+    arm.move_to_joints(JointPositions(park_q)).raise_unless_executed()  # clean overhead view for the calib load / live fit + coarse scans
     app = getattr(arm.session, "app", None)
     for _ in range(sim.scene_setup.render_warmup_steps):  # warm the overhead RGB+depth (perception needs it)
         arm.session.step(render=True)
@@ -355,7 +355,7 @@ def run_clutter_gate(runs: int = 10, *, headless: bool = True, data_dir: str | N
     results: list[dict[str, float]] = []  # bool/int values widen to float; keeps the mixed dict typed
     for i in range(runs):
         gripper.open()
-        arm.move_joint(JointPositions(park_q))  # park out of the overhead view for a clean coarse scan
+        arm.move_to_joints(JointPositions(park_q)).raise_unless_executed()  # park out of the overhead view for a clean coarse scan
         for p, (hp, hq) in zip(prims, homes):
             p.set_world_pose(position=hp, orientation=hq)
             try:
@@ -374,7 +374,7 @@ def run_clutter_gate(runs: int = 10, *, headless: bool = True, data_dir: str | N
         coarse_err = float(np.linalg.norm((coarse_c - true_chosen)[:2]))
         z0 = float(np.asarray(prims[chosen_idx].get_world_pose()[0])[2])
 
-        arm.move_joint(JointPositions(home_q))  # via home: reachable approach to the wrist view pose
+        arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()  # via home: reachable approach to the wrist view pose
         arm.move(topdown_view_pose(coarse_c, p_cam_tool, view_height_mm))
         report = service.pick()
         outcome = getattr(getattr(report, "outcome", None), "value", getattr(report, "outcome", None))
@@ -430,7 +430,7 @@ def run_vision_probe(*, headless: bool = True, data_dir: str | None = None,
             fn()
         except Exception:  # noqa: BLE001
             pass
-    arm.move_joint(JointPositions(np.asarray(sim.park_joint_positions, dtype=np.float64)))
+    arm.move_to_joints(JointPositions(np.asarray(sim.park_joint_positions, dtype=np.float64))).raise_unless_executed()
     app = getattr(arm.session, "app", None)
     for _ in range(max(30, sim.scene_setup.render_warmup_steps)):
         arm.session.step(render=True)

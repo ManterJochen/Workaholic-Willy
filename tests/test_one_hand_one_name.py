@@ -3,7 +3,7 @@
 Step 4f (owner, Step 4 Q5 and Q10). The registry name is the only name a hand has. The self collision guard derives
 its mesh bundle and its coupling plate from it, so ``safety.self_collision.collision_mesh_variant`` and
 ``coupling_mm`` leave the schema, and a cell whose guard reads hand geometry refuses to build while the name is
-unset. A KUKA, a dummy and the rehearsal read no hand geometry and build as before.
+unset. A dummy and the rehearsal read no hand geometry and build as before.
 
 No test here needs Coal or python-fcl: where the guard would build its exact mesh backend, the arguments it asks
 for are captured instead.
@@ -206,20 +206,23 @@ class TheCouplingPlatesTests(unittest.TestCase):
 
 
 class AnUnsetHandRefusesTests(unittest.TestCase):
-    """Where hand geometry is read, an unset name refuses at build (Q5), on a UR and on a non UR double."""
+    """Where hand geometry is read, an unset name refuses at build (Q5), on a planned arm and on a non UR double.
+
+    The planned arm is the kit's (P0g slice 13), which builds from a tree what the UR driver builds and refuses what it
+    refuses, with the same sentence (``tests/test_the_kit_builds_what_the_ur_driver_builds.py``)."""
 
     def test_an_unset_hand_refuses_where_hand_geometry_is_read(self) -> None:
-        from src.robot.drivers.ur.arm import URRobotArm
+        from tests._arm_kit import planned_arm
 
         with self.assertRaises(ConfigError) as caught:
-            URRobotArm(_robot(None))
+            planned_arm(_robot(None))
         self.assertIn("robot.gripper.model", str(caught.exception))
         self.assertIn("ur5e", str(caught.exception))
 
     def test_a_named_hand_builds_and_the_preflight_says_which(self) -> None:
-        from src.robot.drivers.ur.arm import URRobotArm
+        from tests._arm_kit import planned_arm
 
-        arm = URRobotArm(_robot("robotiq_2f85"))
+        arm = planned_arm(_robot("robotiq_2f85"))
         preflight = arm.safety_preflight
         assert preflight is not None
         self.assertEqual(preflight.planner_hand(arm).model, "robotiq_2f85")
@@ -236,31 +239,28 @@ class AnUnsetHandRefusesTests(unittest.TestCase):
             sim_safety_preflight(unnamed)
         self.assertIn("robot.gripper.model", str(caught.exception))
 
-        isaac = SimpleNamespace(capabilities=SimpleNamespace(vendor="isaac-sim", model="isaac-sim"))
+        isaac = SimpleNamespace(capabilities=SimpleNamespace(vendor="sim", model="ur5e"))
         preflight = sim_safety_preflight(cfg)
         hand = preflight.planner_hand(isaac)
         self.assertEqual(hand.model, "robotiq_2f85")
         self.assertIs(_guard(preflight).hand, hand)
 
-    def test_a_model_from_either_source_is_enough_to_refuse(self) -> None:
+    def test_the_arm_model_is_enough_to_refuse(self) -> None:
+        """Since P0d D5 the arm the driver knows it is was the only source; a safety key was the other one."""
         from src.robot.safety.preflight import SafetyPreflight
 
-        declared = RobotSafetyConfig.model_validate({"self_collision": {"kinematics_model": "ur5e"}})
-        with self.assertRaises(ConfigError):
-            SafetyPreflight.from_safety_config(declared, WorkspaceLimitsConfig())
         with self.assertRaises(ConfigError):
             SafetyPreflight.from_safety_config(RobotSafetyConfig(), WorkspaceLimitsConfig(), arm_model="ur3e")
+
+    def test_an_arm_model_nobody_describes_reads_no_hand_geometry(self) -> None:
+        """The control: the rule is the registry's, so a model it does not describe is no UR to read a hand on."""
+        from src.robot.safety.preflight import SafetyPreflight
+
+        SafetyPreflight.from_safety_config(RobotSafetyConfig(), WorkspaceLimitsConfig(), arm_model="isaac-sim")
 
 
 class WhatReadsNoHandGeometryBuildsTests(unittest.TestCase):
     """Controls, green before and after: none of these resolves an arm model for an exact mesh guard."""
-
-    def test_a_kuka_arm_builds_with_no_hand(self) -> None:
-        from src.robot.drivers.kuka.arm import KukaRobotArm
-
-        tree = RobotConfig.model_validate({"vendor": "kuka", "kuka": {"controller_ip": "10.8.8.8"}})
-        self.assertIsNone(tree.gripper.model)
-        KukaRobotArm(tree)
 
     def test_a_dummy_robot_builds_with_no_hand(self) -> None:
         from src.robot.execution.robot import Robot
@@ -268,13 +268,15 @@ class WhatReadsNoHandGeometryBuildsTests(unittest.TestCase):
         Robot.from_config(RobotConfig.model_validate({"vendor": "dummy", "gripper": {"vendor": "dummy"}}))
 
     def test_a_capsule_guard_and_a_stood_down_guard_build_with_no_hand(self) -> None:
+        """The arm is a ur5e, which the exact mesh guard WOULD read a hand on (the default block refuses it, see
+        test_the_arm_model_is_enough_to_refuse); the capsule backend and the stood-down guard are what spare it."""
         from src.robot.safety.preflight import SafetyPreflight
 
-        for block in ({"backend": "capsule", "kinematics_model": "ur5e"},
-                      {"enforce": False, "kinematics_model": "ur5e"}):
+        for block in ({"backend": "capsule"}, {"enforce": False}):
             with self.subTest(**block):
                 SafetyPreflight.from_safety_config(
                     RobotSafetyConfig.model_validate({"self_collision": block}), WorkspaceLimitsConfig(),
+                    arm_model="ur5e",
                 )
 
 
@@ -301,9 +303,9 @@ class TheTwoHandKeysAreRefusedAtLoadTests(_ScratchTree):
 
 class TheGuardTakesItsHandFromTheRobotConfigTests(unittest.TestCase):
     def test_the_hande_profile_builds_a_guard_on_the_hande_bundle_with_its_plate(self) -> None:
-        from src.robot.drivers.ur.arm import URRobotArm
+        from tests._arm_kit import planned_arm
 
-        arm = URRobotArm(load_robot_config(profile="hande"))
+        arm = planned_arm(load_robot_config(profile="hande"))
         guard = _guard(arm.safety_preflight)
         captured = _Captured()
         with mock.patch(_FCL, captured):
@@ -397,10 +399,10 @@ class TheDoctorAsksForTheHandTests(unittest.TestCase):
 
 
 class EveryPreflightBuildNamesTheHandTests(unittest.TestCase):
-    """Every construction of the preflight in the library passes the hand, except where no arm model can resolve."""
+    """Every construction of the preflight in the library passes the hand, with no exception left."""
 
-    #: A KUKA resolves no arm model and reads no bundle, so its preflight has no hand to take.
-    _READS_NO_HAND = frozenset({"src/robot/drivers/kuka/arm.py"})
+    #: None since the KUKA EthernetKRL driver, which resolved no arm model, was deleted (2026-09-19).
+    _READS_NO_HAND: frozenset[str] = frozenset()
 
     def test_every_site_passes_the_hand(self) -> None:
         sites: list[tuple[str, int, set[str | None]]] = []

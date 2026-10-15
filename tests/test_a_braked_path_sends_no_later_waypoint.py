@@ -1,6 +1,6 @@
 """A cuRobo path halted in leg k sends no later waypoint, braked or not.
 
-``CuroboUrPlanner.execute`` runs a judged path as one ``moveJ`` per waypoint, in order. A leg that answered ``True``
+``CuroboPlanner.execute`` runs a judged path as one ``moveJ`` per waypoint, in order. A leg that answered ``True``
 before it arrived would let the next waypoint's move start while it still ran, cutting the leg short off the path both
 authorities judged; a leg the halt ended must be the last one sent. So:
 
@@ -23,12 +23,17 @@ import unittest
 
 import numpy as np
 
+from src.config.arms import load_arm
 from src.geometry import Frame, Pose
 from src.robot.core import JointPositions, MotionCommand, MotionStatus
-from src.robot.drivers.ur.arm import _Route
+from src.robot.drivers.planned.arm import _Route
 from src.robot.drivers.ur.connection import URConnection
-from src.robot.drivers.ur.curobo_motion import CuroboUrPlanner
+from src.robot.drivers.planned.curobo_motion import CuroboPlanner
 from tests._halt_fakes import SimulatedUr, VirtualClock, no_client, ur_arm_on
+from tests._ur_transport import over
+
+#: The controller's joint order as the ur5e description states it; the planner is handed it since P0e E4.
+_UR_JOINT_NAMES = tuple(joint.name for joint in load_arm("ur5e").joints)
 
 _HERE = [0.0, -1.2, 1.3, -0.4, 1.5, 0.2]
 #: Four waypoints, the first where the arm stands (a plan starts there): legs of 0, 0.4, 0.4 and 0.4 s at 0.5 rad/s.
@@ -43,12 +48,12 @@ _POSE = Pose(position_mm=np.array([450.0, -120.0, 320.0]), quaternion_xyzw=np.ar
 _REASON = "the operator pressed halt now"
 
 
-def _glue(*, brake: bool) -> tuple[CuroboUrPlanner, URConnection, SimulatedUr, VirtualClock]:
+def _glue(*, brake: bool) -> tuple[CuroboPlanner, URConnection, SimulatedUr, VirtualClock]:
     clock = VirtualClock()
     sim = SimulatedUr(_HERE, clock=clock, wait=clock.sleep)
     conn = sim.attach(URConnection("127.0.0.1", vel=0.5, acc=0.8, brake_on_halt=brake, clock=clock,
                                    sleep=clock.sleep))
-    return CuroboUrPlanner(conn, client_factory=no_client, vel=0.5, acc=0.8), conn, sim, clock
+    return CuroboPlanner(over(conn), joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180, client_factory=no_client, vel=0.5, acc=0.8), conn, sim, clock
 
 
 class TheGlueSendsNoWaypointAfterTheHaltTests(unittest.TestCase):
@@ -163,7 +168,7 @@ class TheGlueSendsNoWaypointAfterTheHaltTests(unittest.TestCase):
                 sim.moveJ(joints, vel or 0.5, acc or 0.8, False)
                 return True
 
-        planner = CuroboUrPlanner(_Broken(), client_factory=no_client)  # type: ignore[arg-type]
+        planner = CuroboPlanner(over(_Broken()), joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180, client_factory=no_client)
         self.assertIs(MotionStatus.EXECUTED, planner.execute(_PATH, _POSE).status)
         self.assertEqual(4, len(sim.named("moveJ")))
 

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Annotated, cast
 from fastapi import APIRouter, Depends
 
 from api.cell import Console, console
-from api.schemas import PreflightCheckOut, PreflightOut, Status
+from api.schemas import AbilitiesOut, AbilityRowOut, AbilityStatusOut, PreflightCheckOut, PreflightOut, Status
 from src.contracts import UNSET, Maybe
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -80,3 +80,33 @@ def to_wire_for_console(cell: Console) -> PreflightOut:
 @router.get("/preflight", response_model=PreflightOut, summary="Is this cell runnable?")
 def get_preflight(cell: Annotated[Console, Depends(console)]) -> PreflightOut:
     return to_wire_for_console(cell)
+
+
+def abilities_for_console(cell: Console) -> AbilitiesOut:
+    """What each operator function can do on the console's cell, both halves from one read (P0i i4, owner decision 7).
+
+    One call to ``desk_abilities`` plus a serialisation, as the checklist beside it is one call: the rows are the ones
+    ``real_cell --check`` prints after its checklist, and a test asserts the two agree row for row. It builds the arm
+    the tree selects and connects nothing.
+    """
+    from src.robot.execution.abilities import desk_abilities
+
+    config, robot = cell.resolved()
+    data = desk_abilities(robot, camera=config.camera, data_dir=cell.root).to_dict()
+    return AbilitiesOut(
+        abilities=[
+            AbilityRowOut(ability=row["ability"], status=cast(AbilityStatusOut, row["status"]), reason=row["reason"],
+                          fix=row["fix"])
+            for row in cast("list[dict[str, str]]", data["abilities"])
+        ],
+        n_available=cast(int, data["n_available"]),
+        n_refused=cast(int, data["n_refused"]),
+        n_bench=cast(int, data["n_bench"]),
+        profile=cell.profile,
+        vendor=str(robot.vendor),
+    )
+
+
+@router.get("/abilities", response_model=AbilitiesOut, summary="What can each operator function do on this cell?")
+def get_abilities(cell: Annotated[Console, Depends(console)]) -> AbilitiesOut:
+    return abilities_for_console(cell)

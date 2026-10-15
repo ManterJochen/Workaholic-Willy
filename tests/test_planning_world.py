@@ -3,11 +3,15 @@
 Two silent failures are what this covers. A duplicate NAME collapses two obstacles into one, because
 the planner keys its world by name. And a registration the planner only partly confirms reads as
 success at every layer above, while the planner routes straight through whatever it never received.
+
+The arms are ``PlannedArm`` over the fake transport since P0g slice 13 (``tests/_arm_kit.planned_arm``), and the planner
+glue is built over the fake too: what reaches the planner is the planning half's, whichever vendor is below it.
 """
 
 from __future__ import annotations
 
 import pathlib
+from typing import Any
 
 import numpy as np
 import pytest
@@ -17,7 +21,7 @@ from src.config.schema.robot import (
     PlanningWorldConfig,
     SupportPlaneConfig,
 )
-from src.robot.drivers.ur.curobo_motion import UR_ARM_JOINT_NAMES, CuroboUrPlanner
+from src.robot.drivers.planned.curobo_motion import CuroboPlanner
 from src.robot.safety.planning import CuroboUnavailableError
 from src.robot.safety.planning.world import (
     DEFAULT_MAX_CUBOIDS,
@@ -25,6 +29,13 @@ from src.robot.safety.planning.world import (
     build_planner_cuboids,
     describe_planner_world,
 )
+
+from src.config.arms import load_arm
+from tests._arm_kit import planned_arm
+from tests._fake_transport import fake_transport
+
+#: The controller's joint order as the ur5e description states it; the planner is handed it since P0e.
+_UR_JOINT_NAMES = tuple(joint.name for joint in load_arm("ur5e").joints)
 
 
 def _bench(height_mm: float = 0.0, thickness_mm: float = 50.0) -> SupportPlaneConfig:
@@ -177,7 +188,7 @@ class _FakeClient:
     """A cuRobo client that confirms only ``confirm`` of the cuboids it is sent."""
 
     def __init__(self, traj, *, confirm: int | None = None) -> None:
-        self.joint_names = list(UR_ARM_JOINT_NAMES)
+        self.joint_names = list(_UR_JOINT_NAMES)
         self.dt = 0.0
         self._traj = traj
         self._confirm = confirm
@@ -207,20 +218,9 @@ class _FakeClient:
 _GOAL = [0.1] * 6
 
 
-class _FakeConn:
-    def __init__(self) -> None:
-        self.moves: list[list[float]] = []
-
-    @property
-    def is_connected(self) -> bool:
-        return True
-
-    def get_joint_positions(self):
-        return [0.0] * 6
-
-    def moveJ(self, joints, vel=None, acc=None):
-        self.moves.append([float(v) for v in joints])
-        return True
+def _zero() -> Any:
+    """The fake transport standing at zero, as the hand-written controller of this file did."""
+    return fake_transport(joints=[0.0] * 6)
 
 
 def _cuboids(n: int = 2) -> list[dict]:
@@ -230,8 +230,8 @@ def _cuboids(n: int = 2) -> list[dict]:
 
 def test_the_world_is_registered_once_not_per_move() -> None:
     client = _FakeClient([[0.0] * 6, [0.1] * 6])
-    planner = CuroboUrPlanner(
-        _FakeConn(), client_factory=lambda: client, world_cuboids=_cuboids()
+    planner = CuroboPlanner(
+        _zero(), client_factory=lambda: client, world_cuboids=_cuboids(), joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180
     )
     planner.plan_joint(_GOAL)
     planner.plan_joint(_GOAL)
@@ -242,14 +242,15 @@ def test_the_world_is_registered_once_not_per_move() -> None:
 def test_no_declared_world_sends_nothing() -> None:
     """Byte-identical: the planner keeps the world it booted with."""
     client = _FakeClient([[0.0] * 6])
-    CuroboUrPlanner(_FakeConn(), client_factory=lambda: client).plan_joint(_GOAL)
+    CuroboPlanner(_zero(), joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180,
+                  client_factory=lambda: client).plan_joint(_GOAL)
     assert client.worlds == []
 
 
 def test_a_partial_registration_refuses_to_plan() -> None:
     client = _FakeClient([[0.0] * 6], confirm=1)
-    planner = CuroboUrPlanner(
-        _FakeConn(), client_factory=lambda: client, world_cuboids=_cuboids(3)
+    planner = CuroboPlanner(
+        _zero(), client_factory=lambda: client, world_cuboids=_cuboids(3), joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180
     )
     with pytest.raises(CuroboUnavailableError, match="confirmed 1 of 3"):
         planner.plan_joint(_GOAL)
@@ -263,8 +264,8 @@ def test_a_partial_registration_refuses_the_SECOND_move_too() -> None:
     world the refusal had been about. A guard that only ever fires once is worse than either answer.
     """
     client = _FakeClient([[0.0] * 6, [0.1] * 6], confirm=1)
-    planner = CuroboUrPlanner(
-        _FakeConn(), client_factory=lambda: client, world_cuboids=_cuboids(3)
+    planner = CuroboPlanner(
+        _zero(), client_factory=lambda: client, world_cuboids=_cuboids(3), joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180
     )
     for attempt in (1, 2):
         with pytest.raises(CuroboUnavailableError, match="confirmed 1 of 3"):
@@ -274,11 +275,12 @@ def test_a_partial_registration_refuses_the_SECOND_move_too() -> None:
 
 def test_a_partial_registration_can_be_accepted_deliberately() -> None:
     client = _FakeClient([[0.0] * 6, [0.1] * 6], confirm=1)
-    planner = CuroboUrPlanner(
-        _FakeConn(),
+    planner = CuroboPlanner(
+        _zero(),
         client_factory=lambda: client,
         world_cuboids=_cuboids(3),
         require_registration=False,
+        joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180,
     )
     assert planner.plan_joint(_GOAL) is not None
 
@@ -290,7 +292,6 @@ def test_the_driver_actually_hands_its_config_down_to_the_planner() -> None:
     directly, and the flag guard could not see it. Same shape here: assert the declared boxes arrive.
     """
     from src.config.schema.robot import RobotConfig
-    from src.robot.drivers.ur.arm import URRobotArm
 
     config = RobotConfig.model_validate({
         "vendor": "ur",
@@ -298,7 +299,7 @@ def test_the_driver_actually_hands_its_config_down_to_the_planner() -> None:
         "safety": {
             "payload": {"enforce": False},
             "self_collision": {
-                # The margin every UR cuRobo cell must declare (B1 S17). A stub client skips the factory that refuses an undeclared one,
+                # The margin every cuRobo cell must declare (B1 S17). A stub client skips the factory that refuses an undeclared one,
                 # so this used to pass without it; the evidence check reads the margin to find its file (S22), and meets it here.
                 "planner_margin_mm": 4.0,
                 # A cell that declares a fixture keeps 10 mm from it, as robot.ur5e.yaml does.
@@ -317,20 +318,18 @@ def test_the_driver_actually_hands_its_config_down_to_the_planner() -> None:
         },
     })
     client = _FakeClient([[0.0] * 6, [0.1] * 6])
-    arm = URRobotArm(config)
-    arm._conn = _FakeConn()  # type: ignore[assignment]
+    arm = planned_arm(config, transport=_zero())
     arm._curobo_client_factory = lambda: client  # type: ignore[assignment]
-    arm._curobo_ur_planner().plan_joint(_GOAL)
+    arm._curobo_planner().plan_joint(_GOAL)
 
     assert [c["name"] for c in client.worlds[0]] == ["support_plane", "bin_wall_left"]
 
     # And with the block off, nothing is registered: the byte-identical path.
     off = RobotConfig.model_validate({"vendor": "ur", "safety": {"payload": {"enforce": False}, "self_collision": {"planner_margin_mm": 4.0}}, "gripper": {"model": "robotiq_2f85"}})
     quiet = _FakeClient([[0.0] * 6])
-    arm_off = URRobotArm(off)
-    arm_off._conn = _FakeConn()  # type: ignore[assignment]
+    arm_off = planned_arm(off, transport=_zero())
     arm_off._curobo_client_factory = lambda: quiet  # type: ignore[assignment]
-    arm_off._curobo_ur_planner().plan_joint(_GOAL)
+    arm_off._curobo_planner().plan_joint(_GOAL)
     assert quiet.worlds == []
 
 
@@ -363,7 +362,8 @@ def test_an_injected_factory_still_gets_the_reservation() -> None:
     reservation = PlannerReservation(cuboid_slots=24, mesh_slots=1, voxel_grid="", sphere_slots=0)
     client = _ReservingClient([[0.0] * 6, [0.1] * 6])
 
-    CuroboUrPlanner(_FakeConn(), client_factory=lambda: client, reservation=reservation).plan_joint(_GOAL)
+    CuroboPlanner(_zero(), joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180,
+                  client_factory=lambda: client, reservation=reservation).plan_joint(_GOAL)
 
     assert client.events[:2] == ["reserve", "start"], client.events
     assert client.reservation == reservation
@@ -372,14 +372,13 @@ def test_an_injected_factory_still_gets_the_reservation() -> None:
 def test_a_declared_mesh_is_registered_without_a_live_world() -> None:
     """A tote declared as a mesh reached the planner only through the live world, never on its own."""
     from src.config.schema.robot import RobotConfig
-    from src.robot.drivers.ur.arm import URRobotArm
 
     config = RobotConfig.model_validate({
         "vendor": "ur",
         "gripper": {"model": "robotiq_2f85"},
         "safety": {
             "payload": {"enforce": False},
-            # The margin every UR cuRobo cell must declare (B1 S17). A stub client skips the factory that refuses an undeclared one,
+            # The margin every cuRobo cell must declare (B1 S17). A stub client skips the factory that refuses an undeclared one,
             # so this used to pass without it; the evidence check reads the margin to find its file (S22), and meets it here.
             "self_collision": {"planner_margin_mm": 4.0},
             "planning_world": {
@@ -391,11 +390,10 @@ def test_a_declared_mesh_is_registered_without_a_live_world() -> None:
         },
     })
     client = _ReservingClient([[0.0] * 6, [0.1] * 6])
-    arm = URRobotArm(config)
-    arm._conn = _FakeConn()  # type: ignore[assignment]
+    arm = planned_arm(config, transport=_zero())
     arm._curobo_client_factory = lambda: client  # type: ignore[assignment]
 
-    arm._curobo_ur_planner().plan_joint(_GOAL)
+    arm._curobo_planner().plan_joint(_GOAL)
 
     assert [m["name"] for m in client.meshes[0]] == ["tote"], "the declared mesh never reached the planner"
     assert [c["name"] for c in client.worlds[0]] == ["support_plane"]
@@ -453,7 +451,13 @@ def _preflight(*, fixtures=()):
              "half_extents_mm": list(f.half_extents_mm)} for f in fixtures
         ]},
     })
-    return SafetyPreflight.from_safety_config(safety, WorkspaceLimitsConfig())
+    # Built for the ur5e the doubles here report, with its hand named: a pipeline judges only the arm it was built
+    # for since P0e, and a guard that reads hand geometry on a UR refuses to build without the hand.
+    from src.config.schema.robot import RobotConfig
+    from src.robot.safety.planning.hand import planner_hand
+
+    hand = planner_hand(RobotConfig.model_validate({"gripper": {"model": "robotiq_2f85"}}))
+    return SafetyPreflight.from_safety_config(safety, WorkspaceLimitsConfig(), hand=hand, arm_model="ur5e")
 
 
 def _samples(*configs):
@@ -470,7 +474,7 @@ def _samples(*configs):
 class _Arm:
     from src.robot.core.capabilities import RobotCapabilities
 
-    capabilities = RobotCapabilities(vendor="ur", model="ur5e", has_native_fk=True)
+    capabilities = RobotCapabilities(vendor="ur", model="ur5e", has_native_fk=True, dof=6, controller=None, owns_a_controller=True)
 
 
 #: A configuration that folds a finger into the forearm. The exact-mesh backend refuses it with
@@ -631,11 +635,10 @@ def test_a_config_with_no_tool_frame_is_refused_rather_than_guessed() -> None:
 def test_the_arm_turns_a_jaw_WIDTH_into_a_box_the_planner_can_use() -> None:
     """The jaw opening measures the part at the grasp LINE. The length is a declared worst case."""
     from src.config.schema.robot import RobotConfig
-    from src.robot.drivers.ur.arm import URRobotArm
 
     config = RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"motion_planner": "curobo"},
+        "motion": {"planner": "curobo"},
         "gripper": {"model": "robotiq_2f85"},
         "safety": {
             "payload": {"enforce": False},
@@ -647,8 +650,7 @@ def test_the_arm_turns_a_jaw_WIDTH_into_a_box_the_planner_can_use() -> None:
             },
         },
     })
-    arm = URRobotArm(config)
-    arm._conn = _FakeConn()  # type: ignore[assignment]
+    arm = planned_arm(config, transport=_zero())
     seen: dict = {}
 
     class _Planner:
@@ -656,7 +658,7 @@ def test_the_arm_turns_a_jaw_WIDTH_into_a_box_the_planner_can_use() -> None:
             seen.update(joints=list(joints), dims=tuple(dims_mm), centre=tuple(centre_mm))
             return True
 
-    arm._curobo_ur = _Planner()  # type: ignore[assignment]
+    arm._curobo = _Planner()  # type: ignore[assignment]
     assert arm.attach_payload(60.0) is True
     # Along the hand's approach, tool0 +Y as Step 4g.0 measured it, from the fingertips, as the self filter has the part
     # (Step 4h). It was 120 mm along tool0 +Z from the flange: 90 degrees off the hand, and inside the wrist.
@@ -679,34 +681,30 @@ def test_a_cell_that_declares_no_length_models_no_part_and_names_the_key() -> No
     the cell's to declare: without one nothing is attached, and the arm says which key is missing.
     """
     from src.config.schema.robot import RobotConfig
-    from src.robot.drivers.ur.arm import URRobotArm
 
-    arm = URRobotArm(RobotConfig.model_validate({"vendor": "ur", "gripper": {"model": "robotiq_2f85"}}))
-    arm._conn = _FakeConn()  # type: ignore[assignment]
+    arm = planned_arm(RobotConfig.model_validate({"vendor": "ur", "gripper": {"model": "robotiq_2f85"}}), transport=_zero())
     assert arm.attach_payload(60.0) is False
     assert arm.detach_payload() is True  # nothing was ever attached
     reason = arm.payload_declined_reason()
     assert reason is not None and "safety.planning_world.payload.length_mm" in reason
 
 
-def _curobo_ur_with(payload: dict) -> object:
+def _curobo_arm_with(payload: dict) -> object:
     from src.config.schema.robot import RobotConfig
-    from src.robot.drivers.ur.arm import URRobotArm
 
-    arm = URRobotArm(RobotConfig.model_validate({
+    arm = planned_arm(RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"motion_planner": "curobo"},
+        "motion": {"planner": "curobo"},
         "gripper": {"model": "robotiq_2f85"},
         "safety": {"payload": {"enforce": False}, "planning_world": {"payload": payload}},
-    }))
-    arm._conn = _FakeConn()  # type: ignore[assignment]
+    }), transport=_zero())
     return arm
 
 
-def test_a_curobo_ur_with_a_declared_length_models_its_payload_by_default() -> None:
+def test_a_curobo_arm_with_a_declared_length_models_its_payload_by_default() -> None:
     from src.robot.safety.planning.hand import HAND_APPROACH_IN_TOOL0
 
-    arm = _curobo_ur_with({"length_mm": 20.0})
+    arm = _curobo_arm_with({"length_mm": 20.0})
     seen: dict = {}
 
     class _Planner:
@@ -714,16 +712,16 @@ def test_a_curobo_ur_with_a_declared_length_models_its_payload_by_default() -> N
             seen.update(dims=tuple(dims_mm))
             return True
 
-    arm._curobo_ur = _Planner()  # type: ignore[attr-defined]
+    arm._curobo = _Planner()  # type: ignore[attr-defined]
     assert arm.attach_payload(30.0) is True  # type: ignore[attr-defined]
     approach = np.asarray(HAND_APPROACH_IN_TOOL0, dtype=np.float64)
     assert float(np.abs(np.asarray(seen["dims"])) @ np.abs(approach)) == 20.0, "the declared length runs along the approach"
 
 
-def test_a_curobo_ur_without_a_length_models_nothing_and_names_the_key() -> None:
-    arm = _curobo_ur_with({"enabled": True})
+def test_a_curobo_arm_without_a_length_models_nothing_and_names_the_key() -> None:
+    arm = _curobo_arm_with({"enabled": True})
     planner = type("_Planner", (), {"attach_payload": lambda self, *a: True})()
-    arm._curobo_ur = planner  # type: ignore[attr-defined]
+    arm._curobo = planner  # type: ignore[attr-defined]
 
     assert arm.attach_payload(30.0) is False  # type: ignore[attr-defined]
     assert arm._attached_payload is None, "the self filter took out a part of a length nobody declared"  # type: ignore[attr-defined]
@@ -731,16 +729,14 @@ def test_a_curobo_ur_without_a_length_models_nothing_and_names_the_key() -> None
     assert reason is not None and "safety.planning_world.payload.length_mm" in reason
 
 
-def test_an_ik_ur_still_declines_and_says_why() -> None:
-    """The control, green before and after: an ik UR models no part, with a length or without."""
+def test_an_ik_arm_still_declines_and_says_why() -> None:
+    """The control, green before and after: an ik arm models no part, with a length or without."""
     from src.config.schema.robot import RobotConfig
-    from src.robot.drivers.ur.arm import URRobotArm
 
-    arm = URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"motion_planner": "ik"}, "gripper": {"model": "robotiq_2f85"},
+    arm = planned_arm(RobotConfig.model_validate({
+        "vendor": "ur", "motion": {"planner": "ik"}, "gripper": {"model": "robotiq_2f85"},
         "safety": {"planning_world": {"payload": {"enabled": True, "length_mm": 50.0}}},
-    }))
-    arm._conn = _FakeConn()  # type: ignore[assignment]
+    }), transport=_zero())
     assert arm.attach_payload(30.0) is False
 
 

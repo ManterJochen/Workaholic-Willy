@@ -219,5 +219,35 @@ class MotionResultEqualityTests(unittest.TestCase):
         self.assertEqual(a, b)
 
 
+
+class RaiseUnlessExecutedTests(unittest.TestCase):
+    """What the raising verbs raised until they left the Protocol (2026-09-19), one call on a typed result."""
+
+    def test_an_executed_result_is_returned(self) -> None:
+        done = MotionResult.executed(MotionCommand.MOVE_JOINTS, target_joints=_joints())
+        self.assertIs(done, done.raise_unless_executed())
+
+    def test_a_refusal_raises_rejected_carrying_the_result_chained_from_its_exception(self) -> None:
+        from src.robot.core.errors import RobotMotionRejected
+
+        cause = ValueError("the guard said no")
+        refused = MotionResult.failed(MotionStatus.JOINT_LIMIT_REJECTED, MotionCommand.MOVE_JOINTS,
+                                      target_joints=_joints(), message="joint 6 past its limit", exception=cause)
+        with self.assertRaises(RobotMotionRejected) as caught:
+            refused.raise_unless_executed()
+        self.assertIs(refused, caught.exception.result)
+        self.assertIs(cause, caught.exception.__cause__)
+        self.assertIn("joint 6 past its limit", str(caught.exception))
+
+    def test_a_connection_error_raises_connection_error(self) -> None:
+        from src.robot.core.errors import RobotConnectionError, RobotMotionRejected
+
+        lost = MotionResult.failed(MotionStatus.CONNECTION_ERROR, MotionCommand.MOVE_TO, target_pose=_pose(),
+                                   message="the link is down")
+        with self.assertRaises(RobotConnectionError) as caught:
+            lost.raise_unless_executed()
+        self.assertNotIsInstance(caught.exception, RobotMotionRejected)
+
+
 if __name__ == "__main__":
     unittest.main()

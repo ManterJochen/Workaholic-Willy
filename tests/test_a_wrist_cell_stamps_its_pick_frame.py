@@ -146,7 +146,7 @@ class AWristCellStampsItsPickFrameTests(unittest.TestCase):
             ("no record", _calibration(record=None), "records none"),
             ("a stale record", _calibration(record=FlangeToTcp.from_matrix("willy", moved)), "stale"),
             ("a record from another tool frame source",
-             _calibration(record=FlangeToTcp.from_matrix("polyscope", np.eye(4))), "tool frame source"),
+             _calibration(record=FlangeToTcp.from_matrix("controller", np.eye(4))), "tool frame source"),
         ):
             with self.subTest(label):
                 arm = DummyRobotArm(initial_pose=_POSE)

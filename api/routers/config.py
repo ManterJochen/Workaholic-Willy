@@ -138,8 +138,8 @@ def patch_config(
         )
 
     # `connected=` has to reach `ConfigTree.write`, which has no default for it. `set_keys` declares
-    # `connected: bool = False`, the permissive value, and `robot.ur.ip` and `robot.kuka.controller_ip`
-    # carry `requires_disconnected=True` because they decide which machine receives every motion. A
+    # `connected: bool = False`, the permissive value, and `robot.ur.ip` carries
+    # `requires_disconnected=True` because it decides which machine receives every motion. A
     # caller that leaves it out repoints the live cell from the browser with nothing in the result
     # saying the guard did not run: a default that means "no guard" is a guard nobody has to switch off.
     #

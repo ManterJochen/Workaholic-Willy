@@ -37,14 +37,14 @@ from src.robot.core import (
     JointPositions,
     RobotArm,
     RobotCapabilities,
-    RobotVendor,
 )
+from src.robot.core.camera_world import holds_a_planner_world, plans_motions
 from src.robot.core.camera_world import without_camera_world as _without_camera_world
 from src.robot.core.gripper import HoldEvidence
 from src.robot.execution import handling as _handling
 from src.robot.execution import motion as _motion
-from src.robot.execution.cell_lock import CellLock, cell_lock_key
-from src.robot.execution.lifecycle import ConnectedRobot, ConnectStage, let_go_of_held_views
+from src.robot.execution.cell_lock import CellLock, LockKeyRequired, arm_lock_key, cell_lock_key
+from src.robot.execution.lifecycle import ConnectedRobot, ConnectStage, WatchedRobot, let_go_of_held_views
 from src.robot.execution.robot_parts import build_gripper, resolve_arm
 from src.robot.safety import SafetyAttestation
 
@@ -54,6 +54,7 @@ if TYPE_CHECKING:
     from src.geometry import Pose
     from src.geometry.closing_axis import ClosingAxisLike
     from src.robot.core.keep_out import SegmentationOffer
+    from src.robot.execution.abilities import CellAbilities
     from src.robot.execution.camera_world_wiring import CameraWorldWiring
     from src.robot.execution.real_cell.preflight import PreflightReport
     from src.robot.execution.wrist_bodies import WristBodies
@@ -61,17 +62,6 @@ if TYPE_CHECKING:
 __all__ = ["LockKeyRequired", "Robot"]
 
 #: Vendors whose arms drive no controller of their own, so there is nothing to lock for them.
-_OWNS_NO_CONTROLLER = frozenset({RobotVendor.SIM.value, RobotVendor.DUMMY.value})
-
-
-class LockKeyRequired(ValueError):
-    """An arm that drives a controller was handed in, and no lock key derives from it.
-
-    The key is the controller address in the tree the arm was built with (``arm.config``). An adapter
-    that keeps no tree, or a UR driver built from a tree naming another vendor, yields none, and a
-    robot that took no lock on such an arm would let a second process compete for its controller.
-    Stating ``lock_key`` resolves it, and ``lock_key=None`` states that no lock is taken.
-    """
 
 
 @dataclass(frozen=True)
@@ -204,23 +194,26 @@ class Robot:
             arm (RobotArm): The arm driver.
             gripper (Gripper | None): The hand, or ``None`` for an arm-only robot.
             lock_key (Maybe[str | None]): The controller the cross-process lock is taken on. Unset derives it from the
-                tree the arm keeps (``ur@<ip>``, ``kuka@<ip>``); ``None`` states that no lock is taken (default: UNSET).
+                arm's own identity, its ``capabilities`` (``ur@<ip>``); ``None`` states that no lock is taken
+                (default: UNSET).
             cameras (Maybe[Sequence[Any]]): Open camera owners, the primary first, each answering ``rig_id``, ``rig``,
                 ``handle()`` and ``calibration()`` as :class:`Camera` does; the caller opens and releases them, the
                 robot only reads them. Unset builds no world; ``None`` is refused (default: UNSET).
-            robot_config (Maybe[RobotConfig]): The section whose planning block the camera world is built under; unset
-                reads the arm's ``arm.config`` (default: UNSET).
+            robot_config (Maybe[RobotConfig]): The section whose planning block the camera world is built under;
+                required with cameras, because a robot reads the tree it keeps and never one an arm keeps (P0e)
+                (default: UNSET).
 
         Returns:
             Robot: The robot; ``camera_world`` holds what the cameras built, handed to the arm through its
                 ``set_live_planner_world`` where it has one.
 
         Raises:
-            LockKeyRequired: An arm with a controller of its own (anything but sim and dummy) yields no lock key and
-                none was stated.
+            LockKeyRequired: An arm that says it drives a controller of its own names no address and no lock key was
+                stated.
             CameraWorldRequired: The arm needs a camera world for every motion and a calibrated camera builds none.
             TypeError: ``cameras=None``.
-            ValueError: ``cameras`` is empty, or was handed to an arm that keeps no tree with no ``robot_config``.
+            ValueError: ``cameras`` is empty, or was handed with no ``robot_config``: a robot reads the tree it
+                keeps, never one an arm keeps.
         """
         return cls._assemble(arm=arm, gripper=gripper, lock_key=lock_key, cameras=cameras,
                              robot_config=robot_config, wrist=UNSET)
@@ -243,18 +236,12 @@ class Robot:
         if chosen(lock_key):
             return cls(arm=arm, gripper=gripper, lock_key=lock_key, camera_world=wiring, wrist_bodies=held,
                        robot_config=kept)
-        derived = cell_lock_key(getattr(arm, "config", None))
-        if derived is None:
-            capabilities = getattr(arm, "capabilities", None)
-            vendor = capabilities.vendor if isinstance(capabilities, RobotCapabilities) else None
-            if vendor is not None and vendor not in _OWNS_NO_CONTROLLER:
-                raise LockKeyRequired(
-                    f"the arm in hand ({type(arm).__name__}) reports vendor {vendor!r}, which drives "
-                    f"a controller of its own, and no lock key derives from the tree it keeps: "
-                    f"arm.config is missing, names another vendor, or names no controller address. "
-                    f"State lock_key as the controller it drives (for a UR, 'ur@<ip>'), or pass "
-                    f"lock_key=None to take no lock on purpose."
-                )
+        # The arm's own identity says what to lock (P0e E4): an arm that drives no controller of its own (a simulator,
+        # a desk dummy) takes none, and one that drives one and names no address is refused. An object that reports
+        # no capabilities at all is a stand-in, as ``resolve_arm`` counts it, and takes no lock.
+        capabilities = getattr(arm, "capabilities", None)
+        derived = (arm_lock_key(capabilities, arm_name=type(arm).__name__)
+                   if isinstance(capabilities, RobotCapabilities) else None)
         return cls(arm=arm, gripper=gripper, lock_key=derived, camera_world=wiring, wrist_bodies=held,
                    robot_config=kept)
 
@@ -282,6 +269,21 @@ class Robot:
         lock = CellLock(self.lock_key, owner="Robot") if self.lock_key else None
         return ConnectedRobot(self.arm, self.gripper, lock=lock, announce=announce)
 
+    def watching(self) -> WatchedRobot:
+        """The robot's arm watched, not connected, for the duration of a ``with`` block (P0i, owner 2026-09-26).
+
+        The lock ``connected()`` takes, then a link that reads the controller's state and releases a protective stop
+        and never starts a control program (``SupportsWatching``); the gripper is not touched, and every motion verb of
+        the arm refuses meanwhile. What the fault door opens: a stop is what it is for, and a full connect is refused by
+        exactly that stop. An arm that cannot be watched is refused (``TypeError``) before the lock is taken.
+
+        Returns:
+            WatchedRobot: The ``with`` block: it takes the lock and opens the watch, and gives both back on every
+                way out.
+        """
+        lock = CellLock(self.lock_key, owner="Robot") if self.lock_key else None
+        return WatchedRobot(self.arm, lock=lock)
+
     def wrist_body_line(self) -> str:
         """One line saying which wrist cameras this robot's arm carries.
 
@@ -301,13 +303,30 @@ class Robot:
         Returns:
             str: ASCII, no newline.
         """
-        needs = (": every planned motion needs a decline"
-                 if bool(getattr(self.arm, "camera_world_required", False)) else "")
+        needs = ": every planned motion needs a decline" if _needs_a_camera_world(self.arm) else ""
         if self.camera_world is None:
             return f"camera world  not handed any camera{needs}"
         if self.camera_world.world is None:
             return f"camera world  none: {self.camera_world.reason}{needs}"
         return "camera world  wired: " + ", ".join(repr(camera) for camera in self.camera_world.cameras)
+
+    def abilities(self) -> "CellAbilities":
+        """What each operator function can do with this robot's arm and hand as they are built. Commands nothing.
+
+        Asked of the handles this robot holds, connected or not, through their capability Protocols, and of the tree it
+        keeps where it keeps one (``from_tree``), as ``Cell.abilities`` asks the arm a tree builds (P0i).
+
+        Returns:
+            CellAbilities: One row per operator function, asked of this robot's arm and hand.
+        """
+        from src.config.schema.robot import RobotConfig
+        from src.robot.execution.abilities import abilities_of
+
+        config = self.robot_config if isinstance(self.robot_config, RobotConfig) else UNSET
+        if self.tree is None:
+            return abilities_of(self.arm, self.gripper, robot_config=config)
+        return abilities_of(self.arm, self.gripper, robot_config=config, camera=self.tree.app_config.camera,
+                            data_dir=self.tree.root)
 
     def safety(self) -> SafetyAttestation:
         """What this robot's arm will refuse, asked of the built arm. Commands nothing.
@@ -329,8 +348,9 @@ class Robot:
     def preflight(self) -> "PreflightReport":
         """The real cell's desk checklist for the tree this robot was built from. Touches no hardware.
 
-        The robot half comes from the tree the robot keeps, else from the arm's ``arm.config``; the camera half and the
-        root only from a tree :meth:`from_tree` read. A robot that keeps no tree gets one BLOCK row that says so.
+        The robot half comes from the tree the robot keeps, and from nothing else: not from a tree an arm keeps, which
+        only the UR driver does (P0e); the camera half and the root only from a tree :meth:`from_tree` read. A robot
+        that keeps no tree gets one BLOCK row that says so.
 
         Returns:
             PreflightReport: One row per check, ``OK``, ``WARN`` or ``BLOCK``, and an ``exit_code``; prints as itself.
@@ -343,7 +363,7 @@ class Robot:
             run_config_preflight,
         )
 
-        config = self.robot_config if self.robot_config is not None else getattr(self.arm, "config", None)
+        config = self.robot_config
         if not isinstance(config, RobotConfig):
             return PreflightReport(checks=(PreflightCheck(
                 "config", CheckStatus.BLOCK,
@@ -393,7 +413,7 @@ class Robot:
         facts = self._facts()
         facts["route"] = self.route().to_dict()
         facts["camera_world"] = {
-            "needs_decline": bool(getattr(self.arm, "camera_world_required", False)),
+            "needs_decline": _needs_a_camera_world(self.arm),
             "wiring": None if self.camera_world is None else self.camera_world.to_dict(),
         }
         facts["wrist_bodies"] = None if self.wrist_bodies is None else self.wrist_bodies.to_dict()
@@ -451,7 +471,7 @@ class Robot:
         from src.geometry import Pose  # noqa: PLC0415
         from src.geometry.closing_axis import closing_axis_of, natural_closing_axis_of  # noqa: PLC0415
 
-        config = self.robot_config if self.robot_config is not None else getattr(self.arm, "config", None)
+        config = self.robot_config
         axis = closing_axis_of(closing_axis) if chosen(closing_axis) else natural_closing_axis_of(config)
         if axis is not None and axis.heading_deg is not None:
             return Pose.tool_down(x_mm, y_mm, z_mm, yaw_deg=axis.heading_deg + float(yaw_deg))
@@ -647,6 +667,17 @@ class Robot:
         return _without_camera_world(self.arm, reason)
 
 
+def _needs_a_camera_world(arm: object) -> bool:
+    """Whether every motion of ``arm`` needs a live camera world or a decline.
+
+    An arm that does not plan its motions needs neither, and one that cannot answer is read the same way: the
+    question is asked while a cell is being built, and a refusal made up from a broken answer would stop a cell that
+    has nothing wrong with it (:func:`~src.robot.core.camera_world.plans_motions`).
+    """
+    planner = plans_motions(arm)
+    return planner is not None and bool(planner.camera_world_required)
+
+
 def _refuse_a_calibrated_robot_without_a_world(
     arm: RobotArm, cameras: "Maybe[Sequence[Any]]", robot_config: "Maybe[RobotConfig]",
 ) -> None:
@@ -655,9 +686,9 @@ def _refuse_a_calibrated_robot_without_a_world(
     Reads config only, before anything is handed to the arm. The wiring half, cameras the plan names
     that build no world, is refused in :func:`_camera_world`.
     """
-    if cameras is None or not chosen(cameras) or not bool(getattr(arm, "camera_world_required", False)):
+    if cameras is None or not chosen(cameras) or not _needs_a_camera_world(arm):
         return
-    tree = robot_config if chosen(robot_config) else getattr(arm, "config", None)
+    tree = robot_config if chosen(robot_config) else None
     owners = list(cameras)
     if tree is None or not owners:
         return  # _camera_world refuses both, saying why
@@ -708,7 +739,7 @@ def _wrist_bodies(
     """
     if cameras is None or not chosen(cameras):
         return None
-    tree = robot_config if chosen(robot_config) else getattr(arm, "config", None)
+    tree = robot_config if chosen(robot_config) else None
     owners = list(cameras)
     if tree is None or not owners:
         return None  # _camera_world refuses both, saying why
@@ -730,11 +761,11 @@ def _camera_world(
         )
     if not chosen(cameras):
         return None
-    tree = robot_config if chosen(robot_config) else getattr(arm, "config", None)
+    tree = robot_config if chosen(robot_config) else None
     if tree is None:
         raise ValueError(
-            f"cameras were handed to a robot around {type(arm).__name__}, which keeps no tree (arm.config), and no "
-            f"robot_config was passed: the live world's planning block is read from one of them"
+            f"cameras were handed to a robot around {type(arm).__name__} and no robot_config was passed: the live "
+            f"world's planning block is read from the tree the robot keeps, never from one an arm keeps"
         )
     # Imported here, so a robot handed no camera loads nothing of the camera world.
     from src.robot.execution.camera_world_wiring import CameraWorldPlan, CameraWorldWiring
@@ -748,12 +779,12 @@ def _camera_world(
         tree, plan=plan, cameras={str(owner.rig_id): owner for owner in owners},
         tool_pose=get_tcp_pose if callable(get_tcp_pose) else UNSET,
     )
-    if wiring.world is None and plan.rig_ids and bool(getattr(arm, "camera_world_required", False)):
+    if wiring.world is None and plan.rig_ids and _needs_a_camera_world(arm):
         from src.robot.execution.camera_world_wiring import CameraWorldRequired
 
         raise CameraWorldRequired(
             f"this arm plans with cuRobo and its calibrated cameras built no live world: {wiring.reason}")
-    setter = getattr(arm, "set_live_planner_world", None)
-    if wiring.world is not None and callable(setter):
-        setter(wiring.world)
+    holder = holds_a_planner_world(arm)
+    if wiring.world is not None and holder is not None:
+        holder.set_live_planner_world(wiring.world)
     return wiring

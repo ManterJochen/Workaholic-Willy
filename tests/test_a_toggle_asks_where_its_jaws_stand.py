@@ -276,9 +276,46 @@ class TheStartQuestionTests(unittest.TestCase):
         self.assertEqual(["connect", "disconnect"], arm.calls)
 
 
+class TheToggleIsAHandWithoutSensorTests(unittest.TestCase):
+    def test_it_is_a_toggle_without_sensor(self) -> None:
+        from src.robot.core.gripper import toggle_without_sensor_of
+
+        toggle = _toggle([], Person(""))
+        self.assertIs(toggle, toggle_without_sensor_of(toggle))
+        self.assertIs(True, toggle.asks_at_connect)
+        solenoid = JawIOGripper(_IO([]), close_output_pin=0, sleep=lambda _s: None)
+        self.assertIsNone(toggle_without_sensor_of(solenoid), "⭐ THE CONTROL: a solenoid is not one")
+        self.assertIs(False, solenoid.asks_at_connect)
+
+    def test_a_disconnect_and_a_connect_ask_again_and_nothing_is_kept(self) -> None:
+        """The count is never carried over: a person or the pendant may have moved the jaws in between."""
+        person = Person("", "closed", "p")
+        events: list[Any] = []
+        jaws = _toggle(events, person)
+        jaws.connect()
+        jaws.set_closed(True)
+        jaws.disconnect()
+        jaws.connect()
+        self.assertEqual(3, len(person.asked))
+        self.assertFalse(jaws.jaws_closed)
+        self.assertEqual(2, _pulses(events), "one change closed them, one change the person chose opened them")
+
+
 class TheQuestionIsOptInForASolenoidTests(unittest.TestCase):
     def _solenoid(self, events: list[Any], **kw: Any) -> JawIOGripper:
         return JawIOGripper(_IO(events), close_output_pin=0, sleep=lambda _s: None, **kw)
+
+    def test_false_is_refused_for_a_toggle_at_load_and_in_the_constructor(self) -> None:
+        from pydantic import ValidationError
+
+        from src.config.schema.robot.robot_schema import JawIOGripperConfig
+
+        with self.assertRaises(ValidationError) as caught:
+            JawIOGripperConfig.model_validate({"actuation": "single_toggle", "confirm_open_at_start": False})
+        self.assertIn("always asks at connect", str(caught.exception))
+        with self.assertRaises(ValueError):
+            _toggle([], confirm_open_at_start=False)
+        JawIOGripperConfig.model_validate({"confirm_open_at_start": False})  # ⭐ THE CONTROL: a solenoid may say no
 
     def test_a_solenoid_asks_nothing_by_default(self) -> None:
         jaws = self._solenoid([], ask=Person())             # a question would raise: none scripted
@@ -304,7 +341,7 @@ class TheQuestionIsOptInForASolenoidTests(unittest.TestCase):
                 return None
 
         cfg = RobotConfig.model_validate({
-            "vendor": "ur", "gripper": {"vendor": "jaw_io", "min_width_mm": 5.0, "max_width_mm": 49.99,
+            "vendor": "ur", "ur": {"ip": "127.0.0.1"}, "gripper": {"vendor": "jaw_io", "min_width_mm": 5.0, "max_width_mm": 49.99,
                                         "jaw_io": {"close_output_pin": 0, "confirm_open_at_start": True}},
         })
         jaws = build_gripper(cfg, arm=_UR([]))  # type: ignore[arg-type]
@@ -427,6 +464,26 @@ class APickStartTakesAWordNotAnEnterTests(unittest.TestCase):
         events.clear()
         return jaws, person, events
 
+    def test_open_jaws_are_answered_at_once_and_nothing_is_asked(self) -> None:
+        person = Person("")
+        jaws = _toggle([], person)
+        jaws.connect()
+        self.assertEqual("", jaws.jaws_open_for_a_pick())
+        self.assertEqual(1, len(person.asked))
+
+    def test_closed_and_a_pulse_opens_them_for_the_pick(self) -> None:
+        jaws, _person, events = self._closed("closed", "p")
+        self.assertEqual("", jaws.jaws_open_for_a_pick())
+        self.assertEqual(1, _pulses(events))
+        self.assertFalse(jaws.jaws_closed)
+
+    def test_a_solenoid_is_never_asked_before_a_pick(self) -> None:
+        """⭐ THE CONTROL: its pick opens the jaws by command."""
+        jaws = JawIOGripper(_IO([]), close_output_pin=0, ask=Person(), sleep=lambda _s: None)
+        jaws.connect()
+        jaws.set_closed(True)
+        self.assertEqual("", jaws.jaws_open_for_a_pick())
+
     def test_an_empty_line_at_a_pick_start_is_no_answer_and_is_asked_again(self) -> None:
         jaws, person, events = self._closed("", "open")
         self.assertEqual("", jaws.jaws_open_for_a_pick())
@@ -497,6 +554,39 @@ class NothingMovesWhileTheQuestionWaitsTests(unittest.TestCase):
     OPEN before the person had answered, so while the connect question waited another thread saw a connected hand it
     believed open and could pulse it. The hand is connected, and its count started, only once the answer is in; a
     question whose connection changed while it waited is refused without a pulse."""
+
+    def test_a_command_waits_for_the_question_on_another_thread(self) -> None:
+        """The lock: a set_closed from another thread waits while a person is asked, and never changes the output in
+        between."""
+        import threading
+
+        events: list[Any] = []
+        asked, release = threading.Event(), threading.Event()
+
+        def person(_question: str) -> str:
+            asked.set()
+            release.wait(5.0)
+            return "closed"
+
+        jaws = _toggle(events, Person(""))
+        jaws.connect()
+        jaws.set_closed(True)
+        events.clear()
+        jaws._ask = lambda q: person(q) if "CLOSED." not in q else "a"  # type: ignore[attr-defined]
+        done: list[str] = []
+        picker = threading.Thread(target=lambda: done.append(jaws.jaws_open_for_a_pick()))
+        picker.start()
+        self.assertTrue(asked.wait(5.0))
+        commander = threading.Thread(target=lambda: jaws.set_closed(False))
+        commander.start()
+        commander.join(0.2)
+        self.assertTrue(commander.is_alive(), "a command ran while the pick-start question waited")
+        self.assertEqual(0, _pulses(events))
+        release.set()
+        picker.join(5.0)
+        commander.join(5.0)
+        self.assertIn("not starting the pick", done[0])
+        self.assertEqual(1, _pulses(events), "the command after the question changed the output once, as its count said")
 
     def test_while_the_connect_question_waits_the_hand_is_not_connected_and_nothing_pulses(self) -> None:
         events: list[Any] = []
@@ -731,6 +821,22 @@ class APickOnJawsBelievedClosedAsksTests(unittest.TestCase):
 # ---------------------------------------------------------------------------------------------------
 
 
+class ThePickLoopSaysWhatItMeansTests(unittest.TestCase):
+    def test_the_loop_closes_at_the_part_whatever_closed_below_mm_says(self) -> None:
+        """⛔ URSim, the owner's hand: with closed_below_mm 5 the loop's close at 39 mm was an open, and it reported
+        object_not_detected on jaws it never closed."""
+        from tests.test_grasp_execution_policy import _FakeArm
+        from tests.test_grasp_execution_policy import _grasp as _policy_grasp
+
+        events: list[Any] = []
+        jaws = _toggle(events, Person(""), closed_below_mm=5.0)
+        jaws.connect()
+        report = GraspExecutionPolicy(arm=_FakeArm(), gripper=jaws, pre_open_width_mm=49.99).execute(_policy_grasp())
+        self.assertIs(PolicyOutcome.EXECUTED, report.outcome)
+        self.assertEqual(1, _pulses(events), "no change at the pre-open, one at the part")
+        self.assertTrue(jaws.jaws_closed)
+
+
 class ThePolicyKeepsTheSameRulesTests(unittest.TestCase):
     def test_no_pulse_before_the_approach_and_one_at_the_part(self) -> None:
         events: list[Any] = []
@@ -875,6 +981,23 @@ class ACampaignAsksAtEveryPickAfterAClose(unittest.TestCase):
         self.assertIn("move", events, "the approach before the fault is gone from the log")
 
 
+class ACleanPickNamesNoGripperFaultTests(unittest.TestCase):
+    """The control of the cases above: a pick that ended otherwise has no gripper fault to say."""
+
+    def test_a_pick_that_ended_otherwise_names_no_gripper_fault(self) -> None:
+        from tests.test_a_stopped_controller_moves_no_jaws import _service
+
+        events: list[Any] = []
+        jaws = _toggle(events, Person(""))
+        jaws.connect()
+
+        report = _service(_Arm(events), jaws).pick()
+
+        self.assertEqual("", report.gripper_fault, report.render())
+        self.assertNotIn("needs a person", report.render())
+        self.assertEqual("", report.to_dict()["gripper_fault"])
+
+
 # ---------------------------------------------------------------------------------------------------
 # The stroke
 # ---------------------------------------------------------------------------------------------------
@@ -912,13 +1035,21 @@ class TheDeskAsksForTheStrokeTests(unittest.TestCase):
         from src.robot.execution.real_cell.preflight import run_config_preflight
 
         cfg = RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "ik"},
+            "vendor": "ur", "ur": {"ip": "127.0.0.1", "model": "ur5e"}, "motion": {"planner": "ik"},
             "gripper": {"vendor": "jaw_io", "jaw_io": {"close_output_pin": 0, **jaw_io}},
             "safety": {"self_collision": {"backend": "capsule"}},
         })
         rows = {check.name: check for check in run_config_preflight(cfg, curobo_available=True,
                                                                     collision_engine="coal").checks}
         return rows.get("jaw travel time")
+
+    def test_any_jaw_io_with_no_feedback_at_the_default_settle_is_warned(self) -> None:
+        for actuation in ("single_solenoid", "double_solenoid"):
+            with self.subTest(actuation=actuation):
+                extra = {"open_output_pin": 1} if actuation == "double_solenoid" else {}
+                row = self._row(actuation=actuation, **extra)
+                assert row is not None
+                self.assertEqual("warn", str(getattr(row, "status")))
 
     def test_the_owners_toggle_at_the_default_settle_is_warned(self) -> None:
         row = self._row(actuation="single_toggle")
@@ -949,7 +1080,7 @@ class TheDeskHasNoPulseToAskForTests(unittest.TestCase):
         from src.robot.execution.real_cell.preflight import run_config_preflight
 
         cfg = RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "ik"},
+            "vendor": "ur", "ur": {"ip": "127.0.0.1", "model": "ur5e"}, "motion": {"planner": "ik"},
             "gripper": {"vendor": "jaw_io", "jaw_io": {"close_output_pin": 0, **jaw_io}},
             "safety": {"self_collision": {"backend": "capsule"}},
         })
@@ -1048,15 +1179,23 @@ class TheBenchTests(unittest.TestCase):
         from contextlib import redirect_stdout
 
         from src.config.schema.robot import RobotConfig
-        from src.robot.drivers.ur import __main__ as bench_cli
+        from src.robot.execution.io_bench import __main__ as bench_cli
 
-        cfg = RobotConfig.model_validate({"vendor": "ur", "gripper": gripper or {"vendor": "robotiq"}})
+        from src.robot.execution.cell_lock import lock_path_for
+
+        # The controller's address, this file's own (TEST-NET-2): the bench takes the cell lock on it before it connects
+        # (found reading for P0i, 2026-09-26), and a UR with no address is refused before any of this is asked.
+        cfg = RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "198.51.100.22"},
+                                          "gripper": gripper or {"vendor": "robotiq"}})
         bench_arm = arm if arm is not None else _BenchArm()
         out = io.StringIO()
-        with patch.object(bench_cli, "_load_robot_config", lambda *_a: cfg), \
-                patch("src.robot.drivers.create_arm", lambda *_a, **_k: bench_arm), \
-                patch.dict("os.environ", {"WILLY_PROFILE": ""}), redirect_stdout(out):
-            code = bench_cli.main(list(argv))
+        try:
+            with patch.object(bench_cli, "_load_robot_config", lambda *_a: cfg), \
+                    patch("src.robot.drivers.create_arm", lambda *_a, **_k: bench_arm), \
+                    patch.dict("os.environ", {"WILLY_PROFILE": ""}), redirect_stdout(out):
+                code = bench_cli.main(list(argv))
+        finally:
+            lock_path_for("ur@198.51.100.22").unlink(missing_ok=True)
         return code, out.getvalue()
 
     def _jaws(self, command: str, *answers: str) -> tuple[int, str, int]:
@@ -1070,6 +1209,44 @@ class TheBenchTests(unittest.TestCase):
             code, printed = self._bench("--jaws", command, "--yes", gripper=_BENCH_TOGGLE, arm=arm)
         self.assertEqual([], person.answers, "a scripted answer was never asked for")
         return code, printed.strip().splitlines()[-1], _pulses(arm.events)
+
+    def test_the_pasted_line_is_the_pose_it_was_read_off(self) -> None:
+        """⭐ THE CONTROL: the --where line is Python that builds the joints again, to a tenth of a degree."""
+        from src.robot.core import JointPositions
+        from src.robot.execution.io_bench.bench import where_lines
+
+        joints = np.radians([12.34, -90.0, 45.06, -0.04, 90.0, 180.0])
+        line = where_lines(list(joints), Pose.tool_down(0.0, 0.0, 300.0))[0]
+        built = eval(line, {"JointPositions": JointPositions})  # noqa: S307 - the line is this repository's own output
+        np.testing.assert_allclose(np.degrees(built.values), np.degrees(joints), atol=0.051)
+        self.assertNotIn("-0.0", line)
+
+    def test_an_exported_profile_is_named_as_exported(self) -> None:
+        from contextlib import redirect_stdout
+
+        from src.robot.execution.io_bench import __main__ as bench_cli
+
+        out = io.StringIO()
+        with patch.dict("os.environ", {"WILLY_PROFILE": "ur3e,tiltcam"}), redirect_stdout(out):
+            self.assertEqual(1, bench_cli._refuse(None, "a test refusal"))
+        self.assertIn("profile chain 'ur3e,tiltcam' (from WILLY_PROFILE)", out.getvalue())
+
+    def test_a_config_that_did_not_load_names_the_chain_it_tried(self) -> None:
+        from contextlib import redirect_stdout
+
+        from src.config.loader import ConfigError
+        from src.robot.execution.io_bench import __main__ as bench_cli
+
+        def broken(*_a: object) -> Any:
+            raise ConfigError("robot.gripper.jaw_io.pulse_s: must be at least 0.05")
+
+        out = io.StringIO()
+        with patch.object(bench_cli, "_load_robot_config", broken), patch.dict("os.environ", {"WILLY_PROFILE": ""}), \
+                redirect_stdout(out):
+            code = bench_cli.main(["--profile", "ur10", "--read"])
+        self.assertEqual(1, code)
+        self.assertIn("REFUSED: the config did not load", out.getvalue())
+        self.assertIn("profile chain 'ur10' (from --profile)", out.getvalue())
 
     def test_where_prints_the_joints_as_a_line_to_paste_and_the_tcp(self) -> None:
         code, printed = self._bench("--where")

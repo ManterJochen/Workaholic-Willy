@@ -6,7 +6,7 @@ pose the software used to generate from a work point, a distance and a heading, 
 once the arm stood there.
 
 A look is a :class:`~src.robot.core.JointPositions` (``JointPositions.deg`` takes the pendant's degrees, and
-``python -m src.robot.drivers.ur --where`` prints them), or :data:`HOME`, the arm's own configured home. Joints rather
+``python -m src.robot.execution.io_bench --where`` prints them), or :data:`HOME`, the arm's own configured home. Joints rather
 than a Cartesian pose, because joints are the configuration a person stood the arm in and checked: a Cartesian look
 leaves the IK branch, the cable window and the camera's roll about its own axis to a solver.
 
@@ -49,7 +49,7 @@ import numpy as np
 from src.contracts import UNSET
 from src.geometry import Pose
 from src.robot.constants import create_robot_logger
-from src.robot.core.camera_world import ReadsCameraWorld
+from src.robot.core.camera_world import PlansMotions
 from src.robot.core.capabilities import RobotCapabilities
 from src.robot.core.joint_positions import JointPositions
 from src.robot.core.motion_result import MotionCommand, MotionResult
@@ -179,7 +179,7 @@ def _already_there(arm: Any, pose: LookPose, joints: JointPositions) -> _motion.
     command = MotionCommand.MOVE_HOME if home else MotionCommand.MOVE_JOINTS
 
     def nothing_sent() -> MotionResult:
-        if isinstance(arm, ReadsCameraWorld):
+        if isinstance(arm, PlansMotions):
             return MotionResult.executed(command, target_joints=joints, message=ALREADY_THERE,
                                          camera_world=arm.camera_world_for_move(UNSET))
         return MotionResult.executed(command, target_joints=joints, message=ALREADY_THERE)

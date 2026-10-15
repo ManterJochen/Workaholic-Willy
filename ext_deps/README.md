@@ -49,6 +49,27 @@ Install elsewhere if you prefer: set the matching `WILLY_*` variable and the def
 powershell -ExecutionPolicy Bypass -File scripts\ext_deps\install.ps1
 ```
 
+```bash
+python3 scripts/ext_deps/install.py     # Linux, and the same installer the Windows script runs
+```
+
+Since P0h h3 `install.ps1` is a shim for [`scripts/ext_deps/install.py`](../scripts/ext_deps/install.py), the one
+installer, standard library only, run by any Python 3.10 or newer. On Windows it runs exactly the commands the
+PowerShell script ran (`tests/data/install_plan/win-64.txt`); `--plan` prints every command it would run on this box,
+and `--plan --from-nothing --platform linux-64` another platform's. On Linux it also makes the main environment,
+`.venv`, a micromamba environment with Python 3.11 holding `requirements.txt`, and names `libportaudio2` when the
+microphone's system library is missing. The Linux locks (P0h h5, made in Ubuntu-24.04) hold the Windows versions
+wherever the platform allows: the same Python, all 49 CUDA toolkit packages, Coal 3.0.4 at the same build with its
+octomap, and the pip half resolved with the Windows pip lock as constraints. What differs has a platform reason
+(GCC in place of MSVC, torch's CUDA 12.8 runtime wheels on Linux), named and held pair by pair in
+`tests/test_both_platforms_lock_the_same_versions.py`. The Windows pip lock itself does not resolve on Linux.
+
+The conda locks pin the conda half of each environment. Since P0h h4 the pip half of `curobo_env` is pinned too,
+`locks/curobo_env.<platform>.pip.lock`: every package pip installed there (torch at `+cu128`, warp, cuda-core and all
+that cuRobo's `[cu12]` pulls), at the version that runs, installed right after torch so the editable cuRobo install
+finds each requirement met and floats nothing. `python scripts/ext_deps/install.py --write-pip-lock` writes it again
+from an installed environment.
+
 From nothing to a verified stack.
 
 `-Clean` deletes the targets first, which is how to test that it really does rebuild from nothing.
@@ -78,7 +99,7 @@ collision-avoidance guard both run on **Coal**.
 
 ## cuRobo: the collision-aware motion planner
 
-The `motion_planner="curobo"` path plans global, collision-free trajectories with NVIDIA
+The `curobo` planner path plans global, collision-free trajectories with NVIDIA
 [cuRobo](https://curobo.org).
 
 ### 0. Prerequisites
@@ -87,7 +108,7 @@ The `motion_planner="curobo"` path plans global, collision-free trajectories wit
 |---|---|
 | a conda-family package manager (`micromamba`, `mamba` or `conda`) | creates the isolated env |
 | an NVIDIA GPU and a driver for your CUDA version | cuRobo is CUDA-only |
-| **MSVC build tools** (Windows) or `g++` (Linux) | needed for the compiled backend in step 2b |
+| **MSVC build tools** (Windows; on Linux the lock carries GCC 13) | needed for the compiled backend in step 2b |
 
 On Windows, `winget install --id Microsoft.VisualStudio.2022.BuildTools` (workload: *Desktop
 development with C++*) provides MSVC. Step 2b must run from a shell where `cl.exe` is on `PATH`:
@@ -145,7 +166,14 @@ CUROBO_USE_PYBIND=1 ext_deps/curobo_env/python.exe -m pip install -e "ext_deps/c
 ```
 
 This compiles the CUDA kernels ahead of time, which takes several minutes. cuRobo then prefers
-`cuda.core` and falls back to the compiled extensions where it is unavailable.
+`cuda.core` and falls back to the compiled extensions where it is unavailable. On Windows,
+[`scripts/curobo/build_compiled_backend.bat`](../scripts/curobo/build_compiled_backend.bat) does it with the
+MSVC environment already sourced. On Linux its twin
+[`scripts/curobo/build_compiled_backend.sh`](../scripts/curobo/build_compiled_backend.sh) does it with the
+environment's own nvcc and GCC 13, which the Linux lock carries, so a distribution with no compiler of its own
+builds it without root. Measured in Ubuntu-24.04 on 2026-09-26: cuRobo's bare `setup.py build_ext` there finds no
+`gcc` and then no `cuda_runtime_api.h` (conda-forge keeps the CUDA headers under `targets/x86_64-linux/include`);
+the script puts both in reach. Without `CUROBO_USE_PYBIND=1` cuRobo's `setup.py` compiles nothing.
 
 > [!WARNING]
 > ### Why both, and not just the JIT backend
@@ -178,27 +206,27 @@ rt.kernel_backend = 'pybind'
 cuRobo ships `ur10e` and `franka`, but not `ur5e` or `ur3e`. The builder generates each UR arm descriptor from the vendored Universal Robots description and the arm's committed collision-sphere fit, producing `<model>.urdf` and `willy_<model>.yml`. Grippers are added separately by the cell at planner startup, so `--gripper` and `--coupling-mm` are not supported here.
 
 ```bash
-ext_deps/curobo_env/python.exe scripts/curobo/fetch_ur_meshes.py
-ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur5e
-ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur3e
-ext_deps/curobo_env/python.exe scripts/curobo/check_ur_descriptors.py --hand robotiq_2f85
+ext_deps/curobo_env/python.exe scripts/arms/fetch.py
+ext_deps/curobo_env/python.exe scripts/arms/descriptor.py ur5e
+ext_deps/curobo_env/python.exe scripts/arms/descriptor.py ur3e
+ext_deps/curobo_env/python.exe scripts/arms/check.py --hand robotiq_2f85
 ```
 
 Each descriptor records its arm and `carries_hand: false` in `_provenance`. The planner rejects descriptors for the wrong arm or descriptors containing a hand, rebuilding stale descriptors when necessary.
 
 The builder also fixes an upstream `forarm_link` → `forearm_link` typo in `self_collision_ignore`. Without this fix, the dense Lula `ur5e` spheres cause persistent `forearm`/`wrist_1` collisions and `plan_pose` returns `None`.
 
-Committed sphere fits make builds deterministic and require no simulator. Without a committed fit, the builder falls back to the Lula spheres and adds collision spheres fitted to the arm's own meshes. This fallback is randomized; use `--seed` for reproducible descriptors. The seed is recorded in `_provenance`.
+Committed sphere fits make builds deterministic and require no simulator: a build fits nothing, and two builds from the same commit are byte identical, measured for all seven arms in P0f F4. An arm without a committed fit is refused. The Lula spheres and the collision spheres fitted to the arm's own meshes that used to stand in for one were retired in P0f F5, and so were `--seed` and the other flags that tuned them. That fit was randomized: two runs of the same script differed on 486 lines and by two spheres on one link (measured 2026-08-26), so a descriptor built from it could not be built again.
 
-Keep descriptors when measured planner results depend on a specific build. Full provenance is documented in [`src/robot/safety/planning/robot/PROVENANCE.md`](../src/robot/safety/planning/robot/PROVENANCE.md).
+Full provenance is documented in [`src/robot/safety/planning/robot/PROVENANCE.md`](../src/robot/safety/planning/robot/PROVENANCE.md).
 
 > Robot descriptors live inside the clone and must be rebuilt after a fresh clone. The boot banner only verifies that the sidecar Python environment exists, not the descriptor. `python -m src.robot.safety.planning --check --hand <hand>` reports the expected descriptor.
 
 
 ### 4. Wiring
 
-The driver reaches this path only when `motion_planner="curobo"`, which is the default for both the
-simulation driver (`SimRobotConfig.motion_planner`) and a real UR arm (`URConfig.motion_planner`).
+The driver reaches this path only when its planner is `curobo`, which is the default for both the
+simulation driver (`SimRobotConfig.motion_planner`) and a real UR arm (`robot.motion.planner`).
 What differs by deployment is what happens when the planner is not there, and the difference is
 deliberate:
 
@@ -259,10 +287,10 @@ certified motion safety, and it has never planned for a physical arm.
 ### One geometry, two consumers
 
 [`src/robot/safety/data/ur5e_collision_meshes.npz`](../src/robot/safety/data/ur5e_collision_meshes.npz)
-holds the DH-baked per-link collision meshes, read from the collision STL files of Universal Robots
-and pinned to one upstream commit. It lives in the repository rather than being generated per box,
-and it is the single source of truth for both the Coal self-collision backend and the sphere fit
-that `scripts/curobo/fit_cover_spheres.py` writes for `scripts/curobo/build_ur_config.py` to read.
+holds the DH-baked per-link collision meshes, which `scripts/arms/bake.py` bakes from the collision
+STL files of Universal Robots, pinned to one upstream commit. It lives in the repository rather than
+being generated per box, and it is the single source of truth for both the Coal self-collision backend
+and the sphere fit that `scripts/arms/fit.py` writes for `scripts/arms/descriptor.py` to read.
 
 That coupling is the point. The collision model of the planner and the safety gate that checks the
 answer of the planner derive from the same geometry, so the gate cannot disagree with the planner
@@ -279,12 +307,11 @@ together.
    the driver falls back to blind IK at both build time and move time; not optional on a real UR
    arm, which refuses to move without it.
 4. **Generate the robot configs**, which cuRobo does not ship. The install script does this, and by
-   hand it is `ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur5e` and the same
+   hand it is `ext_deps/curobo_env/python.exe scripts/arms/descriptor.py ur5e` and the same
    for every arm the box runs, as in section 3. They are written inside the cuRobo clone, so a fresh
    clone always needs this step again.
 5. **If your layout differs**, every path above is an environment variable and none of them is
-   baked into the package. The `ISAAC_MODEL_DIR` and `CUROBO` constants of the generator are the
-   last two.
+   baked into the package. The `CUROBO` constant of the generator is the last one.
 
 
 ## See also

@@ -57,10 +57,10 @@ _ROOT = Path(__file__).resolve().parents[1]
 
 #: A controller in a protective stop, as the receive stream reads it.
 STOPPED = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.PROTECTIVE_STOP, protective_stopped=True,
-                      emergency_stopped=False)
+                      emergency_stopped=False, program_running=True)
 #: A controller that can move.
 RUNNING = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.NORMAL, protective_stopped=False,
-                      emergency_stopped=False)
+                      emergency_stopped=False, program_running=True)
 
 
 def dummy_tree(target: Path) -> None:
@@ -85,6 +85,24 @@ def wait_for(condition: Callable[[], Any], *, timeout: float = 10.0, what: str =
             return found
         time.sleep(0.01)
     raise AssertionError(f"{what} did not happen within {timeout} s")
+
+
+def _carries_a_payload(arm: Any, detached: list[str]) -> None:
+    """Make ``arm`` an arm that models a payload (``CarriesPayload``, the whole capability: an arm carries one or does
+    not), its ``detach_payload`` writing into ``detached``. The console tells the planner the hand is empty only on
+    such an arm."""
+    from src.robot.core.arm_capabilities import PayloadModel
+
+    arm.attach_payload = lambda _width_mm: True
+    arm.detach_payload = lambda: detached.append("detach") or True
+    arm.payload_declined_reason = lambda: None
+    arm.payload_model = lambda: PayloadModel.PLANNER_AND_FILTER
+
+
+def _confirmed_order(cell: Any) -> int:
+    """Where the last open answer stands in the order of the console's stamps, 0 before any: the order the countdown
+    reads, because two stamps inside one tick of the Windows clock (15.6 ms) read the same wall-clock time."""
+    return int(cell._stamp_order.get("jaws_confirmed", 0))
 
 
 class _InBackground:
@@ -176,7 +194,7 @@ class ToggleCell(ScratchCell):
         self.cell.session.service.runtime.orchestrator.gripper = self.jaws
         self.arm = self.cell.session.arm
         self.detached: list[str] = []
-        self.arm.detach_payload = lambda: self.detached.append("detach") or True  # type: ignore[attr-defined]
+        _carries_a_payload(self.arm, self.detached)
         if self.INSTALL:
             browser_jaws.install(self.cell)
 
@@ -450,7 +468,7 @@ class AConnectThatKeepsThePartIsNeverStampedOpenTests(ScratchCell):
                             ask=Person(), sleep=lambda _s: None)
         self.cell.session.service.runtime.orchestrator.gripper = hand
         detached: list[str] = []
-        self.cell.session.arm.detach_payload = lambda: detached.append("detach") or True  # type: ignore[attr-defined]
+        _carries_a_payload(self.cell.session.arm, detached)
         browser_jaws.install(self.cell)
         connecting = _InBackground(self.app, "POST", "/v1/cell/connect", json={"token": self.token()})
         asked = wait_for(lambda: self.client.get("/v1/cell/jaws").json().get("question"), what="the question")
@@ -509,7 +527,7 @@ class TheCheckAlwaysAsksTests(ToggleCell):
         return _InBackground(self.app, "POST", "/v1/cell/jaws/check")
 
     def test_it_asks_even_where_the_count_says_open_and_an_open_answer_stamps_and_detaches(self) -> None:
-        confirmed = self.cell.jaws_confirmed_at
+        confirmed = _confirmed_order(self.cell)
         checking = self.check_in_background()
         asked = self.question()
         self.assertEqual(("where", "check"), (asked["stage"], asked["at"]))
@@ -522,7 +540,7 @@ class TheCheckAlwaysAsksTests(ToggleCell):
         self.assertIsNone(checked.json()["question"])
         self.assertEqual(0, _pulses(self.events))
         self.assertEqual(["detach"], self.detached)
-        self.assertGreater(self.cell.jaws_confirmed_at, confirmed)
+        self.assertGreater(_confirmed_order(self.cell), confirmed, "the open answer was not stamped")
         self.assertFalse(self.cell.countdown_due())
 
     def test_open_now_on_a_count_that_says_closed_is_one_change_and_counts_down_the_next_motion(self) -> None:
@@ -557,7 +575,7 @@ class TheCheckAlwaysAsksTests(ToggleCell):
         then, and the check answers ``jaws_not_open`` with the hand's own words, nothing sent and nothing stamped."""
         self.jaws.set_closed(True)
         self.events.clear()
-        confirmed = self.cell.jaws_confirmed_at
+        confirmed = _confirmed_order(self.cell)
         checking = self.check_in_background()
         offered = self.question(stage="open_now")
         self.jaws._io.do[0] = not self.jaws._io.do[0]  # type: ignore[attr-defined] # somebody at the pendant
@@ -568,7 +586,7 @@ class TheCheckAlwaysAsksTests(ToggleCell):
         self.assertEqual((409, "jaws_not_open"), (refused.status_code, refused.json()["code"]), refused.text)
         self.assertIn("RobotError", refused.json()["message"])
         self.assertEqual(0, _pulses(self.events), "a change went out on a count nobody keeps")
-        self.assertEqual(confirmed, self.cell.jaws_confirmed_at)
+        self.assertEqual(confirmed, _confirmed_order(self.cell), "a refused change was stamped open")
         self.assertEqual("unknown", self.client.get("/v1/cell/jaws").json()["hand"]["jaws"])
 
     def test_a_stopped_controller_is_refused_before_anybody_is_asked(self) -> None:
@@ -953,7 +971,7 @@ class InstallingTheSeamTests(unittest.TestCase):
 
         arm = self._dummy_arm()
         detached: list[str] = []
-        arm.detach_payload = lambda: detached.append("detach") or True  # type: ignore[attr-defined]
+        _carries_a_payload(arm, detached)
         console = self._console_on(arm)
         console.session.service.runtime.orchestrator.gripper = _SaysOpenKeepsClosed()
         console.session.state = CellState.CONNECTED

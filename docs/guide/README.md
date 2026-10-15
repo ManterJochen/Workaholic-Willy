@@ -52,7 +52,7 @@ passed after the subcommand.
 | choose a self-collision backend | [04](04-robot-and-safety.md), the two backends and what each is worth |
 | prove the planner and the collision engine are installed | [04](04-robot-and-safety.md), and `python -m src.robot.safety.planning --check` |
 | work out which gripper driver I need | [06](06-grippers.md), which driver is yours |
-| measure which pin closes my jaws | [06](06-grippers.md), and `python -m src.robot.drivers.ur --measure PIN=VALUE` |
+| measure which pin closes my jaws | [06](06-grippers.md), and `python -m src.robot.execution.io_bench --measure PIN=VALUE` |
 | fit a gripper this repository never shipped | [docs/runbooks/your_own_gripper.md](../runbooks/your_own_gripper.md) |
 | find out why the connect refuses a hand that could not be built | [06](06-grippers.md), a substituted gripper |
 | launch a simulator runner without corrupting its log | [05](05-pick-loop.md), the `cmd /c` rule |

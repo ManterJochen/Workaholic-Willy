@@ -66,7 +66,7 @@ def _carry(scene: "BinScene | None" = None, *, carry: str = "over_the_rim", agai
     log: list[Any] = []
     arm = TaskArm(log, fk_table={_key(L1): AT_L1, _key(L2): AT_L2}, refuse=refuse)
     if again is not None:
-        arm.live_planner_world = AgainWorld(log, again=again)
+        arm.set_live_planner_world(AgainWorld(log, again=again))
     arm.config = hande_tree(carry=carry, length_mm=length_mm)  # type: ignore[attr-defined]
     scene = scene if scene is not None else BinScene()
     locator = MeasuringLocator(scene, arm=arm, log=log)

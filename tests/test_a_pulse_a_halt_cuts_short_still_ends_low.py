@@ -42,7 +42,9 @@ class _HaltInThePulse:
 
     def io_since_the_halt(self) -> list[tuple[str, list[Any]]]:
         assert self.halted_at is not None, "the halt never landed inside a pulse"
-        return [(call[2], call[3]) for call in self.sim.calls[self.halted_at:] if call[1] == "io"]
+        # The writes: each asks first whether the IO link is up (P0g io1), a reading this leaves aside.
+        return [(call[2], call[3]) for call in self.sim.calls[self.halted_at:]
+                if call[1] == "io" and call[2] != "isConnected"]
 
 
 def _on_a_ur(make: Callable[[Any, _HaltInThePulse], Any]) -> tuple[Any, SimulatedUr, _HaltInThePulse]:

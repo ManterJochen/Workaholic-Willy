@@ -40,18 +40,20 @@ def _body_links():
     return module
 
 
+_LINKS = ("shoulder_link", "upper_arm_link", "forearm_link", "wrist_1_link", "wrist_2_link", "wrist_3_link")
 _ARM = {
     "robot_cfg": {"kinematics": {
         "urdf_path": "robot/ur5e.urdf",
         "base_link": "base_link",
         "ee_link": "tool0",
         "tool_frames": ["tool0"],
-        # An ARM descriptor: the tool frame is not a collision link, because the hand is added as a body (S11).
-        "collision_link_names": ["wrist_1_link"],
-        "collision_spheres": {"wrist_1_link": [{"center": [0.0, 0.0, 0.0], "radius": 0.05}]},
+        # An ARM descriptor: the tool frame is not a collision link, because the hand is added as a body (S11). All
+        # six links, because a hand is judged against the third from the flange by position (P0f F9b).
+        "collision_link_names": list(_LINKS),
+        "collision_spheres": {name: [{"center": [0.0, 0.0, 0.0], "radius": 0.05}] for name in _LINKS},
         "collision_sphere_buffer": 0.0,
-        "self_collision_ignore": {"wrist_1_link": []},
-        "self_collision_buffer": {"wrist_1_link": 0.0},
+        "self_collision_ignore": {name: [] for name in _LINKS},
+        "self_collision_buffer": {name: 0.0 for name in _LINKS},
         "cspace": {
             "joint_names": ["a", "b", "c", "d", "e", "f"],
             # What THIS repository's descriptors carry, measured 2026-09-16: default_joint_position and no

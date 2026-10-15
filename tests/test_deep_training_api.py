@@ -394,22 +394,31 @@ class EpochRowKeepsTheRawColumnsTests(unittest.TestCase):
         self.assertNotEqual(row.held_top1_hit, row.held_top1_hit)     # NaN != NaN
 
 
+#: Where `probe()` looks its instruments up at call time, which is where a test patches them.
+_TRAINER = "src.robot.grasping.deep.train.trainer"
+_PROBES = "src.robot.grasping.deep.eval.probes"
+
+
 class TheProbeIsAskedOfTheCorpusNotOfAModelTests(unittest.TestCase):
     """⚠ WITHOUT THIS VERB, both ends of every scale were reachable only from inside a training run.
 
     `eval/probes.py` computes what a perfect head scores on a corpus and what four heads that learned
     nothing score on it, and the README's "What to measure" section is built on both. Every caller was
     inside `train/trainer.py`, so the only way to find out whether a corpus had anything to teach was
-    to spend the run finding out. All three instruments need no weights and no GPU.
+    to spend the run finding out. All three instruments need no weights and no GPU, and here all three
+    are patched: nothing is computed.
     """
 
-    def _probing(self) -> GeneratorTraining:
-        run = GeneratorTraining.from_recipe(corpus=_scene_dir(2), recipe="v1", tier="smoke")
-        return run
+    def _probing(self, **context: object) -> GeneratorTraining:
+        return GeneratorTraining.from_recipe(corpus=_scene_dir(2), recipe="v1", tier="smoke",
+                                             **context)                # type: ignore[arg-type]
 
     def test_it_asks_the_three_instruments_and_carries_all_three_back(self) -> None:
         run = self._probing()
-        with mock.patch("src.robot.grasping.deep.train.trainer.corpus_index") as index,              mock.patch("src.robot.grasping.deep.eval.probes.oracle_ceiling") as ceiling,              mock.patch("src.robot.grasping.deep.eval.probes.baseline_floor") as floor,              mock.patch("src.robot.grasping.deep.eval.probes.approach_headroom") as headroom:
+        with (mock.patch(f"{_TRAINER}.corpus_index") as index,
+              mock.patch(f"{_PROBES}.oracle_ceiling") as ceiling,
+              mock.patch(f"{_PROBES}.baseline_floor") as floor,
+              mock.patch(f"{_PROBES}.approach_headroom") as headroom):
             ceiling.return_value = {"top1_hit": 1.0, "coverage": 0.36}
             floor.return_value = {"top_down": {"top1_hit": 0.18, "coverage": 0.04}}
             headroom.return_value = {"unaugmented": {"global": 53.2, "per_seed": 34.4}}
@@ -424,6 +433,22 @@ class TheProbeIsAskedOfTheCorpusNotOfAModelTests(unittest.TestCase):
         self.assertEqual(17, probe.units)
         self.assertEqual(1.0, probe.ceiling["top1_hit"])
         self.assertEqual(0.18, probe.floor["top_down"]["top1_hit"])
+
+    def test_unchosen_units_are_the_runs_own_probe_units(self) -> None:
+        """The context already says how many units a probe draws; `probe()` reads it rather than
+        declaring a second number, and a seed nobody chose is left to the instruments."""
+        run = self._probing(probe_units=40)
+        with (mock.patch(f"{_TRAINER}.corpus_index"),
+              mock.patch(f"{_PROBES}.oracle_ceiling") as ceiling,
+              mock.patch(f"{_PROBES}.baseline_floor") as floor,
+              mock.patch(f"{_PROBES}.approach_headroom") as headroom):
+            ceiling.return_value, floor.return_value, headroom.return_value = {}, {}, {}
+            probe = run.probe()
+
+        self.assertEqual(40, probe.units)
+        for call in (ceiling, floor, headroom):
+            self.assertEqual(40, call.call_args.kwargs["units"])
+            self.assertNotIn("seed", call.call_args.kwargs)
 
     def test_the_rendered_table_shows_both_ends_and_stays_ascii(self) -> None:
         from src.robot.grasping.deep.train.api import CorpusProbe

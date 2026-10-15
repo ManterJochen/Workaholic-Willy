@@ -31,7 +31,8 @@ python scripts/ursim/probe_our_driver.py --profile ursim  # this repository's dr
 
 | Step | Script | What it proves | Moves |
 |---|---|---|---|
-| 0 | [`ursim.sh`](ursim.sh) `up\|down\|status MODEL` | the simulator runs and its dashboard answers; `MODEL` is `UR5` or `UR3` | nothing |
+| 0 | [`ursim.sh`](ursim.sh) `up\|remote\|down\|status MODEL` | the simulator runs, its dashboard answers and it is in remote control; `MODEL` is `UR5` or `UR3` | nothing |
+| 0b | [`enable_remote.py`](enable_remote.py) | run by `up` inside the container: the pendant's own Remote Control clicks over VNC, then the dashboard asked whether they took; `URSIM_NO_REMOTE=1` leaves the selector to a person | the pendant's selector |
 | 1 | [`probe_ursim.py`](probe_ursim.py) | `ur_rtde` talks to the controller, with none of this repository's code | power, brakes, I/O outputs |
 | 2 | [`probe_our_driver.py`](probe_our_driver.py) | `URRobotArm`: payload push, tool frame check, `RobotStatus`, a joint move through `SafetyPreflight` | the arm; I/O once confirmed |
 | 3 | [`probe_grippers.py`](probe_grippers.py) | `JawIOGripper` and `VacuumGripper` reach the controller's digital I/O | I/O once confirmed |
@@ -44,6 +45,10 @@ python scripts/ursim/probe_our_driver.py --profile ursim  # this repository's dr
 | | [`watch_stop.py`](watch_stop.py) | what the stack sees when a person presses the stop at the pendant | three small joint moves after the stop |
 | | [`probe_base_frame.py`](probe_base_frame.py) | whether the controller reports poses in the DH base frame or the one turned half a turn | nothing |
 | | [`probe_curobo_bed.py`](probe_curobo_bed.py) | the checked motions with the cuRobo planner on, and what each check costs | the arm |
+| | [`probe_planned_route.py`](probe_planned_route.py) | the planned route (`WILLY_PROFILE=ursim,ursim_curobo`, with `ursim_ur3` for the UR3e): a clear move runs as one straight joint line, a joint line into a declared block is planned around to the same target, and a station at home - 200 deg on wrist 3 runs as its twin at + 160 deg | the arm |
+| | [`probe_freedrive.py`](probe_freedrive.py) | hand guiding over the transport: a verb inside a session is refused with nothing sent, `hold()` then a `moveJ` runs, a process that stops sampling trips the watchdog, and one killed while the arm is free is protective-stopped, each stop timed on the dashboard and unlocked again; powers the arm on | a small wrist turn |
+| | [`probe_teach.py`](probe_teach.py) | `teach_poses` through `Robot.connected()` with a scripted person: the default name, a typed name, a skip and the finish reach the file, each pose carries the controller's joints and its line reads back to them, nothing moved the arm, and the session ends held with motion given back; powers the arm on | the arm to a station inside the workspace box, a small `moveJ` and back |
+| | [`probe_acknowledge.py`](probe_acknowledge.py) | a person clears a real protective stop through the one door, `python -m src.robot.faults acknowledge`: answered "no" the stop stays (exit 1), `--yes` clears it (exit 0, the dashboard reads NORMAL), and a second run finds no fault. It powers the arm on itself, refuses a controller that is not the loopback, and leaves no stop behind. Measured 2026-10-15 on the CB3 UR10 (PolyScope 3.15.8, `WILLY_PROFILE=ursim,ur10`): 4 of 4 | the arm, by a raw `moveL` into the base that the controller stops |
 | | [`probe_push_on_the_mat.py`](probe_push_on_the_mat.py) | the push and clearing a blocker, with a cell's own tree, a recorded mat and the toggle hand | the arm and the tool output |
 
 Each script's docstring holds its procedure and its exit codes. Most exit 0 when every step answered
@@ -120,7 +125,10 @@ python scripts/ursim/probe_console_task.py --json c.json  # C5, then C1-C4; need
 has no Remote/Local switch. A "Power off" notice comes first (click **Not now**); power on and release the
 brakes from the dashboard; only then does "Confirm Safety Configuration" appear, and RTDE refuses until it is
 confirmed. After a protective stop the control script has ended, and the first script upload after the
-release can time out once. The measurements of both probes, and what they leave for the cell, are in
+release can time out once. A reused container can hold a TCP in its saved installation (157 mm, from an earlier
+probe), which every start of the controller loads again: a `willy` profile is then refused at the connect with
+that distance named. `rtde_control.RTDEControlInterface("127.0.0.1").setTcp([0.0] * 6)` clears it until the
+controller restarts. The measurements of both probes, and what they leave for the cell, are in
 [`docs/runbooks/console_at_the_cell.md`](../../docs/runbooks/console_at_the_cell.md).
 
 ## The push on a cell's own mat

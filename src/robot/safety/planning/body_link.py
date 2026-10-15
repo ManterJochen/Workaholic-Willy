@@ -13,8 +13,10 @@ The arithmetic is ``_curobo_body_links.hand_body_link``, shared with the scripts
 The placement is required. A hand whose declared frame places it nowhere has no link, and the refusal says why: UNSET
 read as the identity would model a real UR hand a quarter turn from where it is, so it is refused and never implied.
 
-The hand ignores ``tool0``, ``wrist_3_link`` and ``wrist_2_link``: the frame a descriptor holds an ignore table for, and
-the pairs the guard skips. ``wrist_1_link`` stays checked. Its buffer is 0, and the margin raises it like every link's.
+The hand ignores the arm's flange link and its last two links, ``tool0``, ``wrist_3_link`` and ``wrist_2_link`` on a UR:
+the frame a descriptor holds an ignore table for, and the pairs the guard skips. The link before them, ``wrist_1_link``,
+stays checked. Its buffer is 0, and the margin raises it like every link's. Each noun is built for one arm, named by
+model, and reads its links from that arm's description (P0f F9b).
 
 A wrist camera is :class:`WristBody`: its registry housing and the rig's bracket, grown by the rig's margin and placed
 on tool0 by the recorded flange to TCP times the calibrated CAMERA to TOOL. One noun gives the planner its link, the
@@ -33,15 +35,15 @@ from typing import Any
 import numpy as np
 import yaml
 
+from src.config.arms import load_arm
 from src.contracts import chosen
 
 from ._curobo_body_links import (
-    HAND_IGNORE,
     HAND_JOINT,
     HAND_LINK,
-    HAND_PARENT,
     WRIST_BODY_PREFIX,
     WRIST_BODY_REACH_MM,
+    ArmLinks,
     BodyLinkError,
     canonical_sha256,
     hand_body_link,
@@ -51,17 +53,19 @@ from ._declared_body import Box, box_spheres, boxes_to_parts, cover_refusal, inf
 from ._hand_placement import HandPlacement
 from .hand import PlannerHand
 
-__all__ = ["HAND_IGNORE", "HAND_JOINT", "HAND_PARENT", "HandLink", "WristBody", "coupling_bodies",
-           "wrist_body_refusal"]
+__all__ = ["HAND_JOINT", "HandLink", "WristBody", "coupling_bodies", "links_of", "wrist_body_refusal"]
 
-#: DH frame 6, where tool0 sits and where the exact mesh guard hangs every part on the flange.
-_TOOL0_FRAME = 6
 #: How far a reported fixed transform may differ from the one sent before the sidecar holds another camera.
 _TRANSFORM_TOLERANCE = 1e-12
 
 
-def coupling_bodies(hand: PlannerHand) -> "list[dict[str, Any]]":
-    """The plates a cell measured across, as bodies to send beside the hand, or an empty list.
+def links_of(model: str) -> ArmLinks:
+    """``model``'s flange link and joint links, from its description: what a body on its flange hangs from and ignores."""
+    return ArmLinks.from_description(load_arm(model.lower()))
+
+
+def coupling_bodies(hand: PlannerHand, *, arm: str) -> "list[dict[str, Any]]":
+    """The plates a cell measured across, as bodies to send beside the hand on ``arm``, or an empty list.
 
     Empty is the answer for every shipped cell, and it is not a silence: a plate that declared only a
     thickness still holds the hand out, and ``PlannerHand.coupling_undeclared`` names it so the checklist
@@ -77,13 +81,13 @@ def coupling_bodies(hand: PlannerHand) -> "list[dict[str, Any]]":
             f"{hand.model} cannot carry plates on a placement its declared tool frame refuses: "
             f"{hand.placement_refusal}"
         )
-    body = coupling_body_link(boxes=hand.coupling_boxes, rotation=hand.placement.rotation)
+    body = coupling_body_link(arm_links=links_of(arm), boxes=hand.coupling_boxes, rotation=hand.placement.rotation)
     return [] if body is None else [body]
 
 
 @dataclass(frozen=True)
 class HandLink:
-    """One hand as a fixed link under tool0: its map's spheres in the hand's own frame, and where that frame sits."""
+    """One hand as a fixed link under an arm's flange: its map's spheres in the hand's own frame, and where it sits."""
 
     #: The registry name, ``robot.gripper.model``.
     model: str
@@ -98,10 +102,12 @@ class HandLink:
     fixed_transform: tuple[float, ...]
     #: :func:`~._curobo_body_links.canonical_sha256` of the spheres as they are sent.
     spheres_sha256: str
+    #: The arm it hangs from: that arm's flange link, and the links it ignores by position.
+    arm_links: ArmLinks
 
     @classmethod
-    def from_hand(cls, hand: PlannerHand) -> HandLink:
-        """The link ``hand`` is, or :class:`BodyLinkError` where its placement or its map gives none."""
+    def from_hand(cls, hand: PlannerHand, *, arm: str) -> HandLink:
+        """The link ``hand`` is on ``arm``, or :class:`BodyLinkError` where its placement or its map gives none."""
         if not chosen(hand.placement):
             raise BodyLinkError(
                 f"{hand.model} cannot be a link of the planner's robot, because its declared tool frame places it "
@@ -115,8 +121,9 @@ class HandLink:
                 "plan with"
             )
         placement = hand.placement
+        on = links_of(arm)
         body = hand_body_link(
-            spheres=entries, rotation=placement.rotation, approach_in_tool0=placement.approach_in_tool0,
+            arm_links=on, spheres=entries, rotation=placement.rotation, approach_in_tool0=placement.approach_in_tool0,
             origin=hand.origin, coupling_mm=hand.coupling_mm,
         )
         return cls(
@@ -127,26 +134,28 @@ class HandLink:
             spheres=tuple((tuple(sphere["center"]), sphere["radius"]) for sphere in body["spheres"]),
             fixed_transform=tuple(body["fixed_transform"]),
             spheres_sha256=canonical_sha256(body["spheres"]),
+            arm_links=on,
         )
 
     def render(self) -> str:
         x, y, z = (1000.0 * v for v in self.fixed_transform[:3])
         return (
-            f"hand link {self.model}: {len(self.spheres)} spheres under {HAND_PARENT} at ({x:g}, {y:g}, {z:g}) mm, "
-            f"approach {self.placement.approach}, closing {self.placement.closing}, ignoring {', '.join(HAND_IGNORE)}"
+            f"hand link {self.model}: {len(self.spheres)} spheres under {self.arm_links.flange} at ({x:g}, {y:g}, {z:g}) mm, "
+            f"approach {self.placement.approach}, closing {self.placement.closing}, ignoring "
+            f"{', '.join(self.arm_links.hand_ignore)}"
         )
 
     def to_dict(self) -> dict[str, Any]:
         """The body in the shape ``apply_body_links`` reads, and what it was derived from."""
         return {
             "link": HAND_LINK,
-            "parent": HAND_PARENT,
+            "parent": self.arm_links.flange,
             "joint": HAND_JOINT,
             "fixed_transform": list(self.fixed_transform),
             "spheres": [{"center": list(centre), "radius": radius} for centre, radius in self.spheres],
             "slots": 0,
             "buffer_m": 0.0,
-            "ignore": list(HAND_IGNORE),
+            "ignore": list(self.arm_links.hand_ignore),
             "model": self.model,
             "origin": self.origin,
             "coupling_mm": self.coupling_mm,
@@ -185,7 +194,7 @@ class WristBody:
     boxes: tuple[Box, ...]
     #: The optical frame on tool0 as a 4x4 in millimetres: recorded flange to TCP times CAMERA to TOOL.
     placement_mm: tuple[tuple[float, ...], ...]
-    #: Where the record came from: ``willy`` or ``polyscope``.
+    #: Where the record came from: ``willy`` or ``controller``.
     record_source: str
     #: The calibration artifact the placement was read from.
     artifact_path: str
@@ -245,7 +254,7 @@ class WristBody:
         """Why the flange to TCP the cell applies now, ``frame`` on a ``source`` cell, is not this body's record, or None.
 
         The body and the pick frame were both placed from the record, so a frame that moved since makes both stale. On
-        a ``willy`` cell the record was written from the declared numbers and has to be them; on a ``polyscope`` cell
+        a ``willy`` cell the record was written from the declared numbers and has to be them; on a ``controller`` cell
         the frame is derived at connect and may lie within the rig's record tolerances.
         """
         from src.calibration.rig_calibration import flange_to_tcp_record_refusal
@@ -267,17 +276,17 @@ class WristBody:
         """Each box's sphere fill, in metres, in the optical frame, as the planner link carries them."""
         return [box_spheres(box, reach_mm=WRIST_BODY_REACH_MM) for box in self.boxes]
 
-    def link(self) -> "dict[str, Any]":
-        """The body in the shape ``apply_body_links`` reads, and what it was derived from."""
+    def link(self, *, arm: str) -> "dict[str, Any]":
+        """The body on ``arm``'s flange in the shape ``apply_body_links`` reads, and what it was derived from."""
         placement = self.placement()
-        body = wrist_body_link(rig_id=self.rig_id, boxes=self.boxes, rotation=placement[:3, :3].tolist(),
+        body = wrist_body_link(arm_links=links_of(arm), rig_id=self.rig_id, boxes=self.boxes, rotation=placement[:3, :3].tolist(),
                                translation_m=(placement[:3, 3] / 1000.0).tolist())
         return {**body, "rig_id": self.rig_id, "model": self.model, "margin_mm": self.margin_mm,
                 "boxes": [box.to_dict() for box in self.boxes]}
 
-    def guard_parts(self) -> "dict[str, np.ndarray]":
-        """The boxes as one exact mesh guard part on DH frame 6, vertices placed on tool0."""
-        parts = boxes_to_parts(list(self.boxes), frame=_TOOL0_FRAME)
+    def guard_parts(self, *, frame: int) -> "dict[str, np.ndarray]":
+        """The boxes as one exact mesh guard part on ``frame``, the flange of the arm the camera is on, placed on tool0."""
+        parts = boxes_to_parts(list(self.boxes), frame=frame)
         placement = self.placement()
         key = f"{self.link_name}__v"
         vertices = parts[key]
@@ -315,8 +324,8 @@ class WristBody:
                 "record_source": self.record_source, "artifact_path": self.artifact_path}
 
 
-def wrist_body_refusal(identity: Any, bodies: "Sequence[WristBody]") -> "str | None":
-    """Why the started sidecar does not hold exactly ``bodies`` with a cover proven complete, or ``None``.
+def wrist_body_refusal(identity: Any, bodies: "Sequence[WristBody]", *, arm: str) -> "str | None":
+    """Why the started sidecar does not hold exactly ``bodies`` on ``arm`` with a cover proven complete, or ``None``.
 
     ``identity`` is the sidecar's ``SidecarIdentity``. With no bodies, a sidecar that reports none passes and one that
     reports any is refused. With bodies, in this order: a sidecar that reports no wrist bodies, rows whose hash is not
@@ -346,7 +355,7 @@ def wrist_body_refusal(identity: Any, bodies: "Sequence[WristBody]") -> "str | N
         return (f"the sidecar loaded the wrist camera(s) {sorted(held)} and this cell sent {sorted(sent)}, so the "
                 "planner holds a camera that is not this cell's. Restart the planner.")
     for name, body in sent.items():
-        row, link = held[name], body.link()
+        row, link = held[name], body.link(arm=arm)
         if row.get("parent") != link["parent"]:
             return (f"the sidecar loaded {name} with parent {row.get('parent')!r} and this cell sent "
                     f"{link['parent']!r}, so the planner holds a camera that is not this cell's. Restart the planner.")

@@ -17,10 +17,10 @@ _DATA = _REPO / "src" / "robot" / "safety" / "data"
 
 
 def _fitter():
-    name = "_fit_cover_spheres_for_why"
+    name = "_fit_for_why"
     if name in sys.modules:
         return sys.modules[name]
-    path = _REPO / "scripts" / "curobo" / "fit_cover_spheres.py"
+    path = _REPO / "scripts" / "arms" / "fit.py"
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -46,7 +46,7 @@ class ARefusedFitSaysWhyTests(unittest.TestCase):
         said = str(caught.exception.code)
         self.assertIn("not tried", said)
         self.assertIn(f"{self.spacing_mm:.2f}", said)
-        self.assertIn("fit_cover_spheres.py --hand schunk_egu50 --bodies lfinger --curve", said)
+        self.assertIn("scripts/arms/fit.py --hand schunk_egu50 --bodies lfinger --curve", said)
         self.assertNotIn("does not cover this body", said)
 
     def test_the_curve_already_called_that_rung_not_tried(self) -> None:

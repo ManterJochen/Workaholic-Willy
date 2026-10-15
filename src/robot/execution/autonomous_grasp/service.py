@@ -52,7 +52,7 @@ from src.robot.core import (
     RobotArm,
     RobotError,
 )
-from src.robot.core.errors import CameraWorldUnavailable
+from src.robot.core.errors import ArmFault, CameraWorldUnavailable
 from src.robot.core.gripper import toggle_without_sensor_of, why_toggle_count_unknown
 from src.robot.execution.looks import Look, LookPose, look_label, looks_of, move_to_look
 from src.robot.execution.motion import MotionOutcome, MotionReport
@@ -530,13 +530,12 @@ class AutonomousGraspService:
         effective_policy = policy
         if chosen(motion):
             # The caller's motion, on this service's arm and hand, with every guard: the base frame
-            # guard where a resolver is wired, the dwell gate the arm's tree asks for, and the jaws
-            # opened before every approach.
+            # guard where a resolver is wired and the jaws opened before every approach; the arm holds
+            # its own steady gate.
             standoff_mm, retreat_mm = motion.standoff_and_retreat(standoff_mm, retreat_mm)
             effective_policy = build_execution_policy(
                 motion, arm=arm, gripper=gripper, standoff_mm=standoff_mm, retreat_mm=retreat_mm,
                 base_frame_required=frame_resolver is not None,
-                dwell=getattr(getattr(getattr(arm, "config", None), "safety", None), "dwell", None),
             )
         elif effective_policy is None and frame_resolver is not None:
             effective_policy = GraspExecutionPolicy(
@@ -848,12 +847,11 @@ class AutonomousGraspService:
             # willy_sim-only and hardcodes `robot_vendor="sim"`. Scene and session provenance are
             # deliberately not stamped: in production those would be fabricated strings and would
             # flip the leakage audit from an honest "skipped" to a dishonest green pass.
+            # The selection answers this, so the stamp cannot fall behind the vendor list: it was a two-entry dict
+            # keyed on the vendor, `ArmSelection.model` written a second time.
+            selected = getattr(robot_cfg, "arm", None)
             vendor_str = str(getattr(robot_cfg, "vendor", "") or "")
-            model = {
-                "ur": getattr(getattr(robot_cfg, "ur", None), "model", None),
-                "sim": getattr(getattr(robot_cfg, "sim", None), "robot_model", None),
-                "kuka": getattr(getattr(robot_cfg, "kuka", None), "model", None),
-            }.get(vendor_str)
+            model = selected.model if selected is not None else ""
             service.enable_record_logging(
                 record_log_path,
                 provenance={"robot_vendor": vendor_str, "robot_model": model or "unknown"},
@@ -1470,14 +1468,18 @@ class AutonomousGraspService:
     def _fault_report(self, fault: Exception, *, mode: "GraspMode | str | None") -> AutonomousGraspReport:
         """The report for a pick a fault of the cell ended.
 
-        EXECUTION_FAILED, the outcome the pick loop's own aborted attempt maps to, with the fault on the
-        report and no ``pick_report``: nothing below this service returned, so there is no attempt trail
-        to carry, and an invented one would put a trail into the corpus that replay could not tell from
-        a real one.
+        The fault on the report and no ``pick_report``: nothing below this service returned, so there is no attempt
+        trail to carry, and an invented one would put a trail into the corpus that replay could not tell from a real
+        one. A cell that stopped (:class:`~src.robot.core.errors.ArmFault`) is CANCELLED, as the pick loop's own
+        ``CONTROLLER_NOT_OPERATIONAL`` is, because a stopped controller is not a grasp that failed, and filing it under
+        failed grasps puts a machine state into the failure taxonomy this stack measures. Every other fault is
+        EXECUTION_FAILED.
         """
         effective_mode = resolve_grasp_mode(mode) if mode is not None else self.default_mode
+        outcome = (AutonomousGraspOutcome.CANCELLED if isinstance(fault, ArmFault)
+                   else AutonomousGraspOutcome.EXECUTION_FAILED)
         return AutonomousGraspReport(
-            outcome=AutonomousGraspOutcome.EXECUTION_FAILED,
+            outcome=outcome,
             mode=effective_mode,
             profile=_profile_for(effective_mode),
             effective_config=self.effective_config,

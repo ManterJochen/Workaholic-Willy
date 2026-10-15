@@ -63,7 +63,7 @@ ALLOWLIST: frozenset[str] = frozenset({
 })
 
 #: Text files worth scanning. Binary assets are not scanned: a name inside a mesh is not an install guide.
-_SCANNED_SUFFIXES = (".py", ".md", ".yaml", ".yml", ".toml", ".txt", ".cfg", ".ini", ".ps1", ".bat")
+_SCANNED_SUFFIXES = (".py", ".md", ".yaml", ".yml", ".toml", ".txt", ".cfg", ".ini", ".ps1", ".bat", ".sh")
 
 #: Directories that are not ours to police (installed payloads, caches, build output, local logs).
 _SKIP_DIRS = frozenset({
@@ -310,6 +310,14 @@ class LicenseBoundaryTests(unittest.TestCase):
         """
         scanned = {_rel(p) for p in _repo_files(_SCANNED_SUFFIXES)}
         self.assertIn("ext_deps/README.md", scanned)
+
+    def test_the_shell_scripts_are_scanned(self) -> None:
+        """P0h h9: the scan read ``.ps1`` and ``.bat`` and not ``.sh``, which ``scripts/ursim/ursim.sh`` already was and
+        the Linux build twin became. A shell script can carry an install recipe as well as a batch file can."""
+        scanned = {_rel(p) for p in _repo_files(_SCANNED_SUFFIXES)}
+        for script in ("scripts/ursim/ursim.sh", "scripts/curobo/build_compiled_backend.sh"):
+            with self.subTest(script):
+                self.assertIn(script, scanned)
 
     def test_no_forbidden_project_is_named_anywhere(self) -> None:
         problems = audit_text(_repo_files(_SCANNED_SUFFIXES))

@@ -101,14 +101,11 @@ robot:
 
   safety:
     self_collision:
-      # Selects the DH chain and the collision mesh bundle the guard evaluates this arm
-      # against. Unset, the guard falls back to the arm's `capabilities.model`, which is
-      # derived from `ur.model` and works, but the load-time validator that compares the
-      # two is guarded on this key being set, and a wrong `ur.model` is then caught only at
-      # connect, where `URRobotArm` compares it against the model the controller reports,
-      # and only where that model names a size. The bundle for this value ships at
-      # `src/robot/safety/data/ur5e_collision_meshes.npz`.
-      kinematics_model: "ur5e"
+      # The DH chain and the collision mesh bundle the guard evaluates this arm against come from
+      # `ur.model`, the one name the cell gives its arm (P0d D5): the arm reports it and the guard
+      # judges what the arm reports. A wrong `ur.model` is caught at connect, where `URRobotArm`
+      # compares it against the model the controller reports, and only where that model names a
+      # size. The bundle for this arm ships at `src/robot/safety/data/ur5e_collision_meshes.npz`.
 
       # `planner_margin_mm` is not declared here. It is the clearance the trajectory planner
       # keeps, a separate number from the 10 mm `min_distance_mm` the base file sets, and a UR
@@ -167,7 +164,7 @@ robot:
 #    commands is the grasp centre, so an undeclared or guessed tool frame means a top-down
 #    grasp commanding z = 37 mm drives the flange there and the fingertips through the
 #    bench. `source: willy` means this driver composes flange to TCP and the controller
-#    runs a bare flange; `polyscope` means the pendant holds it and this driver only
+#    runs a bare flange; `controller` means the pendant holds it and this driver only
 #    verifies it at connect. The schema also rejects a declared source left at identity,
 #    so half a declaration does not pass either.
 #

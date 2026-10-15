@@ -109,11 +109,8 @@ def _reachability(cell: Console) -> ReachabilityOut:
     """
     robot = cell.robot()
     vendor = str(robot.vendor)
-    address = None
-    if vendor == "ur":
-        address = getattr(getattr(robot, "ur", None), "ip", None)
-    elif vendor == "kuka":
-        address = getattr(getattr(robot, "kuka", None), "controller_ip", None)
+    selected = robot.arm
+    address = selected.controller if vendor == "ur" else None
 
     if not address:
         return ReachabilityOut(

@@ -11,7 +11,7 @@ planner loads. A pose set judged at another placement is refused rather than com
 Two measurements, both against the committed geometry the guard checks:
 
 * Per link: every arm sphere's reach past the convex hull of its own committed link mesh (``_arm_spheres.LinkHull``),
-  carried into the bundle frame with the chain ``build_ur_config.py`` places fitted spheres with
+  carried into the bundle frame with the chain ``scripts/arms/descriptor.py`` places fitted spheres with
   (``inv(urdf link frame) @ Rz(180) @ T_dh[frame]``). Worst reach, the count past 5 and past 10 mm, and whether the
   worst sphere is Isaac's (vendor) or fitted. An arm with no committed bundle has no links to judge.
 * Per pose: the composed config's spheres, arm plus hand link plus planner margin, composed by the module the sidecar
@@ -29,6 +29,7 @@ import argparse
 import copy
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -43,11 +44,21 @@ from curobo.types import JointState  # type: ignore[import-not-found]
 
 REPO = Path(__file__).resolve().parents[2]
 CONTENT = Path(str(get_content_root()))
-ISAAC_MP = Path("D:/isaacsim/isaac-sim-standalone-5.1.0-windows-x86_64/exts/isaacsim.robot_motion.motion_generation/"
-                "motion_policy_configs/universal_robots")
-#: bundle key -> (URDF link, DH frame), the map build_ur_config.py and the bake use.
-LINKS = {"shoulder": ("shoulder_link", 1), "upper_arm": ("upper_arm_link", 2), "forearm": ("forearm_link", 3),
-         "wrist_1": ("wrist_1_link", 4), "wrist_2": ("wrist_2_link", 5), "wrist_3": ("wrist_3_link", 6)}
+#: Where Isaac Sim keeps UR's Lula motion-policy configs, below its install root.
+_MOTION_POLICIES = Path("exts/isaacsim.robot_motion.motion_generation/motion_policy_configs/universal_robots")
+#: The reference workstation's install, guessed on Windows only when neither --isaac-root nor WILLY_ISAAC_ROOT names
+#: one (P0h h8: this was the only place the script looked, on every platform).
+_WINDOWS_ISAAC_ROOT_GUESS = "D:/isaacsim/isaac-sim-standalone-5.1.0-windows-x86_64"
+
+
+def isaac_motion_policies(root: str | None) -> Path:
+    """UR's Lula motion-policy configs below the Isaac install ``root``, else WILLY_ISAAC_ROOT, else the Windows guess."""
+    chosen = root or os.environ.get("WILLY_ISAAC_ROOT") or (
+        _WINDOWS_ISAAC_ROOT_GUESS if sys.platform == "win32" else None)
+    if not chosen:
+        raise SystemExit("this probe tells Isaac's own spheres from fitted ones by Isaac's Lula configs: pass "
+                         "--isaac-root <the Isaac Sim install> or set WILLY_ISAAC_ROOT")
+    return Path(chosen) / _MOTION_POLICIES
 
 
 def _load(path: Path) -> ModuleType:
@@ -59,14 +70,14 @@ def _load(path: Path) -> ModuleType:
     return module
 
 
-ARM = _load(REPO / "scripts" / "curobo" / "_arm_spheres.py")
+ARM = _load(REPO / "scripts" / "arms" / "_arm_spheres.py")
 FIDELITY = _load(REPO / "scripts" / "curobo" / "_sphere_fidelity.py")
 #: The hand as a cell's planner sends it, and the composition its sidecar runs. Loading the same two modules is what
 #: makes this probe measure the robot the planner builds, rather than a file that resembles it.
-HAND = _load(REPO / "scripts" / "curobo" / "_hand_body.py")
+HAND = _load(REPO / "scripts" / "arms" / "_hand_body.py")
 COMPOSE = _load(REPO / "src" / "robot" / "safety" / "planning" / "_curobo_body_links.py")
-#: The standard UR DH table as the URDF baker inlines it. Every inlined copy of it is held against the others.
-UR_DH = _load(REPO / "scripts" / "isaac" / "bake_ur_meshes_from_urdf.py").UR_DH
+#: The arm description, read by path as every build script reads it: the links and the DH rows.
+ARM_FILE = _load(REPO / "scripts" / "arms" / "_arm_file.py")
 
 
 def _axis_angle(axis: tuple[float, float, float], angle: float) -> np.ndarray:
@@ -106,29 +117,30 @@ def _urdf_frames(text: str):
 
 def _dh_frames(model: str) -> list[np.ndarray]:
     frames, t = [np.eye(4)], np.eye(4)
-    for a, d, alpha in UR_DH[model]:
+    for a, d, alpha in ARM_FILE.dh_rows(model):
         ca, sa = np.cos(alpha), np.sin(alpha)
         t = t @ np.array([[1.0, 0.0, 0.0, a], [0.0, ca, -sa, 0.0], [0.0, sa, ca, d], [0.0, 0.0, 0.0, 1.0]])
         frames.append(t.copy())
     return frames
 
 
-def link_reach(name: str, kinematics: dict) -> dict[str, dict]:
+def link_reach(name: str, kinematics: dict, motion_policies: Path) -> dict[str, dict]:
     """Per arm link: how far its spheres reach past the hull of its committed mesh. Empty with no bundle."""
     model = name.split("_", 1)[0]
     bundle_path = REPO / "src" / "robot" / "safety" / "data" / f"{model}_collision_meshes.npz"
-    if not bundle_path.is_file() or model not in UR_DH:
+    if not bundle_path.is_file() or model not in ARM_FILE.described():
         return {}
     urdf = (CONTENT / "assets" / "robot" / "ur_description" / f"{model}.urdf").read_text(encoding="utf-8")
     frame = _urdf_frames(urdf)
     dh = _dh_frames(model)
     rz = np.diag([-1.0, -1.0, 1.0, 1.0])
     bundle = np.load(bundle_path)
-    lula = yaml.safe_load((ISAAC_MP / model / "rmpflow" / f"{model}_robot_description.yaml").read_text(encoding="utf-8"))
+    lula = yaml.safe_load((motion_policies / model / "rmpflow" / f"{model}_robot_description.yaml")
+                          .read_text(encoding="utf-8"))
     vendor = {link: {tuple(np.round(np.asarray(s["center"], float), 3)) for s in spheres}
               for entry in lula["collision_spheres"] for link, spheres in entry.items()}
     out: dict[str, dict] = {}
-    for key, (link, index) in LINKS.items():
+    for key, link, index in ARM_FILE.collision_links(model):
         hull = ARM.LinkHull.from_vertices(np.asarray(bundle[f"{key}__v"], dtype=np.float64) / 1000.0)
         back = np.linalg.inv(np.linalg.inv(frame(link)) @ rz @ dh[index])
         rows = []
@@ -156,7 +168,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tool-rotation-xyzw", type=float, nargs=4, default=list(HAND.SIM_TOOL_ROTATION_XYZW),
                         help="where the declared tool frame puts the hand; it must match the pose set's placement")
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--isaac-root", default=None,
+                        help="the Isaac Sim install whose Lula configs tell Isaac's spheres from fitted ones "
+                             "(default: WILLY_ISAAC_ROOT, else the reference workstation's install on Windows)")
     args = parser.parse_args(argv)
+    motion_policies = isaac_motion_policies(args.isaac_root)
 
     exact = json.loads(args.exact.read_text(encoding="utf-8"))
     arm, hand = args.descriptor.split("_", 1)
@@ -171,12 +187,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     source = args.yml if args.yml is not None else CONTENT / "configs" / "robot" / f"willy_{arm}.yml"
     if not source.is_file():
-        print(f"no arm descriptor at {source}; build it with build_ur_config.py {arm}")
+        print(f"no arm descriptor at {source}; build it with scripts/arms/descriptor.py {arm}")
         return 1
 
     # What the sidecar loads for this cell, by the same modules: the arm descriptor, the hand as a body link where the
     # declared frame puts it, then the planner margin.
-    body = HAND.hand_body(hand, coupling_mm=exact.get("coupling_mm"), rotation_xyzw=tuple(args.tool_rotation_xyzw))
+    body = HAND.hand_body(hand, arm=arm, coupling_mm=exact.get("coupling_mm"),
+                          rotation_xyzw=tuple(args.tool_rotation_xyzw))
     composed, adjusted, _ = COMPOSE.compose_with_counts(
         yaml.safe_load(source.read_text(encoding="utf-8")), bodies=[body], margin_mm=args.planner_margin_mm,
     )
@@ -201,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
         per_kind[kind] = FIDELITY.Agreement.from_verdicts(
             sphere_collides=[collides[i] for i in chosen], exact_distance_mm=[distances[i] for i in chosen],
             margin_mm=args.guard_margin_mm)
-    reach = link_reach(args.descriptor, composed["robot_cfg"]["kinematics"])
+    reach = link_reach(args.descriptor, composed["robot_cfg"]["kinematics"], motion_policies)
 
     print(f"== {args.descriptor}: {source.name} with the hand as a body link at {placed.approach}{placed.closing}, "
           f"planner margin {args.planner_margin_mm:g} mm on {adjusted} link buffers, "

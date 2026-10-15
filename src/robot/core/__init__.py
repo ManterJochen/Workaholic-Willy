@@ -22,12 +22,18 @@ Public exports:
   :func:`stamp_result` and the :class:`DeclinesCameraWorld` capability say how a driver
   declines, reads a decline and stamps its motions, and :func:`camera_world_refusal` with
   ``NO_CAMERA_WORLD_MESSAGE`` says which stamped motions a driver refuses before they move.
+* :class:`PlansMotions` (an arm that plans, asked through :func:`plans_motions`),
+  :class:`HoldsAPlannerWorld` (an arm that holds the live world, read through
+  :func:`live_planner_world_of` and :func:`holds_a_planner_world`) and :class:`StartsAPlanner`
+  (a planner a person starts at a desk) are what the stack asks an arm about its planner.
 * :class:`RobotError` and its subclasses are the vendor-neutral error hierarchy.
 * :class:`SupportsFreedrive` is hand guiding as a vendor capability: a :class:`FreedriveSession`
   frees the arm for a person and reads it as :class:`FreedriveSample`, and
   :class:`ControllerPayload` is the payload the controller compensates for while it is free.
 * :class:`SupportsHalt` is the halt latch ("halt now"): :class:`HaltState` is the latch while it is set, and
   :class:`ArmHalted` the refusal of an output a halted arm will not switch.
+* The rest of what the stack asks an arm, each a capability a driver implements or not, lives in
+  :mod:`~src.robot.core.arm_capabilities` and is imported from there.
 
 The numerics contract mirrors :mod:`src.geometry`: translations in millimetres,
 orientations as unit XYZW quaternions with a canonical sign, joint angles in radians,
@@ -37,9 +43,13 @@ all of them ``float64``. Every public ndarray this layer returns is read-only.
 from __future__ import annotations
 
 from .arm_capabilities import (
+    AppliesToolFrame,
     ArmHalted,
+    CarriesWristBodies,
+    ControllerProvenance,
     DigitalIOPort,
     HaltState,
+    ReportsControllerProvenance,
     RobotMode,
     RobotStatus,
     SafetyMode,
@@ -47,6 +57,7 @@ from .arm_capabilities import (
     SupportsForceTorque,
     SupportsHalt,
     SupportsRobotStatus,
+    SupportsWatching,
     Wrench,
 )
 from .camera_world import (
@@ -56,19 +67,26 @@ from .camera_world import (
     CameraWorldStamp,
     CameraWorldUse,
     DeclinesCameraWorld,
+    HoldsAPlannerWorld,
+    PlansMotions,
+    StartsAPlanner,
     active_decline,
     camera_world_refusal,
+    holds_a_planner_world,
+    live_planner_world_of,
+    plans_motions,
     resolve_camera_world,
     stamp_result,
     without_camera_world,
 )
 from .capabilities import RobotCapabilities
 from .errors import (
+    ArmFault,
+    ArmFaultClass,
     PerceptionFrameMoved,
     CameraWorldUnavailable,
     IsaacNotAvailableError,
     RobotConnectionError,
-    RobotEmergencyStop,
     RobotError,
     RobotKinematicsError,
     RobotMotionRejected,
@@ -94,13 +112,20 @@ from .motion_result import (
     NO_PLAN_FAIL_SAFE_MESSAGE,
     MotionCommand,
     MotionResult,
+    MotionSent,
     MotionStatus,
 )
 from .robot_arm import RobotArm
 from .vendor import RobotVendor
 
 __all__ = [
+    "AppliesToolFrame",
+    "ArmFault",
+    "ArmFaultClass",
     "ArmHalted",
+    "CarriesWristBodies",
+    "ControllerProvenance",
+    "ReportsControllerProvenance",
     "CameraWorldDecline",
     "CameraWorldStamp",
     "CameraWorldUse",
@@ -108,6 +133,9 @@ __all__ = [
     "DECLINE_ON_A_LIVE_WORLD_MESSAGE",
     "NO_CAMERA_WORLD_MESSAGE",
     "DeclinesCameraWorld",
+    "HoldsAPlannerWorld",
+    "PlansMotions",
+    "StartsAPlanner",
     "CameraWorldUnavailable",
     "DigitalIOPort",
     "FreedriveSample",
@@ -119,6 +147,7 @@ __all__ = [
     "JointPositions",
     "MotionCommand",
     "MotionResult",
+    "MotionSent",
     "MotionStatus",
     "NO_PLAN_FAIL_SAFE_MESSAGE",
     "ObjectDetectingGripper",
@@ -128,7 +157,6 @@ __all__ = [
     "RobotArm",
     "RobotCapabilities",
     "RobotConnectionError",
-    "RobotEmergencyStop",
     "RobotError",
     "RobotKinematicsError",
     "RobotMode",
@@ -142,9 +170,13 @@ __all__ = [
     "SupportsFreedrive",
     "SupportsHalt",
     "SupportsRobotStatus",
+    "SupportsWatching",
     "Wrench",
     "active_decline",
     "camera_world_refusal",
+    "holds_a_planner_world",
+    "live_planner_world_of",
+    "plans_motions",
     "resolve_camera_world",
     "stamp_result",
     "toggle_without_sensor_of",

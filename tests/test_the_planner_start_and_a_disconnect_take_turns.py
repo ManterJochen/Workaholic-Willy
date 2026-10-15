@@ -2,7 +2,7 @@
 
 The console starts cuRobo after every Connect (build plan 0.19), a run of its own that takes about a minute and moves
 nothing, and a person can press Disconnect meanwhile. The sidecar a start spawns is kept by the planner glue only once
-it has started and passed its descriptor check (``CuroboUrPlanner._client_or_start``), so a disconnect that ran in the
+it has started and passed its descriptor check (``CuroboPlanner._client_or_start``), so a disconnect that ran in the
 middle found nothing to close, dropped the glue, and the start then finished into a glue nobody held: a sidecar process
 and its GPU memory, orphaned until the server exits. A lock now guards building, starting and closing the planner, on
 the arm (``start_planner``, ``stop_planner``, ``disconnect``) and inside the glue (a start a move made lazily), so the
@@ -29,9 +29,13 @@ import time
 import unittest
 from typing import Any
 
-from src.robot.drivers.ur.curobo_motion import UR_ARM_JOINT_NAMES, CuroboUrPlanner
+from src.config.arms import load_arm
+from src.robot.drivers.planned.curobo_motion import CuroboPlanner
 from src.robot.safety.planning import CuroboUnavailableError, JointCheckVerdict
 from tests._halt_fakes import RecordingRtde, ur_arm_on
+
+#: The controller's joint order as the ur5e description states it; the planner is handed it since P0e E4.
+_UR_JOINT_NAMES = tuple(joint.name for joint in load_arm("ur5e").joints)
 
 _HERE = [0.0, -1.2, 1.3, -0.4, 1.5, 0.2]
 
@@ -45,7 +49,7 @@ class _SlowClient:
         self.started = 0
         self.closed = 0
         self.fail = fail
-        self.joint_names = list(UR_ARM_JOINT_NAMES)
+        self.joint_names = list(_UR_JOINT_NAMES)
 
     def start(self) -> None:
         self.starting.set()
@@ -83,7 +87,7 @@ class _RestartingClient:
     (``if self._proc is None: self.start()``), counting its starts and closes."""
 
     def __init__(self) -> None:
-        self.joint_names = list(UR_ARM_JOINT_NAMES)
+        self.joint_names = list(_UR_JOINT_NAMES)
         self.running = False
         self.starts = 0
         self.closes = 0
@@ -111,14 +115,14 @@ class _RestartingClient:
 
 def _arm(client: _SlowClient) -> Any:
     arm = ur_arm_on(RecordingRtde(), "curobo")
-    arm._curobo_ur = CuroboUrPlanner(arm._conn, client_factory=lambda: client)
+    arm._curobo = CuroboPlanner(arm._transport, joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180, client_factory=lambda: client)
     return arm
 
 
 def _arm_building_on(sidecars: _Sidecars) -> Any:
     """A cuRobo arm that builds its own planner glue on ``sidecars``; they report no descriptor, so none is checked."""
     arm = ur_arm_on(RecordingRtde(), "curobo")
-    arm._curobo_ur = None
+    arm._curobo = None
     arm._curobo_client_factory = sidecars
     arm._descriptor_check = lambda: None
     return arm
@@ -153,7 +157,7 @@ class TheyTakeTurnsTests(unittest.TestCase):
         """A move starts the planner lazily, below the arm's lock: the glue's own lock makes the close wait."""
         client = _SlowClient()
         arm = _arm(client)
-        planner = arm._curobo_ur
+        planner = arm._curobo
         starting = _thread(planner.start)
         self.assertTrue(client.starting.wait(2.0))
         self.assertEqual("starting", planner.state)
@@ -213,7 +217,7 @@ class PlannerStateTests(unittest.TestCase):
     def test_the_glue_alone_says_off_and_ready(self) -> None:
         client = _SlowClient()
         client.release.set()
-        planner = CuroboUrPlanner(object(), client_factory=lambda: client)  # type: ignore[arg-type]
+        planner = CuroboPlanner(object(), joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180, client_factory=lambda: client)  # type: ignore[arg-type]
         self.assertEqual("off", planner.state)
         planner.start()
         self.assertEqual("ready", planner.state)
@@ -230,7 +234,7 @@ class ADisconnectRetiresThePlannerTests(unittest.TestCase):
         sidecars = _Sidecars()
         arm = _arm_building_on(sidecars)
         arm.start_planner()
-        held = arm._curobo_ur_planner()  # what a move takes, once, at the start of its route
+        held = arm._curobo_planner()  # what a move takes, once, at the start of its route
         arm.disconnect()
         with self.assertRaises(CuroboUnavailableError) as refused:
             held.check_joint_path([_HERE], refresh=False)
@@ -249,7 +253,7 @@ class ADisconnectRetiresThePlannerTests(unittest.TestCase):
         sidecars = _Sidecars()
         arm = _arm_building_on(sidecars)
         arm.start_planner()
-        held = arm._curobo_ur_planner()
+        held = arm._curobo_planner()
         arm.stop_planner()
         for ask in (lambda: held.check_joint_path([_HERE], refresh=False), held.start,
                     lambda: held.plan_joint(_HERE, start_ur=_HERE), lambda: held.judge_joint_path([_HERE])):
@@ -270,7 +274,7 @@ class ADisconnectRetiresThePlannerTests(unittest.TestCase):
         legs: list[str] = []
 
         def move() -> None:
-            planner = arm._curobo_ur_planner()
+            planner = arm._curobo_planner()
             for leg in range(3):
                 try:
                     planner.check_joint_path([_HERE], refresh=False)
@@ -300,11 +304,11 @@ class ADisconnectRetiresThePlannerTests(unittest.TestCase):
         arm.start_planner()
         arm.halt("disconnect")
         arm.disconnect()
-        fresh = arm._curobo_ur_planner()  # the move's next call for the planner
+        fresh = arm._curobo_planner()  # the move's next call for the planner
         with self.assertRaises(CuroboUnavailableError) as refused:
             fresh.check_joint_path([_HERE], refresh=False)
         self.assertIn("halted", str(refused.exception))
-        self.assertIsNone(arm._curobo_ur, "the arm kept a planner built for a move on a halted arm")
+        self.assertIsNone(arm._curobo, "the arm kept a planner built for a move on a halted arm")
         self.assertEqual("off", arm.planner_state)
         self.assertEqual(1, len(sidecars.made))
         arm.start_planner()  # a person's own start is no move: it starts, halted and at a desk included
@@ -312,8 +316,8 @@ class ADisconnectRetiresThePlannerTests(unittest.TestCase):
         self.assertEqual(2, len(sidecars.made))
         arm.stop_planner()
         arm.clear_halt()
-        kept = arm._curobo_ur_planner()
-        self.assertIs(kept, arm._curobo_ur, "a cleared arm keeps the planner it builds for a move again")
+        kept = arm._curobo_planner()
+        self.assertIs(kept, arm._curobo, "a cleared arm keeps the planner it builds for a move again")
         self.assertEqual(2, len(sidecars.made), "building the glue starts nothing: the first plan does")
         kept.check_joint_path([_HERE], refresh=False)
         self.assertEqual(3, len(sidecars.made))
@@ -323,7 +327,7 @@ class ADisconnectRetiresThePlannerTests(unittest.TestCase):
     def test_a_plain_close_still_lets_the_next_start_begin_empty(self) -> None:
         """``close`` is not ``retire``: the glue it closed starts a fresh sidecar on the next start, as it always did."""
         sidecars = _Sidecars()
-        planner = CuroboUrPlanner(object(), client_factory=sidecars)  # type: ignore[arg-type]
+        planner = CuroboPlanner(object(), joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180, client_factory=sidecars)  # type: ignore[arg-type]
         planner.start()
         planner.close()
         planner.start()
@@ -339,9 +343,9 @@ class ADisconnectRetiresThePlannerTests(unittest.TestCase):
         a client the glue no longer held."""
         client = _RestartingClient()
         arm = ur_arm_on(RecordingRtde(), "curobo")
-        arm._curobo_ur = CuroboUrPlanner(arm._conn, client_factory=lambda: client)
+        arm._curobo = CuroboPlanner(arm._transport, joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180, client_factory=lambda: client)
         arm.start_planner()
-        taken = arm._curobo_ur._client_or_start()  # what refresh_planner_world holds while it reads the camera
+        taken = arm._curobo._client_or_start()  # what refresh_planner_world holds while it reads the camera
         arm.halt("disconnect")
         arm.disconnect()
         with self.assertRaises(CuroboUnavailableError):
@@ -354,9 +358,9 @@ class ADisconnectRetiresThePlannerTests(unittest.TestCase):
         own timeouts bound that), then closes, and nothing starts again."""
         client = _RestartingClient()
         arm = ur_arm_on(RecordingRtde(), "curobo")
-        arm._curobo_ur = CuroboUrPlanner(arm._conn, client_factory=lambda: client)
+        arm._curobo = CuroboPlanner(arm._transport, joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180, client_factory=lambda: client)
         arm.start_planner()
-        held = arm._curobo_ur
+        held = arm._curobo
         client.release.clear()
         verdicts: list[Any] = []
         checking = _thread(lambda: verdicts.append(held.check_joint_path([_HERE], refresh=False)))
@@ -377,7 +381,7 @@ class ADisconnectRetiresThePlannerTests(unittest.TestCase):
         import copy
 
         client = _RestartingClient()
-        planner = CuroboUrPlanner(object(), client_factory=lambda: client)  # type: ignore[arg-type]
+        planner = CuroboPlanner(object(), joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180, client_factory=lambda: client)  # type: ignore[arg-type]
         planner.start()
         copied = copy.copy(planner._client_or_start())
         self.assertTrue(copied.check_joints([_HERE]).valid)
@@ -397,10 +401,10 @@ class ADisconnectRetiresThePlannerTests(unittest.TestCase):
                 closed.append("close")
 
         arm = ur_arm_on(RecordingRtde(), "curobo")
-        arm._curobo_ur = _Closing()
+        arm._curobo = _Closing()
         arm.disconnect()
         self.assertEqual(["close"], closed)
-        self.assertIsNone(arm._curobo_ur)
+        self.assertIsNone(arm._curobo)
 
 
 if __name__ == "__main__":  # pragma: no cover

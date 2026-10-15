@@ -41,7 +41,7 @@ What happens, in order:
    draws only. While a person guides the arm it also shows the way to the next target and the boundaries, and
    takes Enter, ``s`` and ``q`` as the console does (``hand_guiding``).
 4. The solve's carrier is written into ``out_dir``: ``eth_<rig>.json`` (CAMERA to BASE) or ``eih_<rig>.json``
-   (CAMERA to TOOL, with the flange to TCP record when the tool frame is declared ``willy`` or ``polyscope``). The
+   (CAMERA to TOOL, with the flange to TCP record when the tool frame is declared ``willy`` or ``controller``). The
    dataset is written during the sweep, before the solve, so a solve that fails still leaves the samples, and each
    counted sample's frame lands in ``<mode>_<rig>_images``. A run guided by hand also writes
    ``<mode>_<rig>_stations.json``, one joint station per counted pose, which ``fixed_poses`` replays without hands;
@@ -68,6 +68,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping
 
 from src.calibration.eye_hand import MountingMode
 from src.contracts import UNSET, Maybe, chosen, resolve
+from src.robot.core import AppliesToolFrame
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from collections.abc import Sequence
@@ -78,6 +79,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.geometry import Pose
     from src.robot.core.camera_world import CameraWorldStamp
     from src.robot.events import RobotCalibrationEventListener
+    from src.robot.execution.abilities import AbilityRow
     from src.robot.execution.calibration import PoseVerdict
     from src.robot.execution.hand_guiding import OperatorConsole
     from src.robot.execution.lifecycle import ConnectStage, TeardownReport
@@ -816,7 +818,8 @@ class HandEyeCalibration:
             camera (Maybe[Camera]): An owner of the rig to calibrate; ``run()`` opens it when closed and gives back only
                 what it opened (default: UNSET).
             robot_config (Maybe[Any]): The robot section the workspace box, the calibration block and the tool frame are
-                read from; unset is the arm's ``arm.config`` (default: UNSET).
+                read from; unset is the tree the robot keeps (``Robot.robot_config``), never one its arm keeps (P0e)
+                (default: UNSET).
             camera_config (Maybe[Any]): The camera section: names the rig without ``camera``, and carries every wrist
                 body the tree declares; without it only the calibrated camera's body is read (default: UNSET).
             rig_id (Maybe[str]): The rig, without ``camera`` (default: UNSET).
@@ -848,12 +851,12 @@ class HandEyeCalibration:
         from src.robot.execution.calibration import DEFAULT_FREEDRIVE_SAMPLES
 
         selected = MountingMode(mode)
-        tree: Any = robot_config if chosen(robot_config) else (
-            getattr(robot.arm, "config", None) if chosen(robot) else None)
+        tree: Any = robot_config if chosen(robot_config) else (robot.robot_config if chosen(robot) else None)
         if tree is None:
             raise ValueError(
                 "a sweep reads the robot section (workspace box, calibration block, tool frame): pass robot_config=, "
-                "or a robot whose arm keeps the tree it was built from (arm.config)")
+                "or a robot that keeps its tree (Robot.from_config, Robot.from_tree, or robot_config= on "
+                "Robot.from_parts)")
         if chosen(camera):
             if chosen(rig_id) and rig_id != camera.rig_id:
                 raise ValueError(f"rig_id={rig_id!r} names another rig than the camera handed in ({camera.rig_id!r})")
@@ -914,7 +917,11 @@ class HandEyeCalibration:
     # --- the verbs ---------------------------------------------------------------------------
 
     def check(self) -> CalibrationCheck:
-        """What the config says about this sweep. Builds nothing, opens nothing, moves nothing.
+        """What the config says about this sweep. Opens nothing and moves nothing.
+
+        A run by hand (``freedrive``, ``adjust``) builds the arm, never connected, to ask whether a person can
+        guide it, with the desk's ``calibrate by hand`` row (P0i i3): the check passed such a run on an arm the
+        build then refused.
 
         Returns:
             CalibrationCheck: The values the sweep will use, the stations it will run and every refusal; prints as
@@ -986,6 +993,9 @@ class HandEyeCalibration:
         refusal = self._way_refusal()
         if refusal is not None:
             return _Staged(CalibrationCheck(rig_id=self.rig_id, mode=self.mode, refusal=refusal))
+        refusal = self._hand_guiding_refusal()
+        if refusal is not None:
+            return _Staged(CalibrationCheck(rig_id=self.rig_id, mode=self.mode, refusal=refusal))
         stations, refusal = self._own_stations()
         if refusal is not None:
             return _Staged(CalibrationCheck(rig_id=self.rig_id, mode=self.mode, refusal=refusal))
@@ -1036,7 +1046,7 @@ class HandEyeCalibration:
     def _planner_evidence_refusal(self) -> str | None:
         """Why the sweep's planner would refuse to start, read at the desk, or ``None``.
 
-        Only for an arm this noun builds on a real UR cell that plans with cuRobo and declares its planner margin:
+        Only for an arm this noun builds on a cell that plans with cuRobo and declares its planner margin:
         there the planner starts on the committed evidence file for this cell's combination (arm, hand, coupling,
         margin and the carried part's attach slots) and refuses without one, after the arm is connected. The check
         makes the same lookup (``desk_evidence_refusal``, the one ``real_cell --check`` reads), so a combination
@@ -1044,9 +1054,11 @@ class HandEyeCalibration:
         here instead. An undeclared margin is left to ``real_cell --check``, which blocks on it with its own fix.
         """
         robot_cfg = self.sections.robot
-        if chosen(self.robot) or str(getattr(robot_cfg, "vendor", "")) != "ur":
+        if chosen(self.robot):
             return None
-        if str(getattr(getattr(robot_cfg, "ur", None), "motion_planner", "")) != "curobo":
+        # The planner the selected arm's driver reads: the selection names none where it reads no planner key, so a
+        # sim or a dummy tree is out by the same fact (P0i i1).
+        if str(getattr(getattr(robot_cfg, "arm", None), "planner", "")) != "curobo":
             return None
         from src.robot.safety.planning.evidence import desk_evidence_refusal
         from src.robot.safety.planning.margin import declared_planner_margin
@@ -1063,8 +1075,9 @@ class HandEyeCalibration:
     def _own_stations(self) -> "tuple[list[Any] | None, str | None]":
         """``(stations, None)`` for the caller's own stations, ``(None, None)`` for none, or ``(None, why)``.
 
-        A file is read and every record checked here (``pose_provider.load_stations``), so ``--check`` refuses a
-        file the sweep would refuse, and a list may hold only ``Pose`` and ``JointStation``. Neither is screened
+        A file is read and every record checked here (``pose_provider.load_stations``), a joint against the range the
+        description of the tree's arm rates it for, so ``--check`` refuses a file the sweep would refuse, and a list may
+        hold only ``Pose`` and ``JointStation``. Neither is screened
         against the box here: a joint station's grasp centre needs the arm's forward kinematics, and the sweep
         screens each station as it reaches it.
         """
@@ -1072,11 +1085,12 @@ class HandEyeCalibration:
         if fixed is None:
             return None, None
         from src.geometry import Pose
-        from src.robot.execution.pose_provider import JointStation, load_stations
+        from src.robot.execution.pose_provider import JointStation, load_stations, rated_joints_deg
 
         if isinstance(fixed, (str, Path)):
+            model = str(getattr(getattr(self.sections.robot, "arm", None), "model", "") or "")
             try:
-                return list(load_stations(fixed)), None
+                return list(load_stations(fixed, rated_deg=rated_joints_deg(model))), None
             except (OSError, ValueError) as exc:
                 return None, f"fixed_poses: {exc}"
         stations = list(fixed)
@@ -1242,18 +1256,48 @@ class HandEyeCalibration:
         return build, parts
 
     def _refuse_without_hand_guiding(self, arm: Any) -> None:
-        """Raise ``HandGuidingRefused`` where a run by hand meets an arm a person cannot guide."""
-        if not (self.freedrive or self.adjust):
-            return
-        from src.robot.core.freedrive import SupportsFreedrive
+        """Raise ``HandGuidingRefused`` where a run by hand meets an arm a person cannot guide, in the row's words."""
+        from src.robot.execution.abilities import AbilityStatus
         from src.robot.execution.hand_guiding import HandGuidingRefused
 
-        if isinstance(arm, SupportsFreedrive):
-            return
-        what = "freedrive guides the arm to every pose" if self.freedrive else "adjust frees the arm at each station"
-        raise HandGuidingRefused(
-            f"{what} by hand, and {type(arm).__name__} offers no hand guiding (SupportsFreedrive; the UR teach mode "
-            "is one). This arm has fixed stations only: run them without adjust (--fixed-poses PATH)")
+        row = self._by_hand_row(arm)
+        if row is not None and row.status is AbilityStatus.REFUSED:
+            raise HandGuidingRefused(row.reason)
+
+    def _hand_guiding_refusal(self) -> str | None:
+        """Why a run by hand cannot be guided, read at the desk of the arm the tree builds, never connected (P0i i3).
+
+        The build asks the same row of the arm it builds (``_refuse_without_hand_guiding``), so the desk and the sweep
+        refuse with one sentence. An arm that does not build at the desk is left to the build, which refuses it before
+        anything opens; the desk's ability rows already say it (every row refuses such an arm), while this check reads
+        the sweep's config and rig (review of i3, kept on purpose: refusing it here too would have this check build the
+        arm for runs a person never guides).
+        """
+        from src.robot.execution.abilities import AbilityStatus
+
+        if not (self.freedrive or self.adjust):
+            return None
+        if chosen(self.robot):
+            arm: Any = self.robot.arm
+        else:
+            from src.robot.execution.robot_parts import construct_arm
+
+            try:
+                arm = construct_arm(self.sections.robot)
+            except Exception:  # noqa: BLE001 - the build refuses such an arm with its own sentence
+                return None
+        row = self._by_hand_row(arm)
+        return row.reason if row is not None and row.status is AbilityStatus.REFUSED else None
+
+    def _by_hand_row(self, arm: Any) -> "AbilityRow | None":
+        """The desk's ``calibrate by hand`` row for ``arm`` and this sweep's camera section, or ``None`` for a run that
+        nobody guides."""
+        if not (self.freedrive or self.adjust):
+            return None
+        from src.robot.execution.abilities import Ability, row_of
+
+        section = _one_rig(self.camera.rig) if chosen(self.camera) else self.sections.camera
+        return row_of(Ability.CALIBRATE_BY_HAND, arm=arm, camera=section)
 
     def _stem(self, rig_id: str, what: str) -> str:
         """A file of this run in ``out_dir``: ``<mode>_<rig>_<what>``."""
@@ -1346,7 +1390,7 @@ class HandEyeCalibration:
                     else:
                         result = parts.routine.run_with_poses(stations or [], dataset_save_path=dataset_path,
                                                               adjust=self.adjust, stations_save_path=by_hand)
-                    # While the arm is still connected: on a polyscope cell the frame is known only then.
+                    # While the arm is still connected: on a controller cell the frame is known only then.
                     record = _flange_to_tcp_record(self.sections.robot, parts.robot.arm)
                 except Exception as exc:  # noqa: BLE001 (reported once the arm is down)
                     failure = exc
@@ -1655,14 +1699,20 @@ def _flange_to_tcp_record(robot_cfg: Any, arm: Any) -> Any:
     The solve is CAMERA to TOOL against ``get_tcp_pose``, which is the flange times this frame, so the body a wrist
     camera declares is placed from it and a later tool frame that differs refuses the rig. Read from the arm while it
     is still connected: the declared frame on a ``willy`` cell, the frame derived from the controller at connect on a
-    ``polyscope`` cell. ``UNSET`` for an arm that does not say which frame it applies and for an ``undeclared`` cell,
+    ``controller`` cell. ``UNSET`` for an arm that does not say which frame it applies and for an ``undeclared`` cell,
     and the artifact is then written as ``/1``.
     """
     from src.calibration.serialization import FlangeToTcp
 
     source = robot_cfg.gripper.tool_frame.source
-    matrix = getattr(arm, "active_tool_frame", None)
-    if source not in ("willy", "polyscope") or matrix is None:
+    # A broken answer is still an answer, and isinstance against a Protocol with a property evaluates it: an arm that
+    # cannot say which frame it applies has not said, and the artifact records /1 rather than a frame nobody stood
+    # behind.
+    try:
+        matrix = arm.active_tool_frame if isinstance(arm, AppliesToolFrame) else None
+    except Exception:  # noqa: BLE001 (an arm that cannot answer has not answered)
+        matrix = None
+    if source not in ("willy", "controller") or matrix is None:
         return UNSET
     return FlangeToTcp.from_matrix(source, matrix)
 

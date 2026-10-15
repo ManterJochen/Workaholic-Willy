@@ -7,20 +7,20 @@ of capsules, one per link, plus a tool capsule rooted at the TCP and a base colu
 capsule. Fixtures are the axis-aligned boxes declared in :class:`FixtureBoxConfig`.
 The distance is closed-form, so the per-move cost stays under a millisecond.
 
-* On a UR the arm-against-arm capsule chain comes from the bundled DH table in
-  :mod:`_ur_kinematics`, and every non-adjacent link pair is checked against the others
-  and against every fixture.
-* On another vendor, KUKA or the sim, that chain is unavailable, so the guard checks
-  the tool against the base and the tool against the fixtures only. Arm-against-arm
-  coverage needs a DH or URDF entry, which is not bundled for KUKA.
+* On an arm whose reported model the arm registry describes as a UR (a real UR, and the
+  Isaac arm, which reports the UR it drives) the arm-against-arm capsule chain comes from
+  that description's DH rows (:mod:`_ur_kinematics`), and every non-adjacent link pair is
+  checked against the others and against every fixture.
+* On any other arm (the dummy) that chain is unavailable, so the guard checks the tool
+  against the base and the tool against the fixtures only.
 
 ``fcl`` is exact mesh-against-mesh distance over the bundled per-model collision
 meshes, with Coal preferred and python-fcl as the fallback, in
 :mod:`_fcl_self_collision`. It removes two measured errors of the capsule proxy, the
 skipped-wrist false negative and the fat-radius false positive, by checking every link
-pair more than one DH frame apart exactly. Any UR model with a bundled DH chain and a
-committed ``{model}_collision_meshes.npz`` qualifies, and ``ur5e`` and ``ur3e`` ship
-one. Where the engine or the bundle is missing the guard falls back to the capsule
+pair more than one DH frame apart exactly. Any UR the arm registry describes and with a
+committed ``{model}_collision_meshes.npz`` qualifies: seven do today
+(``safety/data/bundles.json``), and ur20 has link lengths and no bundle. Where the engine or the bundle is missing the guard falls back to the capsule
 path and logs that fallback with a reason token, because the capsule proxy is
 materially coarser and a cell that swaps one for the other in silence is a
 safety-relevant regression.
@@ -55,7 +55,12 @@ from ._capsule import (
     capsule_box_distance_mm,
     capsule_capsule_distance_mm,
 )
-from ._ur_kinematics import arm_link_transforms_mm, arm_link_transforms_mm_many, ur_link_origins_mm
+from ._ur_kinematics import (
+    arm_link_transforms_mm,
+    arm_link_transforms_mm_many,
+    described_ur_model,
+    ur_link_origins_mm,
+)
 from .decision import SafetyDecision, SafetyReason
 from .guard import SafetyContext
 
@@ -79,6 +84,11 @@ _DEFAULT_BASE_RADIUS_MM = 80.0
 _DEFAULT_BASE_HEIGHT_MM = 150.0
 
 
+def _hand_identity(hand: "Maybe[PlannerHand]") -> "tuple[str, tuple[object, ...]] | None":
+    """What makes two hands one hand for a capsule's tool dimensions: its name and the plates that hold it out."""
+    return (hand.model, tuple(hand.plates)) if chosen(hand) else None
+
+
 class SelfCollisionGuard:
     """Self-collision guard.
 
@@ -90,8 +100,13 @@ class SelfCollisionGuard:
 
     def __init__(
         self, config: "SelfCollisionSafetyConfig", *, hand: "Maybe[PlannerHand]" = UNSET,
+        built_for: "Maybe[str | None]" = UNSET,
     ) -> None:
         self._config = config
+        #: The arm model the pipeline was built for, as ``SafetyPreflight.from_safety_config`` names it, ``None`` where
+        #: it names an arm the registry does not describe as a UR, ``UNSET`` for a guard built directly (P0e E6). The
+        #: hand refusal at build was decided for this arm, so the guard judges no other (:meth:`refusal_for`).
+        self._built_for = built_for
         # The hand this guard models, resolved from robot.gripper.model: its variant picks
         # the mesh bundle and its coupling moves a mounting-face hand onto the flange.
         # UNSET where the guard is built directly, which keeps the arm bundle's own hand;
@@ -122,6 +137,8 @@ class SelfCollisionGuard:
         # means not yet built, or unavailable.
         self._fcl_backend: object | None = None
         self._fcl_backend_built = False
+        #: The arm model the exact-mesh backend was built for, once it is. One model per guard (P0d D5).
+        self._fcl_model: str | None = None
         #: A wrist camera's bodies (``body_link.WristBody``), handed in before the exact-mesh backend
         #: is built.
         self._wrist_bodies: tuple[object, ...] = ()
@@ -284,21 +301,17 @@ class SelfCollisionGuard:
         return Capsule(p0=tcp_mm, p1=flange_side_mm, radius_mm=self._tool_radius_mm)
 
     def _ur_arm_capsules(self, ctx: SafetyContext) -> list[Capsule] | None:
-        """Per-link capsules for an arm with UR kinematics, or ``None`` where none derive.
+        """Per-link capsules for the arm in hand, keyed by the model it reports, or ``None`` where none derive.
 
-        An explicit ``self_collision.kinematics_model`` selects the bundled DH table
-        and overrides the vendor gate, which lets a non-UR vendor that is physically a
-        UR arm, such as a UR5e in the Isaac sim, opt into real arm-against-arm
-        capsules. Without it only a genuine ``vendor == "ur"`` arm qualifies, keyed by
-        its own model.
+        The model is :meth:`model_for`'s, so capsules, meshes and the path sampler's reach answer from one rule: a
+        model the arm registry describes as a UR. The Isaac arm reports the UR it drives and gets real arm-against-arm
+        capsules; until P0d D5 it answered ``isaac-sim`` and needed ``self_collision.kinematics_model`` to opt in.
         """
         if ctx.target_joints is None or ctx.arm is None:
             return None
-        model = self._config.kinematics_model
+        model = self.model_for(ctx.arm)
         if model is None:
-            if ctx.arm.capabilities.vendor != "ur":
-                return None
-            model = ctx.arm.capabilities.model
+            return None
         origins_mm = ur_link_origins_mm(
             model, ctx.target_joints.values,
         )
@@ -342,6 +355,9 @@ class SelfCollisionGuard:
     # ------------------------------------------------------------------
 
     def evaluate(self, ctx: SafetyContext) -> SafetyDecision:
+        refused = self.refusal_for(ctx.arm)
+        if refused is not None:
+            return SafetyDecision.reject(self.name, SafetyReason.UNAVAILABLE, message=refused)
         if self._backend == "fcl":
             # Exact mesh-against-mesh self-collision over the real collision meshes. It
             # returns a decision when it runs, and ``None`` when the engine or the mesh
@@ -361,6 +377,8 @@ class SelfCollisionGuard:
         if arm_links is not None:
             for i, cap in enumerate(arm_links):
                 labelled.append((f"link_{i}", cap))
+        # The link the tool is bolted to: the last one built, link_5 on a UR (P0f F9d).
+        last_link = f"link_{len(arm_links) - 1}" if arm_links else None
         if tool is not None:
             labelled.append(("tool", tool))
 
@@ -369,7 +387,7 @@ class SelfCollisionGuard:
             name_i, cap_i = labelled[i]
             for j in range(i + 1, len(labelled)):
                 name_j, cap_j = labelled[j]
-                if self._should_skip_pair(name_i, name_j):
+                if self._should_skip_pair(name_i, name_j, last_link=last_link):
                     continue
                 d = capsule_capsule_distance_mm(cap_i, cap_j)
                 if d < self._min_distance_mm:
@@ -439,32 +457,103 @@ class SelfCollisionGuard:
         """The hand this guard models, or ``UNSET`` where it keeps the arm bundle's own."""
         return self._hand
 
+    def mount_refusal(self, hand: "Maybe[PlannerHand]") -> str | None:
+        """Why this guard cannot judge with ``hand`` mounted, or ``None``: the build's own refusals (a hand not named, a
+        frame that places none), and a capsule guard handed another hand than the one it was built with (P0i i5).
+
+        ⛔ THE CAPSULE MODELS THE TREE'S TOOL (found by review, 2026-09-26). Its tool is a capsule of
+        ``safety.self_collision``'s ``tool_length_mm``, ``tool_radius_mm`` and finger dimensions, set for the hand the
+        tree names and read from nothing else, so another hand would be judged with the first one's dimensions. A
+        guard on ``fcl`` reads the hand's own geometry and takes it; where its engine is missing it falls back to the
+        same capsule, a cell the doctor already reports as degraded.
+        """
+        from src.robot.safety.planning.hand import guard_hand_refusal, hand_geometry_model
+
+        built_for = self._built_for if chosen(self._built_for) else None
+        refusal = guard_hand_refusal(self._config, hand, built_for)
+        if refusal is not None:
+            return refusal
+        if chosen(hand) and not chosen(hand.placement):
+            return (hand.placement_refusal
+                    or f"{hand.model} has no placement on the flange, so no exact mesh guard can model where it is")
+        if hand_geometry_model(self._config, built_for if built_for else UNSET) is None:
+            held, wanted = _hand_identity(self._hand), _hand_identity(hand)
+            if held != wanted:
+                return (
+                    f"this cell's self collision guard models the tool as a capsule from safety.self_collision's tool "
+                    f"dimensions, set for {held[0] if held else 'no hand'} and changed by no mount, so it would judge "
+                    f"{wanted[0] if wanted else 'no hand'} with them: build the cell with the tool it carries"
+                )
+        return None
+
+    def mount(self, hand: "Maybe[PlannerHand]") -> None:
+        """Model ``hand`` from now on; the exact mesh backend is built again for it at the next judged path. What
+        ``PlannedArm.mount_tool`` reaches, the one path a hand takes after the build (P0i i5).
+
+        Refused with :meth:`mount_refusal`'s reason (``ToolChangeRefused``), with nothing changed. The wrist bodies this
+        guard holds stay: they hang on the arm, not the hand.
+        """
+        refusal = self.mount_refusal(hand)
+        if refusal is not None:
+            from src.robot.safety.planning.mounted_tool import ToolChangeRefused
+
+            raise ToolChangeRefused(refusal)
+        self._hand = hand
+        # The opening the old hand was told is not this hand's (lever G): its fingers stand as baked, fully open,
+        # until it is told a width of its own.
+        self._finger_opening_mm = None
+        self._fcl_backend = None
+        self._fcl_backend_built = False
+        self._fcl_model = None
+        self._fcl_status = None
+
     @property
     def base_yaw_deg(self) -> float:
         """The yaw, in degrees, this guard turns the bundled DH base by to place the arm."""
         return float(self._config.kinematics_base_yaw_deg)
 
     def model_for(self, arm: "object | None") -> str | None:
-        """The robot model this guard judges ``arm`` as, or ``None`` if none derives.
+        """The robot model this guard judges ``arm`` as: the model the arm reports, where the arm registry describes a
+        UR by that name (``_ur_kinematics.described_ur_model``), else ``None``.
 
-        ``safety.self_collision.kinematics_model`` comes first: that key is what a cell
-        states its arm is for safety purposes, and it exists because the arm cannot always
-        say. Where it is unset the model comes from the arm in hand, and only a UR has a
-        mesh bundle baked into this repository.
+        The arm is the only source since P0d D5. ``safety.self_collision.kinematics_model`` used to stand in for it,
+        because the Isaac arm answered ``isaac-sim``; it now reports the UR it drives (``robot.sim.robot_model``), and
+        a key that could only ever repeat that name goes. The vendor does not enter the rule: an arm that reports a
+        model nobody describes, the dummy's ``dummy-6dof`` or a KUKA's, gets no UR geometry whatever its vendor says.
 
-        Public because more than the meshes depend on it. A sampled path is bounded by how
-        far a joint can swing a point of this same arm, so the two answers have to be the
-        same robot. Asking the arm directly is not enough: the Isaac sim arm answers
-        `isaac-sim`, no reach derives from that, and every motion in the sim would be
-        refused as unsampleable.
+        Public because more than the meshes depend on it. A sampled path is bounded by how far a joint can swing a
+        point of this same arm, so the two answers have to be the same robot. An arm that could not name itself cost
+        aurora's M1 gate on 2026-09-12: the Isaac arm answered `isaac-sim`, no reach derived, and every motion in the
+        sim was refused as unsampleable. ``tests/test_joint_path_gate.py`` keeps that case.
         """
-        model = self._config.kinematics_model
-        if model is not None:
-            return str(model)
-        capabilities = getattr(arm, "capabilities", None)
-        if capabilities is None or getattr(capabilities, "vendor", None) != "ur":
+        if self.refusal_for(arm) is not None:
             return None
-        return str(capabilities.model)
+        return self._reported_model(arm)
+
+    @staticmethod
+    def _reported_model(arm: "object | None") -> str | None:
+        capabilities = getattr(arm, "capabilities", None)
+        return described_ur_model(getattr(capabilities, "model", None))
+
+    def refusal_for(self, arm: "object | None") -> str | None:
+        """Why this guard will not judge ``arm``, or ``None`` where it will (P0e E6).
+
+        The pipeline decided at build, for the arm it was built for, whether a hand is named and where it sits, and
+        which hand geometry the exact-mesh guard reads. An arm that reports another UR than that one would be judged
+        by a guard whose hand refusal never asked about it. Until P0e a pipeline built with no arm model was that case
+        for every arm reporting a UR: no "robot.gripper.model is unset", and the arm bundle's own hand judged instead.
+        An arm that reports no UR is not refused here; it gets no UR geometry at all, as before.
+        """
+        if not chosen(self._built_for):
+            return None
+        reported = self._reported_model(arm)
+        expected = described_ur_model(self._built_for) if self._built_for else None
+        if reported is None or reported == expected:
+            return None
+        built = expected if expected is not None else "no arm the arm registry describes as a UR"
+        return (f"the self-collision guard was built for {built} and the arm reports {reported}: its hand refusal was "
+                f"decided for the arm it was built for, so it judges no other. Build the safety preflight with the "
+                f"model this arm reports (arm_model=arm.capabilities.model), from the tree the arm was built from.")
 
     def set_wrist_bodies(self, bodies: "Sequence[object]") -> None:
         """Hold a wrist camera's bodies (``body_link.WristBody``) in the exact-mesh backend.
@@ -486,7 +575,17 @@ class SelfCollisionGuard:
         return self._wrist_bodies
 
     def _exact_mesh_backend(self, model: str) -> object | None:
-        """Build the exact-mesh backend once for ``model`` and cache it, ``None`` included."""
+        """Build the exact-mesh backend once for ``model`` and cache it, ``None`` included.
+
+        One model per guard. The model comes from the arm each call is asked about (P0d D5), and the cache holds one
+        arm's meshes: a guard asked about a second model would place the first arm's links on the second arm's DH
+        chain. No driver shares a preflight between arms, so a second model is refused rather than rebuilt.
+        """
+        if self._fcl_backend_built and self._fcl_model is not None and model != self._fcl_model:
+            raise RuntimeError(
+                f"this self collision guard holds the exact meshes of the {self._fcl_model} arm and was asked about a "
+                f"{model}: build one safety preflight per arm"
+            )
         if not self._fcl_backend_built:  # build the BVH models once, caching None too
             from ._fcl_self_collision import make_backend, mesh_backend_status
             hand = self._hand
@@ -500,10 +599,15 @@ class SelfCollisionGuard:
             # hand's mounting face, nearer the wrist than the hand does.
             boxes = hand.coupling_boxes if chosen(hand) else ()
             # A wrist camera's parts, passed only when the arm carries one, so a cell without a
-            # camera calls the builder with the same arguments.
+            # camera calls the builder with the same arguments. A camera is bolted to the flange,
+            # which is frame dof of this arm (P0f F9).
             wrist: dict = {}
-            for body in self._wrist_bodies:
-                wrist.update(body.guard_parts())  # type: ignore[attr-defined]
+            if self._wrist_bodies:
+                from src.config.arms import load_arm
+
+                flange = load_arm(model.lower()).dof
+                for body in self._wrist_bodies:
+                    wrist.update(body.guard_parts(frame=flange))  # type: ignore[attr-defined]
             carried: dict = {"wrist_parts": wrist} if wrist else {}
             # How wide the baked fingers stand open, the hand's own stroke, for a told finger opening (lever G).
             stroke = float(hand.jaw.aperture_mm) if chosen(hand) else None
@@ -512,6 +616,7 @@ class SelfCollisionGuard:
                 coupling_boxes=boxes, baked_opening_mm=stroke, **carried,
             )
             self._fcl_backend_built = True
+            self._fcl_model = model
             told = getattr(self, "_finger_opening_mm", None)
             if told is not None and self._fcl_backend is not None:
                 self._fcl_backend.set_finger_opening(told)  # type: ignore[attr-defined]
@@ -737,7 +842,7 @@ class SelfCollisionGuard:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _should_skip_pair(name_a: str, name_b: str) -> bool:
+    def _should_skip_pair(name_a: str, name_b: str, *, last_link: str | None) -> bool:
         """Skip the pairs that always overlap by construction.
 
         Adjacent links share an end-point. The non-adjacent wrist links, ``link_3``,
@@ -760,8 +865,8 @@ class SelfCollisionGuard:
         # collision is caught by link_2, the upper-arm shaft.
         if {name_a, name_b} == {"base", "link_1"}:
             return True
-        # The wrist-mounted tool inevitably overlaps the last link.
-        if {name_a, name_b} == {"tool", "link_5"}:
+        # The wrist-mounted tool inevitably overlaps the last link, whichever index the arm gives it.
+        if last_link is not None and {name_a, name_b} == {"tool", last_link}:
             return True
         return False
 

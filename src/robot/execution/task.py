@@ -127,6 +127,7 @@ from typing import TYPE_CHECKING, Any, Callable, Literal, Mapping, Protocol, Seq
 
 from src.contracts import UNSET, Maybe, chosen
 from src.robot.constants import create_robot_logger
+from src.robot.core.camera_world import live_planner_world_of
 from src.robot.core.errors import RobotError
 from src.robot.execution.pick_run import configured_looks_of, keep_pick_views
 from src.robot.execution.place_target import (
@@ -1240,7 +1241,7 @@ class _Task:
         if not locators:
             raise TaskRefused("camera_target_unavailable", "a camera place was handed no camera to find its target with")
         if any(bool(getattr(locator, "on_the_wrist", False)) for locator in locators):
-            world = getattr(self.arm, "live_planner_world", None)
+            world = live_planner_world_of(self.arm)
             if not (callable(getattr(world, "hold_pick_views", None))
                     and callable(getattr(world, "forget_pick_views", None))):
                 raise TaskRefused("camera_target_unavailable", (
@@ -2279,7 +2280,7 @@ class _Task:
             return False
 
         grasp = report.grasp_pose
-        world = getattr(self.arm, "live_planner_world", None)
+        world = live_planner_world_of(self.arm)
         again, forget = getattr(world, "hold_pick_views_again", None), getattr(world, "forget_pick_views", None)
         if grasp is None:
             return via_the_look("the pick reported no grasp pose, so how far the part hangs is not known")

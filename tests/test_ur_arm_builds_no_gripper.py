@@ -87,7 +87,13 @@ def _imports_of_grippers(path: Path) -> list[int]:
 class NoUrDriverModuleImportsAGripperTests(unittest.TestCase):
 
     def test_no_module_under_drivers_ur_imports_the_grippers_package(self) -> None:
-        modules = sorted((_REPO / "src" / "robot" / "drivers" / "ur").rglob("*.py"))
+        """Every file under `drivers/ur` and every file URRobotArm's classes live in, so the rule still holds the
+        planning half after P0e moves it into a base class in `drivers/planned/` (tests/_driver_sources.py)."""
+        from tests._driver_sources import ur_arm_source_files
+
+        drivers = _REPO / "src" / "robot" / "drivers"
+        modules = sorted({*(drivers / "ur").rglob("*.py"), *(drivers / "planned").rglob("*.py"),
+                          *ur_arm_source_files()})
         self.assertIn("arm.py", {path.name for path in modules}, "the scan found no UR driver")
         offenders = {path.relative_to(_REPO).as_posix(): lines for path in modules
                      if (lines := _imports_of_grippers(path))}

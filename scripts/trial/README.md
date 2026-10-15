@@ -20,12 +20,23 @@ phase P4 compares the checkout with the snapshot phase P0 took. From the reposit
 ```
 
 - Both paths are absolute. `--root` is the copy, and it must not exist yet; delete it afterwards.
-- The plan's `bindings` name this checkout's paths (`ORIG`, `PY`, `CONTENT`). On another machine, edit
-  them first.
+- The plan's `bindings` name the reference workstation's folders (`ORIG`, `PY`, `CONTENT`, `CUROBO_PY`).
+  Another box, or Linux, binds its own with `--bind NAME=VALUE`, which wins over the plan and every phase;
+  a name the plan does not bind is refused before anything runs.
 - Exit 0: every step went as expected. Exit 1: the run stopped at a step, and the line printed says
   which and why. Exit 2: the plan or the runbook is malformed, and nothing ran.
 - A stop means a defect: fix it in the tree with a test first, delete the copy, and start again.
   `--from ID` resumes inside the same copy, and only after an interruption with no source change.
+
+On Linux, for a clone at `/root/willy` (not yet run there; P0h h8 made it possible):
+
+```bash
+.venv/bin/python scripts/trial/run_runbook.py --runbook docs/runbooks/your_own_gripper.md \
+    --plan scripts/trial/customer_hand_trial.json --root /root/willy_trial/customer_hand --logs <logs> \
+    --bind ORIG=/root/willy --bind PY=/root/willy/.venv/bin/python \
+    --bind CONTENT=/root/willy/ext_deps/curobo/curobo/content \
+    --bind CUROBO_PY=/root/willy/ext_deps/curobo_env/bin/python
+```
 
 ## The phases
 

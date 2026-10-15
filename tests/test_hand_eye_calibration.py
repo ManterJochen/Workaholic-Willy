@@ -24,7 +24,7 @@ import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import chdir, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -350,6 +350,18 @@ class DryRunTests(_Doubles):
 
 class SweepTests(_Doubles):
 
+    def test_the_rig_block_names_the_artifact_absolute_so_a_tree_reads_the_file_that_was_written(self) -> None:
+        """Pasted into a tree, a relative path is read against the config folder, not the folder the sweep ran in,
+        so a block naming the file as the sweep wrote it, relatively, would send the tree elsewhere."""
+        here = Path(self._out())
+        self.enterContext(chdir(here))
+        sweep = MagicMock(return_value=_eth_result())
+        with patch.object(CalibrationRoutine, "run_with_poses", sweep):
+            report = self._noun(options=SweepOptions(out_dir="calibration/real")).run()
+        block = yaml.safe_load(report.rig_block)["camera"]["cameras"]["rigs"][0]
+        self.assertEqual(Path(block["extrinsics"]["artifact_path"]), here / "calibration/real/eth_overhead.json")
+        self.assertTrue(Path(block["extrinsics"]["artifact_path"]).is_absolute())
+
     def test_an_eye_to_hand_sweep_writes_the_artifact_keyed_by_the_rig(self) -> None:
         out = self._out()
         sweep = MagicMock(return_value=_eth_result())
@@ -569,7 +581,7 @@ class TheCheckLooksUpThePlannersEvidenceTests(unittest.TestCase):
         check = self._check(robot)
         self.assertFalse(check.ok)
         for part in ("the sweep's planner would refuse to start", "after the arm is connected",
-                     "ur10_robotiq_hande_c16mm", "matrix_gate.py"):
+                     "ur10_robotiq_hande_c16mm", "scripts/arms/gate.py"):
             self.assertIn(part, check.refusal)
 
     def test_a_measured_combination_passes(self) -> None:

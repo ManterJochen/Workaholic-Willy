@@ -140,7 +140,7 @@ class JointPositions:
 
     @classmethod
     def deg(cls, *degrees: float) -> JointPositions:
-        """The joints in DEGREES, one per axis, as a pendant shows them and ``python -m src.robot.drivers.ur --where``
+        """The joints in DEGREES, one per axis, as a pendant shows them and ``python -m src.robot.execution.io_bench --where``
         prints them; stored in radians like every other value.
 
         Args:

@@ -7,10 +7,11 @@ no pipeline, planner or application-layer change.
 Registered:
 
 * :mod:`.ur` for Universal Robots, over RTDE.
-* :mod:`.kuka` for KUKA, over EthernetKRL, meaning EKI and KRL on TCP with XML.
+* :mod:`.sim`, the Isaac-backed sim arm.
 * :mod:`.dummy`, the pure-Python sim arm for offline development.
 
-Package slots exist for ``franka``, ``ros2`` and ``sim``.
+``kuka``, ``franka`` and ``ros2`` are reserved names with no driver here: a config may name them, and
+:func:`create_arm` refuses them. KUKA's EthernetKRL driver was deleted on 2026-09-19; KUKA returns over ROS 2.
 
 Vendor isolation
 ----------------
@@ -106,32 +107,6 @@ def _make_ur(**kwargs) -> RobotArm:
             f"create_arm(RobotVendor.UR) got unexpected kwargs: {sorted(kwargs)}"
         )
     return URRobotArm(config)
-
-
-@register_arm_driver(RobotVendor.KUKA)
-def _make_kuka(**kwargs) -> RobotArm:
-    """Build a KUKA-backed :class:`src.robot.drivers.kuka.KukaRobotArm`.
-
-    Accepted kwargs::
-
-        config : RobotConfig   the full robot config tree, required
-
-    The KUKA driver speaks EthernetKRL, which is EKI, over TCP with XML to the
-    controller-side KRL program shipped under ``config/robot/templates/kuka/``. It
-    needs no vendor SDK on this side.
-    """
-    from .kuka.arm import KukaRobotArm
-
-    config = kwargs.pop("config", None)
-    if config is None:
-        raise TypeError(
-            "create_arm(RobotVendor.KUKA) requires a 'config=RobotConfig(...)' kwarg."
-        )
-    if kwargs:
-        raise TypeError(
-            f"create_arm(RobotVendor.KUKA) got unexpected kwargs: {sorted(kwargs)}"
-        )
-    return KukaRobotArm(config)
 
 
 @register_arm_driver(RobotVendor.SIM)

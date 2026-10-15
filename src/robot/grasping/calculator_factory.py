@@ -349,10 +349,13 @@ def _batched_builds_here(robot_cfg: "RobotConfig", calculator: Any) -> bool:
 
 def opens_as_needed(robot_cfg: "RobotConfig") -> bool:
     """Whether the cell's hand opens only as wide as a grasp needs before it closes: a Robotiq hand, which is told a
-    width (lever G, the owner's "nur wenn Robotiq genutzt wird", 2026-10-13). A toggle, an I/O jaw and every other
-    hand open fully."""
+    width (lever G, the owner's "nur wenn Robotiq genutzt wird", 2026-10-13), as its driver's spec says. A toggle, an
+    I/O jaw and every other hand open fully."""
+    from src.robot.grippers import gripper_driver  # noqa: PLC0415
+
     gripper = getattr(robot_cfg, "gripper", None)
-    return str(getattr(gripper, "vendor", "") or "").strip().lower() == "robotiq"
+    driver = gripper_driver(str(getattr(gripper, "vendor", "") or "").strip().lower())
+    return bool(driver is not None and driver.opens_as_needed)
 
 
 def inner_grasps(robot_cfg: "RobotConfig") -> bool:

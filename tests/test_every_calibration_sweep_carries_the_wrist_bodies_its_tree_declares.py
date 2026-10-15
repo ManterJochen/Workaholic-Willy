@@ -169,6 +169,17 @@ class AFixedCameraSweepCarriesTheWristCameraTests(_Sweeps):
         _, robot = self._dry_run(self._sweep(self._app(self._wrist(enabled=False))))
         self.assertEqual(self._held(robot), ["wrist_camera_wrist"])
 
+    def test_the_body_is_the_one_robot_from_tree_hands_its_arm(self) -> None:
+        """Field by field, the record and its tolerances included, against the door a pick builds its arm through
+        (review of 2026-09-25: this compared the sweep's own resolver through ``to_dict``, which leaves those out)."""
+        app = self._app(self._wrist())
+        picking = Robot.from_tree(LoadedTree(tree=ConfigTree.from_directory(profile=None), config=app), gripper=None)
+        _, robot = self._dry_run(self._sweep(app))
+        assert isinstance(robot.arm, URRobotArm) and isinstance(picking.arm, URRobotArm)
+        swept = robot.arm._preflight.wrist_bodies(robot.arm)  # noqa: SLF001
+        self.assertEqual(len(swept), 1)
+        self.assertEqual(swept, picking.arm._preflight.wrist_bodies(picking.arm))  # noqa: SLF001
+
 
 class ABodyNothingPlacesTests(_Sweeps):
 
@@ -509,6 +520,24 @@ class AWristRigWithoutABodyStopsNoCalibrationTests(_Sweeps):
         check = self._sweep(app).check()
         self.assertTrue(check.ok, check.refusal)
         self.assertNotIn("wrist", check.render().replace("'overhead'", ""))
+
+    def test_an_enabled_one_does_not_refuse_an_eye_to_hand_sweep_and_is_named(self) -> None:
+        """Before, the eye to hand sweep named nothing: nothing was carried and nothing said so."""
+        report, robot, logged = self._warned(self._sweep(self._app(self._wrist(body=False))))
+        self.assertEqual(self._held(robot), [])
+        self._one_line_each(report, logged)
+        assert report.build is not None
+        self.assertEqual((report.check.wrist, report.build.wrist, report.build.unmodelled), ("", "", ""))
+        self.assertEqual(report.check.to_dict()["without_body"], _NO_BODY)
+        self.assertEqual(report.build.to_dict()["without_body"], _NO_BODY)
+
+    def test_a_switched_off_one_is_named_too(self) -> None:
+        report, robot, logged = self._warned(self._sweep(self._app(self._wrist(body=False, enabled=False))))
+        self.assertEqual(self._held(robot), [])
+        self._one_line_each(report, logged)
+        assert report.build is not None
+        self.assertNotIn("none declared", report.check.render())
+        self.assertNotIn("none declared", report.build.render())
 
 
 class ARobotHandedInThatCarriesTheBodiesTests(_Sweeps):

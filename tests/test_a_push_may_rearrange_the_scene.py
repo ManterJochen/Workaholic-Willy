@@ -368,7 +368,7 @@ class TheArmJudgesEveryLineFromWhereTheOneBeforeEndsTests(unittest.TestCase):
         from types import SimpleNamespace
 
         from src.robot.core import MotionCommand, MotionResult, MotionStatus
-        from src.robot.drivers.ur.arm import _Route
+        from src.robot.drivers.planned.arm import _Route
 
         asked: list[tuple[str, Any]] = []
         lines = {"count": 0}
@@ -393,9 +393,9 @@ class TheArmJudgesEveryLineFromWhereTheOneBeforeEndsTests(unittest.TestCase):
 
         self.asked = asked
         return SimpleNamespace(
-            _motion_planner="curobo", _preflight=object(), _conn=SimpleNamespace(is_connected=True),
+            _motion_planner="curobo", _preflight=object(), _transport=SimpleNamespace(is_connected=True),
             config=SimpleNamespace(motion_limits=SimpleNamespace(max_velocity=0.5)),
-            _curobo_ur_planner=lambda: "planner", _pose_to_flange=lambda pose: pose,
+            _curobo_planner=lambda: "planner", _pose_to_flange=lambda pose: pose,
             _route_to_the_nearest_goal=route_to, _judge_linear_move=judge_line, ik=ik,
         )
 

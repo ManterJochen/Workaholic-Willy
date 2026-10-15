@@ -106,9 +106,10 @@ class AStationsFileIsReadAndCheckedTests(unittest.TestCase):
             ({"label": "flag", "joints_rad": [True, 0.0, 0.0, 0.0, 0.0, 0.0]}, "base as True"),
             ({"label": "nan", "joints_rad": [0.0, float("nan"), 0.0, 0.0, 0.0, 0.0]}, "not a finite number"),
             ({"label": "inf", "joints_deg": [0.0, -90.0, float("inf"), -90.0, -90.0, 0.0]}, "not a finite number"),
-            ({"label": "degrees", "joints_rad": _HOME_DEG}, "shoulder as -90, beyond one full turn (2*pi) in radians"),
-            ({"label": "wound", "joints_deg": [0.0, -90.0, 90.0, -90.0, -90.0, 400.0]}, "wrist 3 as 400, beyond one "
-                                                                                         "full turn (360)"),
+            ({"label": "degrees", "joints_rad": _HOME_DEG}, "shoulder as -90, past -360 to 360 deg, one full turn "
+                                                            "either way"),
+            ({"label": "wound", "joints_deg": [0.0, -90.0, 90.0, -90.0, -90.0, 400.0]}, "wrist 3 as 400, past -360 to "
+                                                                                         "360 deg"),
             ({"label": "radians", "joints_deg": [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]}, "which reads as radians"),
             ({"label": "camera", "schema": "willy.geometry.pose/1", "position_mm": [0.0, 0.0, 500.0],
               "quaternion_xyzw": [0.0, 0.0, 0.0, 1.0], "frame": "camera"}, "a station is in the robot's base frame"),
@@ -135,9 +136,9 @@ class AStationsFileIsReadAndCheckedTests(unittest.TestCase):
         (station,) = load_stations(_write(self.folder, [{"joints_deg": [360.0, -90.0, 90.0, -90.0, -90.0, -360.0]}]))
         self.assertEqual(station.joints.values[0], 2.0 * math.pi)
 
-    def test_a_joint_station_built_in_code_is_radians_within_one_turn(self) -> None:
-        with self.assertRaisesRegex(ValueError, "beyond one full turn"):
-            JointStation(JointPositions([0.0, -90.0, 0.0, 0.0, 0.0, 0.0]), label="deg")
+    def test_a_joint_station_built_in_code_holds_joint_positions(self) -> None:
+        """What it holds is the arm's to judge against its rating when it moves, not the station's: a value past a
+        full turn is tests/test_a_station_file_is_read_against_the_arms_rating.py."""
         with self.assertRaises(TypeError):
             JointStation([0.0] * 6)  # type: ignore[arg-type]
 
@@ -320,7 +321,7 @@ class JointStationsRunAsJudgedJointMovesTests(unittest.TestCase):
             raise RuntimeError("no connection")
 
         arm.fk = unread  # type: ignore[method-assign]
-        arm._tcp_at_joints_mm = lambda joints: tool[keys.index(tuple(joints.tolist()))]  # type: ignore[attr-defined]
+        arm.tcp_at_joints_mm = lambda joints: tool[keys.index(tuple(joints.tolist()))]  # type: ignore[attr-defined]
         box = WorkspaceLimitsConfig(x_min=-100.0, x_max=500.0, y_min=-300.0, y_max=300.0, z_min=0.0, z_max=400.0)
         routine, _ = _routine(arm, limits=box)
         routine.run_with_poses([JointStation(_joints(i), label=f"j{i}") for i in range(6)])
@@ -395,37 +396,28 @@ class JointStationsRunAsJudgedJointMovesTests(unittest.TestCase):
             routine.run_with_poses([[0.0] * 6])  # type: ignore[list-item]
 
 
-class OnACuroboUrTheJudgedLineIsTheLineThatRunsTests(unittest.TestCase):
-    """The sweep's joint station through the real UR driver, its controller and planner doubles: the straight joint
-    line from where the arm stands is judged by the path gate and by the planner, and one ``moveJ`` to exactly the
-    joints written runs it."""
+class OnACuroboArmTheJudgedLineIsTheLineThatRunsTests(unittest.TestCase):
+    """The sweep's joint station through a planned arm, its transport and planner doubles (P0g slice 13, off the UR
+    driver): the straight joint line from where the arm stands is judged by the path gate and by the planner, and one
+    trajectory of exactly the joints written runs it."""
 
     _HERE = [0.0, -1.2, 1.4, -1.6, -1.5, -0.1]
 
-    def _ur(self, *, refuse_at: int | None = None) -> tuple[Any, Any, list[Any], list[Any]]:
-        """The UR driver on cuRobo, its controller a double whose moveJ returns False for station ``refuse_at``."""
+    def _planned(self, *, refuse_at: int | None = None) -> tuple[Any, Any, list[Any], list[Any]]:
+        """A planned arm on cuRobo over the fake, whose controller rejects the waypoint of station ``refuse_at``."""
         from src.robot.safety.planning import JointCheckVerdict
-        from tests.test_ur_arm import _arm as _ur_arm
+        from tests._arm_kit import kit_tree, planned_arm
+        from tests._fake_transport import Rejects, fake_transport
 
         tool = _tool()
         keys = [tuple(_joints(i).tolist()) for i in range(5)]
-        arm = _ur_arm("curobo")
-        conn = arm._conn  # noqa: SLF001 (the controller double)
-        standing = {"joints": list(self._HERE)}
-
-        def fk(joints: list[float]) -> list[float]:
-            pose = Pose.from_matrix(tool[keys.index(tuple(joints))], frame=Frame.BASE)
-            return [*(float(v) / 1000.0 for v in pose.position_mm), *(float(v) for v in pose.axis_angle_rad())]
-
-        def move_j(joints: list[float], **_keywords: Any) -> bool:
-            if refuse_at is not None and tuple(joints) == keys[refuse_at]:
-                return False  # a protective stop part of the way along
-            standing["joints"] = list(joints)
-            return True
-
-        conn.fk.side_effect = fk
-        conn.moveJ.side_effect = move_j
-        conn.get_joint_positions.side_effect = lambda: list(standing["joints"])
+        fake = fake_transport(joints=self._HERE)
+        fake.respond("controller_fk", lambda joints, label="": Pose.from_matrix(
+            tool[keys.index(tuple(joints))], frame=Frame.BASE))
+        # A protective stop part of the way along: the waypoint of that station is sent and rejected.
+        fake.respond("run_trajectory", lambda path, vel, acc: (
+            Rejects(at=0) if refuse_at is not None and tuple(path[0]) == keys[refuse_at] else True))
+        arm = planned_arm(kit_tree("curobo"), transport=fake)
         judged: list[list[list[float]]] = []
         checked: list[list[list[float]]] = []
         arm._preflight = SimpleNamespace(  # noqa: SLF001
@@ -442,34 +434,34 @@ class OnACuroboUrTheJudgedLineIsTheLineThatRunsTests(unittest.TestCase):
                 checked.append([list(map(float, c)) for c in configs])
                 return JointCheckVerdict(valid=True, first_invalid=None, checked=len(configs), reason="accepts")
 
-        arm._curobo_ur = _Planner()  # noqa: SLF001
-        arm.get_tcp_pose = lambda: arm.fk(JointPositions(standing["joints"]))
-        return arm, conn, judged, checked
+        arm._curobo = _Planner()  # noqa: SLF001
+        arm.get_tcp_pose = lambda: arm.fk(JointPositions(fake.joints))
+        return arm, fake, judged, checked
 
-    def test_one_judged_move_j_per_joint_station_to_exactly_the_joints_written(self) -> None:
-        arm, conn, judged, checked = self._ur()
+    def test_one_judged_trajectory_per_joint_station_to_exactly_the_joints_written(self) -> None:
+        arm, fake, judged, checked = self._planned()
         routine, _ = _routine(arm)
         stations = [JointStation(_joints(i), label=f"j{i}") for i in range(5)]
         result = routine.run_with_poses(stations)
 
         self.assertEqual(result.num_samples, 5)
-        sent = [call.args[0] for call in conn.moveJ.call_args_list]
-        self.assertEqual(sent, [station.joints.tolist() for station in stations])  # one moveJ each, as written
+        self.assertEqual(fake.sent, [station.joints.tolist() for station in stations])  # one waypoint each, as written
+        self.assertEqual([1] * 5, [len(call.args[0]) for call in fake.calls("run_trajectory")])
         starts = [self._HERE, *(station.joints.tolist() for station in stations[:-1])]
         self.assertEqual(judged, [[start, station.joints.tolist()] for start, station in zip(starts, stations)])
         for line, start, station in zip(checked, starts, stations):
             self.assertEqual((line[0], line[-1]), (start, station.joints.tolist()))  # the planner saw the same line
         self.assertEqual([stamp.use.value for stamp in result.camera_worlds], ["declined"] * 5)
 
-    def test_a_move_j_the_controller_did_not_complete_stops_the_sweep_through_the_real_driver(self) -> None:
-        """The contract between the UR driver's refusal and the routine's stop, held on the driver's own words."""
+    def test_a_trajectory_the_controller_did_not_complete_stops_the_sweep_through_the_planned_arm(self) -> None:
+        """The contract between the planned arm's refusal and the routine's stop, held on the arm's own words."""
         from src.robot.execution.calibration import SweepStopped
 
-        arm, conn, _, _ = self._ur(refuse_at=2)
+        arm, fake, _, _ = self._planned(refuse_at=2)
         routine, _ = _routine(arm)
         with self.assertRaises(SweepStopped) as caught:
             routine.run_with_poses([JointStation(_joints(i), label=f"j{i}") for i in range(5)])
-        self.assertEqual(len(conn.moveJ.call_args_list), 3, "a moveJ was sent after the controller refused one")
+        self.assertEqual(len(fake.sent), 3, "a waypoint was sent after the controller refused one")
         self.assertEqual((caught.exception.label, caught.exception.status), ("j2", "controller_rejected"))
         self.assertIn("moveJ was sent", routine.pose_log[-1].detail)
 

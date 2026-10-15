@@ -45,6 +45,7 @@ from src.config.schema.camera import (
     WebcamPairRigConfig,
 )
 from src.calibration.rig_calibration import RigCalibration
+from src.camera.setup.capture_backend import capture_backend_refusal
 from src.camera.setup.image_taking.rgbd import OpenCvRGBDStreamer, RealSenseRGBDStreamer
 from src.camera.setup.image_taking.single import SingleDeviceStreamer
 from src.camera.setup.image_taking.webcam import WebcamPairStreamer
@@ -61,7 +62,7 @@ AnyStreamer = WebcamPairStreamer | SingleDeviceStreamer | OpenCvRGBDStreamer | R
 #: A device as the registry knows it: its kind and its id. None is no id, which matches any device
 #: of the kind.
 DeviceKey = tuple[str, "int | str | None"]
-RefusalReason = Literal["unknown", "disabled", "not_rgbd"]
+RefusalReason = Literal["unknown", "disabled", "not_rgbd", "backend"]
 
 __all__ = [
     "PEEK_QUIET_S",
@@ -161,10 +162,11 @@ def create_streamer(rig: CameraRigConfig) -> AnyStreamer:
 def select_rig(camera_cfg: Any, *, rig_id: Maybe[str] = UNSET, open_disabled: Maybe[bool] = UNSET) -> Any:
     """The rig a camera section gives for ``rig_id``, or `CameraRefused` saying why it gives none.
 
-    ``rig_id`` UNSET means the rig the cell runs on, ``camera.cameras.primary_rig_id``. Three
+    ``rig_id`` UNSET means the rig the cell runs on, ``camera.cameras.primary_rig_id``. Four
     refusals, in this order: a rig the section does not configure, a rig switched off (lifted only
-    by ``open_disabled``, which the bench exerciser passes), and a rig with no depth channel. The
-    last is the stereo refusal: the planner world and the pick path take depth from RGB-D rigs only.
+    by ``open_disabled``, which the bench exerciser passes), a rig with no depth channel, and a
+    capture backend this platform's OpenCV does not have (P0h h7: 700 and 1400 exist on Windows only).
+    The third is the stereo refusal: the planner world and the pick path take depth from RGB-D rigs only.
 
     The cell, the calibration CLI and the exerciser all select through this function, so the three
     apply one policy. A refusal for a rig with no depth lists the RGB-D rigs the section has,
@@ -202,6 +204,9 @@ def select_rig(camera_cfg: Any, *, rig_id: Maybe[str] = UNSET, open_disabled: Ma
                 "There is no RGB-D rig in camera.cameras.rigs at all, so this profile cannot build a grasp "
                 "cell until one is added.")
         raise CameraRefused(f"{subject}, not an RGB-D device. {why} {tail}", reason="not_rgbd")
+    backend = capture_backend_refusal(rig)
+    if backend is not None:
+        raise CameraRefused(backend, reason="backend")
     return rig
 
 

@@ -50,7 +50,5 @@ robot:
     z: 337.2
 
   safety:
-    self_collision:
-      kinematics_model: "ur5"
     payload:
       max_mass_kg: 5.0      # UR5 datasheet

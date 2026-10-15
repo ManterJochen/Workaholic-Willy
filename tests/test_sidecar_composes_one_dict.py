@@ -31,7 +31,7 @@ _LINKS = ["shoulder_link", "upper_arm_link", "forearm_link", "wrist_1_link", "wr
 
 
 def _descriptor() -> dict:
-    """Shaped like ur5e_robotiq_hande.yml as build_ur_config.py writes it, cut to what the composition reads."""
+    """Shaped like ur5e_robotiq_hande.yml as descriptor.py writes it, cut to what the composition reads."""
     return {
         "_provenance": {"arm": "ur5e", "gripper_key": "robotiq_hande", "coupling_mm": 20.0},
         "robot_cfg": {

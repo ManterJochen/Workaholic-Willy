@@ -11,8 +11,8 @@ probe and not a pick cell, so `src/robot/execution/cell.py` is the wrong altitud
 blocks on a camera-to-base resolver that URSim has no camera to satisfy.
 
 The arm is built through the vendor-neutral `create_arm` and then narrowed to `URRobotArm`, because
-`raise_if_stopped()` and `tcp_raw` sit on the UR driver and on no Protocol. Narrowing turns a
-profile that names another vendor into a sentence rather than into a missing attribute.
+the raw TCP read sits on the UR driver's connection and on no Protocol. Narrowing turns a profile
+that names another vendor into a sentence rather than into a missing attribute.
 
 Run (URSim up, in REMOTE control):  python scripts/ursim/probe_our_driver.py
 
@@ -36,6 +36,7 @@ if _REPO_ROOT not in sys.path:
 
 from src.config.loader import active_profile, load_robot_config  # noqa: E402
 from src.robot.core import (  # noqa: E402
+    ArmFault,
     JointPositions,
     RobotVendor,
     SupportsDigitalIO,
@@ -45,7 +46,7 @@ from src.robot.core import (  # noqa: E402
 from src.robot.core.arm_capabilities import DigitalIOPort  # noqa: E402
 from src.robot.drivers import create_arm  # noqa: E402
 from src.robot.drivers.ur.arm import URRobotArm  # noqa: E402
-from src.robot.drivers.ur.bench import Bench, BenchVerdict, Read, Set  # noqa: E402
+from src.robot.execution.io_bench import Bench, BenchVerdict, Read, Set  # noqa: E402
 
 #: The chain this probe needs when the operator has not named one. It is resolved here rather than
 #: written into `WILLY_PROFILE`, which would leak process-global state into whatever runs next. It
@@ -68,7 +69,7 @@ def _confirm(yes: bool, what: str) -> bool:
 
     Refusing rather than prompting where stdin is not a terminal is deliberate: a prompt that reads
     EOF and takes the default is how an unattended script drives a coil nobody authorised. It is
-    the rule `python -m src.robot.drivers.ur` follows for the same writes.
+    the rule `python -m src.robot.execution.io_bench` follows for the same writes.
     """
     if yes:
         return True
@@ -96,21 +97,18 @@ def _probe_status(arm: URRobotArm) -> None:
     note("protective_stopped / emergency", f"{st.protective_stopped} / {st.emergency_stopped}")
     note("is_operational / is_stopped", f"{st.is_operational} / {st.is_stopped}")
     note("controller message", repr(st.message))
-    # The verdict is recorded after the call, never before it. Printing "did not raise" first
-    # records a pass for a call that then raises, and the run ends in a traceback under a line
-    # claiming the controller is healthy.
-    try:
-        arm.raise_if_stopped()
-        note("raise_if_stopped()", "did not raise (controller is healthy)")
-    except Exception as exc:  # noqa: BLE001
-        note("raise_if_stopped()", f"{type(exc).__name__}: {str(exc)[:80]}", ok=False)
+    # The fault as the stack classifies it (`ArmFault.from_status`), which is what the deleted
+    # `raise_if_stopped()` raised; a healthy controller answers None.
+    fault = ArmFault.from_status(st)
+    note("ArmFault.from_status()", "no fault (controller is healthy)" if fault is None else fault.render()[:80],
+         ok=fault is None)
 
 
 def _probe_poses(arm: URRobotArm, offset_mm_z: float) -> None:
     """Poses and joints as this API states them: millimetres, XYZW, a frame tag on every pose."""
     print("\n=== 4. pose + joints through this API (mm + XYZW, frame-tagged) ===")
     pose = arm.get_tcp_pose()
-    raw = arm.tcp_raw
+    raw = arm._conn.get_tcp_pose()
     note("get_tcp_pose() [TCP, tool frame applied]",
          f"frame={pose.frame.value} pos_mm={[round(float(v), 1) for v in pose.position_mm]}")
     note("controller raw pose [FLANGE, mm]", f"{[round(v * 1000.0, 1) for v in raw[:3]]}")
@@ -127,7 +125,7 @@ def _probe_poses(arm: URRobotArm, offset_mm_z: float) -> None:
 def _probe_io(arm: SupportsDigitalIO, yes: bool) -> None:
     """Digital I/O through `Bench`, which is the seam carrying the write interlock.
 
-    `io_bench.set_output` underneath energises a pin the moment it is called, so reaching past
+    `pins.set_output` underneath energises a pin the moment it is called, so reaching past
     `Bench` to it would delete the confirmation the library publishes this class to hold.
     `Bench.from_robot_config` is the wrong door here: this profile's gripper vendor is `none` and
     declares no `io_port`, so that factory refuses rather than guessing a bank. `from_arm` with an
@@ -159,13 +157,13 @@ def _probe_motion(arm: URRobotArm) -> None:
     # The RobotArm Protocol declares move_joint() -> None and raises on refusal, so "returned None"
     # is success and not silence. Reading a truthy return here reports a failure on a move that
     # worked.
-    arm.move_joint(JointPositions(target))
+    arm.move_to_joints(JointPositions(target)).raise_unless_executed()
     note("move_joint(+0.15 rad on wrist 3)", f"accepted (no raise) in {time.time() - t0:.1f}s")
     time.sleep(1.0)
     q1 = list(arm.get_joint_positions().values)
     note("joint actually moved", f"delta={round(q1[5] - q0[5], 4)} rad",
          ok=abs(q1[5] - q0[5]) > 0.05)
-    arm.move_joint(JointPositions(q0))  # put it back
+    arm.move_to_joints(JointPositions(q0)).raise_unless_executed()  # put it back
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -182,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
 
     chain = args.profile if args.profile is not None else (active_profile() or _DEFAULT_PROFILE)
     cfg = load_robot_config(profile=chain)
-    print(f"=== profile {chain!r}: vendor={cfg.vendor} ip={cfg.ur.ip} model={cfg.ur.model} "
+    print(f"=== profile {chain!r}: vendor={cfg.vendor} ip={cfg.arm.controller} model={cfg.arm.model} "
           f"tool_frame={cfg.gripper.tool_frame.source} "
           f"payload={cfg.safety.payload.mass_kg} kg ===\n")
 

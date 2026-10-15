@@ -2,7 +2,7 @@
 
 Turns an object's points into ranked 6-DoF grasps, and holds the rest of a pick attempt around them:
 the decision gate, the approach, recovery and the record each attempt leaves. It moves
-nothing by itself: the UR, KUKA and Isaac arm drivers gate every commanded move through their own
+nothing by itself: the UR and Isaac arm drivers gate every commanded move through their own
 safety preflight, and nothing here can relax a guard.
 
 ```python

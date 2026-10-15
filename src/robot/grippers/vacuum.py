@@ -176,6 +176,20 @@ class VacuumGripper:
         if engage and self._ok_pin is not None:
             self._await_vacuum()
 
+    def set_closed(self, closed: bool) -> None:
+        """Vacuum on when ``closed``, off otherwise, whatever width a caller has in mind (``OpensAndCloses``, P0g).
+
+        A cup has no opening. Read as a width, a pick's grasp at the part's width was a release: ``Robot.pick`` of a
+        40 mm part commanded 39.0 mm, the vacuum never came on, and with no switch wired the pick reported a grasp.
+        The hand verbs and the pick loop say the intent here instead. Engaging waits for the switch, as a closing width
+        does, and releasing blows the part off where a blow-off pin is wired.
+        """
+        self._require_connected("set_closed")
+        engage = bool(closed)
+        self._set_vacuum(engage)
+        if engage and self._ok_pin is not None:
+            self._await_vacuum()
+
     def get_width_mm(self) -> float:
         """Reported opening: the closed band while engaged, the open band while released."""
         return self._min_width_mm if self._vacuum_on else self._max_width_mm
@@ -249,3 +263,84 @@ class VacuumGripper:
                 )
                 return False
             self._sleep(0.02)
+
+
+# ---- the driver as the stack reads it (P0g slice 8, grippers/spec.py) -----------------------------------------------
+def _refuse(robot_cfg: Any, facts: Any) -> Any:
+    """Suction switches the arm's digital I/O, so the arm must satisfy ``SupportsDigitalIO`` (the real UR driver does);
+    on any other the build falls back to a ``NullGripper`` and warns, as the Robotiq does on an arm that is not a UR,
+    rather than crashing at connect."""
+    from .null import SubstitutionReason
+    from .spec import Refusal
+
+    if facts.has_digital_io:
+        return None
+    return Refusal(
+        SubstitutionReason.VACUUM_NEEDS_DIGITAL_IO,
+        f"gripper.vendor='vacuum' but the arm in hand reports vendor "
+        f"{facts.vendor!r} and does not advertise SupportsDigitalIO. Suction "
+        f"switches the controller's digital I/O, which only the real UR driver exposes.",
+        "Set robot.vendor: ur for a real suction cell, or gripper.vendor: none.",
+    )
+
+
+def _build(robot_cfg: Any, arm: Any, facts: Any) -> Any:
+    from src.robot.core import GripperVendor
+
+    from .registry import create_gripper
+
+    # Lifecycle contract: VacuumGripper.connect() immediately drives set_digital_output, and from_robot_config does not
+    # call arm.connect() (the caller owns the lifecycle). So a real cell must call arm.connect() before
+    # gripper.connect(), or the vacuum connect raises with no I/O behind it.
+    gripper_cfg = robot_cfg.gripper
+    vac = gripper_cfg.vacuum
+    return create_gripper(
+        GripperVendor.VACUUM,
+        io=arm,
+        config=gripper_cfg,
+        vacuum_output_pin=vac.vacuum_output_pin,
+        blow_off_output_pin=vac.blow_off_output_pin,
+        vacuum_ok_input_pin=vac.vacuum_ok_input_pin,
+        io_port=vac.io_port,
+        engage_timeout_s=vac.engage_timeout_s,
+        blow_off_s=vac.blow_off_s,
+        vacuum_on_below_mm=vac.vacuum_on_below_mm,
+        min_width_mm=gripper_cfg.min_width_mm,
+        max_width_mm=gripper_cfg.max_width_mm,
+    )
+
+
+def _wiring(robot_cfg: Any) -> Any:
+    from .spec import Row
+
+    vac = robot_cfg.gripper.vacuum
+    extra = "".join((
+        f", blow off on output {vac.blow_off_output_pin}" if vac.blow_off_output_pin is not None else "",
+        f", vacuum switch on input {vac.vacuum_ok_input_pin}" if vac.vacuum_ok_input_pin is not None else "",
+    ))
+    return Row("bench",
+               f"the vacuum ejector on {vac.io_port} output {vac.vacuum_output_pin}{extra}, and the solenoid's 24 V supply",
+               "confirm physically, pin by pin; an ejector with no supply looks like a cup that never seals")
+
+
+def _hazards(robot_cfg: Any, gripper: Any, asked: str) -> Any:
+    from .spec import Hazard
+
+    return (Hazard(
+        what="Connecting a vacuum cup asserts the ejector output immediately, and fires a blow-off "
+             "pulse if one is configured.",
+        precaution="If the cup is currently holding anything, it will be RELEASED. Clear the "
+                   "workspace below the tool before connecting.",
+    ),)
+
+
+def _driver() -> Any:
+    from src.robot.core import GripperVendor
+
+    from .spec import GripperDriver
+
+    # No SDK: suction is an ejector pin and, optionally, a blow-off pin and a switch on the arm's digital I/O.
+    return GripperDriver(vendor=GripperVendor.VACUUM, refuse=_refuse, build=_build, wiring=_wiring, hazards=_hazards)
+
+
+DRIVER = _driver()

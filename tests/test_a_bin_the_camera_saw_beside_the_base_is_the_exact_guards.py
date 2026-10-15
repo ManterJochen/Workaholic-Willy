@@ -101,7 +101,7 @@ def _arm(fixtures: "list[dict[str, Any]] | None" = None, *, carried_part_mm: "fl
 
     arm: Any = URRobotArm(RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": "ur10", "motion_planner": "curobo"},
+        "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
         "workspace_limits": OPEN_WORKSPACE,
         "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}],
                     "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 155.75],
@@ -109,8 +109,7 @@ def _arm(fixtures: "list[dict[str, Any]] | None" = None, *, carried_part_mm: "fl
         "safety": {"payload": {"enforce": False},
                    "planned_motion": {"line_clearance_mm": _LINE_MM, "mesh_first": bool(mesh_first)},
                    "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "perceived_min_distance_mm": 5.0,
-                                      "kinematics_model": "ur10", "planner_margin_mm": 4.0,
-                                      "fixtures": list(fixtures or [])},
+                                      "planner_margin_mm": 4.0, "fixtures": list(fixtures or [])},
                    **({} if carried_part_mm is None else
                       {"planning_world": {"payload": {"length_mm": float(carried_part_mm)}}})},
     }))
@@ -267,7 +266,7 @@ def _cell(real_mm: float = 30.0, *, yaw_deg: float = 30.0, world: "tuple[AxisAli
     arm._preflight.set_perceived_obstacles(boxes)
     planner = planner_cls(arm, (_BENCH, *boxes) if world is None else world, **kwargs)
     planner.here = list(Q)
-    arm._curobo_ur = planner
+    arm._curobo = planner
     arm.set_hand(KNOWN_OPEN)
     return arm, planner
 

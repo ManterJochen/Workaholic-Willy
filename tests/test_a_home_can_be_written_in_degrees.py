@@ -1,7 +1,7 @@
 """A cell's home can be written in degrees, as the pendant shows it, and every consumer still reads radians.
 
 The owner, 2026-09-24: ``home_joint_positions`` may also be given in degrees. The pendant and
-``python -m src.robot.drivers.ur --where`` show degrees, and the UR driver's home verb, the joint window centred on the
+``python -m src.robot.execution.io_bench --where`` show degrees, and the UR driver's home verb, the joint window centred on the
 home and the sim arm all read radians. So ``robot.home_joint_positions_deg`` (and its sim twin) is read once, at load,
 into ``home_joint_positions`` in radians, and both at once are refused rather than one silently winning.
 """

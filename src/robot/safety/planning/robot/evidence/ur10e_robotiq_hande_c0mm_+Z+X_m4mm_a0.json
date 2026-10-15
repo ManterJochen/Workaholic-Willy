@@ -4,7 +4,7 @@
  "arm_descriptor_sha256": "8704b7c31544c0336e6fa43324bd58cfc1479d809273a031b35eafed724cc312",
  "attach_spheres": 0,
  "closing": "+X",
- "composed_sha256": "04df78945a64dd722d391254ee127736032f9bb0f0c7c65da7c60d9219582712",
+ "composed_sha256": "521c40a37d57637a5510ffc55c7fbc7a6e32d68deae01cee95bfbf63be137226",
  "coupling_mm": 0.0,
  "criterion": "b1",
  "guard_margin_mm": 10.0,
@@ -21,5 +21,5 @@
   "retract_clear": true
  },
  "planner_margin_mm": 4.0,
- "urdf_sha256": "28efc1b8648114e61470261b5b4f005791089ec13ba8e5a78110630644d93629"
+ "urdf_sha256": "478816d88cbd8dac817e2d609f5268361b5011fe4b31bd29135db470a92cf72f"
 }

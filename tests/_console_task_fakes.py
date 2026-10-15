@@ -300,8 +300,8 @@ class ConsoleArm(TaskArm):
         self.log.append(("status",))
         return self._status()
 
-    def recover_from_protective_stop(self) -> bool:  # pragma: no cover - never called, by design
-        self.calls.append("recover_from_protective_stop")
+    def acknowledge_fault(self, fault: object) -> bool:  # pragma: no cover - never called, by design
+        self.calls.append("acknowledge_fault")
         raise AssertionError("nothing on the console's path may clear a protective stop")
 
     # ---- the planner ----------------------------------------------------------------------------------------
@@ -320,6 +320,10 @@ class ConsoleArm(TaskArm):
             raise RuntimeError(self.start_fails)
         self._planner = "ready"
         return {"provenance": {"arm": "ur10"}, "arm_descriptor_sha256": "abc"}
+
+    def stop_planner(self) -> None:
+        self.calls.append("stop_planner")
+        self._planner = "off"
 
     # ---- the carried part, as the console reads it -------------------------------------------------------------
 

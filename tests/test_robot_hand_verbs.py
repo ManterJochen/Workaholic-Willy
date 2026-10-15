@@ -92,16 +92,16 @@ def _dummy_robot(gripper: Any) -> Robot:
     return Robot.from_parts(arm=arm, gripper=gripper, lock_key=None)
 
 
-def _payload_ur(*, enabled: bool = True, planner_answer: bool = True):  # noqa: ANN202
-    from tests.test_what_the_hand_verbs_read import _payload_ur as build
+def _payload_arm(*, enabled: bool = True, planner_answer: bool = True):  # noqa: ANN202
+    from tests._arm_kit import payload_arm
 
-    return build(enabled=enabled, planner_answer=planner_answer)
+    return payload_arm(enabled=enabled, planner_answer=planner_answer)
 
 
 class GraspTests(unittest.TestCase):
     def test_a_detected_grasp_attaches_the_measured_width(self) -> None:
         handling = _handling()
-        arm = _payload_ur()
+        arm = _payload_arm()
         robot = Robot.from_parts(arm=arm, gripper=_Hand(hold=HoldEvidence.HELD, width_mm=38.2), lock_key=None)
 
         report = robot.grasp(40.0)
@@ -111,27 +111,27 @@ class GraspTests(unittest.TestCase):
         self.assertIs(handling.PayloadState.ATTACHED, report.payload)
         self.assertEqual(38.2, report.reported_width_mm)
         self.assertTrue(report.width_measured)
-        arm._curobo_ur.attach_payload.assert_called_once()
+        arm._curobo.attach_payload.assert_called_once()
         # The box across the jaws is the measured width plus the declared 10 mm lateral margin.
-        self.assertAlmostEqual(48.2, min(arm._curobo_ur.attach_payload.call_args.args[1]))
+        self.assertAlmostEqual(48.2, min(arm._curobo.attach_payload.call_args.args[1]))
         self.assertIn("declared envelope", report.render())
         self.assertIn("a second held part is not modelled", report.render())
 
     def test_an_empty_grasp_attaches_nothing(self) -> None:
         handling = _handling()
-        arm = _payload_ur()
+        arm = _payload_arm()
         robot = Robot.from_parts(arm=arm, gripper=_Hand(hold=HoldEvidence.EMPTY), lock_key=None)
 
         report = robot.grasp(40.0)
 
         self.assertIs(handling.HandOutcome.NOTHING_HELD, report.outcome)
         self.assertIs(handling.PayloadState.UNCHANGED, report.payload)
-        arm._curobo_ur.attach_payload.assert_not_called()
+        arm._curobo.attach_payload.assert_not_called()
         self.assertFalse(report.ok)
 
     def test_a_dummy_gripper_grasp_attaches_the_commanded_width_and_says_nothing_was_measured(self) -> None:
         handling = _handling()
-        arm = _payload_ur()
+        arm = _payload_arm()
         gripper = DummyGripper(max_width_mm=85.0)
         gripper.connect()
         robot = Robot.from_parts(arm=arm, gripper=gripper, lock_key=None)
@@ -142,7 +142,7 @@ class GraspTests(unittest.TestCase):
         self.assertIs(HoldEvidence.UNMEASURED, report.hold)
         self.assertFalse(report.width_measured)
         self.assertIs(handling.PayloadState.ATTACHED, report.payload)
-        self.assertAlmostEqual(50.0, min(arm._curobo_ur.attach_payload.call_args.args[1]))
+        self.assertAlmostEqual(50.0, min(arm._curobo.attach_payload.call_args.args[1]))
         self.assertIn("hold not measured", report.render())
         self.assertIn("width not measured", report.render())
 
@@ -150,7 +150,7 @@ class GraspTests(unittest.TestCase):
 class ReleaseTests(unittest.TestCase):
     def test_a_release_reading_empty_opens_to_the_hand_width_and_detaches(self) -> None:
         handling = _handling()
-        arm = _payload_ur()
+        arm = _payload_arm()
         hand = _Hand(hold=HoldEvidence.EMPTY, max_width_mm=49.99)
         robot = Robot.from_parts(arm=arm, gripper=hand, lock_key=None)
 
@@ -159,14 +159,14 @@ class ReleaseTests(unittest.TestCase):
         self.assertIs(handling.HandOutcome.RELEASED, report.outcome, report.render())
         self.assertEqual([("set_width_mm", 49.99)], hand.commands)
         self.assertIs(handling.PayloadState.DETACHED, report.payload)
-        arm._curobo_ur.detach_payload.assert_called_once()
+        arm._curobo.detach_payload.assert_called_once()
 
     def test_a_release_still_held_keeps_the_payload(self) -> None:
         from src.config.schema.robot import GripperConfig
         from tests.test_gripper_commands_the_number_it_promised import _gripper
 
         handling = _handling()
-        arm = _payload_ur()
+        arm = _payload_arm()
         robotiq, driver = _gripper(GripperConfig(min_width_mm=5.0, max_width_mm=50.0, closed_width_mm=0.0))
         driver.obj = 1  # STOPPED_OPENING: something is still in the way of the fingers
         robot = Robot.from_parts(arm=arm, gripper=robotiq, lock_key=None)
@@ -176,7 +176,7 @@ class ReleaseTests(unittest.TestCase):
 
         self.assertIs(handling.HandOutcome.RELEASE_NOT_CONFIRMED, report.outcome, report.render())
         self.assertIs(handling.PayloadState.UNCHANGED, report.payload)
-        arm._curobo_ur.detach_payload.assert_not_called()
+        arm._curobo.detach_payload.assert_not_called()
         self.assertIsNotNone(arm._attached_payload)
 
     def test_a_jaw_io_release_with_its_pin_high_is_unmeasured_detaches_and_says_so(self) -> None:
@@ -184,7 +184,7 @@ class ReleaseTests(unittest.TestCase):
         from tests.test_jaw_io_gripper import CLOSE_PIN, PART_SW, FakeIO
 
         handling = _handling()
-        arm = _payload_ur()
+        arm = _payload_arm()
         jaws = JawIOGripper(FakeIO({PART_SW: True}), close_output_pin=CLOSE_PIN, part_present_input_pin=PART_SW,
                             sleep=lambda _s: None)
         jaws.connect()
@@ -204,7 +204,8 @@ class TheSelfFilterFollowsTheVerbsTests(unittest.TestCase):
         from src.robot.safety.planning.hand import HAND_APPROACH_IN_TOOL0
         from tests.test_self_filter_envelope import _hand, _place, _tip_mm
 
-        joints = np.asarray(arm._conn.get_joint_positions.return_value, dtype=np.float64)
+        joints = np.asarray(arm.get_joint_positions().values, dtype=np.float64)
+        # UR-specific: the kit arm is a UR5e description, so its links are the UR5e's DH chain.
         frames = ur_link_transforms_mm("ur5e", joints)
         assert frames is not None
         return _place(frames[6], (np.asarray(HAND_APPROACH_IN_TOOL0) * (_tip_mm(_hand()) + 100.0))[None, :])
@@ -219,8 +220,8 @@ class TheSelfFilterFollowsTheVerbsTests(unittest.TestCase):
         return bool(SelfBody.from_frames(envelope.frames_mm, envelope.capsules, padding_mm=_PADDING_MM)
                     .contains(point)[0])
 
-    def test_the_ur_self_filter_follows_grasp_and_release(self) -> None:
-        arm = _payload_ur()
+    def test_the_planned_arms_self_filter_follows_grasp_and_release(self) -> None:
+        arm = _payload_arm()
         robot = Robot.from_parts(arm=arm, gripper=_Hand(hold=HoldEvidence.HELD, width_mm=60.0), lock_key=None)
         point = self._point_past_the_tips(arm)
         self.assertFalse(self._filtered(arm, point))
@@ -231,9 +232,9 @@ class TheSelfFilterFollowsTheVerbsTests(unittest.TestCase):
         robot.release()
         self.assertFalse(self._filtered(arm, point), "the released part is still filtered")
 
-    def test_a_ur_whose_planner_declines_is_filter_only_and_still_filters(self) -> None:
+    def test_an_arm_whose_planner_declines_is_filter_only_and_still_filters(self) -> None:
         handling = _handling()
-        arm = _payload_ur(planner_answer=False)
+        arm = _payload_arm(planner_answer=False)
         robot = Robot.from_parts(arm=arm, gripper=_Hand(hold=HoldEvidence.HELD, width_mm=60.0), lock_key=None)
         point = self._point_past_the_tips(arm)
 
@@ -243,16 +244,16 @@ class TheSelfFilterFollowsTheVerbsTests(unittest.TestCase):
         self.assertTrue(report.payload_reason)
         self.assertTrue(self._filtered(arm, point))
 
-    def test_a_ur_with_the_payload_disabled_models_nothing_and_names_the_key(self) -> None:
+    def test_an_arm_with_the_payload_disabled_models_nothing_and_names_the_key(self) -> None:
         handling = _handling()
-        arm = _payload_ur(enabled=False)
+        arm = _payload_arm(enabled=False)
         robot = Robot.from_parts(arm=arm, gripper=_Hand(hold=HoldEvidence.HELD), lock_key=None)
 
         report = robot.grasp(40.0)
 
         self.assertIs(handling.PayloadState.NOT_MODELLED, report.payload)
         self.assertIn("safety.planning_world.payload.enabled", report.payload_reason)
-        self.assertIsNone(arm._curobo_ur, "the verb started a planner to be told no")
+        self.assertIsNone(arm._curobo, "the verb started a planner to be told no")
 
 
 class ArmsThatModelNoPartTests(unittest.TestCase):

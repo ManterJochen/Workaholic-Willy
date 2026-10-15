@@ -24,7 +24,7 @@ def _cfg(vendor: str, model: "str | None" = None, **gripper: object) -> RobotCon
     # The capsule guard reads no hand geometry, so a cell naming no hand still builds its arm: the driver is the
     # question here, and the hand rules have their own tests.
     return RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "ik"},
+        "vendor": "ur", "ur": {"ip": "127.0.0.1", "model": "ur5e"}, "motion": {"planner": "ik"},
         "gripper": {"vendor": vendor, "model": model, **gripper},
         "safety": {"self_collision": {"backend": "capsule"}},
     })

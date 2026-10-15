@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -37,6 +38,13 @@ _OFFLINE = _EXAMPLES / "offline"
 _TIMEOUT_S = 180
 #: A screen. An example that needs more is two examples, or a tool.
 _MAX_LINES = 70
+
+#: Examples this suite compiles but does not run, each with its reason; the list names only files that exist. A suite
+#: result must not depend on a remote archive, and on a machine with an NVIDIA driver 04 also trains for about a minute.
+#: CI type-checks every example (`mypy ... examples`), so a name 04 takes from `willy` is still checked.
+_NOT_RUN = {
+    "offline/training/04_train_on_a_public_corpus.py": "it fetches from a remote archive and trains on a GPU",
+}
 
 #: What an example may import beside `willy`: the standard library and numpy.
 _ALLOWED_ROOTS = frozenset(sys.stdlib_module_names) | {"numpy", "willy"}
@@ -62,10 +70,33 @@ def _name(path: Path) -> str:
 
 
 def _bare_env() -> dict[str, str]:
-    """No profile from the operator's shell: what CI measures must not depend on it."""
+    """No profile from the operator's shell, and the tree this file lives in on the path.
+
+    Without the path an example imports somebody else's tree. ``python examples/x.py`` puts the script's directory on
+    ``sys.path``, never the working directory, so ``from willy import ...`` resolves through whatever
+    ``pip install -e .`` last wrote into the venv: in a second checkout of the repository, every example imported the
+    first one's ``willy`` (measured in aurora, 2026-09-20). The run would then say nothing about the tree it is in.
+    """
     env = dict(os.environ)
     env.pop("WILLY_PROFILE", None)
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = f"{_ROOT}{os.pathsep}{existing}" if existing else str(_ROOT)
+    # The encoding the example writes in, so that :func:`_run` reads it in that one (see there).
+    env["PYTHONIOENCODING"] = "utf-8"
     return env
+
+
+def _run(path: Path) -> subprocess.CompletedProcess[str]:
+    """One example, run as a user runs it, its output read in UTF-8, the encoding :func:`_bare_env` makes it write.
+
+    Measured 2026-09-26: ``text=True`` read the output in the locale encoding, cp1252 on this box, while the example
+    wrote UTF-8 (the shell carried ``PYTHONIOENCODING=utf-8``). A tqdm bar that transformers draws on stderr ends in a
+    partial block, and some of those blocks are bytes cp1252 has no character for (``▍`` is ``E2 96 8D``). Which
+    block is drawn depends on timing, so ``resolve_perception_stack.py`` failed now and then: the reader thread died
+    on the decode, ``stdout`` came back ``None``, and the test raised a TypeError instead of reporting anything.
+    """
+    return subprocess.run([sys.executable, str(path)], cwd=_ROOT, capture_output=True, encoding="utf-8",
+                          errors="replace", timeout=_TIMEOUT_S, env=_bare_env())
 
 
 #: The line `logging` prints before a traceback it reports and carries on from; that one is not a crash.
@@ -178,13 +209,32 @@ class SimulationAndOfflineExamplesRunTests(unittest.TestCase):
 
     def test_every_simulation_and_offline_example_runs(self) -> None:
         for path in _files(_SIMULATION) + _files(_OFFLINE):
+            if _name(path) in _NOT_RUN:
+                continue
             with self.subTest(_name(path)):
-                proc = subprocess.run([sys.executable, str(path)], cwd=_ROOT, capture_output=True, text=True,
-                                      timeout=_TIMEOUT_S, env=_bare_env())
+                proc = _run(path)
                 output = proc.stdout + proc.stderr
                 self.assertIsNone(_crash(output), f"{_name(path)} raised:\n{_crash(output)}")
                 self.assertEqual(0, proc.returncode, f"{_name(path)} exited {proc.returncode}:\n{output[-1500:]}")
                 self.assertTrue(proc.stdout.strip(), f"{_name(path)} printed nothing")
+
+    def test_the_output_is_read_in_the_encoding_the_example_writes_it_in(self) -> None:
+        """The partial block of a tqdm bar, on stderr, as transformers draws one while it loads weights."""
+        with tempfile.TemporaryDirectory() as folder:
+            script = Path(folder, "bar.py")
+            script.write_text('import sys\nprint("ok")\nsys.stderr.write("\\u258d 739/990\\n")\n', encoding="utf-8")
+            proc = _run(script)
+        self.assertEqual((proc.returncode, proc.stdout.strip()), (0, "ok"))
+        self.assertIn("\u258d 739/990", proc.stderr)
+
+    def test_every_example_left_unrun_exists_and_compiles(self) -> None:
+        """The exception list cannot outlive its file or hide one that no longer parses."""
+        for name, reason in _NOT_RUN.items():
+            with self.subTest(name):
+                path = _EXAMPLES / name
+                self.assertTrue(path.is_file(), f"{name} is listed as not run ({reason}) and is not there")
+                compile(path.read_text(encoding="utf-8"), str(path), "exec")
+                self.assertTrue(reason.strip())
 
 
 if __name__ == "__main__":

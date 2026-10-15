@@ -434,8 +434,6 @@ def _service_for(
     policy = GraspExecutionPolicy(
         arm=cell.arm, gripper=cell.gripper, standoff_mm=standoff_mm, retreat_mm=100.0,
         pre_open_width_mm=80.0, close_width_mm=close_width_mm, require_base_frame_grasp=True,
-        require_steady_before_motion=(cell.dwell.require_steady_before_motion if cell.dwell else False),
-        steady_timeout_s=(cell.dwell.steady_timeout_s if cell.dwell else 5.0),
     )
     mode = resolve_demo_mode("easy")
     return AutonomousGraspService.from_components(

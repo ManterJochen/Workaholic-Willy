@@ -50,9 +50,9 @@ _SIM_FILE = "ur5e_robotiq_2f85_c0mm_+Y+X_m4mm_a0.json"
 def _cell(**over: object) -> RobotConfig:
     """A real UR cell whose combination the matrix measured: ur5e, 2F-85, +Y+X, 4 mm, measured against a 10 mm guard."""
     tree: dict = {
-        "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
+        "vendor": "ur", "ur": {"ip": "127.0.0.1", "model": "ur5e"}, "motion": {"planner": "curobo"},
         "gripper": {"model": "robotiq_2f85", "tool_frame": _TOOL},
-        "safety": {"self_collision": {"kinematics_model": "ur5e", "planner_margin_mm": 4.0, "backend": "fcl"}},
+        "safety": {"self_collision": {"planner_margin_mm": 4.0, "backend": "fcl"}},
     }
     for key, value in over.items():
         section, _, field = key.partition("__")
@@ -98,7 +98,7 @@ class TheFileHalfRunsAtTheDesk(unittest.TestCase):
             said, _ = desk_evidence_refusal(_cell(), evidence_dir=Path(empty))
         assert said is not None
         self.assertIn(_SIM_FILE, said)
-        self.assertIn("matrix_gate.py", said)
+        self.assertIn("scripts/arms/gate.py", said)
 
     def test_a_margin_nobody_measured_refuses(self) -> None:
         said, _ = desk_evidence_refusal(_cell(safety__self_collision__planner_margin_mm=6.0))
@@ -144,7 +144,7 @@ class TheSidecarHalfRunsWhenItStarts(unittest.TestCase):
         assert chosen(hand)
         sc = cfg.safety.self_collision
         return planner_evidence_refusal(
-            identity, hand, HandLink.from_hand(hand), arm="ur5e",
+            identity, hand, HandLink.from_hand(hand, arm="ur5e"), arm="ur5e",
             planner_margin_mm=float(sc.planner_margin_mm), guard_margin_mm=float(sc.min_distance_mm),
             attach_spheres=0, mesh_dir=sc.mesh_dir,
         )
@@ -214,11 +214,11 @@ class TheChecklistSaysWhichHalfItChecked(unittest.TestCase):
             row = self._row(_cell(), evidence_dir=Path(empty))
         self.assertIs(row.status, CheckStatus.BLOCK)
         self.assertIn(_SIM_FILE, row.detail)
-        self.assertIn("matrix_gate.py", row.fix)
+        self.assertIn("scripts/arms/gate.py", row.fix)
 
     def test_an_ik_cell_is_warned_that_the_exact_guard_alone_decides(self) -> None:
         """Owner, 2026-09-16: evidence refuses on cuRobo cells only; an ik cell plans nothing to compare."""
-        row = self._row(_cell(ur__motion_planner="ik"))
+        row = self._row(_cell(motion__planner="ik"))
         self.assertIs(row.status, CheckStatus.WARN)
         self.assertIn("exact", row.detail)
 

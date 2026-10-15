@@ -1,14 +1,15 @@
 """Start a cell's planner at a desk, through the path its first planned move takes, and stop it again.
 
-``PlannerStart`` builds the arm alone, from config, and calls the driver's own
-:meth:`~src.robot.drivers.ur.arm.URRobotArm.start_planner`, so every refusal that move meets is met
-here with the driver's own sentence, and no controller is asked. A cell whose hand body, sphere map,
-retract rows and evidence were written with the scripts learns here whether its planner starts,
-without a connected arm on a bench. The planner is stopped before the report returns.
+``PlannerStart`` builds the arm the tree selects, alone and from config, and calls the driver's own
+``start_planner`` (``StartsAPlanner``), so every refusal that move meets is met here with the driver's
+own sentence, and no controller is asked. A cell whose hand body, sphere map, retract rows and evidence
+were written with the scripts learns here whether its planner starts, without a connected arm on a bench.
+The planner is stopped before the report returns.
 
 The CLI is ``python -m src.robot.execution.real_cell --start-planner``; ``Cell.start_planner()`` is
-the step on a cell. A real UR arm on ``motion_planner: curobo`` is the one cell this starts; every
-other cell is refused saying why.
+the step on a cell. An arm with a planner a desk can start is the one cell this starts, today the UR on
+``robot.motion.planner: curobo``; every other cell is refused saying why, an arm without one by the
+capability it lacks (P0i i1).
 """
 
 from __future__ import annotations
@@ -96,7 +97,10 @@ class PlannerStart:
     def run(self) -> PlannerStartReport:
         """Build the arm, start its planner through the driver, stop it, and report. Never raises for a refusal."""
         cfg = self.robot_config
-        arm_model = str(getattr(getattr(cfg, "ur", None), "model", "") or "")
+        # The selected arm: the UR block is there on every tree, and on a tree naming another vendor its model is the
+        # default nobody chose (``RobotConfig.arm``).
+        selected = cfg.arm
+        arm_model = selected.model
         hand = str(cfg.gripper.model or "")
         began = time.perf_counter()
 
@@ -104,14 +108,8 @@ class PlannerStart:
             return PlannerStartReport(arm=arm_model, hand=hand, started=False, refusal=sentence,
                                       seconds=time.perf_counter() - began)
 
-        vendor = str(getattr(cfg.vendor, "value", cfg.vendor)).lower()
-        if vendor != "ur":
-            return refused(
-                f"robot.vendor is {vendor!r}, and this door starts a real UR arm's planner from its config: a sim "
-                f"cell's planner starts with Isaac, and a dummy arm plans nothing"
-            )
         from src.config.loader import ConfigError
-        from src.robot.drivers import create_arm
+        from src.robot.execution.robot_parts import construct_arm
         from src.robot.safety.planning import CuroboUnavailableError
         from src.robot.safety.planning.hand import planner_hand
 
@@ -128,13 +126,22 @@ class PlannerStart:
             except WristBodyRequired as exc:
                 return refused(str(exc))
         try:
-            # The arm alone and not connected. The SDK readiness gate is not asked: the planner never
-            # touches the controller's SDK, and a desk without ur_rtde is where this question is asked.
-            # `Any`, because starting a planner at a desk is the UR driver's own verb, not the
-            # vendor-neutral protocol's.
-            arm: Any = create_arm("ur", config=cfg)
+            # The arm the tree selects, alone and not connected. The SDK readiness gate is not asked: the
+            # planner never touches the controller's SDK, and a desk without ur_rtde is where this question is
+            # asked. Which arm has a planner to start is its own to say, below, not a vendor name (P0i i1).
+            # `Any`: starting a planner at a desk is a capability (StartsAPlanner), not the vendor-neutral
+            # protocol's.
+            arm: Any = construct_arm(cfg)
         except Exception as exc:  # noqa: BLE001 (a build refusal is the designed outcome, reported as it reads)
             return refused(f"{type(exc).__name__}: {exc}")
+        # A desk starts a planner the arm owns. An arm can plan every motion and still have none to start by
+        # hand, which is what the Isaac driver is, so this is a capability and not a vendor, and the desk's
+        # planner start row says it in this door's words: one sentence, from one place (P0i i3).
+        from src.robot.execution.abilities import Ability, AbilityStatus, row_of
+
+        row = row_of(Ability.PLANNER_START, arm=arm)
+        if row.status is AbilityStatus.REFUSED:
+            return refused(row.reason)
         try:
             if wrist is not None:
                 wrist.hand_to(arm)

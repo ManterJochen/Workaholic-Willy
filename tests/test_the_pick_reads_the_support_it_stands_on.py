@@ -83,7 +83,7 @@ class _Cell:
                  push: bool = False) -> None:
         self.arm = LookingArm(_poses())
         if world is not False:
-            self.arm.live_planner_world = world if world is not None else _SupportWorld()  # type: ignore[attr-defined]
+            self.arm.set_live_planner_world(world if world is not None else _SupportWorld())
         self.camera = _MatCamera(self.arm, boxes=boxes)
         self.calculator = (_Collides if collides else LookCalculator)(self.camera)
         self.policy = _Policy(self.arm)

@@ -47,11 +47,10 @@ def _machine_free(blob: str) -> str:
     A path in a tree is read against the config folder, and ``${WILLY_PROJECT_ROOT}`` is the
     repository, so the loaded config holds absolute paths (``src/config/paths.py``). Where this
     checkout sits is not a property of the tree, and a golden that pinned it would fail in every
-    other checkout, CI included.
+    other checkout, CI included. Only the repository root is replaced: a folder below it written
+    as ``<repo>`` would spell a path wrongly resolved into it exactly as the right one.
     """
-    for root in sorted({repository_root().as_posix(), _SIM_DATA_DIR.parent.as_posix()}, key=len, reverse=True):
-        blob = blob.replace(root, "<repo>")
-    return blob
+    return blob.replace(repository_root().as_posix(), "<repo>")
 
 
 def _data_blob() -> str:

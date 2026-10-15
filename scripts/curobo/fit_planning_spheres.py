@@ -33,7 +33,7 @@ judges, in their DH frames) and of the hand's is covered by the repository's cov
 radius the thickness plus a reach) with a greedy that accepts a sample within a hole allowance outside its sphere
 (``_cover_fit._greedy``), so the few large spheres along each link's axis are kept and the small ones a complete cover
 spends on edges and bolts are not. Per body the plan below says the reach and the hole it is fitted at, as
-``fit_cover_spheres.py`` says the evidence model's, and a body that needs more spheres than its ceiling there walks on
+``scripts/arms/fit.py`` says the evidence model's, and a body that needs more spheres than its ceiling there walks on
 to the coarser rungs of ``COARSER``, as the cover fit walks its ladder; the record carries the rung it was fitted at and
 what a fresh sample measures of both. The ignored pairs are the composition's (``planning_model.py``): the pairs the exact guard decides, every sample of every
 plan, are left to it.
@@ -56,10 +56,12 @@ import numpy as np
 import yaml
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(REPO / "scripts" / "arms"))  # the cover fit and the mesh ruler it reuses
 
+import _arm_file  # noqa: E402 (beside the arm build, stdlib plus PyYAML)
 from _cover_fit import _greedy, _march  # noqa: E402
 from _mesh_body import MeshBody, load_meshes  # noqa: E402
+from fit import arm_frames, hand_frames  # noqa: E402 (the evidence fit's frames: the description's, the hand bundle's)
 
 DATA = REPO / "src/robot/safety/data"
 MAPS = REPO / "src/robot/safety/planning/robot"
@@ -75,9 +77,19 @@ MAX_ROUNDS = 50
 
 
 @dataclass(frozen=True)
+class Budget:
+    """What one part is asked for on every arm or hand that has it: how far a sphere may reach past it, how far a
+    surface point may lie outside every sphere, a ceiling on the count, and why."""
+
+    reach_mm: float
+    hole_mm: float
+    cap: int
+    why: str
+
+
+@dataclass(frozen=True)
 class Ask:
-    """What one body is asked for: its frame, how far a sphere may reach past it, how far a surface point may lie
-    outside every sphere, a ceiling on the count, and why."""
+    """One body's budget in the frame it lives in: an arm's row in its description, a hand's in its own bundle."""
 
     frame: int
     reach_mm: float
@@ -93,13 +105,14 @@ class Ask:
 #     forearm    25/15:   10             30/15: 8          wrist_1/2 25/15: 1 each (one sphere, NVIDIA's own count)
 #     wrist_3    30/15:    1 (hole 6.8)
 # A forearm, a wrist and the hand meet a bin; a shoulder and an upper arm almost never, so those carry the larger hole.
+# Keyed by part and never by frame, as the evidence fit's plan is (P0f F8).
 ARM_PLAN = {
-    "shoulder": Ask(1, 30.0, 20.0, 12, "NVIDIA's one shoulder sphere; the CB3's housings take four at 30 mm reach"),
-    "upper_arm": Ask(2, 30.0, 20.0, 16, "NVIDIA's chain of seven along the arm's axis; nine at 30 mm reach"),
-    "forearm": Ask(3, 25.0, 15.0, 16, "NVIDIA's chain of seven; the forearm meets a bin wall, so 25 mm reach"),
-    "wrist_1": Ask(4, 25.0, 15.0, 4, "NVIDIA's one sphere on the joint"),
-    "wrist_2": Ask(5, 25.0, 15.0, 4, "NVIDIA's one sphere on the joint"),
-    "wrist_3": Ask(6, 30.0, 15.0, 4, "NVIDIA's flange sphere; the hand and the camera are bodies of their own"),
+    "shoulder": Budget(30.0, 20.0, 12, "NVIDIA's one shoulder sphere; the CB3's housings take four at 30 mm reach"),
+    "upper_arm": Budget(30.0, 20.0, 16, "NVIDIA's chain of seven along the arm's axis; nine at 30 mm reach"),
+    "forearm": Budget(25.0, 15.0, 16, "NVIDIA's chain of seven; the forearm meets a bin wall, so 25 mm reach"),
+    "wrist_1": Budget(25.0, 15.0, 4, "NVIDIA's one sphere on the joint"),
+    "wrist_2": Budget(25.0, 15.0, 4, "NVIDIA's one sphere on the joint"),
+    "wrist_3": Budget(30.0, 15.0, 4, "NVIDIA's flange sphere; the hand and the camera are bodies of their own"),
 }
 
 # The hand. NVIDIA's own gripper (franka.yml) is a row of spheres along the palm and two on each finger, 11 mm, the
@@ -108,10 +121,20 @@ ARM_PLAN = {
 # (2026-10-09): the housing takes 3 spheres at 20/10 mm, 6 at 15/8, 12 at 12/8; a finger 3 at 12/8 and 5 at 10/5. The
 # 2F-85's and the EGU-50's housings take more than 24 at 15/8, and walk on to the next rung of COARSER.
 HAND_PLAN = {
-    "gripper": Ask(6, 15.0, 8.0, 24, "the housing: a row along the approach, as franka's palm"),
-    "lfinger": Ask(6, 12.0, 8.0, 6, "one jaw, at the evidence model's reach"),
-    "rfinger": Ask(6, 12.0, 8.0, 6, "the other jaw"),
+    "gripper": Budget(15.0, 8.0, 24, "the housing: a row along the approach, as franka's palm"),
+    "lfinger": Budget(12.0, 8.0, 6, "one jaw, at the evidence model's reach"),
+    "rfinger": Budget(12.0, 8.0, 6, "the other jaw"),
 }
+
+def planned(frames: "dict[str, int]", budgets: "dict[str, Budget]") -> "dict[str, Ask]":
+    """Every body of ``frames``, in its order, asked for its part's budget; a part with none is refused by name."""
+    missing = [part for part in frames if part not in budgets]
+    if missing:
+        raise SystemExit(f"{', '.join(missing)}: no budget in this plan, so nothing says what reach and hole to fit it "
+                         f"at. Give the part a budget here on purpose.")
+    return {part: Ask(frame, budgets[part].reach_mm, budgets[part].hole_mm, budgets[part].cap, budgets[part].why)
+            for part, frame in frames.items()}
+
 
 #: Where a body does not fit its ceiling at the reach and hole it is asked for, the rungs it walks on, reach and hole in
 #: millimetres, as the cover fit walks its ladder; the record says the rung it was fitted at.
@@ -194,10 +217,9 @@ def fit_bodies(bundle: Path, plan: "dict[str, Ask]", *, seed: int = 0) -> "tuple
             "radii_mm": [round(float(radius) * 1000.0, 1) for radius in radii],
             "fresh_uncovered_max_mm": round(fresh.uncovered_max_mm, 3), "fresh_reach_max_mm": round(fresh.reach_max_mm, 3),
             "fresh_samples": fresh.samples, "sample_spacing_mm": round(body.spacing_m * 1000.0, 3),
-            "seconds": round(time.time() - started, 1),
         })
         print(f"  {name:10s} {len(radii):2d} sphere(s), radii {rows[-1]['radii_mm']} mm  |  fresh: {fresh.render()}  "
-              f"({rows[-1]['seconds']:.0f} s)", flush=True)
+              f"({time.time() - started:.0f} s)", flush=True)
     return spheres, rows
 
 
@@ -210,12 +232,10 @@ def nvidia_ur10e() -> "list[dict]":
     if not config.is_file():
         raise SystemExit(f"no pinned cuRobo checkout with NVIDIA's ur10e.yml at {config}")
     kinematics = yaml.safe_load(config.read_text(encoding="utf-8"))["robot_cfg"]["kinematics"]
-    place = link_frames(urd.render_urdf("ur10e"), urd.dh_rows("ur10e"))
+    place = link_frames(urd.render_urdf("ur10e"), urd.dh_rows("ur10e"), chain_yaw_deg=_arm_file.chain_yaw_deg("ur10e"))
     rows = []
-    for body, frame in (("shoulder", 1), ("upper_arm", 2), ("forearm", 3), ("wrist_1", 4), ("wrist_2", 5),
-                        ("wrist_3", 6)):
-        placed = place_spheres(kinematics["collision_spheres"][f"{body}_link"],
-                               np.linalg.inv(place(f"{body}_link", frame)))
+    for body, link, frame in _arm_file.collision_links("ur10e"):
+        placed = place_spheres(kinematics["collision_spheres"][link], np.linalg.inv(place(link, frame)))
         centres = np.asarray([sphere["center"] for sphere in placed])
         radii = np.asarray([sphere["radius"] for sphere in placed])
         mesh = MeshBody(load_meshes(DATA / "ur10e_collision_meshes.npz", [body]), samples=SAMPLES, seed=0)
@@ -284,13 +304,18 @@ def main(argv: "list[str] | None" = None) -> int:
     if bool(args.arm) == bool(args.hand):
         raise SystemExit("name exactly one of --arm or --hand, or ask for --nvidia")
     if args.arm:
-        bundle, plan = DATA / f"{args.arm}_collision_meshes.npz", ARM_PLAN
+        bundle = DATA / f"{args.arm}_collision_meshes.npz"
         out, what = MAPS / f"{args.arm}_arm_{MODEL}_spheres.yml", f"{args.arm} arm links, planning only"
     else:
-        bundle, plan = DATA / f"{args.hand}_hand_meshes.npz", HAND_PLAN
+        bundle = DATA / f"{args.hand}_hand_meshes.npz"
         out, what = MAPS / f"{args.hand}_gripper_{MODEL}_spheres.yml", f"{args.hand} hand bodies, planning only"
     if not bundle.is_file():
         raise SystemExit(f"no bundle at {bundle}")
+    if args.arm:
+        plan = planned(arm_frames(args.arm), ARM_PLAN)
+    else:
+        with np.load(bundle, allow_pickle=True) as data:
+            plan = planned(hand_frames({key: data[key] for key in data.files}), HAND_PLAN)
     print(f"[fit] {bundle.name}, the {MODEL} planning model", flush=True)
     spheres, rows = fit_bodies(bundle, plan, seed=args.seed)
     total = sum(row["spheres"] for row in rows)

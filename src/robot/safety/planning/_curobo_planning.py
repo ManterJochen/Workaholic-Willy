@@ -25,7 +25,7 @@ What the client sends (``WILLY_CUROBO_PLANNING_MODEL``, JSON, :func:`read_payloa
 * ``ignore``: link pairs the planning model does not check against one another.
 
 The sidecar places the arm's spheres from their DH frames into the URDF link frames of the URDF its kinematics
-resolved (:func:`dh_to_link`), the placement ``scripts/curobo/build_ur_config.py`` writes the evidence descriptor's
+resolved (:func:`dh_to_link`), the placement ``scripts/arms/descriptor.py`` writes the evidence descriptor's
 spheres with, and composes the bodies over it with ``compose_for_cell`` as it composes the evidence model
 (:func:`planning_config`). Anything it cannot place or compose raises :class:`PlanningModelError`, and the sidecar
 plans on the evidence model and says why, as it does on a cell that models a carried part: only the planner's own

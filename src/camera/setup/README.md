@@ -137,6 +137,7 @@ The legend is the guide's [evidence levels](../../../docs/guide/README.md#what-v
 | [`image_taking/single.py`](image_taking/single.py) | `SingleDeviceStreamer`, which owns the crop, split and resize of a combined stereo image |
 | [`image_taking/intrinsics.py`](image_taking/intrinsics.py) | `load_intrinsics`; import it by this path, the package does not re-export it |
 | [`quality.py`](quality.py) | `configure_camera_for_quality` |
+| [`capture_backend.py`](capture_backend.py) | `capture_backend_refusal`, `refuse_a_backend_this_platform_lacks`, `CaptureBackendRefused`, `WINDOWS_ONLY`: a rig's OpenCV capture backend against the platform that opens it; 700 (DirectShow) and 1400 (Media Foundation) exist in OpenCV's Windows builds only (P0h h7) |
 | [`devices/webcam.py`](devices/webcam.py) | `StereoVisionCalibrationWebcams`, calibration images from two USB cameras |
 | [`devices/stereocamera.py`](devices/stereocamera.py) | `StereoVisionCalibrationSingleDevice`, calibration images from one combined device |
 

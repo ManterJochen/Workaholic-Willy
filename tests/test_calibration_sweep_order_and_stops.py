@@ -25,9 +25,14 @@ import numpy as np
 
 from src.config.schema.robot import WorkspaceLimitsConfig
 from src.geometry import Frame, Pose
-from src.robot.core import RobotEmergencyStop
 from src.robot.core.arm_capabilities import RobotMode, RobotStatus, SafetyMode
-from src.robot.core.motion_result import NO_PLAN_FAIL_SAFE_MESSAGE, MotionCommand, MotionResult, MotionStatus
+from src.robot.core.motion_result import (
+    NO_PLAN_FAIL_SAFE_MESSAGE,
+    MotionCommand,
+    MotionResult,
+    MotionSent,
+    MotionStatus,
+)
 from src.robot.events import RobotCalibrationEvent
 from src.robot.execution.calibration import CalibrationRoutine, SweepStopped
 from src.robot.execution.hand_eye import CalibrationOutcome, CalibrationRunReport
@@ -49,7 +54,7 @@ class _Arm:
     """Arrives where it is sent, except at ``refuse``'s labels, which answer with a status and a message. ``status``
     is what ``get_robot_status`` reports, or raises when it is an exception."""
 
-    def __init__(self, refuse: dict[str, tuple[MotionStatus, str]], *, status: Any = None,
+    def __init__(self, refuse: "dict[str, tuple[Any, ...]]", *, status: Any = None,
                  steady: list[Any] | None = None) -> None:
         self.refuse = refuse
         self.status = status
@@ -61,8 +66,9 @@ class _Arm:
     def move(self, pose: Pose, **_keywords: Any) -> MotionResult:
         self.moves.append(str(pose.label))
         if pose.label in self.refuse:
-            status, message = self.refuse[pose.label]
-            return MotionResult.failed(status, MotionCommand.MOVE_TO, target_pose=pose, message=message)
+            status, message, *said = self.refuse[pose.label]
+            sent = said[0] if said else MotionSent.UNSTATED
+            return MotionResult.failed(status, MotionCommand.MOVE_TO, target_pose=pose, message=message, sent=sent)
         self.at = pose
         return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
 
@@ -83,12 +89,12 @@ class _StatusArm(_Arm):
 
 
 def _running() -> RobotStatus:
-    return RobotStatus(RobotMode.RUNNING, SafetyMode.NORMAL, protective_stopped=False, emergency_stopped=False)
+    return RobotStatus(RobotMode.RUNNING, SafetyMode.NORMAL, protective_stopped=False, emergency_stopped=False, program_running=True)
 
 
 def _protective() -> RobotStatus:
     return RobotStatus(RobotMode.RUNNING, SafetyMode.PROTECTIVE_STOP, protective_stopped=True,
-                       emergency_stopped=False, message="Protective stop: C153A1")
+                       emergency_stopped=False, message="Protective stop: C153A1", program_running=True)
 
 
 def _sweep(arm: _Arm, *, settle: float = 0.0, count: int = 7) -> tuple[CalibrationRoutine, list[Pose], list]:
@@ -135,6 +141,21 @@ class TheSweepStopsWhereTheArmCannotBeTrustedTests(unittest.TestCase):
         (rejected,) = [data for kind, data in events if kind == RobotCalibrationEvent.POSE_REJECTED]
         self.assertEqual(rejected["stops_sweep"], stopped.why)
 
+    def test_a_refusal_the_driver_says_was_sent_stops_the_sweep_whatever_its_message_says(self) -> None:
+        """P0g R2: the field, not the wording. A driver whose refusal text the pattern does not know still stops it."""
+        arm = _Arm({"p2": (MotionStatus.CONTROLLER_REJECTED, "the controller answered no", MotionSent.SENT)})
+        stopped, _, _ = self._stopped(arm)
+        self.assertEqual(arm.moves, ["p1", "p2"])
+        self.assertIn("after it was sent", stopped.why)
+
+    def test_a_range_refusal_after_part_of_the_path_ran_stops_the_sweep(self) -> None:
+        """Red before: its message says "was not sent", so the pattern read it as nothing moved and went on."""
+        said = ("ur_rtde refused waypoint 2 of 3 of the cuRobo trajectory before sending it (range), so that moveJ was "
+                "not sent and the 1 before it ran")
+        arm = _Arm({"p2": (MotionStatus.INVALID_TARGET, said, MotionSent.SENT)})
+        stopped, _, _ = self._stopped(arm)
+        self.assertEqual(arm.moves, ["p1", "p2"])
+
     def test_a_connection_error_stops_the_sweep(self) -> None:
         arm = _Arm({"p2": (MotionStatus.CONNECTION_ERROR, "cuRobo move requires an open connection.")})
         stopped, _, _ = self._stopped(arm)
@@ -154,16 +175,6 @@ class TheSweepStopsWhereTheArmCannotBeTrustedTests(unittest.TestCase):
         self.assertEqual(arm.moves, ["p1", "p2"])
         self.assertEqual(stopped.why, "the controller reports it is stopped (safety mode protective_stop: Protective "
                                       "stop: C153A1)")
-
-    def test_an_arm_that_only_raises_when_stopped_is_read_too(self) -> None:
-        arm = _Arm({"p2": (MotionStatus.SELF_COLLISION_REJECTED, "the planner refused this joint path")})
-
-        def stopped_state() -> None:
-            raise RobotEmergencyStop("UR controller in robot_emergency_stop (robot_mode=running)")
-
-        arm.raise_if_stopped = stopped_state  # type: ignore[attr-defined]
-        stopped, _, _ = self._stopped(arm)
-        self.assertIn("robot_emergency_stop", stopped.why)
 
     def test_an_exception_after_which_the_controller_reports_a_stop_stops_the_sweep(self) -> None:
         arm = _StatusArm({}, status=_protective())
@@ -223,6 +234,14 @@ class TheSweepGoesOnWhereNothingMovedTests(unittest.TestCase):
         self.assertNotIsInstance(caught.exception, SweepStopped)
         self.assertEqual(arm.moves, [f"p{i}" for i in range(1, 8)])
         self.assertEqual([v.reason for v in routine.pose_log], ["", *["move_rejected"] * 5, ""])
+
+    def test_a_refusal_the_driver_says_sent_nothing_goes_on_whatever_its_message_says(self) -> None:
+        """P0g R2: an empty CONTROLLER_REJECTED stops a sweep that has only the wording to go by; the field says
+        nothing reached the controller, so the next pose is tried."""
+        arm = _StatusArm({"p2": (MotionStatus.CONTROLLER_REJECTED, "", MotionSent.NOTHING)})
+        routine, poses, _ = _sweep(arm)
+        routine.run_with_poses(poses)
+        self.assertEqual(arm.moves, [f"p{i}" for i in range(1, 8)])
 
     def test_a_status_that_cannot_be_read_is_no_stop(self) -> None:
         arm = _StatusArm({"p2": (MotionStatus.WORKSPACE_REJECTED, "outside the box")},

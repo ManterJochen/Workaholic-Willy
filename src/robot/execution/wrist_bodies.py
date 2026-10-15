@@ -13,7 +13,7 @@ hand geometry (:func:`~src.robot.safety.planning.hand.wrist_body_reader`). On su
   sweeps such a rig only with a stated reason;
 * a calibration without the flange to TCP it was solved against is refused, and so is one whose record is not
   the cell's tool frame: exactly the declared frame on a ``willy`` cell, within the connect tolerance on a
-  ``polyscope`` cell at a desk, where the driver compares it again with the rig's record tolerances when it
+  ``controller`` cell at a desk, where the driver compares it again with the rig's record tolerances when it
   connects;
 * a camera the repository's registry does not hold, or that the tree describes differently, is refused.
 
@@ -40,6 +40,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.contracts import UNSET, Maybe, chosen
 from src.robot.constants import create_robot_logger
+from src.robot.core import CarriesWristBodies
 
 if TYPE_CHECKING:
     from src.robot.safety.planning.body_link import WristBody
@@ -148,10 +149,9 @@ class WristBodies:
                    unmodelled_reason=reason if unmodelled else "")
 
     def hand_to(self, arm: Any) -> None:
-        """Hand the bodies to ``arm`` through its ``set_wrist_bodies``, or refuse an arm that cannot take them."""
-        setter = getattr(arm, "set_wrist_bodies", None)
-        if callable(setter):
-            setter(self.bodies)
+        """Hand the bodies to a :class:`CarriesWristBodies` arm, or refuse an arm that cannot take them."""
+        if isinstance(arm, CarriesWristBodies):
+            arm.set_wrist_bodies(self.bodies)
             return
         if self.bodies:
             raise WristBodyRequired(

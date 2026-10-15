@@ -24,7 +24,9 @@ The three traps this module exists to keep an operator out of:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
+
+from src.contracts.options import UNSET, Maybe, chosen, resolve
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from datagen.config import DatagenConfig
@@ -192,6 +194,7 @@ class Estimate:
         return sum(stage.gigabytes for stage in self.stages)
 
     def __str__(self) -> str:
+        """What ``print()`` shows: the report :func:`format_estimate` writes, as the CLI prints it."""
         return format_estimate(self)
 
 
@@ -341,17 +344,20 @@ def format_estimate(result: Estimate) -> str:
 def estimate_for_config(
     config: "DatagenConfig",
     *,
-    scenes: int | None = None,
-    engine: str | None = None,
-    jobs: int = 1,
-    label: bool = True,
-    corpus: bool = True,
-    epochs: int = 0,
-    folds: int = 1,
-    refit: bool = True,
-    dense: bool = False,
+    scenes: Maybe[int] = UNSET,
+    engine: Maybe[str] = UNSET,
+    jobs: Maybe[int] = UNSET,
+    label: Maybe[bool] = UNSET,
+    corpus: Maybe[bool] = UNSET,
+    epochs: Maybe[int] = UNSET,
+    folds: Maybe[int] = UNSET,
+    refit: Maybe[bool] = UNSET,
+    dense: Maybe[bool] = UNSET,
 ) -> Estimate:
     """What the dataset THIS config describes will cost. `estimate` for a caller holding a config.
+
+    One implementation behind two doors: `datagen cost` calls this and so does `DatasetBuild.cost()`,
+    so the command and the code cannot give two different prices for the same config.
 
     The config's own scene count and engine are the answer, and `scenes=` / `engine=` are the
     what-if. Reading a scene count the config did not ask for prints a confident total for a
@@ -369,16 +375,21 @@ def estimate_for_config(
     this does not guess at a number it would go on to price. Counting from the restriction is a
     JSON read; loading the bank is two minutes of mesh parsing, which would make the cheap answer
     the slow one.
+
+    No defaults beyond the config's: `estimate` declares `jobs=1`, `refit=True` and the rest, and an
+    argument the caller did not choose is not forwarded, so there is one declaration of each.
     """
-    chosen_engine = engine if engine is not None else str(config.render.engine)
+    chosen_engine = resolve("engine", engine, str(config.render.engine))
     meshes = 0
     if chosen_engine == "mujoco":
         from datagen.scenes.layout import resolve_mesh_asset_ids  # noqa: PLC0415 (a heavy leaf)
 
         restricted = resolve_mesh_asset_ids(config)
         meshes = len(restricted) if restricted else 0
-    return estimate(
-        int(scenes) if scenes is not None else int(config.scenes),
-        engine=chosen_engine, jobs=jobs, label=label, corpus=corpus, epochs=epochs, folds=folds,
-        refit=refit, dense=dense, meshes=meshes,
-    )
+    options: dict[str, Any] = {
+        name: value for name, value in (
+            ("jobs", jobs), ("label", label), ("corpus", corpus), ("epochs", epochs),
+            ("folds", folds), ("refit", refit), ("dense", dense))
+        if chosen(value)}
+    return estimate(int(resolve("scenes", scenes, int(config.scenes))), engine=chosen_engine,
+                    meshes=meshes, **options)

@@ -1,4 +1,5 @@
 from .robot_schema import (
+    ArmSelection,
     BlockerGraphSchemaConfig,
     DummyConfig,
     DwellSafetyConfig,
@@ -10,8 +11,6 @@ from .robot_schema import (
     GripperConfig,
     IkQualitySafetyConfig,
     JointLimitSafetyConfig,
-    KukaConfig,
-    KukaEkiConfig,
     LimitsSafetyConfig,
     MotionContinuitySafetyConfig,
     MotionLimitsConfig,
@@ -40,6 +39,7 @@ from .robot_schema import (
 )
 
 __all__ = [
+    "ArmSelection",
     "BlockerGraphSchemaConfig",
     "DummyConfig",
     "DwellSafetyConfig",
@@ -51,8 +51,6 @@ __all__ = [
     "GripperConfig",
     "IkQualitySafetyConfig",
     "JointLimitSafetyConfig",
-    "KukaConfig",
-    "KukaEkiConfig",
     "LimitsSafetyConfig",
     "MotionContinuitySafetyConfig",
     "MotionLimitsConfig",

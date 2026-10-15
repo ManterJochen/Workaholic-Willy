@@ -8,8 +8,8 @@
  *
  * Building touches no robot, so its button is not red; it builds for real by default where the arm is real (a
  * rehearsal is chosen, never assumed: build plan 4.3). A latched arm (a halt, or a disconnect during a move) is
- * cleared only by a person's word, after they ticked that they looked; a protective stop is cleared at the pendant,
- * never here.
+ * cleared only by a person's word, after they ticked that they looked; a protective stop is cleared where the arm is
+ * visible, at the pendant or with the command the telemetry shows beside the fault, never here.
  *
  * Two backend fields drive most of what is drawn, and both exist because a console that omits them is misleading:
  *
@@ -22,7 +22,7 @@
  * step is the token the next one sends. The default export stacks every panel over its own read of the cell.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useState } from 'react'
 
 import { api, type CellOut, type TelemetryOut } from '../api/client'
 import { ProvenanceBadge, ProvenanceDetail } from '../components/ProvenanceBadge'
@@ -378,6 +378,16 @@ export function TelemetryPanel({ connected }: { connected: boolean }) {
                     live.emergency_stopped ? <StatusPill key="es" status="block">{t('cl.tel.stopped')}</StatusPill> : t('cl.tel.no'),
                   ],
                   [t('cl.tel.k.says'), live.controller_message || '—'],
+                  ...(live.fault
+                    ? ([
+                        [t('cl.tel.k.fault'), <StatusPill key="f" status="block">{live.fault}</StatusPill>],
+                        [t('cl.tel.k.whatToDo'), live.fault_what_to_do || '—'],
+                        [
+                          t('cl.tel.k.clearWith'),
+                          live.fault_clear_with ? <code key="c">{live.fault_clear_with}</code> : t('cl.tel.notFromSoftware'),
+                        ],
+                      ] as Array<[string, ReactNode]>)
+                    : []),
                 ]}
               />
             ) : (

@@ -173,9 +173,9 @@ def _tcp_down(x: float, y: float, z: float, yaw_deg: float) -> "np.ndarray":
 
 
 def _worst_off_the_line_mm(x: float, y: float, z_from: float, z_to: float, *, knot_mm: float) -> float:
-    """The worst of :func:`~src.robot.drivers.ur.arm._off_the_line_mm` over the steps of the line from ``z_from`` to
+    """The worst of :func:`~src.robot.drivers.planned.arm._off_the_line_mm` over the steps of the line from ``z_from`` to
     ``z_to``, knots ``knot_mm`` apart at most, each solved nearest the one before, from the cell's look."""
-    from src.robot.drivers.ur.arm import _off_the_line_mm
+    from src.robot.drivers.planned.arm import _off_the_line_mm
 
     steps = int(np.ceil(abs(z_to - z_from) / knot_mm - 1e-9))
     seed = np.radians(_LOOK_DEG)
@@ -204,7 +204,7 @@ class TheDhEvidenceTests(unittest.TestCase):
                     self.assertGreater(coarse, fine, "the measure reads nothing")
 
     def test_a_model_with_no_chain_admits_no_knot(self) -> None:
-        from src.robot.drivers.ur.arm import _off_the_line_mm
+        from src.robot.drivers.planned.arm import _off_the_line_mm
 
         self.assertEqual(float("inf"), _off_the_line_mm("not-a-ur", [0.0] * 6, [0.1] * 6, [0.5], reach_mm=100.0))
 

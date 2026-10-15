@@ -1,8 +1,8 @@
 """A cuRobo descriptor is built per arm and carries no hand (UM lane S11).
 
-``build_ur_config.py`` used to write ``{arm}_{hand}.yml``, the hand's spheres on ``tool0``, one file per pairing. It now
+``descriptor.py`` used to write ``{arm}_{hand}.yml``, the hand's spheres on ``tool0``, one file per pairing. It now
 writes ``willy_{arm}.yml`` and refuses ``--gripper`` and ``--coupling-mm``: the sidecar adds the hand the cell names as a
-body link when it starts. The shape of an arm descriptor is ``scripts/curobo/_arm_descriptor.py``, loaded here by path
+body link when it starts. The shape of an arm descriptor is ``scripts/arms/_arm_descriptor.py``, loaded here by path
 because the builder runs where this repository cannot be imported. The builder itself is read as source.
 """
 
@@ -15,8 +15,8 @@ import unittest
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_HELPER = _ROOT / "scripts" / "curobo" / "_arm_descriptor.py"
-_BUILD = _ROOT / "scripts" / "curobo" / "build_ur_config.py"
+_HELPER = _ROOT / "scripts" / "arms" / "_arm_descriptor.py"
+_BUILD = _ROOT / "scripts" / "arms" / "descriptor.py"
 _LINKS = ["shoulder_link", "upper_arm_link", "forearm_link", "wrist_1_link", "wrist_2_link", "wrist_3_link"]
 _SIM = {"source": "willy", "offset_mm": [0.0, 132.0, 0.0], "rotation_quat_xyzw": [-0.70710678, 0.0, 0.0, 0.70710678]}
 
@@ -107,7 +107,7 @@ class TheHandComposesOntoTheArmDescriptorTests(unittest.TestCase):
 
         hand = planner_hand(RobotConfig.model_validate({"vendor": "ur", "gripper": {
             "model": "robotiq_hande", "coupling_plates": [{"name": "plate", "thickness_mm": 20.0}], "tool_frame": _SIM}}))
-        return HandLink.from_hand(hand).to_dict()
+        return HandLink.from_hand(hand, arm="ur5e").to_dict()
 
     def test_the_arm_descriptor_takes_the_hand(self) -> None:
         from src.robot.safety.planning._curobo_body_links import compose_sidecar_config

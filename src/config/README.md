@@ -70,7 +70,7 @@ once: `ur5e,eth2` is a UR5e bench with two fixed cameras, `ur3e,hande` a UR3e wi
 | `sim`, `sim_camera_world` | the Isaac UR5e cell; chained on it, a planner that plans against the overhead camera |
 | `ursim`, `ursim_ur3`, `ursim_curobo` | the UR driver aimed at a URSim container; chained on it, UR3e kinematics, or the planner on |
 | `console_dummy` | a dummy arm and a dummy hand with a declared tool frame: the desk profile |
-| `web` | a development rig of two USB webcams with a KUKA KR6 R900 robot section |
+| `web` | a development rig of two USB webcams |
 | `decision`, `rl_datagen` | the AUTO decision gate alone; the advanced grasping blocks and `rl.mode: rl_shadow` |
 
 Read [`config/robot/robot.ur5e.yaml`](../../config/robot/robot.ur5e.yaml) before you describe your own
@@ -195,8 +195,8 @@ that the merge validates, and refuses a preset that names a removed mode, a remo
 
 `ConfigTree.write` takes the bench measurements and site facts only: the payload mass and centre of
 gravity, the tool frame's `source`, `offset_mm` and `rotation_quat_xyzw`, a rig's `serial_number` and
-`enabled`, `camera.cameras.primary_rig_id`, and the controller addresses `robot.ur.ip` and
-`robot.kuka.controller_ip`. It rewrites one line in place so comments survive, validates the group as
+`enabled`, `camera.cameras.primary_rig_id`, and the controller address `robot.ur.ip`. It rewrites one
+line in place so comments survive, validates the group as
 one transaction and restores every file if the loader rejects the result. The primary rig and the
 controller addresses are refused while anything is connected.
 

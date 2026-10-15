@@ -30,6 +30,7 @@ import base64
 import html
 import json
 import logging
+import os
 import re
 import shutil
 import sys
@@ -53,8 +54,13 @@ import _mat_scene as ms  # noqa: E402
 import instant_ur  # noqa: E402
 from scenes import SCENES, scene_names  # noqa: E402
 
-DEFAULT_TREE = Path(r"D:/dev/willy_handover/2026-10-02/final/owner_monday/config")
-DEFAULT_CALIBRATION = Path(r"D:/helper_cell/calibration/real/eih_EIH_Cam.json")
+#: The owner's tree of 2026-10-02 and the wrist camera's calibration on the reference workstation, guessed on Windows
+#: only where neither --tree / --calibration nor WILLY_BENCH_TREE / WILLY_BENCH_CALIBRATION names them (P0h h8).
+_WINDOWS_TREE_GUESS = "D:/dev/willy_handover/2026-10-02/final/owner_monday/config"
+_WINDOWS_CALIBRATION_GUESS = "D:/helper_cell/calibration/real/eih_EIH_Cam.json"
+DEFAULT_TREE = os.environ.get("WILLY_BENCH_TREE") or (_WINDOWS_TREE_GUESS if sys.platform == "win32" else None)
+DEFAULT_CALIBRATION = os.environ.get("WILLY_BENCH_CALIBRATION") or (
+    _WINDOWS_CALIBRATION_GUESS if sys.platform == "win32" else None)
 DEFAULT_CROP = _REPO / "tests" / "data" / "cell_2026_10_01" / "p1_pick-63e1b3dac29f.npz"
 BENCH_LAYER = "bench"
 PROMPT = "part"
@@ -90,7 +96,7 @@ def copy_the_tree(tree: Path, work: Path, calibration: Optional[Path], *, no_pla
         # An A/B of how far the camera world grows its boxes past the points (``--margin``); the owner's 8 otherwise.
         layer["robot"]["safety"]["planning_world"]["perceived"]["margin_mm"] = float(margin_mm)
     if no_planner:
-        layer["robot"]["ur"]["motion_planner"] = "ik"
+        layer["robot"].setdefault("motion", {})["planner"] = "ik"
     text = ("# The bench's layer (scripts/bench/run_bench.py): the owner's numbers of 2026-10-05 over the tree, and the\n"
             "# instant controller's address. Nothing else changes.\n") + yaml.safe_dump(layer, sort_keys=False)
     (copied / "robot" / f"robot.{BENCH_LAYER}.yaml").write_text(text, encoding="utf-8")
@@ -109,12 +115,11 @@ def copy_the_tree(tree: Path, work: Path, calibration: Optional[Path], *, no_pla
 
 
 def _tcp_offset(robot: Any) -> list[float]:
-    from src.robot.drivers.ur.tool_frame import tool_frame_matrix  # noqa: PLC0415
+    from src.geometry.matrix import position_quaternion_to_matrix  # noqa: PLC0415
 
     frame = robot.gripper.tool_frame
-    ox, oy, oz = (float(v) for v in frame.offset_mm)
-    qx, qy, qz, qw = (float(v) for v in frame.rotation_quat_xyzw)
-    matrix = tool_frame_matrix((ox, oy, oz), (qx, qy, qz, qw))
+    matrix = position_quaternion_to_matrix(np.asarray(frame.offset_mm, dtype=np.float64),
+                                           np.asarray(frame.rotation_quat_xyzw, dtype=np.float64))
     return instant_ur.ur_pose(matrix)
 
 
@@ -219,7 +224,7 @@ class Bench:
         #: The cell's word on where a blocker of a clearing goes (``recovery.blocker_into_the_place``).
         self.blocker_into_the_place = bool(getattr(robot.grasping.recovery, "blocker_into_the_place", True))
         self.home = [float(v) for v in (robot.home_joint_positions or ())]
-        self.state = instant_ur.ControllerState(model=str(robot.ur.model).lower(), joints=list(self.home),
+        self.state = instant_ur.ControllerState(model=str(robot.arm.model).lower(), joints=list(self.home),
                                                 tcp_offset=_tcp_offset(robot))
         static = ms.StaticScene.from_crop(Path(args.crop))
         static.whole_bench = True
@@ -289,7 +294,7 @@ class Bench:
             # Which pairs the planner's world refuses where the lift starts, said beside a carried lift it refuses.
             judged = original_carried(arm, pose, **kwargs)
             start = kwargs.get("start")
-            planner = getattr(arm, "_curobo_ur", None)
+            planner = getattr(arm, "_curobo", None)
             if judged is not None and start is not None and planner is not None:
                 try:
                     said = planner.judge_joint_path([list(start[1])], name_pairs=True).render()
@@ -543,9 +548,11 @@ possible scenes picked: <b>{len(done)}/{len(possible)}</b></p><table>{table}</ta
 
 def main(argv: Optional[list[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--tree", default=str(DEFAULT_TREE), help="the cell's config folder; copied, never written")
+    ap.add_argument("--tree", default=DEFAULT_TREE, required=DEFAULT_TREE is None,
+                    help="the cell's config folder; copied, never written (WILLY_BENCH_TREE)")
     ap.add_argument("--profile", default="monday", help="the tree's own chain; the bench's layer is added after it")
-    ap.add_argument("--calibration", default=str(DEFAULT_CALIBRATION))
+    ap.add_argument("--calibration", default=DEFAULT_CALIBRATION,
+                    help="the wrist camera's calibration (WILLY_BENCH_CALIBRATION)")
     ap.add_argument("--no-calibration", action="store_true", help="keep the tree's own calibration path")
     ap.add_argument("--crop", default=str(DEFAULT_CROP))
     ap.add_argument("--scenes", default="all", help="all, a family (bin, clutter, tray, shapes) or names")
@@ -567,6 +574,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                          "millimetres; the shipped value where not given")
     ap.add_argument("--work", default=str(_REPO / "logs" / "bench" / time.strftime("%Y%m%d_%H%M%S")))
     args = ap.parse_args(argv)
+    if args.calibration is None and not args.no_calibration:
+        ap.error("--calibration or WILLY_BENCH_CALIBRATION names the wrist camera's calibration; --no-calibration "
+                 "keeps the tree's own")
     if args.slack is not None:
         from src.robot.grasping.generation import scene_obstacles  # noqa: PLC0415
 

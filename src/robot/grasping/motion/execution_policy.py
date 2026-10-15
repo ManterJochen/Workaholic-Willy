@@ -111,7 +111,6 @@ from src.geometry.quaternion import from_rotation_matrix
 from src.robot.core import (
     CameraWorldStamp,
     Gripper,
-    MotionCommand,
     MotionResult,
     MotionStatus,
     ObjectDetectingGripper,
@@ -119,6 +118,7 @@ from src.robot.core import (
     SupportsRobotStatus,
 )
 from src.robot.core.arm_capabilities import (
+    CarriesPayload,
     HoldsItsWorld,
     JudgesCarriedLines,
     JudgesGraspsAhead,
@@ -169,7 +169,7 @@ class PolicyOutcome(str, Enum):
     """Close succeeded mechanically but the gripper reports an empty jaw."""
 
     MOTION_FAILED = "motion_failed"
-    """:meth:`RobotArm.move_to` raised. The exception is in the report."""
+    """A commanded :meth:`RobotArm.move` did not execute, or raised. The status and any exception are in the report."""
 
     CAMERA_FRAME_REJECTED = "camera_frame_rejected"
     """Fail-closed guard: the policy refused to execute a camera-frame
@@ -222,20 +222,17 @@ class PolicyReport:
         Optional :class:`Exception` instance for :attr:`PolicyOutcome.MOTION_FAILED`.
     motion_status
         Categorical :class:`MotionStatus` from the typed
-        :meth:`RobotArm.move` surface. ``None`` when the driver exposes
-        only the older bool ``move_to`` path, which carries no typed
-        information. Populated whenever the driver implements the
-        typed move contract, including the success case
-        :attr:`MotionStatus.EXECUTED`, so a consumer can confirm a clean
-        execution without reading ``outcome`` alone.
+        :meth:`RobotArm.move` surface. ``None`` when no motion was
+        commanded. Populated for every commanded motion, including the
+        success case :attr:`MotionStatus.EXECUTED`, so a consumer can
+        confirm a clean execution without reading ``outcome`` alone.
     motion_message
         Optional human-readable detail forwarded from the underlying
         :class:`MotionResult.message`. Empty string when not provided.
     camera_worlds
         One :class:`CameraWorldStamp` per typed motion, in command order,
-        the stamp of a motion that failed included. Empty when the driver
-        only exposes the legacy bool ``move_to`` path or no motion was
-        commanded. :attr:`camera_world` reads the weakest one.
+        the stamp of a motion that failed included. Empty when no motion
+        was commanded. :attr:`camera_world` reads the weakest one.
     """
 
     outcome: PolicyOutcome
@@ -297,7 +294,7 @@ class GraspExecutionPolicy:
     retreat_mm: float = 100.0
     approach_steps: int = 4
     # Split the post-close vertical lift into ``retreat_steps`` interpolated waypoints, each driven and
-    # settled, since move_joint settles after every move. A single 100 mm lift swings a loosely gripped
+    # settled, since the sim's joint drive settles after every move. A single 100 mm lift swings a loosely gripped
     # wide object on a compliant grip: the object pendulums up to about 150 mm during the retreat and
     # trips the arm convergence into execution_failed. Chunked lifts let the pendulum damp between
     # steps. The default of 1 is the single retreat waypoint.
@@ -319,15 +316,6 @@ class GraspExecutionPolicy:
     # :class:`AutonomousGraspService` turns it on, and only when an
     # operator wires a :class:`FrameResolver`.
     require_base_frame_grasp: bool = False
-    # Pre-move steady-state temporal gate, from DwellSafetyConfig. When True the policy blocks on
-    # ``arm.wait_until_steady(steady_timeout_s)`` before every commanded move and fails closed on
-    # timeout, with no motion. The default False leaves a caller that never threads the dwell config,
-    # or a double that does not implement ``wait_until_steady``, unchanged. The autonomous_grasp
-    # composition root turns it on from ``cfg.robot.safety.dwell``, mirroring
-    # ``require_base_frame_grasp``. ``dwell_after_stop_s`` is not consulted here, as no Stop path is
-    # exercised.
-    require_steady_before_motion: bool = False
-    steady_timeout_s: float = 5.0
     # Opt-in grasp-orientation alignment for symmetric top-down grasps. When True the policy rigidly
     # yaws the orientation of each grasp about base-Z so the gripper closing axis falls on the trackable
     # base-X, keeping the position and the near-vertical approach. A top-down close along base-Y is not
@@ -429,9 +417,8 @@ class GraspExecutionPolicy:
         # Forget any part from a previous pick. Detaching here rather than on release means a
         # stale attachment cannot survive a failed pick, a recovery, or a runner that never released:
         # the planner is only ever told about a part between a confirmed close and the next attempt.
-        detach = getattr(self.arm, "detach_payload", None)
-        if callable(detach):
-            detach()
+        if isinstance(self.arm, CarriesPayload):
+            self.arm.detach_payload()
         waypoints = self._build_waypoints(grasp)
 
         # Pre-open the gripper before driving the approach so the jaws
@@ -516,20 +503,19 @@ class GraspExecutionPolicy:
                     camera_worlds=tuple(stamps),
                     line_motion=line_motion,
                 )
-            if result is not None:
-                last_status = result.status
-                last_message = result.message
-                stamps.append(result.camera_world)
-                if not result.ok:
-                    return PolicyReport(
-                        outcome=PolicyOutcome.MOTION_FAILED,
-                        waypoints=tuple(commanded),
-                        error=cast("Exception | None", result.exception),
-                        motion_status=result.status,
-                        motion_message=result.message,
-                        camera_worlds=tuple(stamps),
-                        line_motion=line_motion,
-                    )
+            last_status = result.status
+            last_message = result.message
+            stamps.append(result.camera_world)
+            if not result.ok:
+                return PolicyReport(
+                    outcome=PolicyOutcome.MOTION_FAILED,
+                    waypoints=tuple(commanded),
+                    error=cast("Exception | None", result.exception),
+                    motion_status=result.status,
+                    motion_message=result.message,
+                    camera_worlds=tuple(stamps),
+                    line_motion=line_motion,
+                )
             commanded.append(pose)
 
         # From the part until the arm is back up, every line is judged against the world the line down was judged in
@@ -622,14 +608,13 @@ class GraspExecutionPolicy:
         # The planner learns what it is carrying, before the first motion that carries it. A lift,
         # transit or place planned as if the hand were empty ignores the part, and on a cell lifting a
         # part out of a bin that part is the geometry most likely to meet a wall.
-        attach = getattr(self.arm, "attach_payload", None)
-        if callable(attach):
+        if isinstance(self.arm, CarriesPayload):
             # The commanded width is not the width of the part. On the adaptive branch the command
             # is `grip_width` less `close_squeeze_mm`, a number the jaws never reach by design, so it
             # is the size of something nobody measured. Reading the jaws is a measurement and, since
             # a close waits for the fingers, a settled one. A stroke left to this policy is one only a hand that
             # measures nothing leaves (``wait_settled``), whose width is the one it was told.
-            attach(self._measured_or_commanded_width(grasp))
+            self.arm.attach_payload(self._measured_or_commanded_width(grasp))
 
         # While the jaws close, the joint move a task declared after the pick (the carry) is judged ahead from where the
         # lift will end, in the world held at the part, the part attached (robot.motion.judge_next_leg,
@@ -660,21 +645,20 @@ class GraspExecutionPolicy:
                     camera_worlds=tuple(stamps),
                     line_motion=line_motion,
                 )
-            if result is not None:
-                last_status = result.status
-                last_message = result.message
-                stamps.append(result.camera_world)
-                if not result.ok:
-                    return PolicyReport(
-                        outcome=PolicyOutcome.MOTION_FAILED,
-                        waypoints=tuple(commanded),
-                        object_detected=object_detected,
-                        error=cast("Exception | None", result.exception),
-                        motion_status=result.status,
-                        motion_message=result.message,
-                        camera_worlds=tuple(stamps),
-                        line_motion=line_motion,
-                    )
+            last_status = result.status
+            last_message = result.message
+            stamps.append(result.camera_world)
+            if not result.ok:
+                return PolicyReport(
+                    outcome=PolicyOutcome.MOTION_FAILED,
+                    waypoints=tuple(commanded),
+                    object_detected=object_detected,
+                    error=cast("Exception | None", result.exception),
+                    motion_status=result.status,
+                    motion_message=result.message,
+                    camera_worlds=tuple(stamps),
+                    line_motion=line_motion,
+                )
             commanded.append(pose)
 
         return PolicyReport(
@@ -691,44 +675,14 @@ class GraspExecutionPolicy:
     # Motion adapter
     # ------------------------------------------------------------------
 
-    def _drive_to(self, pose: Pose, *, linear: bool = False) -> MotionResult | None:
-        """Drive ``arm`` to ``pose`` via the best available surface.
+    def _drive_to(self, pose: Pose, *, linear: bool = False) -> MotionResult:
+        """Drive ``arm`` to ``pose`` through the typed :meth:`RobotArm.move` and return its result.
 
-        Prefers the typed :meth:`RobotArm.move` contract, which every
-        production driver implements. Falls back to the older
-        :meth:`RobotArm.move_to` surface, which returns a bool or raises,
-        so a double that does not implement the typed contract keeps
-        working; :class:`PolicyReport.motion_status` records which path
-        was taken and therefore what diagnostics are available.
-
-        Returns the :class:`MotionResult` from the typed path, or
-        ``None`` when the ``move_to`` path is taken, which carries no
-        typed information.
+        The steady gate (``safety.dwell``) is the arm's own since P0e, inside ``move``: a planned arm that did not come
+        to rest answers TIMEOUT, which the execute() loop maps to ``PolicyOutcome.MOTION_FAILED`` as before.
         """
-        # Pre-move steady gate, a fail-closed temporal check outside the per-target SafetyPreflight
-        # pipeline. It is skipped when the gate is off or the driver has no steady signal, in which
-        # case the getattr yields None and the move passes through. A timeout returns a typed timeout
-        # result before any motion, which the execute() loop maps to PolicyOutcome.MOTION_FAILED. An arm
-        # that gates its own sends (safety.dwell.gate_at "send") judges the move first, while it settles,
-        # and waits for steady right before it sends, refusing as this does: it is asked with no gate here.
-        if self.require_steady_before_motion and getattr(self.arm, "gates_its_own_sends", False) is not True:
-            wait_fn = getattr(self.arm, "wait_until_steady", None)
-            if callable(wait_fn) and not wait_fn(float(self.steady_timeout_s)):
-                return MotionResult.failed(
-                    MotionStatus.TIMEOUT,
-                    MotionCommand.OTHER,
-                    target_pose=pose,
-                    message=(
-                        "pre-move steady gate timed out after "
-                        f"{self.steady_timeout_s:.2f}s (require_steady_before_motion)"
-                    ),
-                )
-        typed_move = getattr(self.arm, "move", None)
-        if callable(typed_move):
-            # Only a line passes the keyword, so a planned move is the plain call any arm accepts.
-            return typed_move(pose, linear=True) if linear else typed_move(pose)
-        self.arm.move_to(pose)
-        return None
+        # Only a line passes the keyword, so a planned move is the plain call any arm accepts.
+        return self.arm.move(pose, linear=True) if linear else self.arm.move(pose)
 
     # ------------------------------------------------------------------
     # The retreat judged before the jaws close
@@ -867,18 +821,17 @@ class GraspExecutionPolicy:
                 camera_worlds=tuple(stamps),
                 line_motion=line_motion,
             )
-        if result is not None:
-            stamps.append(result.camera_world)
-            if not result.ok:
-                return PolicyReport(
-                    outcome=PolicyOutcome.MOTION_FAILED,
-                    waypoints=tuple(commanded),
-                    error=cast("Exception | None", result.exception),
-                    motion_status=result.status,
-                    motion_message=f"{said}; the line back up to the standoff was refused too: {result.message}",
-                    camera_worlds=tuple(stamps),
-                    line_motion=line_motion,
-                )
+        stamps.append(result.camera_world)
+        if not result.ok:
+            return PolicyReport(
+                outcome=PolicyOutcome.MOTION_FAILED,
+                waypoints=tuple(commanded),
+                error=cast("Exception | None", result.exception),
+                motion_status=result.status,
+                motion_message=f"{said}; the line back up to the standoff was refused too: {result.message}",
+                camera_worlds=tuple(stamps),
+                line_motion=line_motion,
+            )
         commanded.append(standoff)
         return PolicyReport(
             outcome=PolicyOutcome.CARRIED_RETREAT_REFUSED,

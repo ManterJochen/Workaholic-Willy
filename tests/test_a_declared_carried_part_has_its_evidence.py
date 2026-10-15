@@ -6,7 +6,7 @@ desk's carried-part row says to, reserves 16 attach slots, and every committed e
 desk and the planner start then refused ``ur10_robotiq_hande_c20mm_+Z+X_m4mm_a16.json is not there``, so a cell that
 followed the checklist could not plan at all.
 
-The files were measured on this box's GPU on 2026-09-23 with ``scripts/curobo/matrix_gate.py --attach 16`` for the UR10
+The files were measured on this box's GPU on 2026-09-23 with ``scripts/curobo/matrix_gate.py --attach 16`` (``scripts/arms/gate.py`` since P0f F4) for the UR10
 with the Hand-E (0 and 20 mm plates) and the 2F-85, at both placements, about 65 s each. Every one reached b1 on the
 same 1,482 poses with the same counts as its a0 sibling, and differs from it only in the attach slots and the composed
 hash, which covers the attach link. A real planner started on the ur10,hande profile with a 60 mm carried part at

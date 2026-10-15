@@ -186,6 +186,9 @@ def install(state: ControllerState) -> dict[str, Any]:
                 return ur_pose(state.tcp_mm())
             return ur_pose(state.tcp_mm(q, tcp_offset))
 
+        def getInverseKinematicsHasSolution(self, x: Any, qnear: Any = None, *args: Any) -> bool:  # noqa: N802
+            return bool(state.ik(x, qnear))
+
         def getInverseKinematics(self, x: Any, qnear: Any = None, *args: Any) -> list[float]:  # noqa: N802
             return state.ik(x, qnear)
 

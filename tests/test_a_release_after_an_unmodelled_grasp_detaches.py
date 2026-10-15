@@ -18,17 +18,22 @@ import unittest
 from typing import Any
 from unittest.mock import MagicMock
 
+from src.config.arms import load_arm
 from src.robot.core.gripper import HoldEvidence
-from src.robot.drivers.ur.curobo_motion import UR_ARM_JOINT_NAMES, CuroboUrPlanner
+from src.robot.drivers.planned.curobo_motion import CuroboPlanner
 from src.robot.execution.robot import Robot
 from src.robot.safety.planning import CuroboUnavailableError
+from tests._ur_transport import over
+
+#: The controller's joint order as the ur5e description states it; the planner is handed it since P0e E4.
+_UR_JOINT_NAMES = tuple(joint.name for joint in load_arm("ur5e").joints)
 
 
 class _Sidecar:
     """A cuRobo client that answers attach and detach the way the sidecar does, with or without a sphere budget."""
 
     def __init__(self, *, spheres: int = 0, attach_answer: "bool | None" = None) -> None:
-        self.joint_names = list(UR_ARM_JOINT_NAMES)
+        self.joint_names = list(_UR_JOINT_NAMES)
         self.dt = 0.025
         self.spheres = spheres
         #: What attach answers; None answers the way the sidecar does for this budget.
@@ -64,11 +69,11 @@ class _Sidecar:
         return True
 
 
-def _started(sidecar: _Sidecar) -> CuroboUrPlanner:
+def _started(sidecar: _Sidecar) -> CuroboPlanner:
     """The glue as it stands after the first planned move: its sidecar started."""
     conn = MagicMock()
     conn.get_joint_positions.return_value = [0.0] * 6
-    glue = CuroboUrPlanner(conn, client_factory=lambda: sidecar)
+    glue = CuroboPlanner(over(conn), joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180, client_factory=lambda: sidecar)
     glue._client_or_start()
     return glue
 
@@ -103,7 +108,7 @@ class TheGlueForgetsOnlyWhatItHandedOver(unittest.TestCase):
         glue = _started(sidecar)
         glue.attach_payload([0.0] * 6, (50.0, 50.0, 100.0), (0.0, 0.0, 150.0))
         sidecar.detach_raises = CuroboUnavailableError("the cuRobo sidecar exited with code 1")
-        with self.assertLogs("CuroboUrPlanner", level="ERROR"):
+        with self.assertLogs("CuroboPlanner", level="ERROR"):
             self.assertFalse(glue.detach_payload())
 
     def test_an_attach_the_sidecar_did_not_confirm_is_still_asked_to_detach(self) -> None:
@@ -160,11 +165,11 @@ class _Hand:
 class TheOwnersReleaseTests(unittest.TestCase):
     def test_a_release_after_a_grasp_that_modelled_nothing_reports_detached(self) -> None:
         from src.robot.execution import handling
-        from tests.test_what_the_hand_verbs_read import _payload_ur
+        from tests._arm_kit import payload_arm
 
-        arm = _payload_ur(enabled=False)
+        arm = payload_arm(enabled=False)
         sidecar = _Sidecar(spheres=0)
-        arm._curobo_ur = _started(sidecar)
+        arm._curobo = _started(sidecar)
         robot = Robot.from_parts(arm=arm, gripper=_Hand(), lock_key=None)
 
         grasped = robot.grasp(0.0)

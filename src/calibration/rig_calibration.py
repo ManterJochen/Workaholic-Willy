@@ -210,12 +210,12 @@ def flange_to_tcp_record_refusal(
 
     A wrist camera's body and its pick frame are both placed from the record, so a frame that moved
     since makes both stale. On a ``willy`` cell the record was written from the declared numbers and
-    has to be them; on a ``polyscope`` cell the frame is derived at connect and may lie within the
+    has to be them; on a ``controller`` cell the frame is derived at connect and may lie within the
     rig's record tolerances.
     """
     import numpy as np
 
-    from src.robot.drivers.ur.tool_frame import compare_tool_frames
+    from src.geometry.matrix import compare_tool_frames
 
     key = f"camera.cameras.rigs[{rig_id!r}]"
     if source != record_source:
@@ -229,7 +229,7 @@ def flange_to_tcp_record_refusal(
         limit_mm, limit_deg = 1e-6, 1e-6
     else:
         if record_tolerance_mm is None or record_tolerance_deg is None:
-            return (f"{key}.extrinsics names no record_tolerance_mm and record_tolerance_deg, so a polyscope cell "
+            return (f"{key}.extrinsics names no record_tolerance_mm and record_tolerance_deg, so a controller cell "
                     "cannot say how far its derived tool frame may lie from the one this rig was calibrated "
                     "against")
         limit_mm, limit_deg = record_tolerance_mm, record_tolerance_deg
@@ -264,15 +264,16 @@ def flange_to_tcp_refusal(calibration: Any, tool_frame: Any) -> "str | None":
                 f"{calibration.artifact_path} records none: it was written before the record existed. Calibrate the "
                 f"rig again ({again})")
     source = getattr(tool_frame, "source", None)
-    if source not in ("willy", "polyscope"):
+    if source not in ("willy", "controller"):
         return (f"{key} is placed from a recorded flange to TCP, and robot.gripper.tool_frame.source is "
                 f"{source!r}, so this cell declares no tool frame to hold the record to")
     import numpy as np
 
-    from src.robot.drivers.ur.tool_frame import compare_tool_frames, tool_frame_matrix
+    from src.geometry.matrix import compare_tool_frames, position_quaternion_to_matrix
 
-    declared = tool_frame_matrix(tool_frame.offset_mm, tool_frame.rotation_quat_xyzw)
-    if source == "willy" or record.source != "polyscope":
+    declared = position_quaternion_to_matrix(
+        np.asarray(tool_frame.offset_mm), np.asarray(tool_frame.rotation_quat_xyzw))
+    if source == "willy" or record.source != "controller":
         return flange_to_tcp_record_refusal(
             rig_id, record_source=str(record.source), record_mm=record.matrix(), source=str(source), frame=declared,
             record_tolerance_mm=getattr(calibration, "record_tolerance_mm", None),

@@ -5,8 +5,9 @@ committed bundle with no row is refused by the repository's own checks. A custom
 have to hand-edit that index, so every hand writer records its own row through this one function: the dimensions
 writer, the mesh writer and the USD bake.
 
-``arrays_sha256`` hashes the arrays in name order, never the file: an ``.npz`` is a zip with a timestamp, and the same
-arrays written twice give two files. The repository's checks keep their own copy of that hash, so the writer's row is
+``arrays_sha256`` hashes the arrays in name order, never the file: the same arrays written in another order or memory
+layout give another file. The zip members carry no timestamp that moves (measured 2026-09-23 on all ten bundles). The
+repository's checks keep their own copy of that hash, so the writer's row is
 checked by code that did not write it.
 """
 

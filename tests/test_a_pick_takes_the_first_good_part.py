@@ -35,7 +35,7 @@ from src.robot.grasping.motion.frame_resolver import StaticCameraToBaseResolver
 from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 from src.robot.grasping.types.perception import PerceptionFrame
-from tests._helpers import _FakeArm, _FakePerception
+from tests._helpers import HoldsAWorld, _FakeArm, _FakePerception
 from tests._task_fakes import _World
 from tests._wrist_views import CUBE, K, Box, render
 
@@ -471,6 +471,10 @@ class ALaterLookComputesOnlyThePinnedPartTests(unittest.TestCase):
 
 
 
+class _BenchArm(HoldsAWorld, _FakeArm):
+    """The desk arm holding the cell's camera world (``HoldsAPlannerWorld``), which declares the bench."""
+
+
 class APieceOfABoxsRimIsNoPartTests(unittest.TestCase):
     """The deep crate of 2026-10-14: the detector named two pieces of the crate's rim a cube, a 7 mm strip at 192 to
     196 mm (14:04) and its lip at 162 to 205 mm (14:08). Each stood apart from the parts, so each was computed first,
@@ -486,10 +490,9 @@ class APieceOfABoxsRimIsNoPartTests(unittest.TestCase):
                                "under": Box((-145.0, -655.0, 0.0), (-105.0, -615.0, 40.0), "block")})
         policy = _Policy()
         # The bench the cell's camera world declares, as a cell's arm holds it (the gate reads no other).
-        arm = _FakeArm()
         world = _World([])
         world.limits = SimpleNamespace(support_plane_top_mm=0.0)  # type: ignore[attr-defined]
-        arm.live_planner_world = world  # type: ignore[attr-defined]
+        arm = _BenchArm(world)
         orchestrator = BinPickingOrchestrator(
             arm=arm, calculator=calculator, perception=camera, policy=policy,  # type: ignore[arg-type]
             max_attempts=1, target_label="part", lazy_objects=True, accept_score=BAR,

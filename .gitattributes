@@ -16,9 +16,9 @@ docs/baselines/** -text
 tests/data/replay/** -text
 
 # Universal Robots' description config, vendored byte for byte as its pinned commit holds it and
-# held by scripts/curobo/ur_ros2_description.sha256. A CRLF checkout would change every YAML's
+# held by scripts/arms/ur_ros2_description.sha256. A CRLF checkout would change every YAML's
 # bytes and fail that pin.
-scripts/curobo/ur_ros2_description/** -text
+scripts/arms/ur_ros2_description/** -text
 
 # A shell script runs under bash, which refuses a CRLF line end: scripts/ursim/ursim.sh checked out on Windows
 # (core.autocrlf=true) failed with "$'\r': command not found" until a copy was stripped by hand.

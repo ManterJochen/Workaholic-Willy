@@ -164,6 +164,44 @@ class WindowsPathTests(_Case):
         self.assertIn("ORIG", str(caught.exception))
 
 
+class AnotherBoxBindsItsOwnPathsTests(_Case):
+    """P0h h8: the trial plan binds the reference workstation's folders, and ``--bind`` gives another box, or Linux,
+    its own without editing the plan the record was made from."""
+
+    _PLAN = {"bindings": {"ORIG": "D:/dev/Workaholic-Willy", "PY": "D:/dev/Workaholic-Willy/.venv/Scripts/python.exe"},
+             "phases": [{"name": "P", "bindings": {"PY": "$ORIG/phase.exe"},
+                         "steps": [{"runbook": "first", "expect": {"exit": 0}}]}]}
+
+    def test_a_bound_name_wins_over_the_plan_and_the_phase(self) -> None:
+        runner = self.tool.Runner(runbook_path="runbook.md", steps=[], plan=self._PLAN, root=self.root, logs=self.logs,
+                                  overrides={"ORIG": "/root/willy", "PY": "/root/willy/.venv/bin/python"})
+        bound = runner._bindings(self._PLAN["phases"][0])
+        self.assertEqual((bound["ORIG"], bound["PY"]), ("/root/willy", "/root/willy/.venv/bin/python"))
+
+    def test_a_name_the_plan_does_not_bind_is_refused_before_anything_runs(self) -> None:
+        """⭐ THE CONTROL: a typo in --bind would otherwise leave the plan's own folder in force, unseen."""
+        for name in ("ORGI", "ROOT"):
+            with self.subTest(name):
+                runner = self.tool.Runner(runbook_path="runbook.md", steps=self.tool.parse_runbook(_RUNBOOK),
+                                          plan=self._PLAN, root=self.root, logs=self.logs, overrides={name: "/x"})
+                with self.assertRaises(self.tool.Malformed) as caught:
+                    runner.check()
+                self.assertIn(name, str(caught.exception))
+
+    def test_the_command_line_takes_name_equals_value_and_refuses_anything_else(self) -> None:
+        self.assertEqual(self.tool.parse_binds(["ORIG=/root/willy", "PY=/a=b"]),
+                         {"ORIG": "/root/willy", "PY": "/a=b"})
+        for bad in ("ORIG", "=x", "ORIG="):
+            with self.subTest(bad), self.assertRaises(self.tool.Malformed):
+                self.tool.parse_binds([bad])
+
+    def test_the_trial_plan_names_its_cuRobo_interpreter_as_a_binding(self) -> None:
+        """So a box whose cuRobo environment keeps its interpreter elsewhere (Linux: bin/python) rebinds one name."""
+        plan = json.loads((_REPO / "scripts" / "trial" / "customer_hand_trial.json").read_text(encoding="utf-8"))
+        self.assertEqual(plan["env"]["set"]["WILLY_CUROBO_PYTHON"], "$CUROBO_PY")
+        self.assertEqual(plan["bindings"]["CUROBO_PY"], "$ORIG/ext_deps/curobo_env/python.exe")
+
+
 class TheHashTests(_Case):
     def test_the_steps_hash_moves_with_one_character(self) -> None:
         one = self.tool.steps_sha256(self.tool.parse_runbook(_RUNBOOK))

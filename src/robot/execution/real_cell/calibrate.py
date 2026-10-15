@@ -251,6 +251,11 @@ def main(argv: "list[str] | None" = None) -> int:
         if build.ok and not args.dry_run:
             print(f"\n{check.sweep_banner()}", flush=True)
 
+    # A count that shapes nothing is refused rather than dropped.
+    if args.samples is not UNSET and args.freedrive is not True:
+        print("[config] REFUSED: --samples counts the poses a run guided by hand collects, and there is none "
+              "without --freedrive", flush=True)
+        return _EXIT_CONFIG
     # A board file is read and validated by the check, like a spec, so `--check` refuses a bad one.
     target = args.board if args.board_file is UNSET else Path(args.board_file)
     calibration = HandEyeCalibration.from_config(

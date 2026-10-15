@@ -174,7 +174,11 @@ class TheHandIsItsSphereMapTests(unittest.TestCase):
 
 
 class TheSimFilterUsesTheGuardYawTests(unittest.TestCase):
-    """A non UR double: the Isaac arm reports no UR model, so the guard's model and yaw are the only answer."""
+    """The Isaac arm reports the UR it drives, ur5e here, and the guard judges that model turned by its 180 degree base yaw.
+
+    Until P0d D5 the arm answered "isaac-sim" and the model came from a safety key. The yaw is still the guard's alone:
+    a filter that placed the body from the arm without it stood the wrist mirrored through the base.
+    """
 
     def _arm(self, joints: np.ndarray) -> Any:
         from src.robot.drivers.sim.arm import IsaacRobotArm
@@ -210,16 +214,17 @@ class TheSimFilterUsesTheGuardYawTests(unittest.TestCase):
 
 
 class APartInTheGripperIsFilteredWhileAttachedTests(unittest.TestCase):
-    """Q7 A, on the UR, the one arm that attaches a payload."""
+    """Q7 A, on a planned arm, the family that attaches a payload (a ``PlannedArm`` over the fake since P0g slice 13)."""
 
     def test_a_point_100_mm_past_the_fingertips_is_filtered_while_attached(self) -> None:
-        from src.robot.drivers.ur.arm import URRobotArm
         from src.robot.safety.planning.hand import HAND_APPROACH_IN_TOOL0
         from src.robot.safety.planning.perceived import SelfBody
+        from tests._arm_kit import planned_arm
+        from tests._fake_transport import fake_transport
 
         config = RobotConfig.model_validate({
             "vendor": "ur",
-            "ur": {"motion_planner": "curobo"},
+            "motion": {"planner": "curobo"},
             "gripper": {"model": "robotiq_2f85"},
             "safety": {
                 "payload": {"enforce": False},
@@ -230,14 +235,11 @@ class APartInTheGripperIsFilteredWhileAttachedTests(unittest.TestCase):
                 },
             },
         })
-        arm = URRobotArm(config)
-        arm._conn = MagicMock()  # noqa: SLF001
-        arm._conn.is_connected = True  # noqa: SLF001
-        arm._conn.get_joint_positions.return_value = list(_REACH)  # noqa: SLF001
+        arm: Any = planned_arm(config, transport=fake_transport(joints=list(_REACH)))
         planner = MagicMock()
         planner.attach_payload.return_value = True
         planner.detach_payload.return_value = True
-        arm._curobo_ur = planner  # noqa: SLF001
+        arm._curobo = planner  # noqa: SLF001
 
         frames = ur_link_transforms_mm("ur5e", _REACH)
         assert frames is not None

@@ -33,6 +33,7 @@ from src.geometry import Frame, Pose
 from src.robot.grasping import GraspFrame, GraspPoint
 from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
 from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator, PerceptionFrame
+from src.robot.core.motion_result import MotionCommand, MotionResult
 
 _GOLDEN = Path(__file__).parent / "data" / "r1_characterization" / "shadow_value_golden.json"
 
@@ -148,9 +149,10 @@ class _FakeArm:
     def get_tcp_pose(self) -> Pose:
         return self._tcp
 
-    def move_to(self, pose: Pose, **_: object) -> None:
+    def move(self, pose: Pose, **_: object) -> MotionResult:
         if pose.frame == Frame.BASE:
             self._tcp = pose
+        return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
 
 
 class _FakePerception:

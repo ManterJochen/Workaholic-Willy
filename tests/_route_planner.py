@@ -63,7 +63,8 @@ class RoutePlanner:
     def refresh_world(self, *, near_point_mm: Any = None, goal_keep_out: Any = None) -> None:
         self.calls.append(("refresh", near_point_mm))
 
-    def plan_joint(self, goal: Any, *, refresh: bool = True, **_: Any) -> "list[list[float]] | None":
+    def plan_joint(self, goal: Any, *, start_ur: Any = None, refresh: bool = True, near_point_mm: Any = None,
+                   goal_keep_out: Any = None) -> "list[list[float]] | None":
         asked = [float(v) for v in goal]
         self.calls.append(("plan_joint", asked, refresh))
         trajectory = self.answer(asked)

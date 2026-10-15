@@ -4,11 +4,12 @@ The planner models a robot as spheres and nothing else. A gripper's mesh is neve
 is the source a sphere set is fitted from, once, and the spheres are what the planner ever sees. So
 giving the planner the gripper in 3D means exactly this file.
 
-The fit is a module rather than a script because two callers need it: ``build_gripper_spheres.py``
-here and ``scripts/curobo/build_ur_config.py`` on the target box. A second copy of the fit on the box
-fitted the Robotiq 2F-85 whatever gripper the cell had, so a cell running a different end effector
-planned as though a Robotiq were bolted to the flange while its safety guard used the right
-geometry. One function, two callers.
+The fit is a module rather than a script because it was written twice: in a writer beside this
+module (``build_gripper_spheres.py``, deleted in P0f F1) and in ``scripts/arms/descriptor.py``
+on the target box. The copy on the box fitted the Robotiq 2F-85 whatever gripper the cell had, so a
+cell running a different end effector planned as though a Robotiq were bolted to the flange while
+its safety guard used the right geometry. One function now, kept for measuring and comparing: a
+planner reads cover fits only (``scripts/arms/fit.py``).
 
 Two sources are supported, and they are the two a customer actually has:
 

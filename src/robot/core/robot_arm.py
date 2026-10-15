@@ -72,38 +72,6 @@ class RobotArm(Protocol):
 
     # ---- motion ---------------------------------------------------------
 
-    def move_joint(
-        self,
-        joints: JointPositions,
-        *,
-        velocity: float | None = None,
-        acceleration: float | None = None,
-    ) -> None:
-        """Joint-space move to ``joints``.
-
-        What a driver checks before commanding it is the driver's own business, and the
-        two kinds differ: a cell whose moves are planned judges the whole line from the
-        current configuration to ``joints``, sample by sample, because the controller
-        interpolates and every configuration between the two ends is executed. A cell
-        that plans nothing judges the destination.
-
-        Raises
-        ------
-        RobotMotionRejected
-            If a workspace or safety pre-check denies the move. It carries ``result``,
-            the typed :class:`~src.robot.core.motion_result.MotionResult` the refusal
-            came from, where the driver had one.
-        RobotConnectionError
-            If the link is not open. A driver that judges a path reads the current
-            configuration first, so it raises this before any guard runs.
-        CameraWorldUnavailable
-            If the driver judges the move against a live camera world and a camera stayed
-            silent, blind or stale through its fresh-frame attempts. Nothing is commanded,
-            and it is not a refusal: the cell cannot vouch for itself, so a pick stops
-            rather than trying again.
-        """
-        ...
-
     def move_to_joints(
         self,
         joints: JointPositions,
@@ -112,7 +80,13 @@ class RobotArm(Protocol):
         acceleration: float | None = None,
         camera_world: Maybe[CameraWorldDecline] = UNSET,
     ) -> MotionResult:
-        """Typed joint-space move, the fail-closed counterpart of :meth:`move_joint`.
+        """Typed joint-space move to ``joints``.
+
+        What a driver checks before commanding it is the driver's own business, and the
+        two kinds differ: a cell whose moves are planned judges the whole line from the
+        current configuration to ``joints``, sample by sample, because the controller
+        interpolates and every configuration between the two ends is executed. A cell
+        that plans nothing judges the destination.
 
         The commanded joints go through the ``SafetyPreflight`` destination guards
         (joint limit, self-collision, payload) and are then driven. A commanded joint
@@ -121,8 +95,10 @@ class RobotArm(Protocol):
         quality (the IK-jump check and the singularity check alike) and motion
         continuity. The continuity reference is reset around it. A guard
         rejection comes back as a typed :class:`MotionResult` carrying the matching
-        :class:`MotionStatus`, where the void :meth:`move_joint` raises. A driver
-        with no preflight wired drives and returns ``EXECUTED``.
+        :class:`MotionStatus`; code that wants the exception calls
+        :meth:`MotionResult.raise_unless_executed`. A driver with no preflight wired
+        drives and returns ``EXECUTED``. The raising ``move_joint`` it once stood beside
+        left the Protocol on 2026-09-19 (the new-vendors plan, 3.3).
 
         ``camera_world`` declines the camera world for this motion, with a reason. A
         driver that implements
@@ -207,37 +183,6 @@ class RobotArm(Protocol):
         """
         ...
 
-    def move_to(
-        self,
-        pose: Pose,
-        *,
-        linear: bool = False,
-        vel: float | None = None,
-        acc: float | None = None,
-        register: bool = True,
-    ) -> bool:
-        """High-level go-there command for pipelines.
-
-        Returns ``True`` on success and ``False`` where a workspace or safety check
-        or the controller rejected the move. A driver does not raise for the ordinary
-        out-of-workspace and IK-failed cases, which the bool return signals, but may
-        raise for a connection error.
-
-        ``linear=True`` asks for a straight line, and not every path keeps it. The UR
-        driver's ``move_to`` sends a ``moveL`` whatever the planner, and KUKA sends
-        ``LIN``. The typed :meth:`move` keeps it on a cuRobo UR and a cuRobo sim arm,
-        whose lines are sampled and judged before any of them moves. The sim's ik and
-        RMPflow paths drop it and end in a joint move, although its capabilities report
-        ``supports_linear_move``. A driver that implements
-        :class:`~src.robot.core.arm_capabilities.KeepsLines` says which before it moves.
-
-        ``register=False`` tells the driver not to add ``pose`` to any internal
-        diversity or sampling history. A calibration routine or another per-pose
-        orchestrator that keeps its own bookkeeping passes ``register=False``, so the
-        driver's long-running guard does not double-count.
-        """
-        ...
-
     def move_home(self) -> bool:
         """Move to the driver's configured home configuration.
 
@@ -262,11 +207,11 @@ class RobotArm(Protocol):
 
     # ---- typed motion surface -------------------------------------------
     #
-    # The bool-returning :meth:`move_to` and :meth:`move_home` collapse every failure
-    # into a single ``False``, so an orchestrator or a calibration routine cannot
-    # tell a workspace rejection from an IK failure, a controller refusal or a
-    # connection fault. :meth:`move` is the typed replacement, and the bool methods
-    # remain as compatibility shims.
+    # A bool collapses every failure into a single ``False``, so an orchestrator or a
+    # calibration routine cannot tell a workspace rejection from an IK failure, a
+    # controller refusal or a connection fault. :meth:`move` and :meth:`move_to_joints`
+    # are the typed surface; the bool and raising verbs they replaced left the Protocol
+    # on 2026-09-19, and :meth:`move_home` is the one bool verb left.
 
     def move(
         self,
@@ -288,8 +233,14 @@ class RobotArm(Protocol):
         the caller on the typed code path.
 
         ``register=False`` tells the driver not to add ``pose`` to any internal
-        diversity or sampling history, with the semantics of :meth:`move_to`, which
-        also says what ``linear=True`` does and does not guarantee.
+        diversity or sampling history. A calibration routine or another per-pose
+        orchestrator that keeps its own bookkeeping passes ``register=False``, so the
+        driver's long-running guard does not double-count.
+
+        ``linear=True`` asks for a straight line, and not every path keeps it: a cuRobo
+        UR and a cuRobo sim arm sample and judge the line before any of it moves; the
+        sim's ik and RMPflow paths drop it and end in a joint move. A driver that implements
+        :class:`~src.robot.core.arm_capabilities.KeepsLines` says which before it moves.
 
         ``camera_world`` declines the camera world for this motion, with a
         reason (:class:`~src.robot.core.camera_world.CameraWorldDecline`). A

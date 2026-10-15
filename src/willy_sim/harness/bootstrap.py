@@ -68,7 +68,7 @@ __all__ = [
 
 
 def announce_planning_environment(
-    planner: str, *, robot_config: str | None = None, kinematics_model: str = "ur5e",
+    planner: str, *, robot_config: str | None = None, arm_model: str = "ur5e",
 ) -> str:
     """Print the cuRobo and Coal anchoring status once at boot, and say when a run will degrade.
 
@@ -81,7 +81,7 @@ def announce_planning_environment(
     of burying it in the Isaac boot log. Returns the announced text as well as printing it, so the
     banner can be read back without Isaac.
 
-    ``robot_config`` and ``kinematics_model`` make the banner describe this cell. Both engines are
+    ``robot_config`` and ``arm_model`` make the banner describe this cell. Both engines are
     per-robot: the planner loads ``{model}.yml``, the exact-mesh guard loads
     ``{model}_collision_meshes.npz``. Left at the defaults the banner reports the env-var reading
     and ``ur5e``, which names the wrong robot in a cell driving anything else, even though the
@@ -92,7 +92,7 @@ def announce_planning_environment(
         probe_planning_environment,
     )
 
-    env = probe_planning_environment(robot_config=robot_config, kinematics_model=kinematics_model)
+    env = probe_planning_environment(robot_config=robot_config, arm_model=arm_model)
     lines = [env.render()]
     if planner == "curobo" and not env.curobo.available:
         lines.append(
@@ -105,8 +105,8 @@ def announce_planning_environment(
     # Debug: the full report is on stdout already. What is worth keeping in the file is the one-line
     # answer to "was this run planned by cuRobo or by blind IK", which changes what the arm proposes.
     _LOG.debug(
-        "planning environment for planner=%r robot_config=%s kinematics=%s: curobo=%s collision=%s",
-        planner, robot_config, kinematics_model, env.curobo.available, env.collision.available,
+        "planning environment for planner=%r robot_config=%s arm=%s: curobo=%s collision=%s",
+        planner, robot_config, arm_model, env.curobo.available, env.collision.available,
     )
     return text
 
@@ -126,10 +126,11 @@ def motion_stack_banner(env: object, *, planner: str, missing: list[str]) -> str
     about a missing engine disappears among them.
     """
     from src.robot.safety.planning.environment import ENV_COAL_PREFIX, ENV_CUROBO_PYTHON
+    from src.utility.interpreters import conda_interpreter_parts
 
     hints = {
         "cuRobo planner": (
-            f"set {ENV_CUROBO_PYTHON} to the cuRobo env's python.exe "
+            f"set {ENV_CUROBO_PYTHON} to the cuRobo env's {'/'.join(conda_interpreter_parts())} "
             f"(see ext_deps/README.md). Without it the arm plans with BLIND IK: no collision-aware "
             f"routing, so it proposes self-colliding branches the guard then rejects; picks fail for "
             f"a reason that looks like bad grasping."
@@ -200,7 +201,7 @@ def require_motion_stack(
     planner: str,
     *,
     robot_config: str | None = None,
-    kinematics_model: str = "ur5e",
+    arm_model: str = "ur5e",
     exact_mesh_collision: bool,
 ) -> list[str]:
     """Fail closed when an engine this cell routes through is not installed. Returns what was missing.
@@ -220,7 +221,7 @@ def require_motion_stack(
 
     from src.robot.safety.planning.environment import probe_planning_environment
 
-    env = probe_planning_environment(robot_config=robot_config, kinematics_model=kinematics_model)
+    env = probe_planning_environment(robot_config=robot_config, arm_model=arm_model)
     missing: list[str] = []
     if planner == "curobo" and not env.curobo.available:
         missing.append("cuRobo planner")
@@ -311,7 +312,7 @@ def bootstrap_sim_cell(
     cell needs neither, because nothing plans against a world there.
     """
     # ``robot_model`` selects a second profile layer ("sim,ur3e"), so the whole robot-dependent
-    # config, meaning the reach-limited scene geometry, safe_pose and the safety kinematics model,
+    # config, meaning the reach-limited scene geometry, safe_pose and the arm model the guard judges,
     # comes from that layer's YAML rather than from per-runner patching. ``None`` loads plain "sim".
     started = time.perf_counter()
     _LOG.info(
@@ -397,12 +398,11 @@ def bootstrap_sim_cell(
     # The descriptor the arm loads: its arm's, with the hand added as a body link when the planner
     # starts. With no hand named there is no planner to start, and the banner says so rather than
     # falling back to the environment's ur5e.yml.
-    from src.robot.drivers.sim.robot_models import NO_DESCRIPTOR, curobo_arm_descriptor
+    from src.config.arms import NO_DESCRIPTOR, curobo_descriptor_name
 
-    _robot_yml = curobo_arm_descriptor(sim.robot_model) if robot.gripper.model else NO_DESCRIPTOR
-    # kinematics_model is optional in the schema; an unset one means the guard has no DH chain
-    # configured at all, so report the bundle for the robot the cell actually drives.
-    _kin_model = robot.safety.self_collision.kinematics_model or sim.robot_model
+    _robot_yml = curobo_descriptor_name(sim.robot_model) if robot.gripper.model else NO_DESCRIPTOR
+    # The arm the cell drives, which is the model the Isaac arm reports and so the one the guard loads its bundle for.
+    _arm_model = sim.robot_model
     # The planner this run uses: the caller's, else the tree's. It is read here rather than off
     # ``driver_cfg`` so that the engine check, the banner and the arm all speak about the same one,
     # because a runner that resolves ``ik`` otherwise leaves this gate asking about ``curobo``.
@@ -418,7 +418,7 @@ def bootstrap_sim_cell(
         require_motion_stack(
             _planner,
             robot_config=_robot_yml,
-            kinematics_model=_kin_model,
+            arm_model=_arm_model,
             exact_mesh_collision=(robot.safety.self_collision.backend or "").lower() == "fcl",
         )
     )
@@ -488,7 +488,7 @@ def bootstrap_sim_cell(
     # it stays because Coal is the other engine, and its absence is still a quieter check rather
     # than a refusal.
     announce_planning_environment(
-        driver_cfg.motion_planner, robot_config=_robot_yml, kinematics_model=_kin_model,
+        driver_cfg.motion_planner, robot_config=_robot_yml, arm_model=_arm_model,
     )
     # One line that identifies the cell a later result belongs to: which robot, which end-effector,
     # how many objects, whether the ``camera_to_base`` the calculator reasons in exists at all, and

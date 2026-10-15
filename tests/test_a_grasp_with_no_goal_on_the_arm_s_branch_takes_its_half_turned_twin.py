@@ -50,7 +50,7 @@ HOME_B = (-75.10, -83.00, -72.40, -137.31, 96.02, -76.28)
 #: Sample 129 of 144 of the line down judged ahead on the cell, 2026-10-07 11:19:33, radians.
 _LINE_SAMPLE = (1.2249, -1.3010, 1.9823, 0.6792, 1.4200, -2.2020)
 #: The cell's flange to TCP: 157 mm along the flange axis, turned -90 degrees about it.
-_TOOL = {"source": "polyscope", "offset_mm": [0.0, 0.0, 157.0], "rotation_quat_xyzw": [0.0, 0.0, -0.7071068, 0.7071068]}
+_TOOL = {"source": "controller", "offset_mm": [0.0, 0.0, 157.0], "rotation_quat_xyzw": [0.0, 0.0, -0.7071068, 0.7071068]}
 _STANDOFF_MM = 80.0
 
 
@@ -61,7 +61,7 @@ def _radians(degrees: "tuple[float, ...]") -> list[float]:
 def _ur10(home_deg: "tuple[float, ...]") -> URRobotArm:
     """The cell's UR10 on cuRobo with the cable window about ``home_deg``, on a controller double that records calls."""
     arm = URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": "ur10", "motion_planner": "curobo"},
+        "vendor": "ur", "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
         "safety": {"payload": {"enforce": False}, "joint_limits": {"within_half_turn_of_home": True}},
         "gripper": {"model": "robotiq_2f85", "tool_frame": _TOOL}, "workspace_limits": OPEN_WORKSPACE,
         "home_joint_positions": _radians(home_deg),
@@ -117,19 +117,19 @@ class TheArmSaysOnTheClosedFormTests(unittest.TestCase):
         arm = _ur10(HOME_1007)
         natural = _natural_standoff(arm)
         np.testing.assert_allclose(natural.to_matrix()[:3, 0], (-0.955, -0.296, 0.005), atol=1e-3)
-        self.assertAlmostEqual(86.4, math.degrees(arm._goal_joint_window()[1][5]), places=6)
+        self.assertAlmostEqual(86.4, math.degrees(arm.goal_joint_window()[1][5]), places=6)
 
         self.assertIs(False, arm.has_a_goal_on_its_branch(natural, _radians(HOME_1007)))
         self.assertIs(True, arm.has_a_goal_on_its_branch(_twin(natural), _radians(HOME_1007)))
         self.assertEqual([], arm._conn.method_calls, "the controller was asked")
-        self.assertIsNone(arm._curobo_ur, "a planner was built")
+        self.assertIsNone(arm._curobo, "a planner was built")
 
     def test_the_twin_is_the_same_branch_with_wrist_3_half_a_turn_on(self) -> None:
         """``case1007.py``: the twin's goal on the branch turns wrist 3 to -90 and no joint more than 102 degrees."""
         arm = _ur10(HOME_1007)
         here = _radians(HOME_1007)
         flange = arm._pose_to_flange(_twin(_natural_standoff(arm)))
-        lower, upper = arm._goal_joint_window()
+        lower, upper = arm.goal_joint_window()
         goals = nearest_goals(ur_flange_ik("ur10", np.asarray(flange.to_matrix()), q6_if_singular=here[-1]),
                               current=here, lower=lower, upper=upper, velocity=0.5)
         held = ur_branch("ur10", here)

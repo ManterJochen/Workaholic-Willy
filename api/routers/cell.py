@@ -396,9 +396,16 @@ def get_status(
     the default tick. Poll it at seconds, not at frames.
 
     Read-only in the strong sense: there is no counterpart that clears a protective stop. That is done
-    where the arm is visible, at the pendant, for the same reason there is no E-stop button here.
+    where the arm is visible, for the same reason there is no E-stop button here: at the pendant, or by the
+    person at the cell with the command ``fault_clear_with`` names (``src.robot.faults``), which this
+    console shows beside the fault and never runs.
     """
+    from src.robot.faults import acknowledge_command
     telemetry = read_telemetry(cell.session.arm, include_controller_state=include_controller_state)
+    what_to_do = telemetry.fault_what_to_do
+    if telemetry.fault_acknowledgeable and what_to_do:
+        # Found by review, 2026-09-26: the console holds the cell lock while it is connected, and the command takes it.
+        what_to_do = f"{what_to_do} Disconnect this console first: it holds the cell lock the command takes."
     return TelemetryOut(
         state=str(cell.session.state),
         connected=telemetry.connected,
@@ -417,6 +424,9 @@ def get_status(
         protective_stopped=telemetry.protective_stopped,
         emergency_stopped=telemetry.emergency_stopped,
         controller_message=telemetry.controller_message,
+        fault=telemetry.fault,
+        fault_what_to_do=what_to_do,
+        fault_clear_with=acknowledge_command(cell.profile) if telemetry.fault_acknowledgeable else None,
         controller_is_simulator=telemetry.controller_is_simulator,
         controller_serial=telemetry.controller_serial,
         controller_host=telemetry.controller_host,

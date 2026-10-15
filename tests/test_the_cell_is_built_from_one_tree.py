@@ -205,7 +205,7 @@ class EveryDeskSiteHandsDownItsTreeTests(unittest.TestCase):
     """A desk that resolves the hand without the cell's tree reads OK over a tree the build then refuses.
 
     Left out on purpose: drivers/ur/arm.py resolves the repository registry, which every tree-built cell compared
-    first; the sim runners load the repository tree; scripts/curobo and scripts/grippers write package artefacts
+    first; the sim runners load the repository tree; scripts/arms and scripts/grippers write package artefacts
     from the repository registry. The doctor is in (owner decision of 2026-09-17): it reads a loaded cell.
     """
 

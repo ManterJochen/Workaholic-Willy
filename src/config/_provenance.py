@@ -116,7 +116,7 @@ def index_chains(root: Path, layers: tuple[str, ...] = ()) -> dict[str, list[Ori
     return chains
 
 
-@dataclass(slots=True)
+@dataclass(frozen=True, slots=True)
 class _Key:
     """One key of a parsed file: every line that wrote it, in merge order, and what it holds now.
 

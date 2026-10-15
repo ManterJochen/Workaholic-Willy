@@ -20,7 +20,7 @@ because a different reader lists them in its own order. The halves this golden i
 
 ⚠ ``self_filter`` and ``planner_tool0`` were re-blessed on 2026-09-16 as well, and that one IS a change of
 geometry: B6 refitted every committed hand map from its own collision bundle. Measured with one ruler
-(``scripts/curobo/_mesh_body.py``) against the same meshes, before and after:
+(``scripts/arms/_mesh_body.py``) against the same meshes, before and after:
 
 ===============  ==========================================  =========================================
 hand             before                                      after
@@ -135,7 +135,7 @@ def _planner_capture() -> dict[str, Any]:
 
     out: dict[str, Any] = {}
     for hand_name in _HANDS:
-        link = HandLink.from_hand(_planner_hand(hand_name, _SIM_FRAME))
+        link = HandLink.from_hand(_planner_hand(hand_name, _SIM_FRAME), arm="ur5e")
         # The sim frame derives exactly the identity, so the transform is a translation and the sum is exact.
         assert link.placement.is_identity and link.fixed_transform[3:] == (1.0, 0.0, 0.0, 0.0), link.render()
         shift = link.fixed_transform[:3]

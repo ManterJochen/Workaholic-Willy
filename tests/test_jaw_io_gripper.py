@@ -657,7 +657,7 @@ class _NeverHigh(_ToggleJaws):
 
 class _Lagging(_ToggleJaws):
     """The RTDE receive stream: after each write, the first ``lag`` reads still report the level before it (measured on
-    URSim 5.26.0, ``drivers/ur/io_bench.set_output``)."""
+    URSim 5.26.0, ``execution/io_bench/pins.set_output``)."""
 
     def __init__(self, *, lag: int, **kw) -> None:
         super().__init__(**kw)
@@ -684,7 +684,7 @@ def _after_the_high(io: _Timeline) -> list[tuple[str, object]]:
 
 class SingleToggleChangeIsReadBackTests(unittest.TestCase):
     """⛔ Review of 2026-09-24 (D2). The count flipped as soon as the write returned, and a write that returns says the
-    command was accepted, not that the pin moved (``drivers/ur/io_bench.set_output`` reads back for exactly this
+    command was accepted, not that the pin moved (``execution/io_bench/pins.set_output`` reads back for exactly this
     reason). The output is read back until it reads its new level, for at most ``_CHANGE_READ_BACK_S`` whatever
     ``pulse_s`` says, and the count flips only then; an output that never reads it back leaves the count unknowable and
     the next pick asks."""
@@ -888,6 +888,19 @@ class _CoilNeverHigh(FakeIO):
 class SolenoidsAreReadBackTooTests(unittest.TestCase):
     """The same read-back on a solenoid: a coil or a level that never reads back is refused rather than believed."""
 
+    def test_the_read_back_waits_a_pulse_and_two_cycles_and_no_less_than_50_ms(self) -> None:
+        for pulse_s, bound_s in ((0.0, 0.05), (0.2, 0.216)):
+            with self.subTest(pulse_s=pulse_s):
+                waits: list[float] = []
+                g = JawIOGripper(_CoilNeverHigh(), close_output_pin=CLOSE_PIN, pulse_s=pulse_s, sleep=waits.append)
+                g.connect()
+                waits.clear()
+                with self.assertRaises(RobotError) as caught:
+                    g.set_closed(True)
+                self.assertAlmostEqual(bound_s, sum(waits), places=9)
+                self.assertTrue(all(w <= 0.008 + 1e-12 for w in waits), waits)
+                self.assertIn(f"within {bound_s:.3f} s", str(caught.exception))
+
     def test_a_double_solenoid_coil_that_never_reads_high_is_refused_and_dropped(self) -> None:
         io = _CoilNeverHigh()
         g = JawIOGripper(io, actuation="double_solenoid", close_output_pin=CLOSE_PIN, open_output_pin=OPEN_PIN,
@@ -1072,6 +1085,13 @@ class TheWidthsMeanWhatTheyAreForTests(unittest.TestCase):
 class SingleToggleRefusalTests(unittest.TestCase):
     """What a toggle cannot do, refused by the schema and again by the constructor reachable without it."""
 
+    def test_a_solenoid_keeps_its_switches(self) -> None:
+        """⭐ THE CONTROL: the solenoids read what is wired, as before."""
+        JawIOGripperConfig.model_validate({"actuation": "single_solenoid", "closed_confirm_input_pin": 0,
+                                           "open_confirm_input_pin": 1, "part_present_input_pin": 0})
+        JawIOGripper(FakeIO(), actuation="double_solenoid", close_output_pin=CLOSE_PIN, open_output_pin=OPEN_PIN,
+                     closed_confirm_input_pin=CLOSED_SW, open_confirm_input_pin=OPEN_SW)
+
     def _schema_refusal(self, **fields: object) -> str:
         with self.assertRaises(ValidationError) as caught:
             JawIOGripperConfig.model_validate({"actuation": "single_toggle", **fields})
@@ -1217,6 +1237,17 @@ class APulseLongEnoughToRegisterTests(unittest.TestCase):
         JawIOGripperConfig.model_validate({"actuation": "double_solenoid", "open_output_pin": 1, "pulse_s": 0.05})
         JawIOGripperConfig.model_validate({"actuation": "single_solenoid", "pulse_s": 0.001})
         JawIOGripperConfig.model_validate({"actuation": "single_toggle", "pulse_s": 0.001})
+
+    def test_the_driver_built_directly_keeps_any_pulse(self) -> None:
+        """The floor is the load's: a driver built in a test with a zero pulse still pulses its coil."""
+        io = FakeIO({OPEN_SW: True})
+        g = JawIOGripper(io, actuation="double_solenoid", close_output_pin=CLOSE_PIN, open_output_pin=OPEN_PIN,
+                         closed_confirm_input_pin=CLOSED_SW, open_confirm_input_pin=OPEN_SW, pulse_s=0.0,
+                         sleep=lambda _s: None)
+        g.connect()
+        io.inputs = {CLOSED_SW: True}
+        g.set_width_mm(0.0)
+        self.assertIn((CLOSE_PIN, True, str(DigitalIOPort.TOOL)), io.writes)
 
     def test_a_toggle_moves_the_same_whatever_pulse_s_says(self) -> None:
         """A toggle's command is one change, whatever ``pulse_s`` a config or a test hands it."""

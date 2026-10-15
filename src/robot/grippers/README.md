@@ -15,11 +15,11 @@ with robot.connected():                 # the arm first, then the hand
 
 The walk at a cell is [examples/real_robot/04_open_and_close_the_hand.py](../../../examples/real_robot/04_open_and_close_the_hand.py);
 `print(robot)` says which hand the tree really built, or what stands in for it and why, before anything connects.
-Before the first close of a digital-I/O hand, measure its pins with the UR bench, which moves no arm:
+Before the first close of a digital-I/O hand, measure its pins with the I/O bench, which moves no arm:
 
 ```bash
-python -m src.robot.drivers.ur --read                          # every pin on the tool bank, changes nothing
-python -m src.robot.drivers.ur --measure 4=1 --watch 0 --yes   # drive a pin and time the answer
+python -m src.robot.execution.io_bench --read                          # every pin on the tool bank, changes nothing
+python -m src.robot.execution.io_bench --measure 4=1 --watch 0 --yes   # drive a pin and time the answer
 ```
 
 ## The drivers
@@ -139,9 +139,10 @@ shows. The config refuses a `pulse_s` under 0.05 s for `double_solenoid` (a togg
 and a pin above 1 on `io_port: tool`, which has outputs 0-1 and inputs 0-1 (`jaw_io` and `vacuum`
 alike).
 
-The hand verbs (`pick`, `place`, `grasp`, `release`) and the pick loop tell `jaw_io` open or close by
-intent (`OpensAndCloses.set_closed`), so `closed_below_mm` cannot turn a verb round; on a solenoid it
-only reads the widths a caller sends through `set_width_mm` itself. Both touch the controller's I/O at connect, so the arm connects first; `Robot` does that for
+The hand verbs (`pick`, `place`, `grasp`, `release`) and the pick loop tell `jaw_io` and `vacuum` open or
+close by intent (`OpensAndCloses.set_closed`), so neither `closed_below_mm` nor `vacuum_on_below_mm` can
+turn a verb round; on a solenoid and a cup each only reads the widths a caller sends through `set_width_mm`
+itself, and the sim cup takes `set_closed` as the real one does. Both touch the controller's I/O at connect, so the arm connects first; `Robot` does that for
 you.
 
 **The stroke, left to the verb.** `set_closed(closed, wait=False)` sends the same one change and comes back at once
@@ -235,7 +236,8 @@ I/O drivers against a fake I/O port. None of the real drivers reports force or c
 
 | File | Holds |
 |---|---|
-| `registry.py` | `create_gripper`, `register_gripper_driver`, `available_gripper_vendors` and the rest of the registry |
+| `registry.py` | `create_gripper`, `register_gripper_driver`, `available_gripper_vendors` and the rest of the registry; `gripper_driver(vendor)` and `gripper_drivers()`, the drivers' specs |
+| `spec.py` | `GripperDriver`, the one value each driver states at the end of its module (`DRIVER`): what it refuses on an arm, how it is built, what sits on the flange when it actuates nothing, its desk rows, what moves when it connects, whether the bench's jaw verbs drive it, whether it opens only as wide as a grasp needs, its SDK modules. The build, the desk, the console, the bench and the doctor read it rather than branching on the vendor, which `tests/test_no_gripper_vendor_is_dispatched_by_hand.py` holds |
 | `robotiq.py`, `robotiq_socket.py` | `GripperController` and `RobotiqSocket`, the port-63352 client |
 | `onrobot.py`, `onrobot_modbus.py` | `OnRobotGripper` and `OnRobotRG`, the register-level Modbus client |
 | `jaw_io.py`, `vacuum.py` | `JawIOGripper` and `VacuumGripper`, over the arm's digital I/O |

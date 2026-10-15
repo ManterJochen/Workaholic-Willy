@@ -36,39 +36,55 @@ __all__ = [
 ]
 
 # Vendor to the SDK modules that must import. An empty tuple means no third-party SDK,
-# so the vendor is always importable. KUKA speaks EKI and KRL over a plain TCP socket,
-# and dummy and NONE are pure Python.
+# so the vendor is always importable; dummy and NONE are pure Python.
 _ARM_VENDOR_SDKS: dict[RobotVendor, tuple[str, ...]] = {
     RobotVendor.UR: ("rtde_control", "rtde_receive"),
-    RobotVendor.KUKA: (),
     RobotVendor.SIM: ("isaacsim",),
     RobotVendor.DUMMY: (),
 }
-_GRIPPER_VENDOR_SDKS: dict[GripperVendor, tuple[str, ...]] = {
-    # Robotiq needs no SDK. Naming `robotiq_gripper` here would be unsatisfiable, because
-    # it is not a package: `pip index versions robotiq_gripper` answers that no matching
-    # distribution was found, and the installed `ur_rtde` ships nothing by that name. It
-    # is one example file from SDU's repository that an operator drops on the path by
-    # hand, so such a row would read as an uninstalled SDK on every box, correctly, and
-    # no install would fix it. `grippers/robotiq_socket.py` speaks the URCap port-63352
-    # grammar directly.
-    GripperVendor.ROBOTIQ: (),
-    GripperVendor.DUMMY: (),
-    GripperVendor.NONE: (),
-    # Vacuum ships a real driver in grippers/vacuum.py and needs no SDK, because it
-    # drives the arm digital I/O. Omitting it makes the doctor report no driver
-    # registered for a driver that exists, which is a worse bug than a missing
-    # capability would be.
-    GripperVendor.VACUUM: (),
-    # OnRobot needs no SDK either, because `grippers/onrobot_modbus.py` speaks Modbus TCP
-    # to the Compute Box with `socket` and `struct`. Do not invent an SDK name for a
-    # dependency-free driver: the doctor would then report the vendor as not ready on
-    # every box.
-    GripperVendor.ONROBOT: (),
-}
+
+
+def _gripper_vendor_sdks() -> dict[GripperVendor, tuple[str, ...]]:
+    """Gripper vendor to the SDK modules its driver imports, read off each driver's spec (P0g slice 8).
+
+    Read from the specs rather than kept here: a table kept here once missed ``vacuum`` and then ``jaw_io``, because
+    nobody remembered to add a line. A vendor with no spec (a reserved name) has no row, and the readiness reads
+    ``()`` for it as before.
+    """
+    from src.robot.grippers import gripper_drivers  # noqa: PLC0415
+
+    return {driver.vendor: tuple(driver.sdk_modules) for driver in gripper_drivers()}
+
+
 # The vendors whose SDK need not be present in mock mode, because no real device is
 # driven.
 _MOCKABLE_ARM_VENDORS: frozenset[RobotVendor] = frozenset({RobotVendor.SIM, RobotVendor.DUMMY})
+
+#: Which systems a vendor's driver runs on, by ``sys.platform`` name. A vendor absent from this map carries no
+#: platform claim, which is not the same as running everywhere: the repository says nothing, and the row reads as it
+#: did before this map existed.
+#:
+#: "SDK not installed" is the wrong sentence for a driver that cannot be installed here: it sends an operator to
+#: ``pip install`` something that has no wheel for their system. So the doctor says plainly what runs only on Linux.
+#: The entries are the measured restrictions of aurora's vendor research of 2026-09-19, and only those. UR and the two
+#: simulated arms carry no entry, because nothing measured a system they refuse.
+_ARM_VENDOR_PLATFORMS: dict[RobotVendor, frozenset[str]] = {
+    # franky/libfranka publish Linux wheels only, and a real cell wants PREEMPT_RT besides.
+    RobotVendor.FRANKA: frozenset({"linux"}),
+    # KUKA returns over ROS 2 only, and `kuka_drivers` is an apt package.
+    RobotVendor.KUKA: frozenset({"linux"}),
+    # `rclpy` is built for the distribution's Python on Linux; there is no Windows Jazzy.
+    RobotVendor.ROS2: frozenset({"linux"}),
+}
+
+#: How to say a ``sys.platform`` to a person. An unknown value is printed as it is, rather than guessed.
+_PLATFORM_NAMES: dict[str, str] = {"win32": "Windows", "linux": "Linux", "darwin": "macOS"}
+
+
+def platform_name(platform: str) -> str:
+    """``sys.platform`` as a person writes it, or the raw value where this repository has no name."""
+    return _PLATFORM_NAMES.get(platform, platform)
+
 
 # The gate below is the last cheap moment before a cryptic late failure, so what it saw
 # is worth keeping. A bring-up that dies inside connect() is diagnosed faster from a
@@ -103,6 +119,14 @@ class VendorReadiness:
     sdks: tuple[SdkStatus, ...]
     ready: bool
     note: str
+    #: The systems this driver runs on, by ``sys.platform`` name, sorted. Empty means no claim: this
+    #: repository has measured no system that refuses it (:data:`_ARM_VENDOR_PLATFORMS`), not that it
+    #: runs nowhere.
+    platforms: tuple[str, ...] = ()
+
+    def runs_on(self, platform: str) -> bool:
+        """Whether this driver runs on ``platform``. True wherever no claim is made."""
+        return not self.platforms or platform in self.platforms
 
     def to_dict(self) -> dict[str, Any]:
         """Plain data, safe for `json.dumps` with no custom encoder.
@@ -119,6 +143,7 @@ class VendorReadiness:
             "registered": self.registered,
             "ready": self.ready,
             "note": self.note,
+            "platforms": list(self.platforms),
             "sdks": [sdk.to_dict() for sdk in self.sdks],
         }
 
@@ -193,7 +218,33 @@ def _is_arm_registered(vendor: RobotVendor) -> bool:
     return bool(is_vendor_registered(vendor.value))
 
 
-def _readiness(vendor_value: str, kind: str, sdk_modules: tuple[str, ...], registered: bool) -> VendorReadiness:
+def _readiness(
+    vendor_value: str,
+    kind: str,
+    sdk_modules: tuple[str, ...],
+    registered: bool,
+    platforms: tuple[str, ...] = (),
+    platform: str = "",
+) -> VendorReadiness:
+    """One row. ``platform`` is the ``sys.platform`` the question is asked about, empty to skip it.
+
+    The platform is decided before the SDK is probed, and the probe is then not run at all. A module
+    with no wheel for this system can only answer "not installed", which is true and useless: it names
+    a repair that does not exist here. The row says what the operator can act on, which is that this
+    driver is driven from another system.
+    """
+    runs_here = not platforms or not platform or platform in platforms
+    if not runs_here:
+        where = " or ".join(platform_name(p) for p in platforms)
+        # The reserved-slot wording is kept as it is where it still applies: an operator who has read
+        # this table once reads the sentence, not the row, and two words for one state stop a table
+        # being read.
+        head = (f"no driver registered (reserved slot / not implemented), and when one lands it "
+                f"drives from {where} only" if not registered else f"drives from {where} only")
+        return VendorReadiness(
+            vendor=vendor_value, kind=kind, registered=registered, sdks=(), ready=False,
+            note=f"{head}; this host is {platform_name(platform)}", platforms=platforms,
+        )
     sdks = tuple(probe_module(m) for m in sdk_modules)
     sdks_ok = all(s.importable for s in sdks)
     ready = registered and sdks_ok
@@ -211,6 +262,7 @@ def _readiness(vendor_value: str, kind: str, sdk_modules: tuple[str, ...], regis
         note = "ready"
     return VendorReadiness(
         vendor=vendor_value, kind=kind, registered=registered, sdks=sdks, ready=ready, note=note,
+        platforms=platforms,
     )
 
 
@@ -224,9 +276,9 @@ def arm_vendor_readiness() -> list[VendorReadiness]:
 def gripper_vendor_readiness() -> list[VendorReadiness]:
     """Readiness for every known gripper vendor. A shim over :class:`Host`.
 
-    `registered` is derived from the registry. Reading it off membership in
-    `_GRIPPER_VENDOR_SDKS` instead reports a vendor missing from that dict as an
-    unimplemented reserved slot whether or not a driver exists, which has happened to
+    `registered` is derived from the registry. Reading it off membership in the SDK
+    table, a dict kept by hand until P0g slice 8, reported a vendor missing from it as an
+    unimplemented reserved slot whether or not a driver existed, which happened to
     `vacuum` and to `jaw_io` while `available_gripper_vendors()` listed them.
     """
     from src.robot.drivers.host import Host
@@ -275,7 +327,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Probe which vendor SDKs are importable + report driver readiness.",
     )
     parser.add_argument("--require", metavar="VENDOR", default=None,
-                        help="exit non-zero unless this arm vendor is ready (e.g. ur, sim, kuka).")
+                        help="exit non-zero unless this arm vendor is ready (e.g. ur, sim, dummy).")
     parser.add_argument("--json", action="store_true", help="emit JSON instead of the human table.")
     args = parser.parse_args(argv)
 

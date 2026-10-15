@@ -812,6 +812,16 @@ class AnArmWithoutHandGuidingTests(unittest.TestCase):
         result = routine.run_with_poses([Pose.from_matrix(TOOL[i], frame=Frame.BASE, label=f"s{i}") for i in range(4)])
         self.assertEqual((result.num_samples, result.stations_path), (4, None))
 
+    def test_a_sweep_nobody_guides_keeps_its_counted_frames_too(self) -> None:
+        """Every counted sample's frame, whichever way the station came, and none without a folder."""
+        folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        clock = _Clock()
+        arm = _PlainArm([_stand(0)], clock)
+        routine, _ = _routine(arm, _Console([], arm.log), clock, images=str(folder / "frames"))
+        routine.run_with_poses([Pose.from_matrix(TOOL[i], frame=Frame.BASE, label=f"s {i}") for i in range(4)])
+        self.assertEqual(sorted(path.name for path in (folder / "frames").iterdir()),
+                         [f"0{i + 1}_s_{i}.png" for i in range(4)])
+
 
 # ---------------------------------------------------------------------------------------------------------------------
 # The way to a target, in the tool's own terms
@@ -901,6 +911,14 @@ class ThePreviewIsTheGuidesWindowTests(unittest.TestCase):
         unseen = Observation(kind="aruco", why_not="no DICT_4X4_100 marker in view")
         self.assertEqual(preview_module.PreviewState().guided_lines(["MOVE"], unseen)[1],
                          "board not seen: no DICT_4X4_100 marker in view")
+
+    def test_a_closed_window_is_handed_back_as_closed(self) -> None:
+        gui = _Gui(keys=(27,))
+        preview, _ = _preview(gui=gui, live_hz=0)
+        self.addCleanup(preview.close)
+        preview.start()
+        self.assertTrue(_until(lambda: preview.off == "ESC"))
+        self.assertEqual(preview.poll_key(), "closed")
 
 
 def _rotation_x(degrees: float) -> np.ndarray:
@@ -1046,16 +1064,166 @@ class TheNounRunsTheWayTheOptionsSayTests(unittest.TestCase):
         self.assertIn(f"replay without hands: --fixed-poses {stations}", report.render())
         self.assertIn("=== 3. SWEEP === guided by hand: the arm moves only when you move it", report.render())
 
-    def test_adjust_on_an_arm_nobody_can_guide_is_a_build_refusal(self) -> None:
+    def test_adjust_on_an_arm_nobody_can_guide_is_refused_at_the_check(self) -> None:
+        """P0i i3, changes behaviour on purpose: a build refusal until the check asked the hand guiding row."""
         from src.robot.drivers.dummy.arm import DummyRobotArm
         from src.robot.execution.hand_eye import CalibrationOutcome
 
         report = self._noun(DummyRobotArm(), adjust=True,
                             fixed_poses=[Pose.from_matrix(TOOL[0], frame=Frame.BASE)]).run()
-        self.assertIs(report.outcome, CalibrationOutcome.BUILD_REFUSED)
-        assert report.build is not None
-        self.assertIn("HandGuidingRefused: adjust frees the arm at each station by hand, and DummyRobotArm offers no "
-                      "hand guiding", report.build.refusal)
+        self.assertIs(report.outcome, CalibrationOutcome.REFUSED)
+        self.assertIsNone(report.build)
+        self.assertTrue(report.check.refusal.startswith(
+            "DummyRobotArm offers no hand guiding (SupportsFreedrive; the UR teach mode is one), and a calibration by "
+            "hand, --freedrive or --adjust, hands the arm to a person"), report.check.refusal)
+
+    def test_the_noun_keeps_the_frames_beside_the_dataset(self) -> None:
+        from unittest.mock import patch
+
+        calibration = self._noun(self._guided_arm(), freedrive=True, samples=6)
+        seen: list[Any] = []
+
+        def guided(routine: CalibrationRoutine, targets: Any, **keywords: Any) -> Any:
+            seen.append(routine._images_dir)  # noqa: SLF001
+            return self.solved()
+
+        with patch.object(CalibrationRoutine, "run_freedrive", autospec=True, side_effect=guided):
+            calibration.run()
+        self.assertEqual(seen, [Path(self.out) / "eye_to_hand_overhead_images"])
+
+
+    def test_freedrive_on_an_arm_nobody_can_guide_is_refused_at_the_check(self) -> None:
+        """P0i i3, changes behaviour on purpose: a build refusal until the check asked the hand guiding row."""
+        from src.robot.drivers.dummy.arm import DummyRobotArm
+        from src.robot.execution.hand_eye import CalibrationOutcome
+
+        report = self._noun(DummyRobotArm(), freedrive=True).run()
+        self.assertIs(report.outcome, CalibrationOutcome.REFUSED)
+        self.assertIsNone(report.build)
+        self.assertIn("DummyRobotArm offers no hand guiding", report.check.refusal)
+
+    def test_a_run_guided_by_hand_is_refused_at_the_check_with_no_sample(self) -> None:
+        none = self._noun(self._guided_arm(), freedrive=True, samples=0).check()
+        self.assertEqual(none.refusal, "a run guided by hand collects at least one sample, not 0")
+
+    def test_adjust_is_refused_beside_freedrive_and_without_fixed_stations(self) -> None:
+        both = self._noun(self._guided_arm(), freedrive=True, adjust=True,
+                          fixed_poses=[Pose.from_matrix(TOOL[0], frame=Frame.BASE)]).check()
+        self.assertIn("freedrive and adjust both hand the arm to a person", both.refusal)
+        alone = self._noun(self._guided_arm(), adjust=True).check()
+        self.assertIn("adjust fine-tunes fixed stations by hand, and none were given", alone.refusal)
+
+
+class ExampleTenIsTheOwnersCalibrationTests(unittest.TestCase):
+    """Example 10, the owner's wrist calibration: since 85f082b the stations of a file, each fine-tuned by hand
+    (``adjust``), where it aimed the camera at a marker before (7f260a7)."""
+
+    def _source(self) -> str:
+        root = Path(__file__).resolve().parents[1]
+        (path,) = sorted((root / "examples" / "real_robot").glob("10_*.py"))
+        return path.read_text(encoding="utf-8")
+
+    def test_it_replays_fixed_stations_adjusted_by_hand_and_names_the_target_in_full(self) -> None:
+        import ast
+
+        source = self._source()
+        constants = {node.targets[0].id: ast.literal_eval(node.value)
+                     for node in ast.parse(source).body
+                     if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name)
+                     and node.targets[0].id.isupper()}
+        self.assertEqual(constants["TARGET"], "aruco:50:150:DICT_4X4_100")
+        self.assertEqual(constants["STATIONS"], "examples/real_robot/eih_fixed_stations.json")
+        self.assertIn("adjust=True", source)
+        self.assertIn('preview="auto"', source)
+        root = Path(__file__).resolve().parents[1]
+        self.assertTrue(all(isinstance(station, JointStation)
+                            for station in load_stations(root / constants["STATIONS"])[:4]))
+
+    def test_its_target_is_one_the_schema_takes(self) -> None:
+        from pydantic import TypeAdapter
+
+        from src.config.schema.camera.cam_schema import CalibrationTargetConfig
+        from src.calibration.targets import parse_board_spec
+
+        target = TypeAdapter(CalibrationTargetConfig).validate_python(parse_board_spec("aruco:50:150:DICT_4X4_100"))
+        self.assertEqual((target.kind, target.marker_id, target.marker_length_mm, target.aruco_dict_name),
+                         ("aruco", 50, 150.0, "DICT_4X4_100"))
+
+
+class TheTreeAndTheCommandLineTests(unittest.TestCase):
+    """``robot.calibration.freedrive_samples`` and ``calibrate --freedrive`` / ``--samples``."""
+
+    @staticmethod
+    def _app(**calibration: Any) -> SimpleNamespace:
+        from src.config.schema.camera import HandEyeConfig
+        from src.config.schema.robot import RobotConfig
+        from tests.test_camera_boundaries import _rgbd_rig
+
+        robot = RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "10.253.253.51"},
+                                            **({"calibration": calibration} if calibration else {})})
+        return SimpleNamespace(robot=robot, camera=SimpleNamespace(
+            cameras=SimpleNamespace(rigs=[_rgbd_rig("overhead")], primary_rig_id="overhead"),
+            hand_eye=HandEyeConfig()))
+
+    def test_the_tree_says_how_many_samples_a_run_by_hand_collects(self) -> None:
+        from pydantic import ValidationError
+
+        from src.config.schema.robot import RobotCalibrationConfig
+
+        self.assertEqual(RobotCalibrationConfig().freedrive_samples, 15)
+        with self.assertRaises(ValidationError):
+            RobotCalibrationConfig(freedrive_samples=0)
+
+    def test_the_noun_reads_the_tree_and_an_option_overrides_it(self) -> None:
+        from src.robot.execution.hand_eye import HandEyeCalibration, SweepOptions
+
+        def poses(app: SimpleNamespace, **options: Any) -> str:
+            check = HandEyeCalibration.from_config(app, rig_id="overhead", mode="eye_to_hand",
+                                                   options=SweepOptions(freedrive=True, **options)).check()
+            self.assertTrue(check.ok, check.refusal)
+            return next(line for line in check.render().splitlines() if line.startswith("  poses"))
+
+        self.assertEqual(poses(self._app()), "  poses      15 guided by hand")
+        self.assertEqual(poses(self._app(freedrive_samples=7)), "  poses      7 guided by hand")
+        self.assertEqual(poses(self._app(freedrive_samples=7), samples=3), "  poses      3 guided by hand")
+
+    def _main(self, *argv: str, app: Any = None) -> tuple[int, str]:
+        import io
+        from contextlib import redirect_stdout
+        from unittest.mock import patch
+
+        from src.robot.execution.real_cell import calibrate
+
+        printed = io.StringIO()
+        with patch.object(calibrate, "_load", return_value=app or self._app()), redirect_stdout(printed):
+            code = calibrate.main(["--rig", "overhead", "--check", *argv])
+        return code, printed.getvalue()
+
+    def test_the_command_line_guides_by_hand_and_counts_its_samples(self) -> None:
+        code, printed = self._main("--freedrive")
+        self.assertEqual(code, 0, printed)
+        self.assertIn("  poses      15 guided by hand", printed)
+        code, printed = self._main("--freedrive", "--samples", "4")
+        self.assertEqual(code, 0, printed)
+        self.assertIn("  poses      4 guided by hand", printed)
+
+    def test_a_count_for_no_run_by_hand_is_refused(self) -> None:
+        """A flag that shapes nothing is refused rather than dropped: ``--samples`` counts a run by hand, which there is
+        none of without ``--freedrive``. (``--poses``, the generated sweep's count, is gone since 85f082b:
+        tests/test_nothing_generates_a_calibration_station.py.)"""
+        code, printed = self._main("--samples", "4")
+        self.assertEqual(code, 1, printed)
+        self.assertIn("[config] REFUSED: --samples", printed)
+
+    def test_the_help_names_both_flags(self) -> None:
+        from src.robot.execution.real_cell import calibrate
+
+        text = calibrate.build_parser().format_help()
+        self.assertIn("--freedrive", text)
+        self.assertIn("--samples", text)
+        self.assertIn("robot.calibration.freedrive_samples", text)
+
+
 
 
 if __name__ == "__main__":  # pragma: no cover

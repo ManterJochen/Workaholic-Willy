@@ -59,6 +59,7 @@ from .workspace import WorkspaceGuard
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.robot import (
+        AttachedPayloadConfig,
         RobotSafetyConfig,
         WorkspaceLimitsConfig,
     )
@@ -68,6 +69,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.robot.safety.path_samples import PathSamples
     from src.robot.safety.planning.band import ExactPairs
     from src.robot.safety.planning.hand import PlannerHand
+    from src.robot.safety.planning.mounted_tool import MountedTool
 
 __all__ = [
     "SafetyPreflight",
@@ -165,12 +167,22 @@ class SafetyPreflight:
         "motion_continuity",
     )
 
-    def __init__(self, guards: Sequence[SafetyGuard], *, whole_path_judge: bool = False) -> None:
+    def __init__(
+        self, guards: Sequence[SafetyGuard], *, whole_path_judge: bool = False,
+        carried_part: "AttachedPayloadConfig | None" = None, arm_model: "Maybe[str | None]" = UNSET,
+    ) -> None:
         # Copy to a tuple, so the pipeline is immutable after construction. A guard
         # instance stays mutable, because it owns its own cache, but the sequence
         # cannot be reordered or extended at runtime.
         self._guards: tuple[SafetyGuard, ...] = tuple(guards)
         self._logger = create_robot_logger("SafetyPreflight", SAFETY_PREFLIGHT_LOG_FILE)
+        #: The part the hand may carry, as the safety config this pipeline was built from declares it
+        #: (``safety.planning_world.payload``); ``None`` for a pipeline assembled from guards alone. Kept here since
+        #: P0e, where :meth:`carried_reach_mm` read it off the arm's own tree, which only the UR driver keeps.
+        self._carried_part = carried_part
+        #: The arm model this pipeline was built for (:meth:`from_safety_config`), ``UNSET`` for one assembled from
+        #: guards alone. Its self-collision guard refuses an arm that reports another UR (P0e E6).
+        self._arm_model = arm_model
         # Whether a path gate judges a path whole before it judges it sample by sample
         # (safety.self_collision.whole_path_judge, :meth:`_first_suspect`). Off, every sample is
         # judged one at a time from the first, as it always was.
@@ -208,19 +220,21 @@ class SafetyPreflight:
             gate = SafetyPreflight.from_tree(load_tree())
             refusal = gate.gate_planned_path(waypoints, arm=arm)     # None when every sample passes
 
-        The hand the cell names resolves against the tree's own root, and a UR arm passes its model to
-        the guard, as the UR driver does. A tree that did not load, or loaded with no robot block, is
+        The hand the cell names resolves against the tree's own root, and the model of the arm the tree
+        selects is passed to the guard, as the UR driver passes ``robot.ur.model`` and the Isaac cell
+        ``robot.sim.robot_model``. A tree that did not load, or loaded with no robot block, is
         refused with its own refusal (``ConfigError``); an exact mesh guard on a tree that names no hand
         is refused naming ``robot.gripper.model``.
         """
         from src.robot.safety.planning.hand import planner_hand  # noqa: PLC0415
 
         robot = tree.robot
-        vendor = str(getattr(robot.vendor, "value", robot.vendor))
-        arm_model: Maybe[str] = str(robot.ur.model) if vendor == "ur" else UNSET
+        # The selected arm: on a tree that names another vendor the UR block is still there, and the model it carries
+        # is the default nobody chose (``RobotConfig.arm``).
+        selected = robot.arm
         return cls.from_safety_config(
             robot.safety, robot.workspace_limits, extra_guards=extra_guards,
-            hand=planner_hand(robot, data_dir=tree.root), arm_model=arm_model,
+            hand=planner_hand(robot, data_dir=tree.root), arm_model=selected.model or None,
         )
 
     @classmethod
@@ -231,7 +245,7 @@ class SafetyPreflight:
         *,
         extra_guards: Iterable[SafetyGuard] = (),
         hand: "Maybe[PlannerHand]" = UNSET,
-        arm_model: Maybe[str] = UNSET,
+        arm_model: str | None,
     ) -> "SafetyPreflight":
         """Build the canonical preflight pipeline from configuration.
 
@@ -252,12 +266,16 @@ class SafetyPreflight:
             The hand the cell names, ``planner_hand(robot_config)``. The self-collision
             guard loads its mesh bundle and its coupling from it.
         arm_model
-            The arm the driver knows it is, for a guard with no ``kinematics_model``: the
-            UR driver passes ``robot.ur.model``. With either resolving a model, an exact
-            mesh guard reads hand geometry, and an unset ``hand`` raises ``ConfigError``
-            naming ``robot.gripper.model`` rather than checking whatever hand the arm
-            bundle carries. A declared tool frame whose approach disagrees with the hand
-            model's raises the same way.
+            The arm the pipeline is built for, required since P0e: the UR driver passes its
+            ``capabilities.model``, the Isaac cell ``robot.sim.robot_model``, and ``None``
+            names an arm the registry does not describe as a UR. It is the only build-time
+            source of the arm the guard will read hand geometry on (P0d D5): where it names
+            a UR the arm registry describes, an exact mesh guard reads hand geometry, and an
+            unset ``hand`` raises ``ConfigError`` naming ``robot.gripper.model`` rather than
+            checking whatever hand the arm bundle carries. A declared tool frame whose
+            approach disagrees with the hand model's raises the same way. The self-collision
+            guard then refuses to judge an arm that reports another UR
+            (:meth:`SelfCollisionGuard.refusal_for`).
         """
         # The workspace guard is non-negotiable and is always wired.
         workspace_margin = float(safety_cfg.limits.workspace_margin_mm)
@@ -282,18 +300,14 @@ class SafetyPreflight:
             # geometry, and with no hand named it would check the 2F-85 every arm bundle
             # carries, which on a Hand-E cell that forgot its name passes by coincidence.
             # It is refused here, at build, where the model resolves.
-            from src.robot.safety.planning.hand import (
-                hand_geometry_model,
-                unset_hand_refusal,
-            )
+            from src.robot.safety.planning.hand import guard_hand_refusal
 
-            reads = hand_geometry_model(safety_cfg.self_collision, arm_model)
-            if reads is not None:
+            # The unset hand and the unplaceable frame, refused in one place (`guard_hand_refusal`), which a tool
+            # mounted after the build meets as well (P0i i5).
+            refusal = guard_hand_refusal(safety_cfg.self_collision, hand, arm_model)
+            if refusal is not None:
                 from src.config.loader import ConfigError
 
-                if not chosen(hand):
-                    what, fix = unset_hand_refusal(reads)
-                    raise ConfigError(f"{what} {fix}")
                 # The whole placement. A frame that is a mirror, oblique, points into the
                 # wrist, or is clocked by anything other than a quarter turn places no hand
                 # model: the hand carries UNSET, and a guard built on it would measure the
@@ -302,9 +316,8 @@ class SafetyPreflight:
                 # a cell when it starts, and an ik cell never starts one. This is the only
                 # frame refusal: an approach along +Z, which a real UR flange declares, is
                 # placed like one along the model's +Y.
-                if hand.placement_refusal is not None:
-                    raise ConfigError(hand.placement_refusal)
-            guards.append(SelfCollisionGuard(safety_cfg.self_collision, hand=hand))
+                raise ConfigError(refusal)
+            guards.append(SelfCollisionGuard(safety_cfg.self_collision, hand=hand, built_for=arm_model))
         if safety_cfg.payload.enforce:
             guards.append(PayloadGuard(safety_cfg.payload))
         if safety_cfg.motion_continuity.enforce:
@@ -312,7 +325,8 @@ class SafetyPreflight:
         guards.extend(extra_guards)
         guards.sort(key=lambda g: cls._guard_order_key(g.name))
         whole = bool(getattr(safety_cfg.self_collision, "whole_path_judge", False))
-        return cls(guards, whole_path_judge=whole)
+        return cls(guards, whole_path_judge=whole, carried_part=safety_cfg.planning_world.payload,
+                   arm_model=arm_model)
 
     @staticmethod
     def _guard_order_key(name: str) -> int:
@@ -326,6 +340,12 @@ class SafetyPreflight:
     # ------------------------------------------------------------------
     # Introspection
     # ------------------------------------------------------------------
+
+    @property
+    def arm_model(self) -> "Maybe[str | None]":
+        """The arm model this pipeline was built for, ``None`` for an arm the registry does not describe as a UR, and
+        ``UNSET`` for a pipeline assembled from guards alone."""
+        return self._arm_model
 
     @property
     def guards(self) -> tuple[SafetyGuard, ...]:
@@ -428,7 +448,7 @@ class SafetyPreflight:
         guards, the ``ik_quality`` joint-jump check and the ``motion_continuity`` step
         size, on the planned final configuration. Those two stand in for the assumption
         that the blind interpolator will not teleport, which holds only while
-        ``move_joint`` interpolates in joint space, and cuRobo instead owns a
+        a joint move interpolates in joint space, and cuRobo instead owns a
         continuous, dynamically feasible, collision-checked path, so a large net joint
         delta such as a wrap between +pi and -pi that is no physical rotation at all is
         not a teleport. The static guards, workspace, joint-limit, self-collision and
@@ -596,6 +616,55 @@ class SafetyPreflight:
         guard = self._path_authority(arm)
         return guard.exact_pairs(arm) if guard is not None else None
 
+    def mount_refusal(self, tool: "MountedTool", arm: "RobotArm | None" = None) -> str | None:
+        """Why this pipeline cannot judge with ``tool`` mounted, or ``None`` (P0i i5 and its review).
+
+        The self collision guard's own refusal (:meth:`SelfCollisionGuard.mount_refusal`); a payload the tree could
+        not declare (the schema's own sentence, since a tool built with ``dataclasses.replace`` or ``model_copy`` meets
+        no validator on the way); and a payload that says it is enforced where this pipeline was built without a
+        payload guard, or the other way round: a mount keeps whether the payload is guarded.
+        """
+        guard = self._path_authority(arm)
+        if guard is not None:
+            refusal = guard.mount_refusal(tool.hand)
+            if refusal is not None:
+                return refusal
+        from pydantic import ValidationError
+
+        try:
+            type(tool.payload).model_validate(tool.payload.model_dump())
+        except ValidationError as exc:
+            said = "; ".join(str(error.get("msg", "")) for error in exc.errors())
+            return f"the mounted payload is not one robot.safety.payload could declare: {said}"
+        guarded = self._payload_guard() is not None
+        if bool(tool.payload.enforce) != guarded:
+            return (
+                f"this pipeline was built {'with' if guarded else 'without'} a payload guard "
+                f"(safety.payload.enforce: {str(guarded).lower()}), and the mounted payload says enforce: "
+                f"{str(bool(tool.payload.enforce)).lower()}: a mount keeps whether the payload is guarded, so build "
+                "the cell with the tool it carries"
+            )
+        return None
+
+    def mount_tool(self, tool: "MountedTool", arm: "RobotArm | None" = None) -> None:
+        """Have every guard that models the tool judge ``tool`` from now on: the self collision guard its hand, the
+        payload guard its payload (P0i i5). Refused with :meth:`mount_refusal`'s reason (``ToolChangeRefused``), with
+        nothing changed. What ``PlannedArm.mount_tool`` asks, and nothing else."""
+        refusal = self.mount_refusal(tool, arm)
+        if refusal is not None:
+            from src.robot.safety.planning.mounted_tool import ToolChangeRefused
+
+            raise ToolChangeRefused(refusal)
+        guard = self._path_authority(arm)
+        if guard is not None:
+            guard.mount(tool.hand)
+        payload_guard = self._payload_guard()
+        if payload_guard is not None:
+            payload_guard.mount(tool.payload)
+
+    def _payload_guard(self) -> "PayloadGuard | None":
+        return next((guard for guard in self._guards if isinstance(guard, PayloadGuard)), None)
+
     #: The guard whose verdict a judged path rests on. Named once, because three places
     #: ask for it.
     _PATH_AUTHORITY = "self_collision"
@@ -658,6 +727,9 @@ class SafetyPreflight:
         guard = self._path_authority(arm)
         if guard is None:
             return no_path_guard_refusal()
+        refused = guard.refusal_for(arm)
+        if refused is not None:
+            return refused
         if guard.exact_mesh_engine(arm) is None:
             return exact_mesh_path_refusal()
         return None
@@ -666,7 +738,7 @@ class SafetyPreflight:
         """Why no path of ``arm`` can be judged sample by sample, or ``None`` where every sample can be.
 
         The two sentences a path gate refuses with before its first sample, and one where no
-        joint's sweep can be bounded, naming why: the guard names no kinematics model, or the hand
+        joint's sweep can be bounded, naming why: the guard judges no arm model it has joint radii for, or the hand
         it models has no mesh bundle to read its reach past the flange from. A line on such an arm
         is judged at its start only. Asked before a motion, it moves nothing; the exact mesh engine
         it loads is the guard's own, cached.
@@ -681,8 +753,8 @@ class SafetyPreflight:
             if model and chosen(hand) and self.carried_reach_mm(arm, str(model)) is None:
                 return ("the hand this guard models has no mesh bundle to read its reach past the flange from, so a "
                         "line cannot be sampled at a step that covers the hand, and it is judged at its start only")
-            return ("the self_collision guard names no kinematics model this repository has joint radii for, so a "
-                    "line cannot be sampled at the guard's step and is judged at its start only")
+            return ("the arm reports no model the arm registry describes as a UR, so this repository has no joint "
+                    "radii for it and a line cannot be sampled at the guard's step: it is judged at its start only")
         return None
 
     def gate_joint_path(
@@ -871,9 +943,9 @@ class SafetyPreflight:
         if reach_mm is None or step_mm is None:
             return self._say_and_refuse(
                 f"no reach derives for {type(arm).__name__}, and a path is sampled by how far a "
-                f"joint angle can swing a point of the arm. Declare the robot this cell drives as "
-                f"safety.self_collision.kinematics_model, which is also what the guard loads its "
-                f"meshes for; only the UR models in UR_DH_TABLES_M carry a reach today",
+                f"joint angle can swing a point of the arm. The guard takes the robot from the model the arm "
+                f"reports, which is also the arm it loads its meshes for, and only a UR the arm registry describes "
+                f"(config/arms) carries a reach today",
                 command,
             )
         try:
@@ -907,11 +979,12 @@ class SafetyPreflight:
         the difference between an ordinary six-joint move fitting under the checker's cap
         and being refused by it.
 
-        The model comes from the self-collision guard, which resolves ``kinematics_model``
-        first and the arm second. It has to be the same answer: the guard places link
-        meshes for one robot and the sampler bounds the sweep of another, and a cell where
-        those disagree is judged twice against two arms. It is also the only answer a sim
-        cell has, because the Isaac driver reports its model as ``isaac-sim``.
+        The model comes from the self-collision guard (:meth:`SelfCollisionGuard.model_for`),
+        and only from there. It has to be the same answer: the guard places link meshes for
+        one robot and the sampler bounds the sweep of another, and a cell where those disagree
+        is judged twice against two arms. Until P0d D5 a second, ungated rule stood here for an
+        arm the guard named no model for; with the model taken from the arm through one
+        registry rule there is nothing left for it to answer.
 
         Each radius also covers what the flange carries. The DH table ends at the flange, and
         its radii alone miss the tool: a wrist turn they count as 10 mm moves a 132 mm tool's
@@ -928,9 +1001,6 @@ class SafetyPreflight:
 
         guard = self._path_authority(arm)
         model = guard.model_for(arm) if guard is not None else None
-        if not model:
-            capabilities = getattr(arm, "capabilities", None)
-            model = getattr(capabilities, "model", None)
         if not model:
             return None
         radii = ur_joint_radii_mm(str(model))
@@ -974,9 +1044,8 @@ class SafetyPreflight:
         for wrist in self.wrist_bodies(arm):
             for centre, radius in wrist.envelope_spheres_mm():  # type: ignore[attr-defined]
                 furthest = max(furthest, reach(centre, centre, radius))
-        world = getattr(getattr(getattr(arm, "config", None), "safety", None), "planning_world", None)
-        part = getattr(world, "payload", None)
-        if part is not None and bool(getattr(part, "enabled", False)) and getattr(part, "length_mm", None):
+        part = self._carried_part
+        if part is not None and part.enabled and part.length_mm:
             capsule = payload_capsule(hand, spheres, length_mm=float(part.length_mm),
                                       lateral_margin_mm=float(part.lateral_margin_mm))
             furthest = max(furthest, reach(capsule.start_mm, capsule.end_mm, capsule.radius_mm))

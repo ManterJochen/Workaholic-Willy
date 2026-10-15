@@ -77,18 +77,18 @@ class FlangeToTcp:
     """The flange to TCP an eye-in-hand solve was made against, and where the cell took it from.
 
     ``source`` is the tool frame mode: ``willy`` when the driver composes the declared frame itself,
-    so the record is the declared numbers; ``polyscope`` when the controller applies its own tool
+    so the record is the declared numbers; ``controller`` when the controller applies its own tool
     setting, so the record is the frame the driver derived from the controller at connect.
     ``matrix_mm`` is the 4x4 homogeneous transform as rows, translation in millimetres. A record
     that is not a finite rigid transform raises :class:`ExtrinsicsError`.
     """
 
-    source: Literal["willy", "polyscope"]
+    source: Literal["willy", "controller"]
     matrix_mm: tuple[tuple[float, ...], ...]
 
     def __post_init__(self) -> None:
-        if self.source not in ("willy", "polyscope"):
-            raise ExtrinsicsError(f"FlangeToTcp: source must be 'willy' or 'polyscope', got {self.source!r}")
+        if self.source not in ("willy", "controller"):
+            raise ExtrinsicsError(f"FlangeToTcp: source must be 'willy' or 'controller', got {self.source!r}")
         rows = self.matrix_mm
         if len(rows) != 4 or any(len(row) != 4 for row in rows):
             raise ExtrinsicsError("FlangeToTcp: matrix_mm must be four rows of four numbers")
@@ -300,7 +300,10 @@ def _read_cam_to_tool(path: str | Path) -> tuple[Transform, Maybe[FlangeToTcp]]:
         if not isinstance(held, Mapping):
             raise ExtrinsicsError(f"load_cam_to_tool: {path!s} is {CAM_TO_TOOL_SCHEMA_V2!r} and holds no flange_to_tcp")
         try:
-            record = FlangeToTcp.from_matrix(held.get("source"), held.get("matrix_mm"))
+            # A record written before P0e names the mode `polyscope`: the measurement is the same, only the
+            # spelling changed, so it reads as `controller` rather than asking for the calibration again.
+            source = "controller" if held.get("source") == "polyscope" else held.get("source")
+            record = FlangeToTcp.from_matrix(source, held.get("matrix_mm"))
         except (TypeError, ValueError) as exc:
             raise ExtrinsicsError(f"load_cam_to_tool: {path!s} holds an invalid flange_to_tcp") from exc
     try:

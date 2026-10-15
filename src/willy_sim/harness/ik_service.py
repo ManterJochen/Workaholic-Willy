@@ -98,8 +98,8 @@ class ArmBackedIKService:
         Returns ``None`` when no joint-limit table resolves: no limits means no margin. A solution
         already past a limit clamps to ``0.0``, because the carrier requires a value of at least
         zero and the feasibility scorer then gives it a sub-score of 0, fully demoted. The limits
-        come from :func:`resolve_joint_limits_deg`, either the config static table or the UR vendor
-        table, keyed by the arm's vendor and model: the same resolver the joint-limit and IK-quality
+        come from :func:`resolve_joint_limits_deg`, the config static table, else the arm registry's
+        envelope, keyed by the model the arm reports, the same resolver the joint-limit and IK-quality
         guards use.
         """
         if self._joint_limits_config is None:
@@ -109,11 +109,7 @@ class ArmBackedIKService:
         from src.robot.safety.joint_limits import resolve_joint_limits_deg
 
         caps = getattr(self._arm, "capabilities", None)
-        limits = resolve_joint_limits_deg(
-            self._joint_limits_config,
-            vendor=getattr(caps, "vendor", None),
-            model=getattr(caps, "model", None),
-        )
+        limits = resolve_joint_limits_deg(self._joint_limits_config, model=getattr(caps, "model", None))
         if limits is None:
             return None
         lo_deg, hi_deg = limits

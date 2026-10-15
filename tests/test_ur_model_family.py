@@ -1,9 +1,15 @@
-"""Four registries answer "which UR can this stack drive", and until now none checked another.
+"""One registry answers "which UR can this stack drive", and every reader has to answer for every arm it admits.
 
-    UR_MODEL_KEYS          src/config/schema/robot/_ur_models.py     the config gate
-    UR_DH_TABLES_M         src/robot/safety/_ur_kinematics.py    the link lengths
-    UR_JOINT_LIMITS_DEG    src/robot/safety/joint_limits.py      the axis envelope
-    _UR_MODELS             src/robot/drivers/sim/robot_models.py the asset and the reach
+Until P0d four hand-kept tables answered it, and none checked another:
+
+    UR_MODEL_KEYS          the config gate          now `admitted` in each description
+    UR_DH_TABLES_M         the link lengths         now each description's joints, read by `ur_dh_rows`
+    UR_JOINT_LIMITS_DEG    the axis envelope        now each joint's `limit_deg`, read by the limit resolver
+    _UR_MODELS             the asset and the reach  now each description's sim block, read by `ur_model_spec`
+
+All four live in `config/arms/<model>.yaml` since D4, so they cannot disagree about which models
+exist. What they can still do is leave an ADMITTED arm without an answer from one of its readers, and that is the
+silent direction this file was written for; it holds every admitted arm to every reader instead.
 
 ⛔ **THE TWO DIRECTIONS FAIL DIFFERENTLY, AND ONE OF THEM IS SILENT.** A model with a DH row and no
 config key is refused at load with "unknown UR model", which is loud and harmless. The reverse, a key
@@ -27,10 +33,11 @@ import math
 import unittest
 from pathlib import Path
 
-from src.config.schema.robot._ur_models import UR_MODEL_KEYS
-from src.robot.drivers.sim.robot_models import _UR_MODELS
-from src.robot.safety._ur_kinematics import UR_DH_TABLES_M
-from src.robot.safety.joint_limits import UR_JOINT_LIMITS_DEG
+from src.config.arms import admitted_arms, available_arms, load_arm
+from src.config.schema.robot.safety_schema import JointLimitSafetyConfig
+from src.robot.drivers.sim.robot_models import simulable_models, ur_model_spec
+from src.robot.safety._ur_kinematics import ur_dh_rows
+from src.robot.safety.joint_limits import resolve_joint_limits_deg
 
 #: How much reach a plan is not allowed to spend, so a patch sits inside the DEXTEROUS part of the
 #: sphere rather than at full extension where IK stops converging. The number the ur3e entry was
@@ -40,20 +47,20 @@ _DEXTERITY_MARGIN_MM = 40.0
 
 def _horizontal_radius_mm(model: str) -> float:
     """How far out along the table a model can reach, given its reach sphere and shoulder height."""
-    reach = _UR_MODELS[model].max_reach_mm - _DEXTERITY_MARGIN_MM
-    shoulder = UR_DH_TABLES_M[model][0].d_m * 1000.0
+    reach = float(load_arm(model).reach_mm or 0.0) - _DEXTERITY_MARGIN_MM
+    shoulder = load_arm(model).joints[0].d_m * 1000.0
     return math.sqrt(max(reach * reach - shoulder * shoulder, 0.0))
 
 
-class TheFourRegistriesAgreeTests(unittest.TestCase):
-    """The gate is `UR_MODEL_KEYS`; the other three have to cover exactly it."""
+class EveryAdmittedArmAnswersEveryReaderTests(unittest.TestCase):
+    """The gate is `admitted`; every reader has to answer for every arm it admits."""
 
     def test_there_is_more_than_one_model(self) -> None:
         """A comparison over one model, or none, passes for the wrong reason."""
-        self.assertGreaterEqual(len(UR_MODEL_KEYS), 6, f"only found {UR_MODEL_KEYS}")
+        self.assertGreaterEqual(len(admitted_arms()), 6, f"only found {admitted_arms()}")
 
     def test_every_configurable_model_has_link_lengths(self) -> None:
-        missing = sorted(set(UR_MODEL_KEYS) - set(UR_DH_TABLES_M))
+        missing = sorted(model for model in admitted_arms() if ur_dh_rows(model) is None)
         self.assertEqual(
             missing, [],
             "these models can be configured and have no DH row, so the exact-mesh guard reports "
@@ -62,24 +69,27 @@ class TheFourRegistriesAgreeTests(unittest.TestCase):
         )
 
     def test_every_configurable_model_has_joint_limits(self) -> None:
-        missing = sorted(set(UR_MODEL_KEYS) - set(UR_JOINT_LIMITS_DEG))
+        missing = sorted(model for model in admitted_arms()
+                         if resolve_joint_limits_deg(JointLimitSafetyConfig(), model=model) is None)
         self.assertEqual(missing, [], "resolve_joint_limits_deg returns None, which callers must "
                                       "treat as guard unavailable rather than as no limit")
 
     def test_every_configurable_model_has_a_spec(self) -> None:
-        missing = sorted(set(UR_MODEL_KEYS) - set(_UR_MODELS))
+        missing = sorted(set(admitted_arms()) - set(simulable_models()))
         self.assertEqual(missing, [], "no asset path, no reach, no workspace patch")
 
     def test_no_spec_exists_for_a_model_nobody_can_configure(self) -> None:
         """⭐ THE OTHER DIRECTION, and the one that used to be silent. A spec for a key the config
         refuses is dead weight that reads as support."""
-        extra = sorted(set(_UR_MODELS) - set(UR_MODEL_KEYS))
+        extra = sorted(set(simulable_models()) - set(admitted_arms()))
         self.assertEqual(extra, [])
 
-    def test_the_dh_table_may_be_wider_but_not_narrower(self) -> None:
-        """The DH table is allowed to carry kinematics for a model nobody has stood up yet, because a
-        row is a physical fact rather than a claim of support. The gate is what admits it."""
-        self.assertTrue(set(UR_MODEL_KEYS).issubset(set(UR_DH_TABLES_M)))
+    def test_kinematics_may_be_wider_than_admission_but_not_narrower(self) -> None:
+        """A description may carry kinematics for a model nobody has stood up yet, because a joint row is a
+        physical fact rather than a claim of support. `admitted` is what admits it. ur16e and ur20 are that case."""
+        with_kinematics = {model for model in available_arms() if ur_dh_rows(model) is not None}
+        self.assertTrue(set(admitted_arms()).issubset(with_kinematics))
+        self.assertGreater(len(with_kinematics), len(admitted_arms()), "the control: some arm is described, not admitted")
 
 
 class EveryModelDescribesItselfTests(unittest.TestCase):
@@ -88,28 +98,28 @@ class EveryModelDescribesItselfTests(unittest.TestCase):
         assertion above. A UR5 and a UR5e differ by 0.05 mm in one link and 73 mm in another, which
         is exactly the size of difference a copy would erase."""
         seen: dict[tuple, str] = {}
-        for model in UR_MODEL_KEYS:
-            rows = tuple((r.a_m, r.d_m, r.alpha_rad) for r in UR_DH_TABLES_M[model])
+        for model in available_arms():
+            rows = tuple((r.a_m, r.d_m, r.alpha_rad) for r in (ur_dh_rows(model) or ()))
             self.assertNotIn(rows, seen, f"{model} has the same link lengths as {seen.get(rows)}")
             seen[rows] = model
 
     def test_no_two_models_share_an_asset(self) -> None:
         seen: dict[str, str] = {}
-        for model, spec in _UR_MODELS.items():
+        for model, spec in ((model, ur_model_spec(model)) for model in simulable_models()):
             self.assertNotIn(spec.usd_relpath, seen,
                              f"{model} points at the same USD as {seen.get(spec.usd_relpath)}")
             seen[spec.usd_relpath] = model
             self.assertIn(model, spec.usd_relpath, "the asset path should name its own model")
 
     def test_the_spec_key_is_its_own_key(self) -> None:
-        for key, spec in _UR_MODELS.items():
-            self.assertEqual(key, spec.key)
+        for key in simulable_models():
+            self.assertEqual(key, ur_model_spec(key).key)
 
     def test_reach_grows_with_the_arm(self) -> None:
         """A sanity check on the datasheet numbers themselves: a UR10 reaches further than a UR5,
         which reaches further than a UR3, in both series."""
         for series in (("ur3", "ur5", "ur10"), ("ur3e", "ur5e", "ur10e")):
-            reaches = [_UR_MODELS[m].max_reach_mm for m in series]
+            reaches = [load_arm(m).reach_mm for m in series]
             self.assertEqual(reaches, sorted(reaches), f"{series} reaches are not ordered")
 
 
@@ -118,9 +128,9 @@ class EveryWorkspaceFitsItsOwnArmTests(unittest.TestCase):
     every pick into an IK failure with nothing naming the cause."""
 
     def test_the_far_corner_is_inside_the_horizontal_radius(self) -> None:
-        for model in UR_MODEL_KEYS:
+        for model in admitted_arms(simulated=True):
             with self.subTest(model=model):
-                spec = _UR_MODELS[model]
+                spec = ur_model_spec(model)
                 cx, cy = spec.workspace_center_mm
                 hx, hy = spec.workspace_half_extents_mm
                 corner = math.hypot(abs(cx) + hx, abs(cy) + hy)
@@ -137,7 +147,7 @@ class EveryWorkspaceFitsItsOwnArmTests(unittest.TestCase):
         the UR5e patch by default until 2026-09-09, so it used half the arm it had."""
         for series in (("ur3", "ur5", "ur10"), ("ur3e", "ur5e", "ur10e")):
             areas = [
-                _UR_MODELS[m].workspace_half_extents_mm[0] * _UR_MODELS[m].workspace_half_extents_mm[1]
+                ur_model_spec(m).workspace_half_extents_mm[0] * ur_model_spec(m).workspace_half_extents_mm[1]
                 for m in series
             ]
             self.assertEqual(areas, sorted(areas), f"{series} patches shrink as the arm grows")
@@ -155,17 +165,13 @@ class TheAssetSaysWhetherAGripperHasToBeMountedTests(unittest.TestCase):
     def test_the_bare_models_declare_no_variant(self) -> None:
         for model in sorted(self._BARE):
             with self.subTest(model=model):
-                self.assertIsNone(_UR_MODELS[model].baked_gripper_variant)
+                self.assertIsNone(ur_model_spec(model).baked_gripper_variant)
 
     def test_the_others_declare_one(self) -> None:
         """The control. Without it `_BARE` could name every model and the test above would pass."""
-        for model in sorted(set(UR_MODEL_KEYS) - self._BARE):
+        for model in sorted(set(admitted_arms(simulated=True)) - self._BARE):
             with self.subTest(model=model):
-                self.assertEqual(_UR_MODELS[model].baked_gripper_variant, "Robotiq_2f_85")
-
-
-if __name__ == "__main__":  # pragma: no cover
-    unittest.main()
+                self.assertEqual(ur_model_spec(model).baked_gripper_variant, "Robotiq_2f_85")
 
 
 class ANewArmIsNotGivenAnotherArmsGeometryTests(unittest.TestCase):
@@ -210,10 +216,9 @@ class ANewArmIsNotGivenAnotherArmsGeometryTests(unittest.TestCase):
         return folder
 
     def test_a_model_with_no_bundle_is_told_so_rather_than_given_another_arms(self) -> None:
-        from src.robot.safety._ur_kinematics import UR_DH_TABLES_M
         from src.robot.safety.planning.environment import collision_mesh_bundle
 
-        present = [m for m in sorted(UR_DH_TABLES_M) if collision_mesh_bundle(m).is_file()]
+        present = [m for m in available_arms() if collision_mesh_bundle(m).is_file()]
         self.assertTrue(present, "no arm has a bundle, so nothing here could be taken away")
         for model in present:
             folder = self._without_one_arm(model)
@@ -262,7 +267,7 @@ class ANewArmIsNotGivenAnotherArmsGeometryTests(unittest.TestCase):
         """
         from src.robot.safety.planning.environment import collision_mesh_bundle
 
-        with_bundle = [m for m in UR_MODEL_KEYS if collision_mesh_bundle(m).is_file()]
+        with_bundle = [m for m in admitted_arms() if collision_mesh_bundle(m).is_file()]
         self.assertGreaterEqual(len(with_bundle), 2, "a check over one arm proves nothing")
         for model in with_bundle:
             with self.subTest(model=model):
@@ -271,3 +276,7 @@ class ANewArmIsNotGivenAnotherArmsGeometryTests(unittest.TestCase):
                     f"{model} has exact arm geometry and the guard cannot compose the Hand-E onto it, "
                     f"which would drop a cell carrying it to the capsule proxy",
                 )
+
+
+if __name__ == "__main__":  # pragma: no cover
+    unittest.main()

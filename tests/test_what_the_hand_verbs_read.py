@@ -13,16 +13,13 @@ import unittest
 from src.contracts import UNSET
 from src.robot.core.camera_world import CameraWorldDecline, CameraWorldUse
 from src.robot.drivers.sim.arm import IsaacRobotArm
-from src.robot.drivers.ur.arm import URRobotArm
+from src.robot.drivers.planned.arm import PlannedArm
+from tests._arm_kit import bare_arm, curobo_arm, ik_arm, kit_pose, line_arm, payload_arm
 from tests.test_camera_world_on_every_driver import (
     _JOINTS,
     _sim_mock,
     _sim_unconnected,
-    _ur_curobo,
-    _ur_ik,
 )
-from tests.test_ur_arm import _arm as _ur_arm
-from tests.test_ur_arm import _pose
 
 _BENCH = "bench check, no cameras mounted"
 
@@ -41,37 +38,37 @@ class TheCameraWorldIsReadFromCoreTests(unittest.TestCase):
         self.assertIn("weakest_camera_world", execution_policy.__all__)
 
     def test_the_camera_world_a_move_would_carry_is_read_before_moving(self) -> None:
-        from src.robot.core.camera_world import ReadsCameraWorld
+        from src.robot.core.camera_world import PlansMotions
 
-        bare = _ur_arm("curobo")
+        bare = bare_arm("curobo")
         read = bare.camera_world_for_move()
-        self.assertIsInstance(bare, ReadsCameraWorld)
+        self.assertIsInstance(bare, PlansMotions)
         self.assertIs(CameraWorldUse.MISSING, read.use)
         self.assertFalse(bare.live_camera_world_wired())
-        self.assertIsNone(bare._curobo_ur, "reading the camera world started a planner")
+        self.assertIsNone(bare._curobo, "reading the camera world started a planner")
 
         cases: tuple[tuple[str, object, object], ...] = (
-            ("ur curobo, no world", _ur_curobo, UNSET),
-            ("ur curobo, declined", _ur_curobo, CameraWorldDecline(_BENCH)),
-            ("ur ik", _ur_ik, UNSET),
+            ("planned curobo, no world", curobo_arm, UNSET),
+            ("planned curobo, declined", curobo_arm, CameraWorldDecline(_BENCH)),
+            ("planned ik", ik_arm, UNSET),
             ("sim curobo, no world", _sim_unconnected, UNSET),
             ("sim mock", _sim_mock, UNSET),
         )
         for label, build, keyword in cases:
             with self.subTest(label):
                 arm = build()  # type: ignore[operator]
-                assert isinstance(arm, (URRobotArm, IsaacRobotArm))
-                self.assertIsInstance(arm, ReadsCameraWorld)
+                assert isinstance(arm, (PlannedArm, IsaacRobotArm))
+                self.assertIsInstance(arm, PlansMotions)
                 before = arm.camera_world_for_move(keyword)  # type: ignore[arg-type]
                 if keyword is UNSET:
-                    moved = arm.move(_pose())
+                    moved = arm.move(kit_pose())
                 else:
-                    moved = arm.move(_pose(), camera_world=keyword)  # type: ignore[arg-type]
+                    moved = arm.move(kit_pose(), camera_world=keyword)  # type: ignore[arg-type]
                 self.assertEqual(moved.camera_world.use, before.use, moved.message)
                 self.assertEqual(moved.camera_world.reason, before.reason)
 
     def test_a_block_decline_is_read_as_declined(self) -> None:
-        arm = _ur_curobo()
+        arm = curobo_arm()
         with arm.without_camera_world(_BENCH):
             read = arm.camera_world_for_move()
             moved = arm.move_to_joints(_JOINTS)
@@ -79,7 +76,7 @@ class TheCameraWorldIsReadFromCoreTests(unittest.TestCase):
         self.assertEqual(moved.camera_world, read)
 
     def test_a_wired_world_is_reported_without_asking_it(self) -> None:
-        wired = _ur_curobo(live_world=object())
+        wired = curobo_arm(live_world=object())
         self.assertTrue(wired.live_camera_world_wired())
         self.assertFalse(_sim_mock().live_camera_world_wired())
 
@@ -293,67 +290,66 @@ def running_normally(conn: object) -> None:
     conn.dashboard_safety_status.return_value = ""  # type: ignore[attr-defined]
 
 
-def _payload_ur(*, enabled: bool = True, planner_answer: bool = True, planner_kind: str = "curobo") -> URRobotArm:
-    """The UR of tests/test_self_filter_envelope.py that attaches a part, its planner a double answering ``planner_answer``."""
-    from unittest.mock import MagicMock
-
-    from src.config.schema.robot import RobotConfig
-
-    config = RobotConfig.model_validate({
-        "vendor": "ur",
-        "ur": {"motion_planner": planner_kind},
-        "gripper": {"model": "robotiq_2f85"},
-        "safety": {
-            "payload": {"enforce": False},
-            "planning_world": {
-                "enabled": True,
-                "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
-                "payload": {"enabled": enabled, "length_mm": 120.0, "lateral_margin_mm": 10.0},
-            },
-        },
-    })
-    arm = URRobotArm(config)
-    arm._conn = MagicMock()
-    arm._conn.is_connected = True
-    arm._conn.get_joint_positions.return_value = [0.0, -1.5, 1.5, 0.0, 1.5, 0.0]
-    running_normally(arm._conn)
-    if enabled and planner_kind == "curobo":
-        planner = MagicMock()
-        planner.attach_payload.return_value = planner_answer
-        planner.detach_payload.return_value = True
-        arm._curobo_ur = planner
-    return arm
-
-
 class ThePayloadModelTests(unittest.TestCase):
-    def test_the_ur_says_why_it_models_no_payload_without_starting_a_planner(self) -> None:
+    def test_the_planned_arm_says_why_it_models_no_payload_without_starting_a_planner(self) -> None:
         from src.robot.core.arm_capabilities import CarriesPayload, PayloadModel
 
-        arm = _payload_ur(enabled=False)
+        arm = payload_arm(enabled=False)
         self.assertIsInstance(arm, CarriesPayload)
         reason = arm.payload_declined_reason()
         assert reason is not None
         self.assertIn("safety.planning_world.payload.enabled", reason)
         self.assertIs(PayloadModel.NONE, arm.payload_model())
-        self.assertIsNone(arm._curobo_ur, "asking why started a planner")
+        self.assertIsNone(arm._curobo, "asking why started a planner")
 
-        ik = _payload_ur(planner_kind="ik")
+        ik = payload_arm(planner_kind="ik")
         ik_reason = ik.payload_declined_reason()
         assert ik_reason is not None
-        self.assertIn("robot.ur.motion_planner", ik_reason)
+        self.assertIn("robot.motion.planner", ik_reason)
 
-        self.assertIsNone(_payload_ur().payload_declined_reason())
+        self.assertIsNone(payload_arm().payload_declined_reason())
+
+    def test_every_place_the_hand_verbs_ask_about_a_payload_asks_the_same_question(self) -> None:
+        """A pick forgets the last part before it opens its jaws, and a grasp attaches the new one.
+
+        Those two live 200 lines apart in `handling.py` and used to ask differently: the grasp and the release
+        with `isinstance(arm, CarriesPayload)`, the pick body with `getattr(arm, "detach_payload")`. An arm that
+        carried half the capability, which no driver does but several doubles did, was a payload arm to one half
+        and not to the other, and nothing said so. This asserts the halves agree by walking the module.
+        """
+        import ast
+        import inspect
+
+        from src.robot.execution import handling
+
+        tree = ast.parse(inspect.getsource(handling))
+        payload_verbs = {"attach_payload", "detach_payload", "payload_declined_reason", "payload_model"}
+        asked_by_getattr = [
+            node.lineno for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") in ("getattr", "hasattr")
+            and len(node.args) > 1 and isinstance(node.args[1], ast.Constant)
+            and node.args[1].value in payload_verbs
+        ]
+        self.assertEqual(asked_by_getattr, [], "a payload verb is still reached by name, not by capability")
+
+        isinstance_checks = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "isinstance"
+            and any(getattr(arg, "id", "") == "CarriesPayload" for arg in node.args[1:])
+        ]
+        self.assertGreaterEqual(len(isinstance_checks), 3,
+                                "the hand verbs stopped asking the capability question")
 
     def test_a_declined_attach_is_filter_only(self) -> None:
         from src.robot.core.arm_capabilities import PayloadModel
 
-        declined = _payload_ur(planner_answer=False)
+        declined = payload_arm(planner_answer=False)
         self.assertFalse(declined.attach_payload(60.0))
         self.assertIs(PayloadModel.FILTER_ONLY, declined.payload_model())
         declined.detach_payload()
         self.assertIs(PayloadModel.NONE, declined.payload_model())
 
-        carried = _payload_ur(planner_answer=True)
+        carried = payload_arm(planner_answer=True)
         self.assertTrue(carried.attach_payload(60.0))
         self.assertIs(PayloadModel.PLANNER_AND_FILTER, carried.payload_model())
         carried.detach_payload()
@@ -373,8 +369,7 @@ class LineMotionTests(unittest.TestCase):
         from src.robot.drivers.dummy.arm import DummyRobotArm
         from src.robot.drivers.sim.config import SimRobotConfig
         from src.robot.safety.preflight import SafetyPreflight
-        from tests.test_ur_checked_linear import _arm as _line_ur
-        from tests.test_ur_checked_linear import _mesh_backend_available
+        from tests.test_a_checked_line_is_sampled_and_solved import _mesh_backend_available
 
         def sim(planner: str, *, judge: "str | None | bool" = False) -> IsaacRobotArm:
             arm = IsaacRobotArm(SimRobotConfig(enabled=True, scene="placeholder.usd", robot_prim_path="/World/Robot",
@@ -387,7 +382,7 @@ class LineMotionTests(unittest.TestCase):
 
         sentence = "no self_collision guard is wired, so nothing here can judge a path"
         rows: list[tuple[str, object, LineMotion]] = [
-            ("ur ik", _ur_ik(), LineMotion.CONTROLLER_LINE),
+            ("planned ik", ik_arm(), LineMotion.CONTROLLER_LINE),
             ("sim mock", _sim_mock(), LineMotion.TELEPORT),
             ("sim curobo, judged", sim("curobo", judge=None), LineMotion.CHECKED),
             ("sim curobo, no preflight", sim("curobo"), LineMotion.NOT_KEPT),
@@ -396,16 +391,16 @@ class LineMotionTests(unittest.TestCase):
             ("sim rmpflow", sim("rmpflow", judge=None), LineMotion.NOT_KEPT),
             ("dummy", DummyRobotArm(), LineMotion.TELEPORT),
         ]
-        refused_ur = _line_ur()
+        refused = line_arm()
         with patch.object(SafetyPreflight, "path_judge_refusal", return_value=sentence):
-            reading = line_motion_of(refused_ur)
+            reading = line_motion_of(refused)
             assert reading is not None
             self.assertIs(LineMotion.NOT_KEPT, reading.motion)
             self.assertEqual(sentence, reading.reason)
         if _mesh_backend_available():
-            rows.append(("ur curobo, judged", _line_ur(), LineMotion.CHECKED))
-        else:  # pragma: no cover (a box without Coal)
-            self.skipTest("no exact mesh backend on this box: the CHECKED row of the UR cannot be read")
+            rows.append(("planned curobo, judged", line_arm(), LineMotion.CHECKED))
+        else:  # pragma: no cover - a box without Coal
+            self.skipTest("no exact mesh backend on this box: the CHECKED row of the planned arm cannot be read")
         for label, arm, expected in rows:
             with self.subTest(label):
                 read = line_motion_of(arm)
@@ -434,6 +429,7 @@ class LineMotionTests(unittest.TestCase):
         self.assertIn(no_path_guard_refusal(), gated.message or "")
 
         guard = MagicMock()
+        guard.refusal_for.return_value = None  # the arm it judges is the arm it was built for
         guard.exact_mesh_engine.return_value = None
         blind = SafetyPreflight([])
         blind._path_authority = lambda arm: guard  # type: ignore[method-assign]

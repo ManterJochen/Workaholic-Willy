@@ -43,6 +43,7 @@ from api.readiness import refusal
 from api.routers.pick import _refuse_unroutable_prompt
 from api.runs import RunConflict, RunRefused
 from api.schemas import RestartIn, RunOut, TaskIn
+from src.robot.core.camera_world import live_planner_world_of
 from src.utility.log_cfg import create_logger
 
 router = APIRouter(tags=["task"])
@@ -72,7 +73,7 @@ def _refuse_a_camera_target_this_cell_cannot_find(cell: Console) -> None:
     if not locators:
         raise refusal("camera_target_unavailable", "this cell holds no camera to find a target with.")
     if any(getattr(locator, "on_the_wrist", False) is True for locator in locators):
-        world = getattr(cell.session.arm, "live_planner_world", None)
+        world = live_planner_world_of(cell.session.arm)
         if not (callable(getattr(world, "hold_pick_views", None)) and callable(getattr(world, "forget_pick_views",
                                                                                          None))):
             raise refusal("camera_target_unavailable", (

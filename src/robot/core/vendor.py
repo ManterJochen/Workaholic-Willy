@@ -37,8 +37,8 @@ class RobotVendor(StrEnum):
     UR
         Universal Robots over RTDE. See ``drivers/ur/``.
     KUKA
-        KUKA over EthernetKRL, which is TCP with XML and needs no vendor SDK on this
-        side. See ``drivers/kuka/``.
+        A reserved slot since 2026-09-19, when the EthernetKRL driver was deleted unrun; KUKA
+        returns over ROS 2 (``kuka_drivers``). Listed in ``_RESERVED_VENDORS``, like :attr:`FRANKA`.
     FRANKA
         Franka Emika over libfranka or franky. A reserved slot: ``drivers/franka/`` is
         a package stub that registers nothing, and the name is listed in
@@ -94,7 +94,8 @@ class RobotVendor(StrEnum):
 
 #: Members that exist so a config can be written against a driver this repo does not have. They
 #: are deliberate slots: ``drivers/franka/__init__.py`` and ``drivers/ros2/__init__.py`` are
-#: package stubs that say no driver is registered, and register nothing.
+#: package stubs that say no driver is registered, and register nothing, and ``kuka`` has had no
+#: driver since its EthernetKRL one was deleted (2026-09-19) until the ROS 2 one lands.
 #:
 #: Measured 2026-09-09: the refusal above built its list from the enum and so advertised both of
 #: these as valid. The enum carries six members, ``available_vendors()`` four. A typo was answered
@@ -105,7 +106,7 @@ class RobotVendor(StrEnum):
 #: behaviour one. A reserved gripper name substitutes a ``NullGripper`` and the cell comes up
 #: holding nothing while reporting success. An arm has no such fallback:
 #: ``create_arm(RobotVendor.FRANKA)`` raises ``RobotConnectionError: no driver registered for
-#: vendor 'franka'; available: dummy, kuka, sim, ur``, and ``Host.require`` refuses even earlier.
+#: vendor 'franka'; available: dummy, sim, ur``, and ``Host.require`` refuses even earlier.
 #: Nothing substitutes and nothing moves, so what the old message cost was the hour between
 #: copying ``franka`` out of a list that called it valid and learning at build time that it was
 #: not.
@@ -117,4 +118,4 @@ class RobotVendor(StrEnum):
 #: against the registry in both directions by
 #: ``tests/test_robot_vendor_refusal_names_what_can_be_built.py``: a driver that lands without
 #: leaving this set, or a member added without entering it, goes red.
-_RESERVED_VENDORS: frozenset[str] = frozenset({"franka", "ros2"})
+_RESERVED_VENDORS: frozenset[str] = frozenset({"franka", "kuka", "ros2"})

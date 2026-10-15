@@ -297,22 +297,25 @@ class DatasetBuild:
                          f"{self.config.render.arm.wrist_camera_mount.source}")
         return NEWLINE.join(lines)
 
-    def cost(self, *, scenes: int | None = None, engine: str | None = None, jobs: int = 1,
-             label: bool = True, corpus: bool = True, epochs: int = 0, folds: int = 1,
-             refit: bool = True, dense: bool = False) -> "Estimate":
+    def cost(self, *, scenes: Any = UNSET, engine: Any = UNSET, jobs: Any = UNSET,
+             label: Any = UNSET, corpus: Any = UNSET, epochs: Any = UNSET, folds: Any = UNSET,
+             refit: Any = UNSET, dense: Any = UNSET) -> "Estimate":
         """Hours, gigabytes and the request a yield needs, for this dataset; reads and writes nothing.
 
+        As for ``render``, an argument left unset is not forwarded, so ``estimate`` stays the one declaration of each
+        default.
+
         Args:
-            scenes (int | None): The usable scenes to price; ``None`` is the build's own count (default: None).
-            engine (str | None): The engine to price (``"isaac"``, ``"mujoco"``, ``"none"``); ``None`` the build's own
-                (default: None).
-            jobs (int): Render jobs in parallel (default: 1).
-            label (bool): Include labelling (default: True).
-            corpus (bool): Include extracting the corpus (default: True).
-            epochs (int): Training epochs to include; 0 prices no training (default: 0).
-            folds (int): Cross-validation folds of that training (default: 1).
-            refit (bool): Include the refit on all data after the folds (default: True).
-            dense (bool): Price dense labels instead of the default density (default: False).
+            scenes (Any): The usable scenes to price; unset is the build's own count (default: UNSET).
+            engine (Any): The engine to price (``"isaac"``, ``"mujoco"``, ``"none"``); unset is the build's own
+                (default: UNSET).
+            jobs (Any): Render jobs in parallel; unset is 1 (default: UNSET).
+            label (Any): Include labelling; unset is ``True`` (default: UNSET).
+            corpus (Any): Include extracting the corpus; unset is ``True`` (default: UNSET).
+            epochs (Any): Training epochs to include; 0 prices no training, and so does unset (default: UNSET).
+            folds (Any): Cross-validation folds of that training; unset is 1 (default: UNSET).
+            refit (Any): Include the refit on all data after the folds; unset is ``True`` (default: UNSET).
+            dense (Any): Price dense labels instead of the default density; unset is ``False`` (default: UNSET).
 
         Returns:
             Estimate: Hours, gigabytes, the scenes to request for the usable ones, and warnings; ``print`` shows the
@@ -323,9 +326,10 @@ class DatasetBuild:
         """
         from datagen.cost import estimate_for_config  # noqa: PLC0415 (a leaf, only for this verb)
 
-        return estimate_for_config(self.config, scenes=scenes, engine=engine, jobs=jobs,
-                                   label=label, corpus=corpus, epochs=epochs, folds=folds,
-                                   refit=refit, dense=dense)
+        return estimate_for_config(
+            self.config,
+            **_forwarded(scenes=scenes, engine=engine, jobs=jobs, label=label, corpus=corpus,
+                         epochs=epochs, folds=folds, refit=refit, dense=dense))
 
     # ------------------------------------------------------------------ the verbs
     def render(self, *, headless: Any = UNSET, preview: Any = UNSET,

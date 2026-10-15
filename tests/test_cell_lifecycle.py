@@ -29,6 +29,7 @@ from pathlib import Path
 from src.contracts import Rendered, Structured
 from src.robot.execution.lifecycle import (
     ConnectedCell,
+    ConnectedRobot,
     ConnectStage,
     StepOutcome,
     TeardownReport,
@@ -201,6 +202,76 @@ class TheContextManagerTests(unittest.TestCase):
             "gripper.connect",                             # ...and only THEN do the fingers move
             f"<{ConnectStage.GRIPPER_CONNECTED.value}>",
         ])
+
+
+class AnAnnounceThatRaisesRollsBackWhatCameUpTests(unittest.TestCase):
+    """⛔ THE ANNOUNCE IS INSIDE THE TRANSACTION (P0g L, review of the prod port 2026-09-24).
+
+    `connect_cell` called the announce at ARM_CONNECTED outside the ``try`` that rolls back, so an announce that
+    raised there, a bench ``print`` on a closed pipe or any hook a library caller passes, left the arm connected and
+    its control script held; one that raised at GRIPPER_CONNECTED rolled back the arm and left the gripper up with
+    its output asserted; and an arm-only robot gave its lock back with the arm still connected. Each measured with
+    this file's recorders before the fix."""
+
+    @staticmethod
+    def _raising_at(stage: ConnectStage, log: list[str], error: BaseException) -> "object":
+        def announce(said: ConnectStage) -> None:
+            log.append(f"<{said.value}>")
+            if said is stage:
+                raise error
+        return announce
+
+    def test_an_announce_that_raises_after_the_arm_came_up_rolls_the_arm_back(self) -> None:
+        log: list[str] = []
+        with self.assertRaises(BrokenPipeError):
+            connect_cell(_Recorder(log, "arm"), _Recorder(log, "gripper"),
+                         announce=self._raising_at(ConnectStage.ARM_CONNECTED, log, BrokenPipeError("stdout")))
+        self.assertEqual(log, ["arm.connect", f"<{ConnectStage.ARM_CONNECTED.value}>", "arm.disconnect"])
+
+    def test_a_keyboard_interrupt_there_rolls_the_arm_back_too(self) -> None:
+        log: list[str] = []
+        with self.assertRaises(KeyboardInterrupt):
+            connect_cell(_Recorder(log, "arm"), None,
+                         announce=self._raising_at(ConnectStage.ARM_CONNECTED, log, KeyboardInterrupt()))
+        self.assertEqual(log[-1], "arm.disconnect")
+
+    def test_an_announce_that_raises_after_the_gripper_came_up_takes_the_gripper_down_first(self) -> None:
+        """Gripper first, then arm, the order a cell comes down in: a vacuum cup's disconnect releases its output,
+        and it reaches the I/O only while the arm is still up."""
+        log: list[str] = []
+        with self.assertRaises(BrokenPipeError):
+            connect_cell(_Recorder(log, "arm"), _Recorder(log, "gripper"),
+                         announce=self._raising_at(ConnectStage.GRIPPER_CONNECTED, log, BrokenPipeError("stdout")))
+        self.assertEqual([entry for entry in log if not entry.startswith("<")],
+                         ["arm.connect", "gripper.connect", "gripper.disconnect", "arm.disconnect"])
+
+    def test_an_announce_that_raises_before_the_fingers_move_moves_nothing(self) -> None:
+        """The control: the warning did not reach the bench, so the gripper never connects."""
+        log: list[str] = []
+        with self.assertRaises(BrokenPipeError):
+            connect_cell(_Recorder(log, "arm"), _Recorder(log, "gripper"),
+                         announce=self._raising_at(ConnectStage.GRIPPER_MOVING, log, BrokenPipeError("stdout")))
+        self.assertNotIn("gripper.connect", log)
+        self.assertEqual(log[-1], "arm.disconnect")
+
+    def test_a_gripper_rollback_that_fails_still_takes_the_arm_down_and_reports_the_first_error(self) -> None:
+        log: list[str] = []
+        with self.assertRaises(BrokenPipeError), self.assertLogs("ConnectedCell", level="ERROR") as said:
+            connect_cell(_Recorder(log, "arm"), _Recorder(log, "gripper", refuse="disconnect"),
+                         announce=self._raising_at(ConnectStage.GRIPPER_CONNECTED, log, BrokenPipeError("stdout")))
+        self.assertEqual(log[-1], "arm.disconnect")
+        self.assertTrue(any("will not release" in line for line in said.output))
+
+    def test_an_arm_only_robot_gives_its_lock_back_with_the_arm_down(self) -> None:
+        log: list[str] = []
+        released: list[str] = []
+        lock = type("L", (), {"acquire": lambda self: None, "release": lambda self: released.append("released")})()
+        robot = ConnectedRobot(_Recorder(log, "arm"), None, lock=lock,
+                               announce=self._raising_at(ConnectStage.ARM_CONNECTED, log, BrokenPipeError("stdout")))
+        with self.assertRaises(BrokenPipeError):
+            robot.__enter__()
+        self.assertEqual(log[-1], "arm.disconnect")
+        self.assertEqual(released, ["released"])
 
 
 class ASubstitutedGripperIsNotACellTests(unittest.TestCase):

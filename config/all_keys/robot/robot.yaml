@@ -15,19 +15,15 @@ robot:
     # [default: ur5e] [one of: ur3e | ur5e | ur10e]
     model: ur5e
 
-    # Ip address of the UR controller.
-    # [default: 192.168.1.100]
+    # The address of the UR controller. It has no default: a cell says where its controller is, and the cell lock holds
+    # the cell by this name (ur@<address>). A tree that drives a UR and names none is refused at connect.
+    # [default: none]
     ip: 192.168.1.100
 
     # RTDE update rate in Hz. Please refer to the UR documentation for recommended values.
     # Dont use 0.0 because it may cause synchronization issues with the UR controller.
     # [default: 0.0] 
     rtde_frequency: 0.0
-
-    # Chooses how an approach motion gets from A to B on a real UR.
-    # CuRobo NEEDS a proper environment setup to function correctly & an GPU available.
-    # [default: curobo] [one of: ik | curobo]
-    motion_planner: curobo
 
     # What "halt now" in the console (POST /v1/cell/brake) does to a move already in flight. Off, as shipped: every
     # move is sent exactly as it always was, and a halt latches the arm, so the move in flight ends first and nothing
@@ -261,64 +257,6 @@ robot:
   # Settings for the in-process dummy driver.
   dummy: {}
 
-  # Vendor-specific KUKA settings.
-  kuka:
-
-    # The KUKA arm's model name.
-    # [default: unconfigured]
-    model: kr6-r900
-
-    # How many joints the arm has.
-    # [default: 6]
-    dof: 6
-
-    # KUKA controller network address. Only used when EKI is in client mode (Willy dials the controller);
-    # informational otherwise.
-    # [default: 192.168.1.20]
-    controller_ip: 192.168.1.20
-
-    # EthernetKRL TCP/XML settings for the planned KUKA driver.
-    eki:
-
-      # Python application's role. For typical EthernetKRL setups, the robot-side KRL program opens the
-      # connection to this Python server.
-      # [default: server] [one of: server | client]
-      role: server
-
-      # The TCP address of the EKI link — and WHICH end it describes flips with `eki.role`. With role
-      # 'server' (the shipped default, where the KRL program dials in to us) this is the LOCAL bind address,
-      # and the default 0.0.0.0 means 'accept the controller on any of this PC's interfaces'; narrow it to
-      # one interface address if the PC is multi-homed and you want the controller pinned to the robot
-      # network. With role 'client' this key is IGNORED entirely — the driver dials `kuka.controller_ip`
-      # instead. So on a default config, editing this key changes only which local NIC the listener binds.
-      # ONLY WHEN: robot.vendor must be "kuka"; only consulted when robot.kuka.eki.role == "server".
-      # [default: 0.0.0.0]
-      host: 0.0.0.0
-
-      # The TCP port for the EKI link the port we listen on in server role, or dial on the controller in
-      # client role.
-      # [default: 7000]
-      port: 7000
-
-      # One number used as the deadline for EVERY blocking EKI operation, in seconds: waiting for the
-      # controller's inbound connection, waiting for an <Ack> after a command, and waiting for an FkRequest
-      # or IkRequest reply
-      # [default: 5.0]
-      timeout_s: 5.0
-
-      # How often (seconds) a background thread sends an <Echo> probe down the EKI link to prove the
-      # controller is still alive. If no <EchoAck> comes back within max(2 * heartbeat_s, timeout_s) the
-      # link is declared dead and dropped that is the ONLY mechanism that notices a controller which
-      # stopped answering without closing the socket.
-      # [default: 0.5]
-      heartbeat_s: 0.5
-
-      # Bytes handed to each socket recv() on the EKI reader thread and, less obviously, the basis of an
-      # overflow guard: if 8 x this many bytes accumulate without a complete frame the reader logs 'buffer
-      # overflow' and DROPS THE LINK, on the assumption the peer is sending garbage.
-      # [default: 65536]
-      buffer_size: 65536
-
   # Hard upper bounds on commanded velocity / acceleration.
   motion_limits:
 
@@ -330,8 +268,16 @@ robot:
     # [default: 0.5]
     max_acceleration: 0.5
 
-  # When the next leg of a pick or a place is judged: as it runs, or ahead while the arm waits or moves.
+  # How this cell's motions are planned, whichever arm drives them, and when the next leg of a pick or a place is
+  # judged: as it runs, or ahead while the arm waits or moves.
   motion:
+
+    # How a motion gets from A to B. curobo plans a collision-free trajectory in the isolated planner process and
+    # needs its environment set up and a GPU; ik is the controller's straight line, which knows nothing about the
+    # cell. curobo fails closed: with no planner a move is refused, never run blind. It was robot.ur.motion_planner
+    # until 2026-10-13. The Isaac driver keeps its own (robot.sim.motion_planner).
+    # [default: curobo] [one of: ik | curobo]
+    planner: curobo
 
     # off, as shipped: every leg is judged when the arm stands at its start, and the jaws' stroke is waited out
     # first. in_settles: the jaws' one change goes out as ever, and while their stroke is waited out the next leg is
@@ -568,7 +514,7 @@ robot:
     tool_frame:
 
       # Who owns the transform.
-      # [default: undeclared] [one of: undeclared | willy | polyscope]
+      # [default: undeclared] [one of: undeclared | willy | controller]
       source: undeclared
 
       # Flange -> grasp-centre translation, mm, in the FLANGE frame.
@@ -585,12 +531,12 @@ robot:
       verify_tolerance_mm: 10.0
 
   # Joint configuration the arm returns to on ``move_home()``, in radians. ``None`` uses
-  # :data:`HOME_JOINTS_DEFAULT`, which was authored for a UR5e.
+  # the home the arm's description states (config/arms/), which for every UR was authored for a UR5e.
   # [default: null]
   home_joint_positions: null
 
   # The same home in DEGREES, one per joint, as the pendant shows it and
-  # `python -m src.robot.drivers.ur --where` prints it: [-90.0, -100.0, -110.0, -60.0, 90.0, 0.0].
+  # `python -m src.robot.execution.io_bench --where` prints it: [-90.0, -100.0, -110.0, -60.0, 90.0, 0.0].
   # Give home_joint_positions or this, not both: a cell profile layered over one that wrote the home
   # in radians (ur5e, ur3e) writes home_joint_positions: "__null__" beside it. Read once at load:
   # every consumer reads the home in radians from home_joint_positions, and this key reads null there.
@@ -598,7 +544,7 @@ robot:
   home_joint_positions_deg: null
 
   # Where the camera looks from before each pick when the program names no look: one list per look,
-  # in DEGREES, one value per joint, as the pendant shows them and `python -m src.robot.drivers.ur --where`
+  # in DEGREES, one value per joint, as the pendant shows them and `python -m src.robot.execution.io_bench --where`
   # prints them, visited in this order. A wrist camera's pick fuses each look with the ones before it and
   # stops at the first whose grasp is safe; a fixed camera's arm is moved to them too, and its pick stops at
   # the first look that finds something. Stays in degrees in the loaded config; there is no radians twin. A
@@ -929,12 +875,6 @@ robot:
       # [default: null]
       mesh_dir: null
 
-      # Which bundled UR DH table (`ur3e`, `ur5e`, ...) the guard uses to place the arm's link
-      # capsules/meshes.
-      # At the moment UR arms are the only supported models.
-      # [default: null]
-      kinematics_model: null
-
       # Rotation in degrees about +Z that reconciles the bundled UR DH base frame with the base frame your
       # poses and fixtures are expressed in.
       # [default: 0.0]
@@ -1098,13 +1038,13 @@ robot:
       # [default: true]
       require_steady_before_motion: true
 
-      # How many seconds the execution policy will block on `arm.wait_until_steady()` before EVERY commanded
-      # approach/grasp/retreat move, waiting for the controller to report it has stopped moving.
+      # How many seconds a planned arm (the UR driver) waits on `wait_until_steady()` before EVERY motion verb it
+      # runs (a move, a joint move, a line, the move home), for the controller to report it has stopped moving.
       # [default: 5.0]
       steady_timeout_s: 5.0
 
-      # Where the steady gate waits. verb, as shipped: every verb waits for steady before it asks the arm to move,
-      # and the arm judges the motion after that. send: the judgement goes first, while the arm settles from the
+      # Where the steady gate waits. verb, as shipped: the arm waits for steady at the start of every motion verb,
+      # and judges the motion after that. send: the judgement goes first, while the arm settles from the
       # motion before, and an arm that gates its own sends (the cuRobo UR) waits for steady right before it sends;
       # where the arm then stands more than 0.5 mm from where the motion was judged from, it is judged again. A
       # timeout sends nothing either way, and so does a halt. Saves the 0.5-0.6 s a gate costs right after a motion.
@@ -1148,7 +1088,7 @@ robot:
 
         # Collision spheres the planner reserves for the carried part once `length_mm` is declared,
         # whether or not the planning world is enabled. A cuRobo planner then starts only on an evidence
-        # file measured with them (scripts/curobo/matrix_gate.py --attach).
+        # file measured with them (scripts/arms/gate.py --attach).
         # [default: 16]
         sphere_slots: 16
 

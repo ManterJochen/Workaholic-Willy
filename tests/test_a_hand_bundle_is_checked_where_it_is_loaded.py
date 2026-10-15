@@ -163,7 +163,7 @@ class TheStatusAndTheDoctorNameARefusedBundleTests(unittest.TestCase):
 
 class TheCoverFitRefusesBeforeItFitsTests(unittest.TestCase):
     def test_the_cover_fit_refuses_before_it_fits(self) -> None:
-        path = _REPO / "scripts" / "curobo" / "fit_cover_spheres.py"
+        path = _REPO / "scripts" / "arms" / "fit.py"
         spec = importlib.util.spec_from_file_location("_fit_cover_for_refusal", path)
         assert spec is not None and spec.loader is not None
         module = importlib.util.module_from_spec(spec)

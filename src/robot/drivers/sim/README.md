@@ -23,7 +23,7 @@ and exit. This package has no command line of its own.
 
 | Noun | Built by | Verb | Returns |
 |---|---|---|---|
-| `IsaacRobotArm` | `Robot.from_tree(tree)` on a `sim` cell, or `create_arm("sim", config=SimRobotConfig(...))` | `move(pose)`, `move_joint(joints)`, `fk`, `ik` | `MotionResult`; base-frame poses in millimetres |
+| `IsaacRobotArm` | `Robot.from_tree(tree)` on a `sim` cell, or `create_arm("sim", config=SimRobotConfig(...))` | `move(pose)`, `move_to_joints(joints)`, `fk`, `ik` | `MotionResult`; base-frame poses in millimetres |
 | `SimRobotConfig` | `build_sim_driver_config(tree.robot.sim, tree.robot.gripper.tool_frame)` | | frozen settings; importing it loads no Isaac |
 | `IsaacSimSession` | the arm, at `connect()` | `start()`, `step()`, `step_n(n)`, `stop()` | the Isaac application and its `World` |
 
@@ -40,14 +40,16 @@ select one, and the sim runners build them against this arm's `session`.
 | `IsaacNotAvailableError` | `connect()` outside mock mode with no Isaac; `fk` or `ik` in mock mode | The same |
 | `ValueError` | a `robot_model` outside `ur3`, `ur3e`, `ur5`, `ur5e`, `ur10`, `ur10e` | Use one of the six |
 | `CONTROLLER_REJECTED` | the arm plans with `curobo` and the cuRobo environment is missing or will not start | [ext_deps/README.md](../../../../ext_deps/README.md); `python -m src.robot.safety.planning --doctor` |
-| `CuroboUnavailableError` at planner start | no hand named in `robot.gripper.model`; a descriptor for another arm; a setup no evidence file measured | [ur_family_bringup.md](../../../../docs/runbooks/ur_family_bringup.md) |
+| `CuroboUnavailableError` at planner start | no hand named in `robot.gripper.model`; a descriptor for another arm; a setup no evidence file measured | [add_an_arm_model.md](../../../../docs/runbooks/add_an_arm_model.md) |
 | `CuroboUnavailableError` in a move | planned joint moves are on and no collision-free path exists | Move the goal; nothing interpolates blindly past it |
 | `NoRealGripper` at connect | a `sim` cell built through `Robot` with its gripper: the Robotiq needs a UR controller | Build with `gripper=None`, or run the sim runners |
 
 ## How it behaves
 
 - **The model comes from config.** `robot_model` (`ur5e` by default) selects the Lula solver, the
-  Isaac USD and the cuRobo `willy_{model}.yml` together. A disagreeing `WILLY_CUROBO_ROBOT` environment
+  Isaac USD and the cuRobo `willy_{model}.yml` together. It is also the arm's `capabilities.model`, in
+  mock and real mode alike, and so the model the self-collision guard judges the arm as: the sim needs
+  no safety key for arm-against-arm checks (P0d D5; until then the arm reported `isaac-sim`). A disagreeing `WILLY_CUROBO_ROBOT` environment
   variable is ignored with a warning, because planning one arm against another's geometry shows no
   symptom. The cell's hand is added to the planner as a body when it starts.
 - **Baked or mounted hand.** The `ur5e` and `ur10e` assets carry a Robotiq 2F-85 variant, selected
@@ -58,14 +60,14 @@ select one, and the sim runners build them against this arm's `session`.
   to the grasp centre, from `robot.gripper.tool_frame`, the same key the real drivers read. `fk`, `ik`
   and `get_tcp_pose` all work in that TCP frame.
 - **Joint moves are interpolated.** One large position command stalls short of its target, so
-  `move_joint` walks steps of at most 0.03 rad, capped at 250 steps, then settles.
+  a joint move walks steps of at most 0.03 rad, capped at 250 steps, then settles.
 - **The planner does not fall back.** `motion_planner` defaults to `curobo`, a collision-aware plan
   from a separate cuRobo process (cuRobo and Isaac cannot share one). Where that process cannot start,
   every motion is refused as `CONTROLLER_REJECTED`, because a run on blind IK would report the pick rate
   of another motion stack. A runner may choose `ik` or `rmpflow` for a cell; the config has no key for
   it. Every path ends in the same check: within 5 mm and 6 degrees of the target, with up to 3 attempts.
 - **Planned joint moves are a runner's choice.** With the private `_plan_joint_moves` flag set and the
-  planner on `curobo`, `move_joint` takes its path from cuRobo in joint space, so the goal
+  planner on `curobo`, a joint move takes its path from cuRobo in joint space, so the goal
   configuration is the one asked for. It is off by default and is not a config key.
 
 ## What it does not do
@@ -76,9 +78,10 @@ select one, and the sim runners build them against this arm's `session`.
   its waypoints.
 - `linear=True` is a checked line on `curobo` with a preflight wired, and dropped on `ik` and `rmpflow`;
   `line_motion()` says which before anything moves. `vel` and `acc` are accepted and not applied.
-- In mock mode `move`, `move_linear` and `move_to` commit the requested pose, `move_joint` updates the
+- In mock mode `move` and `move_linear` commit the requested pose, `move_to_joints` updates the
   joints but not the pose, `fk` and `ik` raise, and the capabilities report no native FK or IK, so no
-  guard calls them.
+  guard calls them, and the same `model` as real mode, `robot_model`, so the self-collision guard judges a
+  mock arm as the UR it names.
 - It names no configuration for a pose (`ChoosesConfigurations`) and drives no straight joint line
   alone (`DrivesJointLines`), so a wrist pick on it generates no view after its looks, and the log says
   why.

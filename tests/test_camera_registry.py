@@ -207,7 +207,9 @@ class TheRepositoryIsTheAuthorityTests(unittest.TestCase):
         assert refusal is not None
         self.assertIn(f"{path.resolve()} describes the camera realsense_d435 differently from the repository registry "
                       "config/cameras/realsense_d435.yaml", refusal)
-        self.assertIn("housing.centre_mm [30.0, 0.0, -8.275] there and [32.5, 0.0, -8.275] in the repository", refusal)
+        # The index is the point (2026-10-13, with the arm registry): `_registry.flat` used to stop at a list, so this
+        # sentence printed both vectors in full and left the reader to spot 30.0 against 32.5 by eye.
+        self.assertIn("housing.centre_mm.0 30.0 there and 32.5 in the repository", refusal)
         self.assertIn("copy config/cameras/realsense_d435.yaml over the tree's file, or add the camera to "
                       "the repository registry", refusal)
 

@@ -38,6 +38,7 @@ import yaml
 from ._curobo_planning import ENV_PLANNING_MODEL
 from ._declared_body import Box, box_spheres
 from .band import guard_parts
+from src.config.arms import load_arm
 
 __all__ = [
     "ENV_PLANNING_MODEL",
@@ -59,8 +60,6 @@ PLANNING_MODELS = ("", LEAN)
 LEAN_BOX_REACH_MM = 20.0
 
 _MAPS = Path(__file__).resolve().parent / "robot"
-#: The DH frame each arm link's spheres are written in, as the committed bundles and cover fits hold them.
-_ARM_FRAMES = {"shoulder": 1, "upper_arm": 2, "forearm": 3, "wrist_1": 4, "wrist_2": 5, "wrist_3": 6}
 
 
 def arm_planning_spheres_path(arm: str, model: str = LEAN) -> Path:
@@ -110,23 +109,27 @@ def _rounded(spheres: Sequence[Mapping[str, Any]]) -> "list[dict[str, Any]]":
             for sphere in spheres]
 
 
-def _arm_links(arm: str, model: str) -> "tuple[dict[str, Any], list[list[float]]] | str":
-    path = arm_planning_spheres_path(arm, model)
+def _arm_links(name: str, model: str) -> "tuple[dict[str, Any], list[list[float]]] | str":
+    path = arm_planning_spheres_path(name, model)
     if not path.is_file():
-        return f"no {model} planning spheres are committed for the {arm} ({path.name})"
+        return f"no {model} planning spheres are committed for the {name} ({path.name})"
     document = _read(path)
     rows = (document.get("_provenance") or {}).get("dh_m")
     blocks = document.get("collision_spheres") or {}
-    if sorted(blocks) != sorted(_ARM_FRAMES):
-        return f"{path.name} holds the bodies {sorted(blocks)}, and an arm has {sorted(_ARM_FRAMES)}"
+    # Each body's link and the DH frame its spheres are written in, as the committed bundles and cover fits hold them:
+    # the arm description's rows (P0f F9).
+    described = load_arm(name.lower())
+    frames = {part: (link, frame) for part, link, frame in described.collision_links}
+    if sorted(blocks) != sorted(frames):
+        return f"{path.name} holds the bodies {sorted(blocks)}, and an arm has {sorted(frames)}"
     links: dict[str, Any] = {}
-    for body, frame in _ARM_FRAMES.items():
+    for body, (link, frame) in frames.items():
         block = blocks[body]
         if int(block.get("frame", -1)) != frame or not block.get("spheres"):
             return f"{path.name}: {body} is not written in DH frame {frame}, or holds no spheres"
-        links[f"{body}_link"] = {"frame": frame, "spheres": _rounded(block["spheres"])}
-    if not isinstance(rows, list) or len(rows) != 6:
-        return f"{path.name} records no six DH rows to place its spheres with"
+        links[link] = {"frame": frame, "spheres": _rounded(block["spheres"])}
+    if not isinstance(rows, list) or len(rows) != described.dof:
+        return f"{path.name} records no {described.dof} DH rows to place its spheres with"
     return links, [[float(v) for v in row] for row in rows]
 
 

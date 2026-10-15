@@ -103,7 +103,6 @@ a leaner config.
 | `cameras/<model>.yaml` | the tree check, and a cell that reads geometry | holds the housing a rig's `body` names; a tree without it reads the repository's |
 | `grasping_presets/*.yaml` | `apply_preset`, outside Pydantic | [section 8](#8-the-grasping-presets-a-schema-bypass) |
 | `robot/kpi_thresholds.yaml` | the soak and KPI gate | not part of `AppConfig` |
-| `robot/templates/kuka/` | nothing here | controller-side files you copy to a KUKA by hand |
 | `all_keys/` | nothing by default | the reference tree, below |
 
 The gripper registry gives a named hand its widths and its collision envelope, and the
@@ -224,10 +223,12 @@ chain it loaded, which is the cheapest check.
 under the tree, or the load fails naming the layer. A typo mid-chain would otherwise merge as nothing
 and leave the cell running another robot's geometry.
 
-**A chain that composes is not always meaningful.** The cross-field validators in section 5 refuse
-chains that would evaluate one robot against another robot's geometry. `sim,web` is one: it lands
-`kinematics_model: ur5e` on a `vendor: kuka` cell, and that key selects a Universal Robots DH table.
-Validate any chain in one command rather than trusting a document about it.
+**A chain that composes is not always meaningful.** The loader validates the merged tree, not the intent
+behind the chain, so a chain that loads can still be a cell nobody meant. `sim,web` was refused while the
+`web` layer carried a KUKA arm, because the sim layer then landed a second name for a UR arm on a
+`vendor: kuka` cell. The `web` layer writes no robot file since the KUKA driver went, and the arm has one
+name only (`ur.model`, or `sim.robot_model` on a simulated cell), so `sim,web` loads a sim cell on the webcam
+rig. Validate any chain in one command rather than trusting a document about it.
 
 **Merge rules.** The full treatment is in [`src/config/README.md`](../../src/config/README.md). Three
 rules to remember:
@@ -319,9 +320,9 @@ python -m src.config decisions --section robot.safety --profile sim,ur3e
 
 Scoped, it is short enough to read line by line, and that is how to use it. Read which way each entry
 goes. On the simulator chain some entries loosen a guard a real arm keeps tight, because the simulator
-has no controller-side safety to lean on; others tighten one. `kinematics_model` and
-`kinematics_base_yaw_deg` do neither: they state which robot and which base frame the guard checks
-against.
+has no controller-side safety to lean on; others tighten one. `kinematics_base_yaw_deg` does neither:
+it states which base frame the guard checks against. Which robot it checks is not a safety key: the arm
+reports the model its vendor block names, `sim.robot_model` on the simulator chain.
 
 ### 4.5 From Python
 
@@ -454,7 +455,7 @@ physical open width, not a policy ceiling. `python -m src.config where gripper` 
 
 **Where the camera looks from.** A wrist camera sees what the arm points it at, so a wrist cell names its
 **looks**: `robot.look_joint_positions_deg`, one list of joint degrees per look, as the pendant shows them
-and `python -m src.robot.drivers.ur --where` prints them, visited in this order.
+and `python -m src.robot.execution.io_bench --where` prints them, visited in this order.
 
 ```yaml
 robot:
@@ -544,12 +545,14 @@ is a number somebody has to measure.
 **Safety bounds stay written even at their default**, so an auditor can read the guard envelope out of
 the file. The guards themselves belong to [04-robot-and-safety.md](04-robot-and-safety.md).
 
-Validators on `RobotConfig` stop you when one robot would be evaluated against another robot's
-geometry. When `safety.self_collision.kinematics_model` is set, it must equal `sim.robot_model` on a
-simulated cell and `ur.model` on a UR cell, and on any other vendor it must stay unset: the key picks a
-UR DH table, and only UR tables are bundled. A UR5e's upper-arm and forearm links are roughly 425 mm and 392 mm against
-a UR3e's 244 mm and 213 mm. A further validator keeps `safe_pose` inside the workspace box, because the
-workspace guard would otherwise refuse the retreat itself.
+A validator on `RobotConfig` keeps `safe_pose` inside the workspace box, because the workspace guard
+would otherwise refuse the retreat itself. Three more stood beside it until 2026-10-13 (P0d D5) and coupled
+`safety.self_collision.kinematics_model` to `sim.robot_model`, to `ur.model`, and to nothing at all on any
+other vendor, because that key picked the DH chain the self-collision guard evaluates, and a UR5e's
+upper-arm and forearm links are roughly 425 mm and 392 mm against a UR3e's 244 mm and 213 mm. They went
+with the key, because the arm now names itself: the guard takes the model the arm reports, and `ur.model`
+and `sim.robot_model` each refuse an arm the registry does not admit. A tree that still writes the key,
+`null` included, is refused at load with a sentence naming those two keys instead.
 
 ### Step 3: audit the decisions, which is the acceptance check
 

@@ -146,7 +146,7 @@ class TheDanceDoesNotComeBackTests(unittest.TestCase):
     COLLAPSED = (
         "src/robot/execution/real_cell/__main__.py",
         "src/robot/execution/real_cell/calibrate.py",
-        "src/robot/drivers/ur/__main__.py",
+        "src/robot/execution/io_bench/__main__.py",
         "src/robot/safety/planning/__main__.py",
     )
 

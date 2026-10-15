@@ -72,10 +72,15 @@ __all__ = [
     "CameraWorldStamp",
     "CameraWorldUse",
     "DeclinesCameraWorld",
-    "ReadsCameraWorld",
+    "HoldsAPlannerWorld",
+    "PlansMotions",
+    "StartsAPlanner",
     "UnseenSpace",
     "active_decline",
     "camera_world_refusal",
+    "holds_a_planner_world",
+    "live_planner_world_of",
+    "plans_motions",
     "resolve_camera_world",
     "stamp_result",
     "weakest_camera_world",
@@ -487,14 +492,39 @@ class DeclinesCameraWorld(Protocol):
 
 
 @runtime_checkable
-class ReadsCameraWorld(Protocol):
-    """Capability extension: this arm says, before it moves, the camera world a ``move`` would carry.
+class PlansMotions(Protocol):
+    """Capability extension: this arm plans its motions, and says what they stand on before it makes one.
+
+    Named ``ReadsCameraWorld`` until 2026-10-13, when the planner's own questions joined it. The two always went
+    together (the UR and the Isaac drivers answer all of them, the dummy none), and the stack asked the others by
+    name, so an arm without one of them did not fail: its feature switched off, and nothing said so.
 
     A verb that commands a gripper before its first motion refuses a camera world the motion would be
     refused for before that command, not after it. The reading is the stamp the arm gives a ``move``,
     taken as the arm stands: it opens no connection and starts no planner. Only a motion's own refresh
     can say PLANNED, so a wired world reads as a move without a vouching refresh would.
+
+    ``plans_paths`` and ``camera_world_required`` are two questions. On the UR driver they are the same expression.
+    On the Isaac mock they differ: it sets its joints and refuses nothing, and it still plans a path wherever a
+    planner is configured. One answer for both would refuse every motion of the configuration the suite runs off
+    the cell.
+
+    Two members are properties, and on Python 3.11 ``isinstance`` against this Protocol evaluates them, so a
+    half-built driver can raise inside the type check itself. :func:`plans_motions` asks and answers ``None``
+    instead of raising.
+
+    Holding the live world is :class:`HoldsAPlannerWorld`, a separate question with separate callers.
     """
+
+    @property
+    def plans_paths(self) -> bool:
+        """Whether a motion of this arm produces a path whose middle something judges."""
+        ...
+
+    @property
+    def camera_world_required(self) -> bool:
+        """Whether every motion of this arm needs a live camera world or a decline."""
+        ...
 
     def camera_world_for_move(self, camera_world: Maybe[CameraWorldDecline] = UNSET) -> CameraWorldStamp:
         """The stamp a ``move`` with ``camera_world`` would carry if no refresh vouched for it."""
@@ -503,6 +533,91 @@ class ReadsCameraWorld(Protocol):
     def live_camera_world_wired(self) -> bool:
         """Whether a live camera world is wired to this arm."""
         ...
+
+
+@runtime_checkable
+class HoldsAPlannerWorld(Protocol):
+    """Capability extension: this arm holds the live camera world its planner refreshes from.
+
+    Separate from :class:`PlansMotions`, because the callers are: the cell wiring hands a world to an arm that can
+    hold one, and the pick, the locator and a keep-out reach the world that arm holds, while what a motion stands
+    on is the other question. A driver that plans implements both (the UR and the Isaac drivers do). A double that
+    only carries a world implements this one, and says nothing about planning it does not do.
+    """
+
+    @property
+    def live_planner_world(self) -> "Any | None":
+        """The live world this arm's planner holds, or ``None``. A ``safety.planning.LivePlannerWorld``."""
+        ...
+
+    def set_live_planner_world(self, world: "Any | None") -> None:
+        """Hand this arm the live camera world its planner refreshes from. ``None`` clears it."""
+        ...
+
+
+@runtime_checkable
+class StartsAPlanner(Protocol):
+    """Capability extension: this arm's planner is something a person starts at a desk, and it says what it loaded.
+
+    Separate from :class:`PlansMotions` on purpose: an arm can plan every motion and still have no planner to start
+    by hand. The Isaac driver is exactly that, and these verbs in the capability above would have dropped it out of
+    the Protocol every hand verb reads. It also says where the planner is, which the console shows.
+    """
+
+    def start_planner(self) -> "Any":
+        """Start the planner now and return what it loaded, as a value that can ``render()`` itself."""
+        ...
+
+    def stop_planner(self) -> None:
+        """Stop the planner. Idempotent; the connection is untouched."""
+        ...
+
+    @property
+    def planner_state(self) -> str:
+        """Where the planner is: ``not_used``, ``off``, ``starting`` or ``ready``. Attribute reads only, never raising,
+        because the console reads it on every poll."""
+        ...
+
+
+def plans_motions(arm: object) -> "PlansMotions | None":
+    """``arm`` as a :class:`PlansMotions`, or ``None`` when it is not one, or cannot say.
+
+    A broken answer is still an answer. Protocol matching evaluates a property on Python 3.11, so a half-built
+    driver, or a double that models a member badly, can raise inside ``isinstance`` itself. That reads as "this arm
+    does not plan its motions", the reading an arm without the members gets, because the caller is about to decide
+    what a motion stands on, and a traceback is not an answer.
+    """
+    try:
+        return arm if isinstance(arm, PlansMotions) else None
+    except Exception:  # noqa: BLE001 (an arm that cannot answer has not answered)
+        return None
+
+
+def holds_a_planner_world(arm: object) -> "HoldsAPlannerWorld | None":
+    """``arm`` as a :class:`HoldsAPlannerWorld`, or ``None`` when it is not one, or cannot say.
+
+    Never raises, for the reason :func:`plans_motions` gives.
+    """
+    try:
+        return arm if isinstance(arm, HoldsAPlannerWorld) else None
+    except Exception:  # noqa: BLE001 (an arm that cannot answer has not answered)
+        return None
+
+
+def live_planner_world_of(arm: object) -> "Any | None":
+    """The live world ``arm`` holds (:class:`HoldsAPlannerWorld`), or ``None``: an arm that is not one, holds none,
+    or cannot say.
+
+    Never raises, for the reason :func:`plans_motions` gives. Every caller reads ``None`` as no live world: the
+    target stays an obstacle, a push is refused, and the pick plans as it does without one.
+    """
+    holder = holds_a_planner_world(arm)
+    if holder is None:
+        return None
+    try:
+        return holder.live_planner_world
+    except Exception:  # noqa: BLE001 (an arm that cannot answer has not answered)
+        return None
 
 
 def weakest_camera_world(stamps: Sequence[CameraWorldStamp]) -> CameraWorldStamp | None:

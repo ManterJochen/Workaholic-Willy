@@ -126,7 +126,7 @@ def run_shake_gate(
     grasped_count = 0
     for i in range(runs):
         gripper.open()
-        arm.move_joint(JointPositions(home_q))
+        arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
         reset_object_to_home_z0(obj, home_pos, home_quat, arm.session, settle_steps=30)
         report = service.pick()
         outcome = getattr(report, "outcome", None)

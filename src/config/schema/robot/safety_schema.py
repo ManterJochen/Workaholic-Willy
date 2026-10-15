@@ -228,12 +228,9 @@ class SelfCollisionSafetyConfig(StrictModel):
     perceived_min_distance_mm: float = Field(default=2.0, ge=_SEEN_BOX_LEAST_MM, le=500.0)
     mesh_dir: ConfigPath | None = Field(default=None)
 
-    # Which bundled arm kinematics (DH) table supplies the per-link arm-vs-arm capsules. Under the
-    # default ``None`` only a real ``vendor == "ur"`` arm gets arm-vs-arm capsules, keyed by its own
-    # model. Setting e.g. ``"ur5e"`` lets a non-UR vendor, the Isaac sim being physically a UR5e, opt
-    # into the UR DH and so get real arm-vs-arm self-collision rather than base, tool and fixture
-    # checks alone.
-    kinematics_model: str | None = Field(default=None)
+    # Which arm the guard judges is not a key here either. It is the model the arm reports, which is the model the
+    # cell's selected block names (robot.ur.model, robot.sim.robot_model), and the guard gives it a UR chain where the
+    # arm registry describes one (P0d D5); ``schema/_removed.py`` refuses a tree that still writes ``kinematics_model``.
 
     # The hand's mesh bundle and its coupling plate are not keys here. The guard derives both from
     # the hand the cell names, robot.gripper.model and robot.gripper.coupling_plates, through
@@ -361,11 +358,12 @@ class MotionContinuitySafetyConfig(StrictModel):
 
 
 class PlannedMotionSafetyConfig(StrictModel):
-    """How a cuRobo UR cell chooses the path of a move, and how far a planned path may wander.
+    """How a cuRobo cell chooses the path of a move, and how far a planned path may wander.
 
     A move goes to the configuration of its goal nearest the arm, on the branch the arm holds, and it runs the
     straight joint line there wherever that line is clear; cuRobo plans only where it is not, and never chooses the
-    goal. Both keys bound that choice.
+    goal, on any planned arm (``src/robot/drivers/planned/goal_set.py``). Both keys bound that choice. The Isaac sim
+    arm keeps its own route until it becomes a planned arm and reads neither.
 
     ``line_clearance_mm`` is how far every configuration of a straight joint line has to stay from the planner's
     world, the declared cell and the camera's, before the line runs instead of a plan. A line that comes closer is
@@ -427,21 +425,22 @@ class DwellSafetyConfig(StrictModel):
     A temporal check, does the controller report steady state, rather than the per-target spatial
     check the other guards make, so it sits outside the per-move :class:`SafetyPreflight` pipeline.
 
-    ``require_steady_before_motion`` and ``steady_timeout_s`` are consumed by
-    :class:`GraspExecutionPolicy`: before every commanded approach, grasp and retreat move the policy
-    blocks on ``arm.wait_until_steady(steady_timeout_s)`` and fails closed on timeout.
-    ``dwell_after_stop_s`` is not enforced; there is no exercised Stop or E-stop path in the runtime.
+    ``require_steady_before_motion`` and ``steady_timeout_s`` are consumed by the planned arm itself
+    (``drivers/planned/arm.py``, since P0e): every motion verb waits on ``wait_until_steady(steady_timeout_s)``
+    after its frame and camera-world refusals and fails closed with a TIMEOUT result, so a park, a calibration pose
+    and a recovery move wait as the pick's moves do. ``dwell_after_stop_s`` is not enforced; there is no exercised
+    Stop or E-stop path in the runtime.
     """
 
     require_steady_before_motion: bool = Field(default=True)
     steady_timeout_s: float = Field(default=5.0, gt=0.0, le=60.0)
-    #: Where the steady gate waits. ``"verb"``, the default and today's behaviour: every verb (a grasp's approach,
-    #: grasp and retreat, a robot's move, a pick's and a place's motions) waits for steady before it asks the arm to
-    #: move, and the arm judges the motion after that. ``"send"``: the judgement goes first, while the arm settles from
-    #: the motion before, and an arm that gates its own sends (the cuRobo UR) waits for steady right before it sends
+    #: Where the steady gate waits. ``"verb"``, the default and today's behaviour: the arm waits for steady at the start
+    #: of every motion verb (a grasp's approach, grasp and retreat, a robot's move, a pick's and a place's motions, a
+    #: park), and judges the motion after that. ``"send"``: the judgement goes first, while the arm settles from the
+    #: motion before, and an arm that gates its own sends (the cuRobo UR) waits for steady right before it sends
     #: anything; where the arm then stands more than 0.5 mm from where the motion was judged from, it is judged again. A
-    #: timeout refuses with nothing sent either way, and the halt refuses every send either way. A verb on an arm that
-    #: does not gate its own sends keeps waiting before it asks (map4 motion C4, the owner, 2026-10-09).
+    #: timeout refuses with nothing sent either way, and the halt refuses every send either way. An arm that does not
+    #: gate its own sends waits at the start of its verb either way (map4 motion C4, the owner, 2026-10-09).
     gate_at: Literal["verb", "send"] = Field(default="verb")
     #: What a UR's steady gate reads (``arm.wait_until_steady``, also the zero-move skip at a look). ``"is_steady"``, the
     #: default and today's behaviour: the controller's ``isSteady``, a script command of about 33 ms, polled every 20 ms.
@@ -565,8 +564,10 @@ class PerceivedWorldConfig(StrictModel):
 
     What it costs, stated before the knobs. Every plan waits for a depth frame, converts it and
     registers a world, and a frame older than ``max_age_ms`` refuses the motion rather than planning
-    against a cell that had time to change. That refusal is the point of the feature and it is also
-    the way it will first annoy somebody: a camera that stalls stops the arm.
+    against a cell that had time to change. The age is judged when the world is refreshed: before a
+    path is judged, and again before the next goal after a plan that was not taken, since one such plan
+    costs seconds (P0g R1); not while a plan is being computed. That refusal is the point of the feature
+    and it is also the way it will first annoy somebody: a camera that stalls stops the arm.
     """
 
     #: The way out, not the way in. ``planning_world.enabled`` is what turns this on.

@@ -708,15 +708,16 @@ class ARobotsPosesTakeItsNaturalOrientationTests(unittest.TestCase):
             with self.subTest(closing_axis=other), self.assertRaises(TypeError):
                 _desk_robot("-y").tool_down(*_AT, closing_axis=other)  # type: ignore[arg-type]
 
-    def test_a_robot_built_without_a_tree_reads_the_one_its_arm_keeps(self) -> None:
-        """As ``Robot.preflight`` reads it: a robot handed no ``robot_config`` reads ``arm.config``."""
+    def test_a_robot_built_without_a_tree_reads_none_and_never_the_one_its_arm_keeps(self) -> None:
+        """As ``Robot.preflight`` reads it since P0e: a robot handed no ``robot_config`` reads no tree, not the one an
+        arm keeps (``arm.config``, which only the UR driver does), so its jaws close along ``x``."""
         arm = DummyRobotArm()
         arm.config = RobotConfig(natural_closing_axis="-y")  # type: ignore[attr-defined]
 
         robot = Robot.from_parts(arm=arm, gripper=None, lock_key=None)
 
         self.assertIsNone(robot.robot_config)
-        self.assertEqual(Pose.tool_down(*_AT, closing_axis="-y"), robot.tool_down(*_AT))
+        self.assertEqual(Pose.tool_down(*_AT, closing_axis="x"), robot.tool_down(*_AT))
 
     def test_the_tree_the_robot_was_built_from_wins_over_the_one_its_arm_keeps(self) -> None:
         arm = DummyRobotArm()

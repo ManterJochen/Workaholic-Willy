@@ -6,7 +6,7 @@ module that fails to IMPORT (a syntax error, a broken top-level import, a signat
 
 These modules are all import-clean mock-side (heavy deps are lazy-imported inside functions), so this test
 simply ``importlib.import_module``'s each STILL-uncovered omitted module to guard importability. It extends
-the existing ``test_driver_imports.py`` (UR/KUKA) + ``test_models_imports.py`` (handdetection/speech) which
+the existing ``test_driver_imports.py`` (UR) + ``test_models_imports.py`` (handdetection/speech) which
 already cover their slice. Do NOT trim the omit-list itself — these modules genuinely cannot run on CI.
 """
 

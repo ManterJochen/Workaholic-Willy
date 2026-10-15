@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.robot.drivers.sim.robot_models import ur_model_spec
-from src.robot.safety._ur_kinematics import UR_DH_TABLES_M
+from src.robot.safety._ur_kinematics import ur_dh_rows
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.robot import RobotConfig
@@ -53,7 +53,7 @@ class ReachFinding:
 
 def shoulder_height_mm(model: str) -> float:
     """``d1`` in mm: the shoulder height above the base plane, the centre of the reach sphere."""
-    table = UR_DH_TABLES_M.get(model.lower())
+    table = ur_dh_rows(model)
     return float(table[0].d_m * 1000.0) if table else 0.0
 
 

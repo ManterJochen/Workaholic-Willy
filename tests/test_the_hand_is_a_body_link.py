@@ -1,6 +1,6 @@
 """The hand is its own link of the planner's robot, placed by the declared tool frame (UM lane S10).
 
-A cuRobo descriptor used to carry the hand on tool0: build_ur_config.py moved the map's spheres one plate along +Y and
+A cuRobo descriptor used to carry the hand on tool0: descriptor.py moved the map's spheres one plate along +Y and
 wrote one file per arm and hand. The hand now stays its committed sphere map, in the hand model's own frame, and becomes
 a fixed link named ``hand`` under ``tool0`` whose transform is the placement: rotation R_TM, translation the plate along
 the placed approach. That is where the exact mesh guard puts the hand's vertices, so the two engines hold one hand.
@@ -23,11 +23,11 @@ import yaml
 from src.geometry.quaternion import to_rotation_matrix
 
 _SIM = {"source": "willy", "offset_mm": [0.0, 132.0, 0.0], "rotation_quat_xyzw": [-0.70710678, 0.0, 0.0, 0.70710678]}
-_UR = {"source": "polyscope", "offset_mm": [0.0, 0.0, 155.75], "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}
+_UR = {"source": "controller", "offset_mm": [0.0, 0.0, 155.75], "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}
 _ARM = ["shoulder_link", "upper_arm_link", "forearm_link", "wrist_1_link", "wrist_2_link", "wrist_3_link"]
 
 #: The legacy table, copied from ext_deps/curobo/curobo/content/configs/robot/ur5e_robotiq_hande.yml:10-17 and
-#: :847-863 as build_ur_config.py wrote it on 2026-09-15 (the content directory is not in the repository).
+#: :847-863 as descriptor.py wrote it on 2026-09-15 (the content directory is not in the repository).
 _LEGACY_LINKS = [*_ARM, "tool0"]
 _LEGACY_IGNORE = {
     "camera_mount": ["tool0", "wrist_3_link"],
@@ -70,7 +70,7 @@ def _hand(model: str, frame: dict, plates: "list[float] | None" = None):
 def _link(model: str, frame: dict, plates: "list[float] | None" = None):
     from src.robot.safety.planning.body_link import HandLink
 
-    return HandLink.from_hand(_hand(model, frame, plates))
+    return HandLink.from_hand(_hand(model, frame, plates), arm="ur5e")
 
 
 def _pairs(kinematics: dict, rename: "dict[str, str] | None" = None) -> set:
@@ -271,7 +271,7 @@ class WhatTheSidecarSaysOfTheHandTests(unittest.TestCase):
 
 class TheScriptsSendTheSameHandTests(unittest.TestCase):
     """⭐ ONE DERIVATION, TWO CALLERS. The probes and the descriptor check run under the cuRobo interpreter, where this
-    repository cannot be imported, so they read the committed map themselves (`scripts/curobo/_hand_body.py`). What they
+    repository cannot be imported, so they read the committed map themselves (`scripts/arms/_hand_body.py`). What they
     build must be the body a cell's planner sends, or the box would measure a hand no cell plans with. The sphere fit
     was written twice once already, one copy calling itself a mirror of the other, with nothing checking.
     """
@@ -281,7 +281,7 @@ class TheScriptsSendTheSameHandTests(unittest.TestCase):
         import pathlib
         import sys
 
-        path = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "curobo" / "_hand_body.py"
+        path = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "arms" / "_hand_body.py"
         spec = importlib.util.spec_from_file_location("_hand_body_under_test", path)
         assert spec is not None and spec.loader is not None
         self.helper = importlib.util.module_from_spec(spec)
@@ -296,7 +296,7 @@ class TheScriptsSendTheSameHandTests(unittest.TestCase):
             with self.subTest(model=model, plates=plates, frame=name):
                 link = _link(model, frame, plates).to_dict()
                 body = self.helper.hand_body(
-                    model, coupling_mm=None if plates is None else float(sum(plates)), rotation_xyzw=quaternion,
+                    model, arm="ur5e", coupling_mm=None if plates is None else float(sum(plates)), rotation_xyzw=quaternion,
                 )
                 self.assertEqual(body, {key: link[key] for key in wire_keys})
 
@@ -305,7 +305,7 @@ class TheScriptsSendTheSameHandTests(unittest.TestCase):
         for label, model, coupling in (("mounting face, no plate", "robotiq_hande", None),
                                        ("flange, with a plate", "robotiq_2f85", 20.0)):
             with self.subTest(label), self.assertRaises(self.helper.HandBodyError):
-                self.helper.hand_body(model, coupling_mm=coupling)
+                self.helper.hand_body(model, arm="ur5e", coupling_mm=coupling)
 
 
 if __name__ == "__main__":

@@ -395,7 +395,7 @@ class ATaskIsRefusedBeforeAnythingMovesTests(ConsoleCase):
     def test_a_wrist_camera_place_on_an_arm_with_no_world_to_hold_the_bin_s_frames(self) -> None:
         """The library's pre-check, at the route: a wrist place holds the frames of the bin's look while the part goes in."""
         cell = self.scripted([Scripted("part")], wrist=True)
-        cell.arm.live_planner_world = None
+        cell.arm.set_live_planner_world(None)
         locator = SightedLocator({"blue bin": lambda _tcp: ()}, arm=cell.arm, wrist=True)
         with patch("src.robot.execution.place_target.locators_for_service", return_value=[locator]):
             refused = self.refused(self.client.post("/v1/task", json={

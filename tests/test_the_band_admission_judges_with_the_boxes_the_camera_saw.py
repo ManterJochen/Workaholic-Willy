@@ -42,7 +42,7 @@ def _arm(fixtures: "list[dict] | None" = None) -> Any:
 
     arm: Any = URRobotArm(RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": "ur10", "motion_planner": "curobo"},
+        "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
         "workspace_limits": OPEN_WORKSPACE,
         "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}],
                     "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 155.75],
@@ -50,7 +50,6 @@ def _arm(fixtures: "list[dict] | None" = None) -> Any:
         "safety": {"payload": {"enforce": False},
                    # The 5 mm and 10 mm these cases were built at; the owner ships 3 and 3 since 2026-10-05.
                    "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "perceived_min_distance_mm": 5.0,
-                                      "kinematics_model": "ur10",
                                       "planner_margin_mm": 4.0, "fixtures": list(fixtures or [])}},
     }))
     arm._conn = MagicMock()
@@ -58,7 +57,7 @@ def _arm(fixtures: "list[dict] | None" = None) -> Any:
     arm._conn.get_joint_positions.return_value = list(LOOK0)
     planner = BandPlanner()
     planner.here = list(LOOK0)
-    arm._curobo_ur = planner
+    arm._curobo = planner
     return arm
 
 
@@ -98,7 +97,7 @@ def _box_at(arm: Any, distance_mm: float, *, yaw_deg: float, name: str) -> AxisA
 
 def _admission(arm: Any) -> Any:
     """The driver's own decision on LOOK[0], which the band double refuses on forearm|wrist_2."""
-    planner = arm._curobo_ur
+    planner = arm._curobo
     verdict = planner.check_joint_path([LOOK0], refresh=False)
     assert not verdict.valid
     return arm._exact_guard_decides(planner, [LOOK0], verdict, clearance_mm=0.0, command=MotionCommand.MOVE_JOINTS)

@@ -16,7 +16,7 @@ from typing import Any
 from unittest import mock
 
 _REPO = Path(__file__).resolve().parents[1]
-_CUROBO = _REPO / "scripts" / "curobo"
+_ARMS = _REPO / "scripts" / "arms"
 
 
 def _by_path(name: str, path: Path) -> Any:
@@ -66,7 +66,7 @@ class OneQuaternionPerPlacementTests(unittest.TestCase):
 
 class OneRotationSpellingTests(unittest.TestCase):
     def _gate(self) -> Any:
-        return _by_path("_gate_for_spelling", _CUROBO / "matrix_gate.py")
+        return _by_path("_gate_for_spelling", _ARMS / "gate.py")
 
     def test_the_gate_takes_the_chooser_spelling(self) -> None:
         gate = self._gate()
@@ -98,9 +98,9 @@ class OneRotationSpellingTests(unittest.TestCase):
         self.assertEqual(caught.exception.code, 2)
 
     def test_every_command_the_sweep_builds_reaches_the_gate_with_its_rows_rotation(self) -> None:
-        sweep = _by_path("_sweep_for_spelling", _CUROBO / "matrix_sweep.py")
+        sweep = _by_path("_sweep_for_spelling", _ARMS / "sweep.py")
         folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        table = folder / "ur_retract.yaml"
+        table = folder / "retract.yaml"
         table.write_text(
             "rule:\n  placement: +Y+X\nretracts:\n"
             "- arm: ur5e\n  hand: robotiq_2f85\n  plate_mm: 0.0\n  planner_margin_mm: 4.0\n  retract: [0, 0, 0, 0, 0, 0]\n"

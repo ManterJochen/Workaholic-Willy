@@ -29,6 +29,7 @@ from src.robot.drivers.dummy.arm import DummyRobotArm
 from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 from src.robot.grasping.types.perception import PerceptionFrame
+from tests._helpers import HoldsAWorld
 
 #: A D415 colour camera at half its 1280 x 720, focal length in pixels.
 WIDTH, HEIGHT, FOCAL = 640, 360, 925.0 / 2.0
@@ -166,8 +167,10 @@ def joints_key(joints: JointPositions) -> tuple[float, ...]:
     return tuple(round(value, 1) for value in joints.degrees())
 
 
-class LookingArm(DummyRobotArm):
+class LookingArm(HoldsAWorld, DummyRobotArm):
     """A desk arm whose joint moves put the tool where a look's table says, and which writes every motion down.
+
+    It holds the live world a test hands it (``set_live_planner_world``), and none until then.
 
     ``refuse`` holds the looks it refuses the way a real arm's gate refuses a pose outside its cable window;
     ``unvouched`` the looks on whose way the camera world cannot vouch.

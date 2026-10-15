@@ -135,10 +135,12 @@ class _Hands:
     """The owner's TCP at given joints, and the probe's joints that put its fingertips where the owner's were."""
 
     def __init__(self, owner_cell: Any) -> None:
-        from src.robot.drivers.ur.tool_frame import tool_frame_matrix
+        from src.geometry.matrix import position_quaternion_to_matrix
 
         self.cell = owner_cell
-        self.owner_tool = np.asarray(tool_frame_matrix(*_OWNER_TOOL), dtype=np.float64)
+        offset, turn = _OWNER_TOOL
+        self.owner_tool = position_quaternion_to_matrix(np.asarray(offset, dtype=np.float64),
+                                                        np.asarray(turn, dtype=np.float64))
         self.shift = np.eye(4)
         self.shift[2, 3] = _TIP_SHIFT_MM
 
@@ -467,7 +469,7 @@ def _standoff_14_58(probe: Probe, owner: Any, hands: _Hands, envelope: Any) -> d
 
 def _planner_of(owner: Any) -> Any:
     """The planner glue the arm started."""
-    return owner.arm._curobo_ur  # noqa: SLF001
+    return owner.arm._curobo  # noqa: SLF001
 
 
 def _steps(probe: Probe, owner: Any, planner: Any, spheres_base: Any) -> None:
@@ -533,7 +535,7 @@ def run(args: argparse.Namespace) -> int:
         out["start_s"] = round(time.perf_counter() - started, 1)
         out["composed_sha256"] = identity.composed_sha256
         say(f"1. planner started in {out['start_s']} s, composed_sha256 {identity.composed_sha256}")
-        _steps(probe, owner, arm._curobo_ur, spheres_base)  # noqa: SLF001
+        _steps(probe, owner, arm._curobo, spheres_base)  # noqa: SLF001
     except Exception as exc:  # noqa: BLE001 (reported with its trace, and the planner still stops)
         probe.failed.append(f"{type(exc).__name__}: {exc}")
         out["error"] = traceback.format_exc(limit=12)

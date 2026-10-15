@@ -112,7 +112,7 @@ def run_probe(*, headless: bool = True, data_dir: str | None = None,
     # Park the arm out of the way so it cannot interfere with the box / the static gripper.
     from src.robot.core import JointPositions
     home_q = np.asarray(cell.sim.home_joint_positions, dtype=np.float64)
-    arm.move_joint(JointPositions(home_q))
+    arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
     session.step_n(30)
 
     obj = SingleRigidPrim(OBJECT_PRIM)

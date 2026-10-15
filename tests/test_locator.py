@@ -24,6 +24,7 @@ from src.contracts import UNSET
 from src.geometry import Frame, Pose, Transform
 from src.robot.core.errors import PerceptionFrameMoved
 from src.robot.perception.locator import Located, Locator, LocatorRefused
+from tests._helpers import HoldsAWorld
 
 _REPO = Path(__file__).resolve().parents[1]
 _FX = 500.0
@@ -247,7 +248,7 @@ class ALocatedTargetLeavesTheWorldTests(unittest.TestCase):
         self.assertEqual(1, _camera_boxes(seen), seen.render())
 
         located = Locator.from_parts(camera=owners["overhead"], backend=_backend("red cube")).locate("a red cube")
-        arm = SimpleNamespace(live_planner_world=world)
+        arm = HoldsAWorld(world)
         with keeping_out(arm, located.keep_out(0)):
             world.drop_cached_frames()
             held = world.world_for(self_envelope=self_envelope, now=50.1)

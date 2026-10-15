@@ -129,10 +129,13 @@ def main() -> int:
 
     # A pose folded back on itself, searched rather than written down. Which fold self-collides is
     # a property of one arm's link lengths, so a single hardcoded pose would quietly stop provoking
-    # anything the day a cell declares a different `kinematics_model`. The first that this cell's
+    # anything the day a cell names a different arm. The first that this cell's
     # own guard refuses is the one used, and an arm for which none of them collides is reported as
     # not exercised rather than counted as passed. Measured on this tree 2026-09-10 (a UR5e): all
     # four are refused, so the search costs one evaluation here and earns its keep on the next arm.
+    # The written folds are a six joint arm's and are asked only of one: cut to another length they
+    # would ask a different pose, or a pose the guard refuses for its length rather than for a
+    # collision (P0f F9d).
     folds = [
         [0.0, -math.pi / 2, 2.9, -2.9, 0.0, 0.0],
         [math.pi] * dof,
@@ -154,10 +157,9 @@ def main() -> int:
     ]
 
     # The same table `JointLimitGuard` consults: the operator's static lists first, then the
-    # built-in vendor table. `None` means neither answered and the guard is UNAVAILABLE, which is
-    # a legitimate state rather than a failure.
-    limits = resolve_joint_limits_deg(
-        config.safety.joint_limits, vendor=arm.capabilities.vendor, model=arm.capabilities.model)
+    # envelope the arm registry describes for the model the arm reports. `None` means neither answered
+    # and the guard is UNAVAILABLE, which is a legitimate state rather than a failure.
+    limits = resolve_joint_limits_deg(config.safety.joint_limits, model=arm.capabilities.model)
     if limits is not None:
         values = [0.0] * dof
         values[0] = math.radians(limits[1][0] + 10.0)
@@ -167,8 +169,8 @@ def main() -> int:
     self_collision = guards.get("self_collision")
     if self_collision is not None:
         folded = next(
-            (f[:dof] for f in folds
-             if not self_collision.evaluate(joints(JointPositions(f[:dof]))).accepted),
+            (f for f in folds if len(f) == dof
+             and not self_collision.evaluate(joints(JointPositions(f))).accepted),
             None,
         )
         if folded is not None:

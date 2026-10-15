@@ -17,6 +17,7 @@ from src.config.schema.camera import (
 from src.calibration.stereo.config import StereoRigConfig
 from src.calibration.stereo.manager import StereoCam3D
 from src.camera.orchestration.frame_provider import FrameProvider
+from src.camera.setup.capture_backend import refuse_a_backend_this_platform_lacks
 from src.camera.setup.devices.stereocamera import StereoVisionCalibrationSingleDevice
 from src.camera.setup.devices.webcam import StereoVisionCalibrationWebcams
 
@@ -130,6 +131,9 @@ class StereoCapturePipeline:
         raise RuntimeError(f"Rig {rig_id!r} was not found or is disabled")
 
     def _is_available(self, rig: CameraRig) -> bool:
+        # A backend this platform's OpenCV lacks opens nothing, which read as "No enabled camera rigs are currently
+        # available" with no word about the key (P0h h7). Refused by name instead.
+        refuse_a_backend_this_platform_lacks(rig)
         if isinstance(rig, WebcamPairRigConfig):
             return self._probe_webcam_pair(rig)
         if isinstance(rig, (SingleDeviceRigConfig, RGBDDeviceRigConfig)):

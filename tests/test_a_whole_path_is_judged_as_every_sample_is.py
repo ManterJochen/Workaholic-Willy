@@ -380,7 +380,10 @@ class TheGuardOrderIsTheLoopsTests(unittest.TestCase):
         self.assertEqual(len(path.configs), local.asked)
         self.assertEqual(len(path.configs), asked.call_count)
 
-    def test_without_an_arm_the_capsule_proxy_judges_every_sample(self) -> None:
+    def test_without_an_arm_no_sample_is_judged_and_the_path_is_refused(self) -> None:
+        """No arm, no robot to judge. Since P0d D5 the guard takes its model from the arm alone, so a path handed in
+        without one is refused before its first sample, with the switch off and on alike. Until then the cell's
+        `kinematics_model` stood in for the arm, and every sample was judged on it."""
         off, _, arm = _pair()
         collision = off._path_authority(arm)
         slab, _ = _slab(off, arm, _down_from_the_goal(), 10, owner.GUARD_MM - 0.5)
@@ -392,8 +395,10 @@ class TheGuardOrderIsTheLoopsTests(unittest.TestCase):
                                                            command=MotionCommand.MOVE_TO))
                         for gate in (was_gate, now_gate))
             self.assertEqual(was, now)
-        self.assertEqual(2 * (len(_down_from_the_goal().configs) if was is None else _sample_named(was)),
-                         asked.call_count, "every sample asked of the guard, both times")
+        self.assertIsNotNone(was, "a path with no arm to judge it on is refused")
+        assert was is not None
+        self.assertIn("exact mesh", str(was[1]))
+        self.assertEqual(0, asked.call_count, "no sample asked of a guard that has no arm to judge")
 
 
 class TheKeyTests(unittest.TestCase):
@@ -449,14 +454,13 @@ class MeshFirstSaysTheSameTests(unittest.TestCase):
         from tests._plan_end import OPEN_WORKSPACE
 
         return URRobotArm(RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"model": "ur10", "motion_planner": "curobo"}, "workspace_limits": OPEN_WORKSPACE,
+            "vendor": "ur", "ur": {"model": "ur10"}, "motion": {"planner": "curobo"}, "workspace_limits": OPEN_WORKSPACE,
             "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}],
                         "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 155.75],
                                        "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
             "safety": {"payload": {"enforce": False}, "planned_motion": {"mesh_first": True},
                        "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "perceived_min_distance_mm": 5.0,
-                                          "kinematics_model": "ur10", "planner_margin_mm": 4.0,
-                                          "whole_path_judge": whole}},
+                                          "planner_margin_mm": 4.0, "whole_path_judge": whole}},
         }))
 
     def _sentences(self, configs: "list[list[float]]", *, plane_mm: "float | None" = None,

@@ -21,7 +21,7 @@ cannot say is read as not measured and not modelled rather than guessed.
 
 ``Robot.pick`` and ``Robot.place`` put the hand verbs at the end of a straight descent. Before any command they refuse,
 in this order: a robot that cannot hold, a link that is not open, a pose not in BASE, a camera world the arm's own
-motion would be refused for (``ReadsCameraWorld``), an arm whose motions do not go through cuRobo and the exact mesh
+motion would be refused for (``PlansMotions``), an arm whose motions do not go through cuRobo and the exact mesh
 guard (``motion.route_of``: a desk arm runs, a UR on the ik planner, a KUKA and an arm that does not say are refused),
 and last, as the one question put to the controller, a controller that cannot move. A pick on a hand that toggles with
 no sensor then asks it whether its jaws stand open (``jaws_open_for_a_pick``) instead of opening them: never a change
@@ -90,7 +90,7 @@ from src.robot.core.arm_capabilities import (
 from src.robot.core.camera_world import (
     CameraWorldDecline,
     CameraWorldStamp,
-    ReadsCameraWorld,
+    PlansMotions,
     camera_world_refusal,
     weakest_camera_world,
 )
@@ -103,7 +103,7 @@ from src.robot.core.gripper import (
     width_is_measured_of,
 )
 from src.robot.core.keep_out import SegmentationOffer, keeping_out
-from src.robot.execution.motion import gates_its_own_sends, route_of, steady_timeout_of
+from src.robot.execution.motion import route_of
 from src.robot.constants import create_robot_logger
 from src.robot.core.motion_result import NO_PLAN_FAIL_SAFE_MESSAGE
 
@@ -420,12 +420,15 @@ def is_holding(robot: Any) -> HoldEvidence:
 
 
 def _refusal(robot: Any, verb: HandVerb) -> HandReport | None:
+    from src.robot.execution.abilities import Ability, row_of
+
     gripper = getattr(robot, "gripper", None)
+    # What the desk's hand row says of this gripper, first and in its words: no gripper, or one that holds nothing
+    # (P0i i3). The rest needs a connected cell, which no desk has.
+    row = row_of(Ability.HAND, arm=getattr(robot, "arm", None), gripper=gripper)
     why = ""
-    if gripper is None:
-        why = "this robot has no gripper"
-    elif bool(getattr(gripper, "holds_nothing", False)):
-        why = f"the gripper in hand ({type(gripper).__name__}) holds nothing: no end-effector was built"
+    if not row.available:
+        why = row.reason
     elif not bool(getattr(robot.arm, "is_connected", False)):
         why = "the arm is not connected; call the hand verbs inside robot.connected()"
     elif not bool(getattr(gripper, "is_connected", False)):
@@ -988,9 +991,10 @@ class _Handling:
             if why:
                 return self._report(HandlingOutcome.REFUSED, message=why)
             opening = None
-        detach = getattr(self.arm, "detach_payload", None)
-        if callable(detach):
-            detach()
+        # The same question this module asks by isinstance before a grasp and before a release: an arm that models a
+        # payload forgets the last one before it opens its jaws on the next.
+        if isinstance(self.arm, CarriesPayload):
+            self.arm.detach_payload()
         if opening is not None:
             self._command_gripper(float(opening), close=False)
             if float(opening) < float(self.gripper.max_width_mm) - 1e-6:
@@ -1045,31 +1049,34 @@ class _Handling:
     # ---- before any command -----------------------------------------------------------------
 
     def _refusal(self) -> HandlingReport | None:
+        from src.robot.execution.abilities import Ability, row_of
+
         gripper = self.gripper
-        if gripper is None:
-            return self._report(HandlingOutcome.REFUSED, message="this robot has no gripper")
-        if bool(getattr(gripper, "holds_nothing", False)):
-            return self._report(HandlingOutcome.REFUSED, message=(
-                f"the gripper in hand ({type(gripper).__name__}) holds nothing: no end-effector was built"))
+        # The desk's rows, each where its check stood and in its words (P0i i3): the hand row first (no gripper, or
+        # one that holds nothing), the move row after what only a connected cell can answer. Together they are the
+        # handle row the desk shows.
+        hand = row_of(Ability.HAND, arm=self.arm, gripper=gripper)
+        if not hand.available:
+            return self._report(HandlingOutcome.REFUSED, message=hand.reason)
         if not bool(getattr(self.arm, "is_connected", False)) or not bool(getattr(gripper, "is_connected", False)):
             return self._report(HandlingOutcome.REFUSED, message=(
                 f"the arm or the gripper is not connected; call {self.verb.value} inside robot.connected()"))
         if self.pose.frame is not Frame.BASE:
             return self._report(HandlingOutcome.REFUSED, message=(
                 f"the pose is in {self.pose.frame.value!r}, and {self.verb.value} takes a pose in BASE"))
-        if isinstance(self.arm, ReadsCameraWorld):
+        if isinstance(self.arm, PlansMotions):
             stamp = self.arm.camera_world_for_move(self.camera_world)
             sentence = camera_world_refusal(stamp, live_world_wired=self.arm.live_camera_world_wired())
             if sentence is not None:
                 self.stamps.append(stamp)
                 return self._report(HandlingOutcome.REFUSED, message=sentence)
         # Everything that moves the arm goes through cuRobo and the exact mesh guard with the camera world, so a pick
-        # or a place reads the route its motions take, as Robot.move does. A desk arm runs; a UR on the ik planner is
-        # refused like a KUKA.
-        route = route_of(self.arm)
-        self.line = route.line
-        if not route.runs:
-            return self._report(HandlingOutcome.REFUSED, message=route.reason)
+        # or a place reads the route its motions take, as Robot.move does, and asks the desk's move row (P0i i3). A
+        # desk arm runs; a UR on the ik planner is refused like a KUKA.
+        self.line = route_of(self.arm).line
+        move = row_of(Ability.MOVE, arm=self.arm)
+        if not move.available:
+            return self._report(HandlingOutcome.REFUSED, message=move.reason)
         # Last, because it is the one question that goes to the controller, and before the detach and the pre-open:
         # the jaws of a stopped arm stay as they are, whatever they hold.
         why = _controller_refusal(self.arm)
@@ -1100,12 +1107,6 @@ class _Handling:
                     frame=Frame.BASE, label="lift")
 
     def _move(self, target: Pose, *, linear: bool) -> None:
-        timeout = self._steady_timeout()
-        if timeout is not None and not self.arm.wait_until_steady(timeout):
-            self.poses.append(target)
-            self.statuses.append(MotionStatus.TIMEOUT)
-            raise _Refused(self._report(HandlingOutcome.MOTION_REFUSED, message=(
-                f"the arm did not come to rest within {timeout:.2f} s before the next motion (safety.dwell)")))
         keywords: dict[str, Any] = {"linear": linear}
         if chosen(self.camera_world):
             keywords["camera_world"] = self.camera_world
@@ -1161,11 +1162,6 @@ class _Handling:
         except Exception as exc:  # noqa: BLE001 (a gripper fault ends the verb, after the jaws are stopped)
             hand = _fault(self.gripper, HandVerb.RELEASE, width_mm, exc)
             raise _Refused(self._report(HandlingOutcome.GRIPPER_FAULT, hand=hand, message=hand.error))
-
-    def _steady_timeout(self) -> float | None:
-        """The arm's own steady gate, where its tree asks for one and it can wait; ``None`` otherwise, and for an arm that
-        gates its own sends (``safety.dwell.gate_at`` ``send``), which waits right before it sends, after its judgement."""
-        return None if gates_its_own_sends(self.arm) else steady_timeout_of(self.arm)
 
     def _report(self, outcome: HandlingOutcome, *, hand: HandReport | None = None, message: str = "") -> HandlingReport:
         return HandlingReport(

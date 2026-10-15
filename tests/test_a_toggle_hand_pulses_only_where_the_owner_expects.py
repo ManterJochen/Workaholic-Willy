@@ -90,9 +90,9 @@ _WHERE = "Do they stand OPEN?"
 _MOTIONS = ("move", "joints", "home")
 
 _RUNNING = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.NORMAL, protective_stopped=False,
-                       emergency_stopped=False)
+                       emergency_stopped=False, program_running=True)
 _PROTECTIVE = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.PROTECTIVE_STOP,
-                          protective_stopped=True, emergency_stopped=False, message="Safetystatus: PROTECTIVE_STOP")
+                          protective_stopped=True, emergency_stopped=False, message="Safetystatus: PROTECTIVE_STOP", program_running=True)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -240,7 +240,7 @@ class _Arm(DummyRobotArm):
         self.log.write("status", "running" if self.status.is_operational else "stopped")
         return self.status
 
-    def recover_from_protective_stop(self) -> bool:  # pragma: no cover - never called, by design
+    def acknowledge_fault(self, fault: object) -> bool:  # pragma: no cover - never called, by design
         raise AssertionError("nothing on the owner's paths may clear a stop")
 
     def move(self, pose: Pose, **keywords: Any) -> MotionResult:
@@ -1169,25 +1169,33 @@ class _Terminal(io.StringIO):
 
 
 class TheBenchJawsTests(unittest.TestCase):
-    """``python -m src.robot.drivers.ur --jaws open|closed``, built from config, the person answering at ``input``."""
+    """``python -m src.robot.execution.io_bench --jaws open|closed``, built from config, the person answering at ``input``."""
 
     def _bench(self, jaws: str, *answers: str, closed: bool) -> tuple[int, str, _Log, _BenchUR, _Person]:
         from src.config.schema.robot import RobotConfig
-        from src.robot.drivers.ur import __main__ as bench_cli
+        from src.robot.execution.io_bench import __main__ as bench_cli
 
         log = _Log()
         ur = _BenchUR(log, closed=closed)
         person = _Person(log, *answers)
+        from src.robot.execution.cell_lock import lock_path_for
+
+        # This file's own controller address (TEST-NET-2): the bench takes the cell lock on it before it connects
+        # (found reading for P0i, 2026-09-26), and a UR with no address is refused before the jaws are asked.
         cfg = RobotConfig.model_validate({
-            "vendor": "ur", "gripper": {"vendor": "jaw_io", "min_width_mm": 5.0, "max_width_mm": 49.99,
-                                        "jaw_io": {"actuation": "single_toggle", "close_output_pin": 0,
-                                                   "io_port": "tool", "close_settle_s": 0.0, "pulse_s": 0.05}}})
+            "vendor": "ur", "ur": {"ip": "198.51.100.24"},
+            "gripper": {"vendor": "jaw_io", "min_width_mm": 5.0, "max_width_mm": 49.99,
+                        "jaw_io": {"actuation": "single_toggle", "close_output_pin": 0,
+                                   "io_port": "tool", "close_settle_s": 0.0, "pulse_s": 0.05}}})
         out = io.StringIO()
-        with patch.object(bench_cli, "_load_robot_config", lambda *_a: cfg), \
-                patch("src.robot.drivers.create_arm", lambda *_a, **_k: ur), \
-                patch.dict("os.environ", {"WILLY_PROFILE": ""}), \
-                patch("sys.stdin", _Terminal("")), patch("builtins.input", person), redirect_stdout(out):
-            code = bench_cli.main(["--jaws", jaws, "--yes"])
+        try:
+            with patch.object(bench_cli, "_load_robot_config", lambda *_a: cfg), \
+                    patch("src.robot.drivers.create_arm", lambda *_a, **_k: ur), \
+                    patch.dict("os.environ", {"WILLY_PROFILE": ""}), \
+                    patch("sys.stdin", _Terminal("")), patch("builtins.input", person), redirect_stdout(out):
+                code = bench_cli.main(["--jaws", jaws, "--yes"])
+        finally:
+            lock_path_for("ur@198.51.100.24").unlink(missing_ok=True)
         return code, out.getvalue(), log, ur, person
 
     def test_the_jaws_end_where_the_command_says_with_one_question(self) -> None:
@@ -1205,6 +1213,43 @@ class TheBenchJawsTests(unittest.TestCase):
                 self.assertEqual(after, ur.closed)
                 self.assertEqual(1, sum(1 for e in log.kinds("ask") if _WHERE in e.data[0]))
                 self.assertEqual(([], []), (person.answers, person.unscripted))
+
+
+class TheBenchSaysWhatRefusedTests(unittest.TestCase):
+    """A write the controller did not take is a refusal, exit 1, and anything unexpected exits 3, as the bench's
+    docstring says; both left the bench as a traceback (P0g io1)."""
+
+    def _set(self, fails: str = "", raises: "BaseException | None" = None) -> tuple[int, str]:
+        from src.config.schema.robot import RobotConfig
+        from src.robot.execution.io_bench import __main__ as bench_cli
+
+        ur = _BenchUR(_Log())
+        ur.next_write_fails = fails
+        if raises is not None:
+            def write(*_a: object, **_k: object) -> None:
+                raise raises
+
+            ur.set_digital_output = write  # type: ignore[method-assign]
+        cfg = RobotConfig.model_validate({
+            "vendor": "ur", "ur": {"ip": "127.0.0.21"}, "gripper": {"vendor": "jaw_io", "min_width_mm": 5.0, "max_width_mm": 49.99,
+                                        "jaw_io": {"actuation": "single_toggle", "close_output_pin": 0,
+                                                   "io_port": "tool", "close_settle_s": 0.0, "pulse_s": 0.05}}})
+        out = io.StringIO()
+        with patch.object(bench_cli, "_load_robot_config", lambda *_a: cfg), \
+                patch("src.robot.drivers.create_arm", lambda *_a, **_k: ur), \
+                patch.dict("os.environ", {"WILLY_PROFILE": ""}), redirect_stdout(out):
+            code = bench_cli.main(["--set", "0=1", "--port", "tool", "--yes"])
+        return code, out.getvalue()
+
+    def test_a_write_the_controller_did_not_take_is_refused_with_exit_1(self) -> None:
+        code, printed = self._set(fails="lost")
+        self.assertEqual(1, code, printed)
+        self.assertIn("REFUSED: RobotError: the controller did not take the write on tool output 0", printed)
+
+    def test_an_unexpected_error_exits_3(self) -> None:
+        code, printed = self._set(raises=RuntimeError("the double broke"))
+        self.assertEqual(3, code, printed)
+        self.assertIn("unexpected error: RuntimeError", printed)
 
 
 if __name__ == "__main__":  # pragma: no cover

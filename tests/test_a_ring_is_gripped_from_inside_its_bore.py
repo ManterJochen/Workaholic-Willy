@@ -223,8 +223,11 @@ class _Arm:
         self.told: list[float | None] = []
         self.attached: list[float] = []
 
-    def move_to(self, pose: Any, **_: Any) -> None:
+    def move(self, pose: Any, *, linear: bool = False) -> Any:
+        from src.robot.core import MotionCommand, MotionResult
+
         self.moves.append(pose)
+        return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
 
     def set_finger_opening(self, width: float | None) -> None:
         self.told.append(width)
@@ -235,6 +238,14 @@ class _Arm:
 
     def detach_payload(self) -> bool:
         return True
+
+    def payload_declined_reason(self) -> str | None:
+        return None
+
+    def payload_model(self) -> Any:
+        from src.robot.core.arm_capabilities import PayloadModel
+
+        return PayloadModel.PLANNER_AND_FILTER
 
 
 _LINE_IN, _CONTACT, _PART = 16.9, 30.9, 92.0

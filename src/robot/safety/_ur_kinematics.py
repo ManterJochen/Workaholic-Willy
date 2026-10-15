@@ -1,19 +1,23 @@
-"""Universal Robots Denavit-Hartenberg parameters, bundled for the self-collision guard.
+"""Universal Robots Denavit-Hartenberg kinematics, used by the self-collision guard to derive per-link transforms.
 
-The guard derives per-link transforms from them. The DH convention is the standard
-Craig-style one, with alpha, a, d and theta_offset, and the joint variable added to
-``theta_offset``. Lengths are metres internally, and the consumer scales to mm for the
-capsule pipeline.
+The rows come from the arm registry (``config/arms/<model>.yaml``) through :func:`ur_dh_rows`. They were hand-typed
+here as ``UR_DH_TABLES_M`` until P0d D4 deleted the table; the numbers did not change, and
+``tests/test_inlined_dh_tables.py`` holds them, exactly, to the copies the committed collision bundles were baked
+through.
+
+The DH convention is the standard Craig-style one, with alpha, a, d and theta_offset, and the joint variable added
+to ``theta_offset``. Lengths are metres internally, and the consumer scales to mm for the capsule pipeline.
 
 Sources
 -------
-The official Universal Robots kinematic data, from the support site under "DH
-parameters for calculations of kinematics and dynamics":
+Universal Robots' own numbers, twice over: the descriptions agree with UR's pinned ROS 2 description to float noise
+(``tests/test_arm_descriptions_are_urs_numbers.py``), and with UR's support-site page "DH parameters for
+calculations of kinematics and dynamics", from which the old table was typed:
 https://www.universal-robots.com/articles/ur/application-installation/dh-parameters-for-calculations-of-kinematics-and-dynamics/
 
-What is bundled
----------------
-* Only the standard 6-DoF UR models. Anything else returns ``None``, and the
+What has kinematics here
+------------------------
+* Only a UR the arm registry describes. Anything else returns ``None``, and the
   self-collision guard then treats an arm-against-arm link check as unavailable while
   still running the tool capsule and fixture checks.
 * The DH theta-offsets are zero for UR, because the controller ``q`` already
@@ -22,6 +26,7 @@ What is bundled
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 
 import numpy as np
@@ -29,14 +34,14 @@ import numpy as np
 __all__ = [
     "URDhChain",
     "URDhRow",
-    "UR_DH_TABLES_M",
     "arm_link_transforms_mm",
     "arm_link_transforms_mm_many",
+    "described_ur_model",
+    "ur_dh_rows",
     "ur_link_origins_mm",
     "ur_link_transforms_mm",
     "ur_link_transforms_mm_many",
     "ur_joint_radii_mm",
-    "ur_reach_mm",
     "ur_series_twin",
 ]
 
@@ -50,83 +55,58 @@ class URDhRow:
     alpha_rad: float
 
 
-# Per-model six-row DH tables in metres and radians, from the UR support page linked
-# above. Each row is one joint, and a link length is mostly the ``a`` of that row and
-# the ``d`` of the next.
+@functools.lru_cache(maxsize=None)
+def _described_rows(key: str) -> tuple[URDhRow, ...] | None:
+    from src.config import ConfigError  # noqa: PLC0415 (the config layer is below this one; lazy for import cost)
+    from src.config.arms import load_arm  # noqa: PLC0415
 
-_UR3_DH: tuple[URDhRow, ...] = (
-    URDhRow(0.0, 0.1519, 1.570796327),
-    URDhRow(-0.24365, 0.0, 0.0),
-    URDhRow(-0.21325, 0.0, 0.0),
-    URDhRow(0.0, 0.11235, 1.570796327),
-    URDhRow(0.0, 0.08535, -1.570796327),
-    URDhRow(0.0, 0.0819, 0.0),
-)
-
-_UR3E_DH: tuple[URDhRow, ...] = (
-    URDhRow(0.0, 0.15185, 1.570796327),
-    URDhRow(-0.24355, 0.0, 0.0),
-    URDhRow(-0.2132, 0.0, 0.0),
-    URDhRow(0.0, 0.13105, 1.570796327),
-    URDhRow(0.0, 0.08535, -1.570796327),
-    URDhRow(0.0, 0.0921, 0.0),
-)
-
-_UR5_DH: tuple[URDhRow, ...] = (
-    URDhRow(0.0, 0.089159, 1.570796327),
-    URDhRow(-0.425, 0.0, 0.0),
-    URDhRow(-0.39225, 0.0, 0.0),
-    URDhRow(0.0, 0.10915, 1.570796327),
-    URDhRow(0.0, 0.09465, -1.570796327),
-    URDhRow(0.0, 0.0823, 0.0),
-)
-
-_UR5E_DH: tuple[URDhRow, ...] = (
-    URDhRow(0.0, 0.1625, 1.570796327),
-    URDhRow(-0.425, 0.0, 0.0),
-    URDhRow(-0.3922, 0.0, 0.0),
-    URDhRow(0.0, 0.1333, 1.570796327),
-    URDhRow(0.0, 0.0997, -1.570796327),
-    URDhRow(0.0, 0.0996, 0.0),
-)
-
-_UR10_DH: tuple[URDhRow, ...] = (
-    URDhRow(0.0, 0.1273, 1.570796327),
-    URDhRow(-0.612, 0.0, 0.0),
-    URDhRow(-0.5723, 0.0, 0.0),
-    URDhRow(0.0, 0.163941, 1.570796327),
-    URDhRow(0.0, 0.1157, -1.570796327),
-    URDhRow(0.0, 0.0922, 0.0),
-)
-
-_UR10E_DH: tuple[URDhRow, ...] = (
-    URDhRow(0.0, 0.1807, 1.570796327),
-    URDhRow(-0.6127, 0.0, 0.0),
-    URDhRow(-0.57155, 0.0, 0.0),
-    URDhRow(0.0, 0.17415, 1.570796327),
-    URDhRow(0.0, 0.11985, -1.570796327),
-    URDhRow(0.0, 0.11655, 0.0),
-)
-
-_UR16E_DH: tuple[URDhRow, ...] = (
-    URDhRow(0.0, 0.1807, 1.570796327),
-    URDhRow(-0.4784, 0.0, 0.0),
-    URDhRow(-0.36, 0.0, 0.0),
-    URDhRow(0.0, 0.17415, 1.570796327),
-    URDhRow(0.0, 0.11985, -1.570796327),
-    URDhRow(0.0, 0.11655, 0.0),
-)
+    # A description, not an arm, and named so: the contract test reads `arm.<member>` as a member of a robot arm
+    # (tests/test_robot_boundaries.py, rule III.b), and a description's `vendor` and `joints` are not one.
+    try:
+        description = load_arm(key)
+    except ConfigError:
+        return None
+    if description.vendor != "ur":
+        return None
+    return tuple(URDhRow(joint.a_m, joint.d_m, joint.alpha_rad) for joint in description.joints)
 
 
-UR_DH_TABLES_M: dict[str, tuple[URDhRow, ...]] = {
-    "ur3": _UR3_DH,
-    "ur3e": _UR3E_DH,
-    "ur5": _UR5_DH,
-    "ur5e": _UR5E_DH,
-    "ur10": _UR10_DH,
-    "ur10e": _UR10E_DH,
-    "ur16e": _UR16E_DH,
-}
+def ur_dh_rows(model: str | None) -> tuple[URDhRow, ...] | None:
+    """This UR's DH rows, from the arm registry, or ``None`` where the registry describes no such UR.
+
+    The one place the rows come from, since P0d D3b. Every function below read ``UR_DH_TABLES_M`` directly, and so did
+    the exact-mesh guard's model check, the closed-form IK, the sidecar's model guess, the sim's reach helper and
+    datagen's robot resolver. They all ask here now, and this asks ``config/arms/<model>.yaml``. The table is gone (D4);
+    what holds these floats now is ``tests/test_inlined_dh_tables.py``, which compares them, exactly, with the copies
+    inlined in the three scripts that baked the committed collision bundles, because those are the floats the geometry
+    was cut from.
+
+    Cached per model: the continuous monitor asks on every sample of a path, and the registry is read once per process
+    (``src.config.arms._repository_registry``), so the cost of asking is one dictionary hit.
+
+    Wider than the old table by one arm, on purpose: ur20 is described from Universal Robots' pinned description and
+    had no row there. So ur20 has kinematics, and the exact-mesh guard's status for it moves from ``unknown_model`` to
+    ``no_bundle``, which is the true answer. No cell can reach it, because its description says ``admitted: false``.
+    """
+    if not model:
+        return None
+    return _described_rows(model.lower())
+
+
+def described_ur_model(model: str | None) -> str | None:
+    """``model`` where the arm registry describes a UR by that name, else ``None``: the one rule for "is this a UR".
+
+    Since P0d D5 the only gate between an arm and UR geometry. The self-collision guard asks it of the model the arm
+    reports (``SelfCollisionGuard.model_for``), and the build-time hand refusal, the wrist body reader, the desk
+    checklist and the half-turn window's elbow ask it of the model the cell names, so all of them answer alike wherever
+    the cell names the model its arm reports (every driver that exists does; ``planning/hand.py`` says where it could
+    not). The vendor does not enter: the Isaac arm is ``vendor="sim"`` and drives
+    the UR it names, and a UR driven over ROS 2 will be another vendor again. A model nobody describes, the dummy's
+    ``dummy-6dof`` or a KUKA's, gets ``None`` and no chain.
+    """
+    if not model or ur_dh_rows(model) is None:
+        return None
+    return str(model)
 
 
 def ur_series_twin(model: str | None) -> str | None:
@@ -154,7 +134,7 @@ def ur_series_twin(model: str | None) -> str | None:
         return None
     key = model.lower()
     twin = key[:-1] if key.endswith("e") else key + "e"
-    return twin if twin in UR_DH_TABLES_M and twin != key else None
+    return twin if ur_dh_rows(twin) is not None and twin != key else None
 
 
 def _dh_transform(theta: float, row: URDhRow) -> np.ndarray:
@@ -180,7 +160,7 @@ def ur_link_origins_mm(model: str, joints_rad: np.ndarray) -> list[np.ndarray] |
     ``[0,0,0]`` and the last entry is the flange origin, meaning the TCP without a
     tool. It returns ``None`` where ``model`` is not in the bundled DH table.
     """
-    table = UR_DH_TABLES_M.get(model.lower())
+    table = ur_dh_rows(model)
     if table is None:
         return None
     if joints_rad.shape[0] != len(table):
@@ -201,8 +181,9 @@ def ur_joint_radii_mm(model: str) -> tuple[float, ...] | None:
 
     Rotating joint ``j`` by ``dq`` sweeps every point distal to it through an arc of at most
     ``dq * radius[j]``. The radius is the sum of every link length and joint offset from that joint
-    outwards, which over-estimates for the same reason :func:`ur_reach_mm` does and in the same safe
-    direction.
+    outwards. Adding them all over-estimates, because the ``d`` offsets run perpendicular to the ``a``
+    lengths and never stack end to end, and that is the safe direction for a bound that sets how densely a
+    path is sampled.
 
     Per joint rather than one number for the arm, because the wrist carries a hand while the shoulder
     carries the whole arm, and holding both to the shoulder's radius samples a wrist move seventeen
@@ -211,31 +192,13 @@ def ur_joint_radii_mm(model: str) -> tuple[float, ...] | None:
     move fits under the checker's cap at all. Both are upper bounds; this one keeps what the table
     already knows.
     """
-    table = UR_DH_TABLES_M.get(model.lower())
+    table = ur_dh_rows(model)
     if table is None:
         return None
     return tuple(
         float(sum(abs(row.a_m) + abs(row.d_m) for row in table[index:]) * 1000.0)
         for index in range(len(table))
     )
-
-
-def ur_reach_mm(model: str) -> float | None:
-    """An upper bound in mm on the distance from the base to any point of this UR, or ``None``.
-
-    The sum of every link length and every joint offset in the model's own DH table. Adding them all
-    is an over-estimate, because the ``d`` offsets run perpendicular to the ``a`` lengths and never
-    stack end to end: a UR5e comes out at 1312 mm against the 850 mm the datasheet calls its reach.
-    That is the safe direction for the one thing this number is for, which is turning a joint angle
-    into the arc a point of the arm can sweep: a bound that is too large samples a path more densely
-    than it has to, and a bound that is too small leaves gaps nobody looked at.
-
-    Derived rather than tabulated so a model added to ``UR_DH_TABLES_M`` cannot arrive without one.
-    """
-    table = UR_DH_TABLES_M.get(model.lower())
-    if table is None:
-        return None
-    return float(sum(abs(row.a_m) + abs(row.d_m) for row in table) * 1000.0)
 
 
 def ur_link_transforms_mm(model: str, joints_rad: np.ndarray) -> list[np.ndarray] | None:
@@ -250,7 +213,7 @@ def ur_link_transforms_mm(model: str, joints_rad: np.ndarray) -> list[np.ndarray
     vertex straight into the mm base frame. It returns ``None`` where ``model`` is not
     in the bundled DH table or the joint count does not match.
     """
-    table = UR_DH_TABLES_M.get(model.lower())
+    table = ur_dh_rows(model)
     if table is None or joints_rad.shape[0] != len(table):
         return None
     T = np.eye(4, dtype=np.float64)
@@ -273,7 +236,7 @@ def ur_link_transforms_mm_many(model: str, joints_rad: np.ndarray) -> np.ndarray
     sample judged at a time places it, about 30 times faster. It returns ``None`` where ``model`` is not in the bundled
     DH table or ``joints_rad`` is not one row of the table's joint count per configuration.
     """
-    table = UR_DH_TABLES_M.get(model.lower())
+    table = ur_dh_rows(model)
     rows = np.asarray(joints_rad, dtype=np.float64)
     if table is None or rows.ndim != 2 or rows.shape[1] != len(table):
         return None
@@ -355,8 +318,8 @@ class URDhChain:
 
     @classmethod
     def nominal(cls, model: str) -> "URDhChain | None":
-        """The bundled table of ``model`` as a chain, or ``None`` for a model with no table."""
-        table = UR_DH_TABLES_M.get(str(model).lower())
+        """The rows the arm registry describes for ``model`` as a chain, or ``None`` for an arm it does not describe."""
+        table = ur_dh_rows(model)
         if table is None:
             return None
         return cls(

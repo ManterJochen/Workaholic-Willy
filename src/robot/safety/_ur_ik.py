@@ -1,6 +1,6 @@
 """Closed-form inverse kinematics of the UR flange, on the DH tables the guards already use.
 
-Every UR in :data:`~src.robot.safety._ur_kinematics.UR_DH_TABLES_M` has the same structure: a shoulder
+Every UR the arm registry describes (:func:`~src.robot.safety._ur_kinematics.ur_dh_rows`) has the same structure: a shoulder
 offset, two parallel arm links and three wrist axes that do not meet in a point. For that chain the flange
 pose has up to eight solutions, one per choice of shoulder (left or right), wrist 2 (flipped or not) and
 elbow (up or down), and each of them is found in closed form. This module finds all of them, so a caller can
@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ._ur_kinematics import UR_DH_TABLES_M, URDhChain, URDhRow, ur_link_transforms_mm
+from ._ur_kinematics import URDhChain, URDhRow, ur_dh_rows, ur_link_transforms_mm
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -186,7 +186,7 @@ def ur_flange_ik(
     ``q6_if_singular`` is where wrist 3 goes when wrist 2 is at 0 or pi and only the sum of wrist 1 and wrist 3 is
     fixed; the arm passes the wrist 3 it stands at, so the solution does not turn it for nothing.
     """
-    table = UR_DH_TABLES_M.get(str(model).lower())
+    table = ur_dh_rows(str(model))
     if table is None:
         return None
     goal = np.asarray(flange_mm, dtype=np.float64)
@@ -305,7 +305,7 @@ def ur_branch(model: str, joints: "Sequence[float]") -> "URBranch | None":
     means the same three choices of the closed form and nothing a caller has to reconstruct. A full turn of any joint
     changes nothing here, as it changes nothing about the arm.
     """
-    table = UR_DH_TABLES_M.get(str(model).lower())
+    table = ur_dh_rows(str(model))
     if table is None:
         return None
     q = [float(v) for v in joints]

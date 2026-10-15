@@ -26,7 +26,7 @@ the operator has not opted in to failing closed for that condition, for instance
 * the self-collision guard is configured for the ``fcl`` backend and the configured
   mesh directory is empty;
 * the joint-limit guard has no static fallback limits and the connected driver exposes
-  no telemetry, as with KUKA EKI.
+  no telemetry.
 
 ``UNAVAILABLE`` does not itself accept the motion. :meth:`SafetyPreflight.evaluate`
 decides whether to fail open or fail closed from the guard ``enforce`` flag.

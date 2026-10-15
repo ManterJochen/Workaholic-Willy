@@ -43,21 +43,21 @@ Every driver implements it, and nothing above the driver layer imports a driver 
 
 | Group | Members | Contract |
 |---|---|---|
-| introspection | `capabilities`, `is_connected` | vendor, model, DoF, feature flags |
+| introspection | `capabilities`, `is_connected` | vendor, model, DoF, controller, whether it has FK and is simulated |
 | lifecycle | `connect`, `disconnect` | idempotent both ways |
 | state | `get_tcp_pose`, `get_joint_positions` | pose tagged `Frame.BASE`; joints in radians |
-| motion | `move_joint`, `move_linear`, `stop` | raise `RobotMotionRejected` or `RobotConnectionError` |
-| motion | `move_to_joints`, `move` | return a typed `MotionResult` |
+| motion | `move_to_joints`, `move` | return a typed `MotionResult`; `result.raise_unless_executed()` raises instead |
+| motion | `move_linear`, `stop` | raise `RobotMotionRejected` or `RobotConnectionError` |
 | kinematics | `fk`, `ik` | BASE frame both ways |
-| bool shims | `is_inside_workspace`, `move_to`, `move_home`, `wait_until_steady` | return `False` instead of raising |
+| bool helpers | `is_inside_workspace`, `move_home`, `wait_until_steady` | return `False` instead of raising |
 
 The units are fixed: millimetres, XYZW quaternions, frame-tagged poses, joints in radians. Vendor
-conventions, such as UR's axis-angle rotation vectors and KUKA's E6POS with ABC Euler degrees, stay inside
-the driver package.
+conventions, such as UR's axis-angle rotation vectors, stay inside the driver package.
 
-Prefer `move()` over `move_to()`. The bool pair folds every failure into one `False`, so a caller cannot
-tell a workspace rejection from an IK failure from a controller refusal. `move()` returns a `MotionResult`
-whose `MotionStatus` comes from a closed set, with one safety rejection per guard:
+A bool folds every failure into one `False`, so a caller could not tell a workspace rejection from an IK
+failure from a controller refusal; `move_to` and `move_joint`, the bool and the raising verb, left the arm on
+2026-09-19. `move()` returns a `MotionResult` whose `MotionStatus` comes from a closed set, with one safety
+rejection per guard:
 
 ```powershell
 python -c "from src.robot.core import MotionStatus; print([m.value for m in MotionStatus])"
@@ -81,15 +81,16 @@ for one with `isinstance()`.
 |---|---|
 | `SupportsDigitalIO` | `set_digital_output`, `get_digital_input`, analog out, banked by `DigitalIOPort` (`standard`, `configurable`, `tool`) |
 | `SupportsForceTorque` | `get_tcp_wrench` in N and Nm, BASE frame, plus `get_joint_torques` |
-| `SupportsRobotStatus` | `get_robot_status` and `recover_from_protective_stop` |
+| `SupportsRobotStatus` | `get_robot_status` and `acknowledge_fault` (a person at the cell clears a stop with `python -m src.robot.faults acknowledge`, never the stack or the console) |
 | `SupportsFreedrive` | `freedrive()` -> `FreedriveSession`: `free()`, `hold()` and `sample()` inside a with-block that holds the arm on every way out, an exception or Ctrl-C included, while every motion verb of the arm refuses as long as it is open; `controller_payload()` -> `ControllerPayload \| None`, the mass and centre of gravity the controller compensates for, or `None` where the controller does not report them |
+| `SupportsWatching` | `watch()`: a link that reads the controller's state and takes a person's acknowledgement and never starts a control program, so it opens on a controller in a protective stop; every motion verb refuses while it is open (P0i). The fault door watches, because a full connect is refused by exactly the stop it is for (measured on URSim, 2026-09-26) |
 | `ChoosesConfigurations` | `nearest_configuration(pose)` -> `JointPositions`: the configuration this arm would take for a TCP pose, judged by its own inverse kinematics, joint window and endpoint gate, **with nothing moved**; `RobotKinematicsError` names what refused it. The generated view of a wrist pick screens every turn with it |
 | `DrivesJointLines` | `move_to_joints_on_the_line(joints)`: a joint move on the **straight joint line only**, judged like `move_to_joints`, and refused with nothing sent where the line is not clear. Never planned around. `UNSUPPORTED` on an arm whose paths nobody judges (the `ik` planner) |
 | `SupportsHalt` | `halt(reason)`, `clear_halt()`, `halt_state()`: the latch "halt now" sets. From the halt on every motion is refused with nothing sent and every output switch raises `ArmHalted`, until `clear_halt()`, which the console calls only once a person said the cell is clear (section 8) |
 
 The vendor-neutral `RobotMode` and `SafetyMode` enumerations turn a controller's integer status codes into
 portable words; the UR driver maps its integers in `src/robot/drivers/ur/arm.py`. `URRobotArm` is the only
-driver that implements any of the first six; its `SupportsFreedrive` is the UR teach mode. It and the dummy arm
+driver that implements any of the first seven; its `SupportsFreedrive` is the UR teach mode. It and the dummy arm
 carry `SupportsHalt`. Four more say how an
 arm moves rather than what it has: `KeepsLines` (what a straight line keeps, [05](05-pick-loop.md)
 section 2), `HomesTyped` (a typed move home), `CarriesPayload` (a model of the carried part) and
@@ -100,6 +101,14 @@ carries weight: the two digital-I/O end-effectors run on it, and neither is buil
 advertise it. So does `SupportsFreedrive`: the hand-guided calibration (`--freedrive`) and the fine-tune at
 each fixed station (`--adjust`) need it, and an arm without it, the simulator's among them, calibrates from
 fixed stations only ([03](03-calibration.md)).
+
+Which of them an arm implements is what each operator function asks before it commands anything, and one
+list says it at the desk: `python -m src.robot.execution.real_cell --check` prints an ability row per
+function after its checklist (move, hand, handle, pick, calibrate, calibrate by hand, teach, io bench,
+planner start, acknowledge fault), asked of the arm the tree builds without connecting it.
+`Cell.abilities()` returns the same rows, and the console serves them at `GET /v1/abilities`. None of
+this is a flag on `capabilities`: the flags there are the ones something reads. Each row is tested
+against the refusal of the function it stands for, on desk trees; no row has met a physical arm yet.
 
 ### 1.3 `Gripper` and `ObjectDetectingGripper`
 
@@ -132,7 +141,7 @@ client separately, so I/O and safety status can degrade without taking the move 
 | Vendor | Registered | Needs SDK | Evidence |
 |---|---|---|---|
 | `ur` | yes | `rtde_control`, `rtde_receive` | run on a physical cell: a UR10 (CB3), connect, moves, cuRobo plans and home; measured against real controller software (URSim): connect, power, motion, digital I/O, tool frame, payload, protective stop |
-| `kuka` | yes | none (EKI and KRL over TCP and XML) | never touched hardware; an integrator deploys the KRL program in [`config/robot/templates/kuka/`](../../config/robot/templates/kuka/) first |
+| `kuka` | no, a reserved name | | its EthernetKRL driver was deleted unrun (2026-09-19); KUKA returns over ROS 2 |
 | `sim` | yes | `isaacsim` | measured in simulation: the full pick path in Isaac Sim |
 | `dummy` | yes | none | a desk arm with **no kinematics**: `fk` returns the last recorded pose, `ik` the last recorded joints |
 | `franka`, `ros2` | **no** | | empty slots; `create_arm` raises `RobotConnectionError` |
@@ -203,12 +212,74 @@ cell holds exactly one `GripperController`.
 
 ### 2.4 The multi-robot key registry
 
-[`src/robot/drivers/sim/robot_models.py`](../../src/robot/drivers/sim/robot_models.py) holds every UR from
-the UR3 to the UR10, both series. One model key maps to a simulator USD, a reach and a payload, and
-`curobo_arm_descriptor(model)` turns the same key into `willy_{key}.yml`, the planner's descriptor of the
-arm. The descriptor carries no hand: the planner adds the hand `robot.gripper.model` names as a body link
-when its sidecar starts, placed by the declared tool frame. One key drives the DH table, the exact-mesh
-bundle, the planner descriptor and the simulator asset, which is why the schema cross-validates it (4.8).
+[`config/arms/<model>.yaml`](../../config/arms) describes one arm per file: its joints, reach and payload,
+whether a cell may name it (`admitted`), and for an arm the simulator ships, a `sim` block with its USD, baked
+gripper variant and workspace patch. [`src/robot/drivers/sim/robot_models.py`](../../src/robot/drivers/sim/robot_models.py)
+builds its `URModelSpec` from that block for the six admitted arms, from the UR3 to the UR10, both series, and
+`src.config.arms.curobo_descriptor_name(model)` turns the same key into `willy_{key}.yml`, the planner's
+descriptor of the arm. The descriptor carries no hand: the planner adds the hand `robot.gripper.model` names as
+a body link when its sidecar starts, placed by the declared tool frame. One key drives the DH rows, the
+exact-mesh bundle, the planner descriptor and the simulator asset, which is why the schema cross-validates it
+(4.8).
+
+A deployment tree may repeat an arm file and nothing else. A tree copied before a description gained a key
+holds files the schema can no longer read; the load then refuses once, naming each stale file and the
+repository file to copy over it. A tree with no `arms/` folder reads through the repository's registry.
+
+Each description also names the pin its joints were read from, as data: `upstream` holds the build adapter,
+the repository, the full commit, the licence as one SPDX identifier and a hash over the adapter manifest's
+rows. Nothing reads it at build or run time yet; `tests/test_the_description_names_its_upstream.py` holds all
+eight to `scripts/arms/fetch.py`, so a pin bump that forgets an arm fails by name. Every joint row also
+names the `link` it moves and the bundle `part` its arrays are baked under; the frame is the row's number and
+the flange is frame `dof`, so neither is written. The bake and the tools around it read the description
+through `scripts/arms/_arm_file.py` (stdlib and PyYAML, so the cuRobo environment's Python 3.10 reads it too);
+the fit plans and the runtime keep their own copies until P0f F8 and F9, and `tests/test_inlined_link_tables.py`
+holds those, the committed bundles and the sphere maps to the description.
+The `base` block names the root the joints hang from and `chain_yaw_deg`, the turn from it to where the DH
+chain starts: 180 on every UR, 0 or 180 and nothing else. It is the relation from the URDF's root to the chain,
+not the cell's `safety.self_collision.kinematics_base_yaw_deg`, which relates the chain to the frame a
+transport reports in.
+`controller_yaw_deg` is the turn from the same root to the frame the controller reports poses in, which a
+cell's geometry is declared in too: 180 on every UR. The driver reads it since P0f F9c: an arm that says 180
+is planned through that half turn, every pose it hands the planner turned in and out, and one that says 0
+through none.
+Each joint row also carries `planner_limit_deg`, the envelope the trajectory planner is given before its clip,
+and `planner.position_limit_clip_rad` is that clip, 0.1 rad on every UR. The guard's `limit_deg` is the arm's
+own envelope, +/-360 on every UR axis; the planner's elbow is UR's +/-180 from `joint_limits.yaml`, where UR
+writes that it "artificially limit[s] this joint to half its actual joint position limit to avoid (MoveIt/OMPL)
+planning problems". The planner's envelope must lie inside the guard's, or the planner would propose what the
+guard refuses.
+Seven of the eight also carry `retract_anchor_rad` on every joint and `retract_anchor_source` on the arm:
+Isaac's Lula `default_q`, where `scripts/arms/retract.py` starts its search, and the text every retract row of
+the arm records. All joints or none, compared by `float.hex` because the rows are hashed into the evidence, so
+`0.0` where Isaac writes `-0.0`; ur20 has no Isaac folder and no anchor.
+
+Why the description is shaped as it is:
+
+- **Metres, not millimetres.** Every committed UR artefact was cut from DH values in metres, and the millimetre
+  round trip is not exact: of the 84 lengths the old hand-typed table held, the ur3e `d6` fails it
+  (`92.1 / 1000` is `0.09209999999999999`, not `0.0921`). Millimetres would move that arm's chain, and its
+  bundle, in the last bits. The unit is in every field name.
+- **The registry is cached.** One read parses and validates eight files, measured in aurora at 14.95 ms against
+  19 ns for the dict lookup it replaced, and the exact-mesh guard asks on every evaluation. Only the repository's
+  registry is cached. A deployment tree's is read fresh, so a test that rewrites a scratch registry sees its
+  second version, and a broken registry refuses on every call, because an exception is not cached.
+- **The descriptor name refuses by description.** Its predecessor routed the name through the simulator's model
+  table. On 2026-09-22 (in aurora) a planner check for ur16e was refused as "unsupported sim robot_model" and told
+  to build `willy_ur16e.yml`, which was built and on the box.
+- **It replaced ten tables.** Until the registry, an arm was ten hand-kept tables in six modules, none able to see
+  the others: the admitted-name tuple, the DH table, the joint-limit table, the sim model specs, the cuRobo
+  descriptor name, one home pose shared by every vendor, the planner's joint names, the capability record and a
+  `dof=6` default. A model present in one and absent from another degraded without a word.
+- **It describes more arms than a cell may name.** ur16e's exact-mesh bundle was committed so that admitting it
+  later would be "a config question rather than a geometry one" (`safety/data/bundles.json`), and ur20 is
+  described from Universal Robots' pinned files with no collision bundle here. Describing only the admitted six
+  would have left the hand-kept tables the registry replaced unable to go, because they held seven and eight
+  models.
+- **An identical tree copy is accepted.** A deployment tree is normally a copy of the shipped one, so it carries
+  `arms/` whether or not anybody meant it to. Refusing a tree-owned registry outright would refuse a
+  byte-identical copy, which the hand and camera registries decline to do for the same reason, and which
+  `python -m src.config --data <copy>` does on every run of `tests/test_config_cli.py`.
 
 In simulation the mount follows from `robot.gripper.model`. The `ur5e` and `ur10e` assets bake the 2F-85
 as a variant; on the other arms the simulator mounts the named hand standalone. A hand the simulator has no
@@ -262,7 +333,7 @@ which is also why most runners build the service through `from_components`.
 
 ### 4.1 Where the preflight is built
 
-In the driver, not in a composition root. `URRobotArm` and `KukaRobotArm` build one in their constructor;
+In the driver, not in a composition root. `URRobotArm` builds one in its constructor;
 `bootstrap_sim_cell` builds one with `sim_safety_preflight(cfg)` and injects it into `IsaacRobotArm`;
 `DummyRobotArm` has none. Each of them calls `SafetyPreflight.from_safety_config`, so the safety layer is
 the same on the simulation path and on the real-hardware path. `SafetyPreflight.from_tree` builds the
@@ -293,17 +364,18 @@ remembers the target for the next continuity check.
 | # | Guard | `enforce` key | Needs | Refuses on |
 |---|---|---|---|---|
 | 1 | `workspace` | always wired | `target_pose` in `Frame.BASE` | a pose outside the box shrunk by `safety.limits.workspace_margin_mm` (default 20.0) |
-| 2 | `joint_limit` | `safety.joint_limits.enforce` | `target_joints`, plus `arm` for the vendor table | an axis outside `[min + margin_deg, max - margin_deg]`, `margin_deg` default 5.0 |
+| 2 | `joint_limit` | `safety.joint_limits.enforce` | `target_joints`, plus `arm` for the registry envelope | an axis outside `[min + margin_deg, max - margin_deg]`, `margin_deg` default 5.0 |
 | 3 | `ik_quality` | `safety.ik_quality.enforce` | `target_joints`, plus `arm` | non-finite joints, DoF mismatch, joint jump, near-limit proximity, near-singularity |
-| 4 | `self_collision` | `safety.self_collision.enforce` | `target_joints` and a kinematics model | any monitored pair closer than `min_distance_mm`, default 10.0; a box a camera saw closer than `perceived_min_distance_mm`, default 2.0 and never less than 1 (5.5) |
+| 4 | `self_collision` | `safety.self_collision.enforce` | `target_joints`, and for the arm's links an arm the registry describes (4.7) | any monitored pair closer than `min_distance_mm`, default 10.0; a box a camera saw closer than `perceived_min_distance_mm`, default 2.0 and never less than 1 (5.5) |
 | 5 | `payload` | `safety.payload.enforce` | config only | negative mass, mass over `max_mass_kg`, a negative inertia component |
 | 6 | `motion_continuity` | `safety.motion_continuity.enforce` | a previous **accepted** target | a joint, TCP or orientation step over its cap |
 
 The planner's joint envelope is narrower than guard 2's on purpose. Guard 2 enforces the Universal Robots
 factory limit of 360 degrees per axis either way, less `margin_deg`. A planner descriptor holds the elbow at
 the published planning limit of 180 degrees and every other joint at 360, and the planner narrows all of
-them by `position_limit_clip`, 0.1 rad or 5.73 degrees, when it loads. Since 5.73 is more than 5.0, the
-planner never proposes a configuration the guard refuses. `tests/test_planner_joint_envelope.py` asserts
+them by `position_limit_clip`, 0.1 rad or 5.73 degrees, when it loads. Each arm description states both, as
+`planner_limit_deg` and `planner.position_limit_clip_rad` (2.4). Since 5.73 is more than 5.0, the planner never
+proposes a configuration the guard refuses. `tests/test_planner_joint_envelope.py` asserts
 that for every bundled arm and for the simulation cell, and a cell that raises `margin_deg` above 5.73
 fails it.
 
@@ -332,17 +404,17 @@ accepted. A margin that inverts an axis raises at construction, so that failure 
 families consult an `enforce`. Setting it false does not disable the workspace guard. To widen the box,
 edit `robot.workspace_limits`; to drop the margin, set `workspace_margin_mm: 0.0`.
 
-**Joint limit** resolves its envelope in order: static `min_deg` and `max_deg` from YAML, then the built-in
-UR table keyed on `capabilities.vendor == "ur"` and `.model`, then nothing, which means unavailable and a
-rejection. The UR table is the factory envelope, not your installation limits, and no driver reads joint
-limits from the controller. The guard can therefore pass a configuration the controller protective-stops
+**Joint limit** resolves its envelope in order: static `min_deg` and `max_deg` from YAML, then the envelope
+the arm registry describes for the model the arm reports (`capabilities.model`, in `config/arms/<model>.yaml`),
+whatever its vendor, then nothing, which means unavailable and a rejection. That envelope is the factory
+envelope, not your installation limits, and no driver reads joint limits from the controller. The guard can therefore pass a configuration the controller protective-stops
 on; the controller is the tighter backstop.
 
-Any cell whose vendor is not `ur` supplies `min_deg` and `max_deg` in YAML. That includes the simulator,
-whose capability vendor is `sim`, and every KUKA cell. The `sim` layer supplies the UR factory envelope. Do
-not paste those numbers onto a KUKA cell: they are far wider than any KR axis. KUKA per-axis limits come
-from the controller or the datasheet, and `config/robot/templates/kuka_eki.yaml` ships no `joint_limits`
-block. `create_arm` raises `JointLimitTableMissing` at build for any arm that enforces this guard and
+An arm whose model the registry does not describe supplies `min_deg` and `max_deg` in YAML. The registry
+describes only Universal Robots today, so every other arm is one. The simulator was one until P0d D5, while
+the lookup was gated on `capabilities.vendor == "ur"`; its arm now reports the UR it drives and resolves that
+UR's envelope, and the `sim` layer's own UR factory envelope still answers first. Another arm's per-axis
+limits come from its controller or its datasheet. `create_arm` raises `JointLimitTableMissing` at build for any arm that enforces this guard and
 resolves no table, naming both keys. An arm built by hand past the factory still fails closed at run time.
 
 **IK quality** runs five checks: non-finite joints, DoF mismatch, joint jump from `current_joints`, limit
@@ -382,29 +454,41 @@ no box at all. If the box is what keeps the arm out of a fixture, declare the fi
 that family's safety surface is gone until the flag comes back. `omitted_guards` names what was left out
 and `guard_names` what runs, so print them (4.1) rather than assume.
 
-### 4.7 The two silent-hole keys
+### 4.7 The arm the guard judges, and the one silent-hole key
 
-`self_collision.kinematics_model` looks optional and carries weight. Unset on an arm whose vendor is not
-`ur`, such as the simulator (physically a UR5e), the arm capsules resolve to `None`. The guard then checks
-only base, tool and fixtures, with no arm against arm and no error. The exact-mesh path has the same gate.
+The arm's chain is not a key. The self-collision guard takes the model from the arm it judges,
+`capabilities.model`, and places arm-link capsules and exact meshes only where the arm registry describes a
+UR by that name (`described_ur_model` in `safety/_ur_kinematics.py`); the vendor does not enter. A real UR
+reports `ur.model`, and the simulator's arm reports `sim.robot_model`, in mock and real mode alike, so a
+simulated cell gets arm-against-arm checks without a safety key. Until P0d D5 the simulator's arm answered
+`isaac-sim`, which no registry describes, and `self_collision.kinematics_model` was the key that opted it
+in; unset, the guard checked only base, tool and fixtures, with no arm against arm and no error. That is
+still what an arm the registry does not describe gets, on both backends and whatever its vendor.
+`tests/test_the_arm_says_what_it_is.py` holds the arm naming itself.
 
 `self_collision.kinematics_base_yaw_deg` looks cosmetic at its 0.0 default. The bundled UR DH base is
 rotated 180 degrees about Z from the simulator's UR5e `base_link`. The reconcile is a pure base rotation,
 so every distance between links is preserved: arm against arm still looks right while every fixture check
-is wrong ([safety-math.md](../safety-math.md)). The `sim` layer sets both keys; the base tree leaves them
-unset:
+is wrong ([safety-math.md](../safety-math.md)). The `sim` layer sets it to 180; the base tree writes none,
+so the 0.0 default is in force. Check the yaw and the arm the simulator reports:
 
 ```powershell
-python -m src.config explain robot.safety.self_collision.kinematics_model --profile sim
+python -m src.config explain robot.safety.self_collision.kinematics_base_yaw_deg --profile sim
+python -m src.config explain robot.sim.robot_model --profile sim
 ```
 
 ### 4.8 Cross-validators that fire at config load
 
-[`robot_schema.py`](../../src/config/schema/robot/robot_schema.py) refuses three shapes of half-migrated
-cell. On an enabled simulation cell, `self_collision.kinematics_model` must equal `sim.robot_model`; on
-`vendor: ur` it must equal `ur.model`; and setting it on a vendor that is neither `ur` nor `sim` is an
-error. Profiles compose, so without these rules a chain that put a simulator layer onto a KUKA cell would
-load with `kinematics_model: ur5e`, and the guard would judge a KUKA arm by UR5e link lengths.
+[`robot_schema.py`](../../src/config/schema/robot/robot_schema.py) keeps the retreat pose inside the
+workspace box (`_check_safe_pose_in_workspace`). Three more validators refused half-migrated cells until
+P0d D5: on an enabled simulation cell `self_collision.kinematics_model` had to equal `sim.robot_model`, on
+`vendor: ur` it had to equal `ur.model`, and on any other vendor it could not be set, because profiles
+compose and a chain that put a simulator layer onto another vendor's cell would have judged that arm by UR5e
+link lengths. The three went with the key, because the arm now names itself and `ur.model` and
+`sim.robot_model` each refuse an arm the registry does not admit. A tree that still writes the key, a `null`
+included, is refused at load: the sentence the refusal prints lives in
+[`_removed.py`](../../src/config/schema/_removed.py) and points to the vendor block where the arm is named
+instead, `robot.ur.model` on a UR cell and `robot.sim.robot_model` on a simulated one.
 
 ---
 
@@ -466,7 +550,7 @@ place: a part other than the gripper and its two fingers, a missing or malformed
 not lie along the model's +Y. `no_engine` means neither Coal nor `python-fcl` imports.
 
 A missing arm bundle is baked with
-[`scripts/isaac/bake_ur_meshes_from_urdf.py`](../../scripts/isaac/bake_ur_meshes_from_urdf.py) in the plain
+[`scripts/arms/bake.py`](../../scripts/arms/bake.py) in the plain
 environment, with no simulator and no GPU. It reads the Universal Robots collision STL files, pinned to one
 upstream commit, and places them through a URDF rendered from the vendored Universal Robots config, so a
 bundle follows from pinned bytes. Run it without `--write` first: it compares the bake with the committed
@@ -475,8 +559,8 @@ way; against the copies a simulator ships, four links of the family differ by 0.
 up to 65 mm.
 
 ```powershell
-python scripts/isaac/bake_ur_meshes_from_urdf.py ur10            # compare with the committed bundle
-python scripts/isaac/bake_ur_meshes_from_urdf.py ur10 --write    # write, when the comparison agrees
+python scripts/arms/bake.py ur10            # compare with the committed bundle
+python scripts/arms/bake.py ur10 --write    # write, when the comparison agrees
 ```
 
 Which arms a hand may be composed onto is not a token. It is measured, one committed evidence file per
@@ -495,9 +579,9 @@ described here.
 Check what resolved with `python -m src.robot.safety.planning --check`, and on a real cell the checklist's
 `exact mesh engine` row (section 7).
 
-**Do not take a capsule verdict as evidence about a real cell.** Keep `backend: fcl`, set
-`kinematics_model` and `kinematics_base_yaw_deg` for your arm (4.7), consider `tool_model: finger`, add the
-bin walls as `fixtures`, and set `planner_margin_mm` (section 6). If `mesh_backend_status` for your arm and
+**Do not take a capsule verdict as evidence about a real cell.** Keep `backend: fcl`, check that the vendor
+block names your arm (`ur.model` on a UR) and set `kinematics_base_yaw_deg` for it (4.7), consider
+`tool_model: finger`, add the bin walls as `fixtures`, and set `planner_margin_mm` (section 6). If `mesh_backend_status` for your arm and
 hand is not `ok`, treat the cell as having no self-collision authority.
 
 ### 5.4 The two path gates
@@ -694,7 +778,7 @@ for a cell that names no hand, 1 is the expected reading. Exit 0 does not prove 
 check only verifies that the environment's interpreter exists. `--model` and `--hand` probe another arm
 and hand than the config names.
 
-**A cuRobo cell refuses motion rather than degrading.** `robot.ur.motion_planner` is `ik` or `curobo`,
+**A cuRobo cell refuses motion rather than degrading.** `robot.motion.planner` is `ik` or `curobo`,
 shipped `curobo`. With cuRobo unavailable, a real UR's move returns `CONTROLLER_REJECTED`, and no
 collision-free plan returns `TIMEOUT`; it never falls back to blind IK. A cuRobo simulator arm that cannot
 reach its sidecar refuses its motions too, and `resolve_runner_planner` refuses the run one layer up. The
@@ -702,9 +786,11 @@ simulator's planner is a runner flag, not a config key. `--motion-planner ik`, o
 says a run is deliberately unplanned, and a pick on such a run is refused before the jaws open: ik keeps no
 straight line, and the pick's descent is one.
 
-**A cuRobo move runs a straight joint line first, and cuRobo never chooses the goal.** A move to a pose goes
-to the configuration of its goal nearest the arm, on the branch the arm holds, ranked from the closed-form
-inverse kinematics inside the joint window. The straight joint line there runs wherever it is clear, judged
+**A cuRobo move runs a straight joint line first, and cuRobo never chooses the goal**, on any planned arm. A move
+to a pose goes to the configuration of its goal nearest the arm, on the branch the arm holds, ranked from the
+closed-form inverse kinematics of the arm's description inside the joint window
+([`goal_set.py`](../../src/robot/drivers/planned/goal_set.py)); an arm whose description states none is refused
+before anything is asked. The straight joint line there runs wherever it is clear, judged
 by the local path gate and by the planner against its world, the camera's included; cuRobo plans only where
 no line is clear, to the same goals in the same order, and there is no fallback that lets it pick a goal of
 its own. Two keys in `safety.planned_motion` bound that choice. `line_clearance_mm` (default 10) is how far
@@ -718,7 +804,9 @@ decides (below). `max_detour_deg` (default 45) is how far any joint of a cuRobo 
 swing beyond the span between where it starts and where it ends: a plan past it is not run, the next goal
 is planned to instead, and with none left the move is refused `JOINT_LIMIT_REJECTED` naming the joint. A
 Cartesian goal out of reach is `IK_FAILED`, and no clear line and no plan is `TIMEOUT`. A `move_to_joints`
-takes the same order to the one configuration it names.
+takes the same order to the one configuration it names: a joint outside the window runs as its full turn inside it,
+and a value past the range the arm's description rates its joint for (`limit_deg`) is refused as written in degrees,
+naming each such joint ([planned/README.md](../../src/robot/drivers/planned/README.md)).
 
 **What a cuRobo UR may ask less, and judge earlier** (the owner, 2026-10-09, each switch off as shipped). A line's
 samples solved on the controller's own kinematics and checked against it at two (`ik_quality.line_ik: local`), the
@@ -771,7 +859,7 @@ stop on it). A down leg refused before it was sent, the arm still in the air, fi
 down leg refused with another status (`unsupported`, `connection_error`,
 `controller_rejected`) stops where it is. Any other failure once the arm left the look, a protective stop
 or a toggle's count nobody can vouch for before a contact leg or once the arm is up among them, **stops the
-arm where it is**: nothing else is commanded, `recover_from_protective_stop` is never called, no escape is
+arm where it is**: nothing else is commanded, `acknowledge_fault` is never called, no escape is
 planned, the service starts no pick until a new run, and a person clears the cell before it. Before
 `next_target` drives a wrist pick's looks again, a toggle's count is read the same way: one nobody can
 vouch for ends the pick as a gripper fault before any look is driven again.
@@ -780,7 +868,7 @@ vouch for ends the pick as a gripper fault before any look is driven again.
 simulator arm outside mock mode, first asks whether a live camera world is wired or the caller declined one.
 With neither, it refuses before planning: status `UNSUPPORTED`, stamp `MISSING`, and a message that starts
 `Refused before planning: this cell plans with cuRobo, no live camera world is wired to this arm`.
-`move_joint` and `move_linear` raise `RobotMotionRejected` with that result, and `move_home` returns False.
+`move_linear` raises `RobotMotionRejected` with that result, and `move_home` returns False.
 On a `Robot`, a decline is `decline="<why>"` on a verb or a `with robot.without_camera_world("<why>"):`
 block. On a bare arm it is `camera_world=CameraWorldDecline("<why>")` on `move` or `move_to_joints`, or
 `with arm.without_camera_world("<why>"):`. The world itself is `safety.planning_world` with a calibrated
@@ -791,7 +879,7 @@ arm is built.
 
 **The simulator's boot gate.** `require_motion_stack` in
 [`src/willy_sim/harness/bootstrap.py`](../../src/willy_sim/harness/bootstrap.py) runs before the simulator
-boots, keyed on the cell's descriptor and `kinematics_model`, and raises `DegradedMotionStackError` unless
+boots, keyed on the cell's descriptor and arm model (`arm_model=`), and raises `DegradedMotionStackError` unless
 `WILLY_ALLOW_DEGRADED_MOTION=1`. It prints a box rather than a log line, because a simulator boot prints
 thousands of lines, and the box states the consequence: a pick rate measured now is not the rate of the
 configured system. A cell whose `self_collision.backend` is not `fcl` is not held to the mesh engine, and
@@ -799,7 +887,7 @@ one that asks for `ik` is not held to cuRobo. Try it without a simulator; it ret
 with both engines and raises with the box on one without:
 
 ```powershell
-python -c "from src.willy_sim.harness.bootstrap import require_motion_stack; require_motion_stack('curobo', robot_config='willy_ur5e.yml', kinematics_model='ur5e', exact_mesh_collision=True)"
+python -c "from src.willy_sim.harness.bootstrap import require_motion_stack; require_motion_stack('curobo', robot_config='willy_ur5e.yml', arm_model='ur5e', exact_mesh_collision=True)"
 ```
 
 **The planner margin.** cuRobo plans against spheres and the guard re-checks exact meshes. Nothing tells
@@ -1021,7 +1109,7 @@ Logs land in `logs/robot/`, with a file per module under `logs/robot/modules/`. 
 the simulator driver's planner resolution log on the plain module logger, so read the runner's standard
 output too. Four symptoms cover most of the confusion:
 
-- `JointLimitTableMissing` at build, or every move `CONTROLLER_REJECTED` on a KUKA, simulator or
+- `JointLimitTableMissing` at build, or every move `CONTROLLER_REJECTED` on a simulator or
   hand-built arm: the joint-limit guard has no table (4.4).
 - Picks that look like bad grasping on a cell that runs `ik`: blind IK proposing self-colliding branches
   that the guard correctly rejects (6).
@@ -1113,7 +1201,6 @@ README and [safety-math.md](../safety-math.md) say the same.
 | The simulator's jaw and suction grippers with their profiles | measured in simulation |
 | The UR driver: connect, power, motion, digital I/O, tool frame, payload, protective stop | measured against real controller software |
 | The UR driver and cuRobo motion on a physical arm: connect, moves, planned motions, home | run on a physical cell: a UR10 (CB3) |
-| KUKA, which also has no built-in joint-limit table and no bundled DH chain, so no exact-mesh authority | never touched hardware |
 | `jaw_io` wired to a Hand-E, switched as `single_toggle` on one tool output | run on a physical cell: the same UR10 (CB3) |
 | The Robotiq driver on a Hand-E over its URCap socket | run on a physical cell: measured with a UR; on the UR10 (CB3) above the socket on port 63352 was refused, so its Hand-E runs as `jaw_io` |
 | The OnRobot driver and the `vacuum` wiring | never touched hardware |

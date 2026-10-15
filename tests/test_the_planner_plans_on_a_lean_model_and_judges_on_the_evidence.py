@@ -37,8 +37,9 @@ from unittest import mock
 import numpy as np
 import yaml
 
+from src.config.arms import load_arm
 from src.robot.safety.planning import _curobo_planning as planning
-from src.robot.safety.planning._curobo_body_links import compose_for_cell, wrist_body_link
+from src.robot.safety.planning._curobo_body_links import ArmLinks, compose_for_cell, wrist_body_link
 from src.robot.safety.planning._curobo_planning import ENV_PLANNING_MODEL, PlanningModelError
 from src.robot.safety.planning._declared_body import Box, inflated
 from src.robot.safety.planning.planning_model import (
@@ -51,7 +52,7 @@ from src.robot.safety.planning.planning_model import (
 )
 
 _ROOT = Path(__file__).resolve().parents[1]
-_SCRIPTS = _ROOT / "scripts" / "curobo"
+_SCRIPTS = _ROOT / "scripts" / "arms"
 _SERVER = _ROOT / "src" / "robot" / "safety" / "planning" / "curobo_planner_server.py"
 _CONTENT = _ROOT / "ext_deps" / "curobo" / "curobo" / "content"
 _ARM_LINKS = ("shoulder_link", "upper_arm_link", "forearm_link", "wrist_1_link", "wrist_2_link", "wrist_3_link")
@@ -75,9 +76,9 @@ def _owner_cell():  # noqa: ANN202
     from src.config.schema.robot import RobotConfig
 
     return RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": "ur10", "motion_planner": "curobo"},
+        "vendor": "ur", "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
         "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "hand_adapter", "thickness_mm": 23.0}],
-                    "tool_frame": {"source": "polyscope", "offset_mm": [0.0, 0.0, 157.0],
+                    "tool_frame": {"source": "controller", "offset_mm": [0.0, 0.0, 157.0],
                                    "rotation_quat_xyzw": [0.0, 0.0, -0.7071068, 0.7071068]}},
     })
 
@@ -86,19 +87,20 @@ def _hand_body() -> dict:
     from src.robot.safety.planning.body_link import HandLink
     from src.robot.safety.planning.hand import planner_hand
 
-    return HandLink.from_hand(planner_hand(_owner_cell())).to_dict()
+    return HandLink.from_hand(planner_hand(_owner_cell()), arm="ur10").to_dict()
 
 
 def _camera_body(width_mm: float = 131.15) -> dict:
     """The owner's D415 in its enclosure (``config/cameras/d415_enclosure.yaml``), grown by the rig's 3 mm."""
     box = inflated(Box(name="wrist_camera_wrist", centre_mm=(35.0, 0.0, -12.9),
                        half_extents_mm=(width_mm / 2.0, 35.15 / 2.0, 16.0)), by_mm=3.0)
-    body = wrist_body_link(rig_id="wrist", boxes=[box], rotation=np.eye(3).tolist(), translation_m=[0.0, -0.08, 0.05])
+    body = wrist_body_link(arm_links=ArmLinks.from_description(load_arm("ur10")), rig_id="wrist", boxes=[box],
+                           rotation=np.eye(3).tolist(), translation_m=[0.0, -0.08, 0.05])
     return {**body, "rig_id": "wrist", "model": "d415_enclosure", "margin_mm": 3.0, "boxes": [box.to_dict()]}
 
 
 def _descriptor() -> dict:
-    """A small arm descriptor in the shape build_ur_config.py writes: six arm links, their buffers and neighbours."""
+    """A small arm descriptor in the shape scripts/arms/descriptor.py writes: six arm links, their buffers and neighbours."""
     return {
         "_provenance": {"arm": "urX", "carries_hand": False},
         "robot_cfg": {"kinematics": {
@@ -137,12 +139,16 @@ def _urdf() -> str:
 
 class ThePlanningModelIsPlacedAsTheBuilderPlacesTests(unittest.TestCase):
     def test_every_link_of_every_rendered_ur_lands_where_the_builder_puts_it(self) -> None:
-        """⭐ The sidecar's own placement (standard library) is the builder's (numpy), on every UR it renders."""
+        """⭐ The sidecar's own placement (standard library) is the builder's (numpy), on every UR it renders.
+
+        The builder turns the chain by the description's ``base.chain_yaw_deg`` (P0f F7b), the sidecar by its own half
+        turn, so this also holds the sidecar's turn to every description."""
         description = _script("_ur_description")
         builder = _script("_arm_spheres")
         for model in ("ur3", "ur3e", "ur5", "ur5e", "ur10", "ur10e", "ur16e"):
             urdf, rows = description.render_urdf(model), description.dh_rows(model)
-            theirs, ours = builder.link_frames(urdf, rows), planning.dh_to_link(urdf, rows)
+            theirs = builder.link_frames(urdf, rows, chain_yaw_deg=load_arm(model).base.chain_yaw_deg)
+            ours = planning.dh_to_link(urdf, rows)
             for frame, link in enumerate(_ARM_LINKS, start=1):
                 with self.subTest(model=model, link=link):
                     np.testing.assert_allclose(np.asarray(ours(link, frame)), np.asarray(theirs(link, frame)),
@@ -176,7 +182,7 @@ class TheCommittedLeanMapsAreNvidiasPatternTests(unittest.TestCase):
     def test_every_arm_map_is_tens_of_spheres_in_its_bundles_dh_frames(self) -> None:
         """NVIDIA's ur10e holds 19 spheres on its arm; a hundred would no longer be its pattern. The owner's UR10 is one
         of them, and every other committed arm is held to the same."""
-        from src.robot.safety._ur_kinematics import UR_DH_TABLES_M
+        from src.robot.safety._ur_kinematics import ur_dh_rows
 
         arms = sorted(path.name.split("_arm_")[0] for path in arm_planning_spheres_path("ur10").parent.glob(
             f"*_arm_{LEAN}_spheres.yml"))
@@ -190,7 +196,9 @@ class TheCommittedLeanMapsAreNvidiasPatternTests(unittest.TestCase):
                 self.assertTrue(6 <= total <= 40, f"{total} arm spheres")
                 self.assertEqual([1, 2, 3, 4, 5, 6], [blocks[body]["frame"] for body in (
                     "shoulder", "upper_arm", "forearm", "wrist_1", "wrist_2", "wrist_3")])
-                table = [[row.a_m, row.d_m, row.alpha_rad] for row in UR_DH_TABLES_M[arm]]
+                rows = ur_dh_rows(arm)
+                assert rows is not None, f"{arm} has a sphere map and no arm description"
+                table = [[row.a_m, row.d_m, row.alpha_rad] for row in rows]
                 np.testing.assert_allclose(document["_provenance"]["dh_m"], table, atol=1e-9,
                                            err_msg="placed with other DH rows than the bundle's")
             for row in document["_provenance"]["bodies"]:

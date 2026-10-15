@@ -237,3 +237,66 @@ class OnRobotGripper:
 
     def __exit__(self, *exc: Any) -> None:
         self.disconnect()
+
+
+# ---- the driver as the stack reads it (P0g slice 8, grippers/spec.py) -----------------------------------------------
+def _build(robot_cfg: Any, arm: Any, facts: Any) -> Any:
+    from src.robot.core import GripperVendor
+
+    from .registry import create_gripper
+
+    # `host` comes from the gripper's own config and not from the arm's controller the way the Robotiq's address does:
+    # the Compute Box is a separate device, and the arm's address would point every command at a machine that has
+    # never heard of it.
+    gripper_cfg = robot_cfg.gripper
+    rg = gripper_cfg.onrobot
+    return create_gripper(
+        GripperVendor.ONROBOT,
+        config=gripper_cfg,
+        host=rg.host,
+        port=rg.port,
+        unit=rg.unit_id,
+        default_force_n=rg.default_force_n,
+        use_fingertip_offset=rg.use_fingertip_offset,
+    )
+
+
+def _wiring(robot_cfg: Any) -> Any:
+    from .spec import Row
+
+    rg = robot_cfg.gripper.onrobot
+    return Row("bench",
+               f"the OnRobot Compute Box at {rg.host}:{rg.port}, unit {rg.unit_id}, a separate device on the network",
+               "confirm the box answers on that address; it is not the arm's controller")
+
+
+def _hazards(robot_cfg: Any, gripper: Any, asked: str) -> Any:
+    from .spec import Hazard
+
+    # No warning about connecting, which is the honest answer rather than an omission: an RG has no activation stroke,
+    # so `connect()` reads two registers and commands nothing. The hazard here is a different one, and it gets its own
+    # sentence because no amount of software can detect it.
+    return (Hazard(
+        what="Connecting an OnRobot RG moves NOTHING: it has no activation stroke. But the "
+             "Modbus unit id is chosen by the MOUNTING, not by the tool, so an RG2-FT in the "
+             "same Quick Changer answers on the same address with an incompatible register map.",
+        precaution="Confirm the model in the Compute Box Web Client before running. A wrong "
+                   "identity here writes a FORCE value into a WIDTH field, and every reading "
+                   "looks healthy.",
+    ),)
+
+
+def _driver() -> Any:
+    from src.robot.core import GripperVendor
+
+    from .spec import GripperDriver
+
+    # No SDK: `onrobot_modbus.py` speaks Modbus TCP to the Compute Box with `socket` and `struct`. Do not invent an SDK
+    # name for a dependency-free driver: the doctor would then report the vendor as not ready on every box. It refuses
+    # no arm either, unlike the two I/O drivers, and none is missing: a Compute Box is a separate device on its own
+    # network address, so this gripper has no dependency on the arm vendor at all.
+    return GripperDriver(vendor=GripperVendor.ONROBOT, refuse=lambda _cfg, _facts: None, build=_build,
+                         wiring=_wiring, hazards=_hazards, sdk_modules=())
+
+
+DRIVER = _driver()

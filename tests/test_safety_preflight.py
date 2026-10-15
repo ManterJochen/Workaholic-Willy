@@ -15,8 +15,7 @@ Covers:
 * Driver integration: ``IsaacRobotArm.move()`` (when given a preflight) surfaces the typed
   ``MotionStatus`` from the preflight decision verbatim; the wiring tests are below.
   ``URRobotArm.move()`` is covered end to end in ``tests/test_ur_arm.py`` (frame check, cuRobo branch,
-  IK failure, all six guard vetoes, ``last_reject_status`` pass-through). ``KukaRobotArm.move()`` is
-  NOT yet driver-tested -- KUKA is unvalidated on real hardware.
+  IK failure, all six guard vetoes, ``last_reject_status`` pass-through).
 * ``as_motion_result`` helper: ``None`` on accept, properly classified
   :class:`MotionResult` on rejection.
 """
@@ -253,7 +252,7 @@ class WorkspaceMarginTests(unittest.TestCase):
             y_min=-500.0, y_max=500.0,
             z_min=100.0, z_max=600.0,
         )
-        pf = SafetyPreflight.from_safety_config(cfg, limits)
+        pf = SafetyPreflight.from_safety_config(cfg, limits, arm_model=None)
         # A pose at x=460 is inside the original ±500 box but OUTSIDE
         # the shrunk box (x_max - 50 = 450). The workspace guard must
         # reject it.
@@ -293,7 +292,6 @@ class AsMotionResultTests(unittest.TestCase):
 # paths that do not need real hardware are exercised. SIM is tested
 # below in mock_mode with a preflight injected at construction; the
 # UR ``move()`` driver integration lives in ``tests/test_ur_arm.py``.
-# KUKA has no driver ``move()`` test yet (unvalidated on real hardware).
 
 
 class IsaacRobotArmPreflightWiringTests(unittest.TestCase):

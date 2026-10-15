@@ -138,7 +138,7 @@ class EveryCommandParsesTests(unittest.TestCase):
         ok, said = _parses("python scripts/grippers/write_hand_from_dimensions.py acme_2f --no-such-flag")
         self.assertFalse(ok)
         self.assertIn("2", said)
-        ok, _ = _parses("python scripts/curobo/choose_ur_retract.py ur10e --tool-rotation-xyzw 0,0,0,1")
+        ok, _ = _parses("python scripts/arms/retract.py ur10e --tool-rotation-xyzw 0,0,0,1")
         self.assertFalse(ok)
 
 

@@ -21,11 +21,9 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-from src.robot.safety.planning.robot.build_gripper_spheres import build
 from src.robot.safety.planning.robot.gripper_spheres import (
     FLANGE,
     MOUNTING_FACE,
-    GripperSpheres,
     SphereFitError,
     bundle_origin,
     fit_gripper_spheres,
@@ -47,13 +45,13 @@ _SHIPPED = tuple(sorted(
 
 
 def _ruler():
-    """The one ruler that judges any sphere map against the exact meshes (`scripts/curobo/_mesh_body.py`).
+    """The one ruler that judges any sphere map against the exact meshes (`scripts/arms/_mesh_body.py`).
 
     Loaded by path because it lives beside the cuRobo work rather than in the backend package, and used here
     for the same reason the fitter uses it: a claim about a map is worth nothing unless the thing that made
     the map and the thing that checks it are not the same code.
     """
-    path = _ROOT / "scripts" / "curobo" / "_mesh_body.py"
+    path = _ROOT / "scripts" / "arms" / "_mesh_body.py"
     spec = importlib.util.spec_from_file_location("_mesh_body_for_gripper_tests", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -188,7 +186,7 @@ class CommittedMapsTests(unittest.TestCase):
                 self.assertIn(
                     carried, described.values(),
                     f"{bundle.name} carries an end effector that no committed sphere map describes. "
-                    f"Fit one: scripts/curobo/fit_cover_spheres.py --hand {name} --write",
+                    f"Fit one: scripts/arms/fit.py --hand {name} --write",
                 )
 
     def test_two_grippers_do_not_produce_the_same_spheres(self) -> None:
@@ -345,16 +343,6 @@ class FitTests(unittest.TestCase):
             fit_spheres_from_mesh(
                 Path("nowhere.stl"), gripper="x", scale_to_mm=1.0, cell_mm=34.0, rmax_mm=17.0
             )
-
-    def test_the_written_file_carries_the_map_under_the_key_curobo_reads(self) -> None:
-        fitted = GripperSpheres(
-            spheres=({"center": [0.0, 0.0, 0.1], "radius": 0.02},), source="test", gripper="test"
-        )
-        written = build(fitted)
-
-        self.assertEqual(list(written["collision_spheres"]), ["tool0"])
-        self.assertEqual(written["collision_spheres"]["tool0"][0]["radius"], 0.02)
-        self.assertIn("test", written["_provenance"]["source"])
 
     def test_the_description_names_the_hand_and_the_file(self) -> None:
         fitted = fit_gripper_spheres(_BUNDLES / "ur5e_collision_meshes.npz", gripper="Robotiq 2F-85")

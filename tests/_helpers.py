@@ -18,12 +18,61 @@ folding them would silently re-point assertions):
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 
+from src.contracts import UNSET
 from src.geometry import Frame, Pose
+from src.robot.core.camera_world import CameraWorldStamp
+from src.robot.core.motion_result import MotionCommand, MotionResult
 from src.robot.grasping.types.feedback import GraspResult
 from src.robot.grasping.types.perception import PerceptionFrame
+
+
+class HoldsAWorld:
+    """The two members of :class:`~src.robot.core.camera_world.HoldsAPlannerWorld`, for a double.
+
+    A double that carries a live world for a keep-out test holds one and plans nothing, which is a real shape: holding
+    a world and planning are separate questions with separate callers. Until 2026-10-13 both were read by name, so a
+    double that set one attribute got the feature, and a driver missing one lost it in silence.
+    """
+
+    #: On the class, so a double whose own ``__init__`` does not chain up holds nothing instead of raising.
+    _live_world: Any = None
+
+    def __init__(self, world: object = None, *args: Any, **kwargs: Any) -> None:
+        # Cooperative, because a double mixes this into a real driver: swallowing the chain here would skip that
+        # driver's own __init__ and leave a half-built arm that answers plausibly and wrongly.
+        self._live_world = world
+        super().__init__(*args, **kwargs)
+
+    @property
+    def live_planner_world(self) -> Any:
+        return self._live_world
+
+    def set_live_planner_world(self, world: Any) -> None:
+        self._live_world = world
+
+
+class PlansItsMotions(HoldsAWorld):
+    """A double that also answers what its motions stand on (``PlansMotions``).
+
+    It plans nothing unless its test says so (``plans_paths``). One that plans reads a move as a planned move reads
+    before a refresh vouched for it, UNSTATED, which is what the verbs read off these doubles while they answered
+    ``plans_paths`` alone; one that plans nothing reads UNPLANNED.
+    """
+
+    plans_paths: bool = False
+    camera_world_required: bool = False
+
+    def camera_world_for_move(self, camera_world: Any = UNSET) -> CameraWorldStamp:
+        if self.plans_paths:
+            return CameraWorldStamp.unstated()
+        return CameraWorldStamp.unplanned(f"{type(self).__name__} is a test double")
+
+    def live_camera_world_wired(self) -> bool:
+        return self._live_world is not None
 
 
 class _FakeArm:
@@ -41,10 +90,11 @@ class _FakeArm:
     def get_tcp_pose(self) -> Pose:
         return self._tcp
 
-    def move_to(self, pose: Pose, **_: object) -> None:
+    def move(self, pose: Pose, **_: object) -> MotionResult:
         self.move_to_calls.append(pose)
         if pose.frame == Frame.BASE:
             self._tcp = pose
+        return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
 
 
 class _FakePerception:

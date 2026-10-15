@@ -34,14 +34,19 @@ class TestReadiness:
     def test_arm_table_covers_all_vendors(self) -> None:
         rows = doctor.arm_vendor_readiness()
         vendors = {r.vendor for r in rows}
-        assert {"ur", "kuka", "sim", "dummy"} <= vendors
+        assert {"ur", "sim", "dummy"} <= vendors
 
-    def test_dummy_and_kuka_have_no_sdk_dependency(self) -> None:
+    def test_dummy_has_no_sdk_dependency(self) -> None:
         rows = {r.vendor: r for r in doctor.arm_vendor_readiness()}
-        # DUMMY/KUKA carry no third-party SDK, so readiness == registered (sdks all trivially ok).
+        # DUMMY carries no third-party SDK, so readiness == registered (sdks all trivially ok).
         assert rows["dummy"].ready is True
         assert rows["dummy"].sdks == ()
-        assert rows["kuka"].sdks == ()
+
+    def test_kuka_is_a_reserved_name_and_not_ready(self) -> None:
+        """The EthernetKRL driver was deleted (2026-09-19); the name stays until the ROS 2 driver lands."""
+        rows = {r.vendor: r for r in doctor.arm_vendor_readiness()}
+        assert rows["kuka"].ready is False
+        assert rows["kuka"].registered is False
 
     def test_table_renders(self) -> None:
         text = doctor.readiness_table()
@@ -49,9 +54,12 @@ class TestReadiness:
 
 
 class TestStartupGate:
-    def test_dummy_and_kuka_always_pass(self) -> None:
+    def test_dummy_always_passes(self) -> None:
         doctor.require_arm_vendor_ready(RobotVendor.DUMMY)  # no raise
-        doctor.require_arm_vendor_ready(RobotVendor.KUKA)   # no raise
+
+    def test_kuka_is_refused_as_a_reserved_slot(self) -> None:
+        with pytest.raises(RobotConnectionError, match="reserved slot"):
+            doctor.require_arm_vendor_ready(RobotVendor.KUKA)
 
     def test_sim_mock_mode_skips_sdk_probe(self) -> None:
         # mock_mode=True for the sim must NOT require isaacsim (mock drives no real device).
@@ -104,6 +112,97 @@ def _sdk_that_is_present_and_will_not_import(tmp_path: Path, name: str) -> "Iter
         sys.modules.pop(name, None)
         importlib.invalidate_caches()
 
+
+class TestPlatformIsNotAMissingInstall:
+    """A driver that cannot run here says which system drives it, instead of naming a missing wheel.
+
+    ⚠ TODAY THESE VENDORS ARE SILENT ABOUT THE SYSTEM BY ACCIDENT: franka, kuka and ros2 name no
+    SDK, so their rows read "no driver registered" and nothing worse. The trap opens when P1 gives
+    franka its `franky` entry, and the row on Windows would then read "franky not installed", which
+    sends an operator to install a wheel that is not built for their machine. That case is exercised
+    here with the entry P1 will add, rather than waited for. The owner asked on 2026-09-19 for the
+    opposite of that sentence: name plainly, from the start, what runs on Linux only.
+
+    The platform is asked as a QUESTION (`Host.running`), so both answers are measured here and
+    neither depends on which box the suite runs on.
+    """
+
+    @staticmethod
+    def _arm_rows(platform: str) -> dict:
+        from src.robot.drivers.host import Host
+
+        return {r.vendor: r for r in Host.running(platform).readiness().rows if r.kind == "arm"}
+
+    def test_a_linux_only_vendor_on_windows_names_the_system(self) -> None:
+        row = self._arm_rows("win32")["franka"]
+        assert row.ready is False
+        assert "Linux only" in row.note
+        assert "this host is Windows" in row.note
+
+    def test_the_sdk_p1_will_name_does_not_become_the_answer_on_the_wrong_system(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """⭐ THE CASE THIS MAP EXISTS FOR, with the entry P1 adds, so it is measured before P1 not after."""
+        monkeypatch.setitem(doctor._ARM_VENDOR_SDKS, RobotVendor.FRANKA, ("franky",))
+        row = self._arm_rows("win32")["franka"]
+        assert "Linux only" in row.note
+        assert "franky" not in row.note, "the operator was sent to install a wheel not built for them"
+        assert "not installed" not in row.note
+        assert row.sdks == (), "a module with no wheel here was probed anyway, which can only fail"
+
+    def test_the_same_sdk_entry_is_probed_normally_on_its_own_system(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """⭐ THE CONTROL: the map suppresses the probe on the wrong system only, never everywhere."""
+        monkeypatch.setitem(doctor._ARM_VENDOR_SDKS, RobotVendor.FRANKA, ("franky",))
+        row = self._arm_rows("linux")["franka"]
+        assert [s.module for s in row.sdks] == ["franky"]
+
+    def test_the_same_vendor_on_linux_is_judged_on_its_driver_alone(self) -> None:
+        """⭐ THE CONTROL: the platform half is a fact about the HOST, not a property stuck on the row."""
+        row = self._arm_rows("linux")["franka"]
+        assert "Linux only" not in row.note
+        assert "reserved slot" in row.note, "on its own system it is judged like any other missing driver"
+
+    def test_the_reserved_slot_wording_survives_on_both_systems(self) -> None:
+        """One vocabulary. A table read twice is read by its sentences, not by its columns."""
+        for platform in ("win32", "linux"):
+            assert "reserved slot" in self._arm_rows(platform)["kuka"].note
+
+    def test_a_vendor_this_repository_measured_no_refusal_for_carries_no_claim(self) -> None:
+        """⭐ THE NEGATIVE CONTROL: the map touches only what it declares, and empty is not "nowhere"."""
+        for platform in ("win32", "linux", "darwin"):
+            for vendor in ("ur", "sim", "dummy"):
+                row = self._arm_rows(platform)[vendor]
+                assert row.platforms == ()
+                assert row.runs_on(platform) is True
+                assert "only" not in row.note
+
+    def test_the_connect_refusal_reads_the_same_sentence(self) -> None:
+        from src.robot.drivers.host import Host
+
+        report = Host.running("win32").readiness()
+        with pytest.raises(RobotConnectionError) as caught:
+            report.require(RobotVendor.FRANKA)
+        message = str(caught.value)
+        assert "Linux only" in message
+        assert "pip install" not in message, "nothing installable on this box fixes a system mismatch"
+
+    def test_every_declared_platform_is_a_name_this_repository_knows(self) -> None:
+        """⛔ A TYPO HERE MAKES A VENDOR RUN NOWHERE, SILENTLY. `Linux` and `win` are not sys.platform."""
+        known = set(doctor._PLATFORM_NAMES)
+        for vendor, platforms in doctor._ARM_VENDOR_PLATFORMS.items():
+            assert isinstance(vendor, RobotVendor)
+            assert platforms, f"{vendor.value} declares an empty platform set, which is 'runs nowhere'"
+            assert set(platforms) <= known, f"{vendor.value} names a system no sys.platform reports: {platforms}"
+
+    def test_the_field_reaches_the_console_rather_than_being_dropped(self) -> None:
+        """The wire model takes `to_dict()` as keywords, so a field it does not declare is dropped in silence."""
+        from api.schemas import VendorReadinessOut
+
+        row = self._arm_rows("win32")["franka"]
+        out = VendorReadinessOut(**row.to_dict())
+        assert out.platforms == ["linux"]
 
 class TestPresentButUnimportableSdk:
     """⛔ THE SAME DEFECT `engine_is_available` HAD FOR MuJoCo, in the driver table.

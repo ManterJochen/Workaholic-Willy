@@ -152,7 +152,8 @@ def sim_safety_preflight(cfg: "AppConfig"):
     from src.robot.safety.preflight import SafetyPreflight
 
     robot = require_robot(cfg)
-    # The hand the cell names. The Isaac arm reports no UR model, so the guard's model is
-    # safety.self_collision.kinematics_model, which the sim profile sets; with it set and no hand
-    # named, this refuses.
-    return SafetyPreflight.from_safety_config(robot.safety, robot.workspace_limits, hand=planner_hand(robot))
+    # The hand the cell names, and the arm it hangs on: the UR sim.robot_model names, which the Isaac arm reports and
+    # the exact mesh guard reads hand geometry on (P0d D5). With a hand unnamed, this refuses.
+    return SafetyPreflight.from_safety_config(
+        robot.safety, robot.workspace_limits, hand=planner_hand(robot), arm_model=robot.arm.model or None,
+    )

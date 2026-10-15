@@ -135,7 +135,7 @@ class _Recorder:
 
 
 class TheCallersPassThePlacementTests(unittest.TestCase):
-    _UR_FRAME = {"source": "polyscope", "offset_mm": [0.0, 0.0, 155.75], "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}
+    _UR_FRAME = {"source": "controller", "offset_mm": [0.0, 0.0, 155.75], "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}
 
     def _hand(self) -> Any:
         from src.config.schema.robot import RobotConfig
@@ -151,7 +151,7 @@ class TheCallersPassThePlacementTests(unittest.TestCase):
         from src.robot.safety.self_collision import SelfCollisionGuard
 
         recorder = _Recorder()
-        guard = SelfCollisionGuard(SelfCollisionSafetyConfig(backend="fcl", kinematics_model="ur5e"), hand=self._hand())
+        guard = SelfCollisionGuard(SelfCollisionSafetyConfig(backend="fcl"), hand=self._hand())
         with mock.patch("src.robot.safety._fcl_self_collision.make_backend", recorder):
             guard._exact_mesh_backend("ur5e")
         self.assertEqual(len(recorder.calls), 1)

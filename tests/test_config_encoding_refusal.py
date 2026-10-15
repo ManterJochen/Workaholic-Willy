@@ -16,7 +16,7 @@ machinery to say it properly already existed and was being walked past.
 ⛔ **THE GUARD COULD NOT FIRE, AND LOOKED LIKE IT COULD.** ``_load_yaml`` wrapped the read in
 ``except OSError``. ``UnicodeDecodeError.__mro__`` is ``(UnicodeDecodeError, UnicodeError, ValueError,
 Exception, BaseException, object)``: there is no ``OSError`` in it. Two shipped CLIs
-(``src.robot.drivers.ur``, ``src.robot.execution.real_cell.calibrate``) carry
+(the bench, ``src.robot.execution.io_bench`` since P0g, and ``src.robot.execution.real_cell.calibrate``) carry
 ``ConfigError`` handlers written for exactly this moment and could never reach them.
 :meth:`EncodingGuardCannotBeNarrowedTests.test_unicode_decode_error_is_not_an_oserror` is that fact
 as an assertion, so narrowing the clause back to ``OSError`` alone fails here with the reason.

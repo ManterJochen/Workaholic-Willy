@@ -26,8 +26,8 @@ A placement or a hand that is not here is admitted by its own file and nothing e
 then measure and write the file, spelling the tool rotation as four numbers in both commands:
 
 ```bash
-python scripts/curobo/choose_ur_retract.py <arm> --tool-rotation-xyzw x y z w
-python scripts/curobo/matrix_gate.py ... --tool-rotation-xyzw x y z w --write
+python scripts/arms/retract.py <arm> --tool-rotation-xyzw x y z w
+python scripts/arms/gate.py ... --tool-rotation-xyzw x y z w --write
 ```
 
 A second run over an unchanged tree writes the same bytes, and no file holds a timestamp, so a diff here

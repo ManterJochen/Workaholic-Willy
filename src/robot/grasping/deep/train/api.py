@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
-from src.contracts.options import merged_overrides
+from src.contracts.options import UNSET, Maybe, chosen, merged_overrides, resolve
 from src.robot.grasping.deep.corpus.discovery import scene_files
 from src.robot.grasping.deep.train.plan import PlanOverrides, build_plan
 from src.robot.grasping.deep.train.report import TrainingRunReport
@@ -76,14 +76,19 @@ class CorpusProbe:
     headroom: Mapping[str, Mapping[str, float]]
 
     def render(self) -> str:
+        """The floor arms and the ceiling as one table, then the approach headroom.
+
+        A column an instrument did not report prints as `-` rather than as a zero, because a zero
+        would read as a measured value and a missing one is not.
+        """
         keys = ("top1_hit", "coverage", "approach_error_deg", "offset_error_mm")
         lines = [f"  probed over {self.units} training unit(s), no weights involved",
                  "  " + f"{'arm':14}" + "".join(f"{key:>20}" for key in keys)]
         rows: list[tuple[str, Mapping[str, float]]] = [*sorted(self.floor.items()),
                                                        ("ORACLE ceiling", self.ceiling)]
         for name, values in rows:
-            lines.append("  " + f"{name:14}"
-                         + "".join(f"{float(values.get(key, 0.0)):20.3f}" for key in keys))
+            lines.append("  " + f"{name:14}" + "".join(
+                f"{float(values[key]):20.3f}" if key in values else f"{'-':>20}" for key in keys))
         for label, block in sorted(self.headroom.items()):
             lines.append(f"  approach signal, {label}: "
                          + ", ".join(f"{key} {float(block[key]):.2f} deg"
@@ -323,13 +328,15 @@ class GeneratorTraining:
         return NEWLINE.join(lines)
 
     # ------------------------------------------------------------------ before it costs anything
-    def probe(self, *, units: int = 256, seed: int = 0) -> CorpusProbe:
+    def probe(self, *, units: Maybe[int] = UNSET, seed: Maybe[int] = UNSET) -> CorpusProbe:
         """The floor, the ceiling and the approach headroom of this corpus, with no weights, on a CPU, in minutes: a hit
         rate is unreadable without both ends of its scale.
 
         Args:
-            units (int): How many training units each instrument draws; more costs time linearly (default: 256).
-            seed (int): The draw's seed; the same seed draws the same units (default: 0).
+            units (Maybe[int]): How many training units each instrument draws; more costs time linearly. Unset is this
+                run's own ``probe_units`` (default: UNSET).
+            seed (Maybe[int]): The draw's seed; the same seed draws the same units, so two corpora compared at one seed
+                are compared on the same draw. Unset is the instruments' own (default: UNSET).
 
         Returns:
             CorpusProbe: The floor (what a straight-down grasp scores), the ceiling and the headroom; prints as itself.
@@ -342,13 +349,16 @@ class GeneratorTraining:
         )
         from src.robot.grasping.deep.train.trainer import corpus_index  # noqa: PLC0415
 
+        drawn = resolve("units", units, self.context.probe_units)
+        shared: dict[str, Any] = {"units": drawn}
+        if chosen(seed):
+            shared["seed"] = seed
         index = corpus_index(self.context.corpus, self.context.hands)
         return CorpusProbe(
-            units=units,
-            ceiling=oracle_ceiling(index, self.plan, units=units, seed=seed,
-                                   device=self.context.device or "cpu"),
-            floor=baseline_floor(index, self.plan, units=units, seed=seed),
-            headroom=approach_headroom(index, self.plan, units=units, seed=seed),
+            units=drawn,
+            ceiling=oracle_ceiling(index, self.plan, device=self.context.device or "cpu", **shared),
+            floor=baseline_floor(index, self.plan, **shared),
+            headroom=approach_headroom(index, self.plan, **shared),
         )
 
     # ------------------------------------------------------------------ the one verb

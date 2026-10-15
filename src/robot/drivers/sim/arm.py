@@ -111,9 +111,9 @@ _SETTLE_VEL_THRESHOLD = 1e-2
 # tolerance the refined TCP lands within.
 _MOVE_POS_TOL_MM = 5.0
 
-# The largest joint step in radians when interpolating a move_joint command. The
-# position drive stalls on a single large point-to-point command, so move_joint walks
-# waypoints no larger than this.
+# The largest joint step in radians when interpolating a joint move. The position drive
+# stalls on a single large point-to-point command, so a joint move walks waypoints no
+# larger than this.
 _MAX_JOINT_STEP_RAD = 0.03
 
 # How many times move() re-resolves IK and drives again before giving up. A large move,
@@ -130,7 +130,7 @@ _MOVE_MAX_ATTEMPTS = 3
 # instability.
 _MOVE_RETRY_MAX_ERR_MM = 40.0
 
-# A hard cap on move_joint interpolation waypoints, so a wild or far IK solution cannot
+# A hard cap on joint-move interpolation waypoints, so a wild or far IK solution cannot
 # explode into thousands of physics steps. 250 * _MAX_JOINT_STEP_RAD is 7.5 rad, which
 # covers any reasonable single move.
 _MAX_INTERP_STEPS = 250
@@ -230,20 +230,18 @@ def _tcp_to_flange(
     return flange_pos, flange_quat
 
 
-# The capability surface for the real Isaac driver, which has native FK and IK.
-# ``IsaacRobotArm.capabilities`` downgrades ``has_native_fk`` and ``has_native_ik`` to
-# False in mock_mode, because the pure-Python mock has no kinematics, so a safety guard
-# never calls fk or ik on a mock arm.
+# The capability surface for the real Isaac driver, which has native FK.
+# ``IsaacRobotArm.capabilities`` downgrades ``has_native_fk`` to False in mock_mode,
+# because the pure-Python mock has no kinematics, so the IK quality guard never calls fk
+# on a mock arm. The model is the default arm's: each arm reports the
+# UR its ``robot_model`` names (P0d D5). It drives no controller of its own, so it takes no lock.
 ISAAC_CAPABILITIES = RobotCapabilities(
     vendor="sim",
-    model="isaac-sim",
+    model="ur5e",
     dof=6,
-    supports_joint_move=True,
-    supports_linear_move=True,
-    supports_async_move=False,
+    controller=None,
+    owns_a_controller=False,
     has_native_fk=True,
-    has_native_ik=True,
-    has_force_control=False,
     is_simulated=True,
 )
 
@@ -288,7 +286,7 @@ class IsaacRobotArm(RobotArm):
         # seed set and the scoring unchanged.
         self._natural_aim_seed = False
         # The opt-in continuous collision-avoidance guard, where ``None`` is off and
-        # leaves behaviour unchanged. Where it is set, as the preflight is, move_joint
+        # leaves behaviour unchanged. Where it is set, as the preflight is, a joint move
         # checks every interpolation waypoint and halts on a margin breach or a
         # fail-safe. It is software avoidance and not certified safety.
         self._continuous_monitor: ContinuousCollisionMonitor | None = None
@@ -302,9 +300,9 @@ class IsaacRobotArm(RobotArm):
         # only where motion_planner is "curobo" and a move() is issued. ``None`` is off,
         # and disconnect() closes it.
         self._curobo_client: CuroboPlanClient | None = None
-        # Opt-in: plan move_joint() through cuRobo rather than interpolating a straight
+        # Opt-in: plan a joint move through cuRobo rather than interpolating a straight
         # line in joint space. It is off by default because it changes the trajectory of
-        # every move_joint call, and a new seam ships default-off until a runner measures
+        # every joint move, and a new seam ships default-off until a runner measures
         # it. A runner sets it, as it sets _natural_aim_seed and _continuous_monitor,
         # before the config carries it.
         self._plan_joint_moves: bool = False
@@ -380,13 +378,18 @@ class IsaacRobotArm(RobotArm):
     def capabilities(self) -> RobotCapabilities:
         """The honest capability surface.
 
-        Real Isaac has native FK and IK. In ``mock_mode`` the pure-Python mock has no
-        kinematics, so ``has_native_fk`` and ``has_native_ik`` report False; otherwise a
-        safety guard would call ``fk`` or ``ik`` on a mock arm and fail.
+        Real Isaac has native FK. In ``mock_mode`` the pure-Python mock has no
+        kinematics, so ``has_native_fk`` reports False; otherwise the IK quality guard
+        would call ``fk`` on a mock arm and fail.
+
+        The model is the UR this arm drives, ``robot_model``, in both modes (P0d D5). It is what the
+        self-collision guard judges the arm as, so the sim no longer needs a safety key to say it; until
+        then this answered ``isaac-sim``, which no registry describes.
         """
+        own = replace(ISAAC_CAPABILITIES, model=str(self._config.robot_model))
         if self._config.mock_mode:
-            return replace(ISAAC_CAPABILITIES, has_native_fk=False, has_native_ik=False)
-        return ISAAC_CAPABILITIES
+            return replace(own, has_native_fk=False)
+        return own
 
     @property
     def is_connected(self) -> bool:
@@ -622,10 +625,10 @@ class IsaacRobotArm(RobotArm):
         """Invalidate the motion-continuity reference of the SafetyPreflight, its previous target.
 
         Call it after a deliberate trajectory discontinuity, such as parking the arm out
-        of an overhead camera view through ``move_joint`` for perception, so the next
+        of an overhead camera view through ``move_to_joints`` for perception, so the next
         ``move()`` is not compared across the park, which the continuity guard would
         otherwise read as a huge spurious joint and TCP step. It does nothing without a
-        preflight. A ``move_joint`` driven internally by move() does not touch it; only
+        preflight. The joint moves move() makes internally do not touch it; only
         explicit repositioning by a caller does.
         """
         if self._preflight is not None:
@@ -775,9 +778,8 @@ class IsaacRobotArm(RobotArm):
     ) -> MotionResult:
         """The typed joint move: gate the destination through the preflight, then drive.
 
-        It returns the typed rejection where :meth:`move_joint` raises it. The gate is
-        the same one, run once here rather than twice by delegating to the public
-        method.
+        It returns the typed rejection where :meth:`_move_joint_gated` raises it. The gate is
+        the same one, run once here rather than twice by delegating.
 
         On the cuRobo planner the result stamps as :meth:`move` does, and is refused as it is, with
         neither a world nor a decline or with a decline on a live world: its path is checked against the
@@ -840,7 +842,7 @@ class IsaacRobotArm(RobotArm):
         # The world first, near the goal flange. The path guard below learns the perceived obstacles
         # from this refresh, and the planner's check does not refresh at all.
         stale = self._refresh_planner_world(near_point_mm=self._flange_mm(joints),
-                                            goal_tcp_mm=self._tcp_at_joints_mm(joints))
+                                            goal_tcp_mm=self.tcp_at_joints_mm(joints))
         if stale:
             return MotionResult.failed(
                 MotionStatus.CONTROLLER_REJECTED, command, target_joints=joints,
@@ -891,23 +893,20 @@ class IsaacRobotArm(RobotArm):
         index = {name: position for position, name in enumerate(_ARM_JOINT_NAMES)}
         return [[float(config[index[name]]) for name in names] for config in configs]
 
-    def move_joint(
+    def _move_joint_gated(
         self,
         joints: JointPositions,
         *,
         velocity: float | None = None,
         acceleration: float | None = None,
     ) -> None:
-        """A gated joint-space move.
+        """The raising joint move this driver's own :meth:`move_home` and the ik and RMPflow :meth:`move` use.
 
-        The Protocol promises ``RobotMotionRejected`` where a safety pre-check denies
-        the move, and runner code reaches this surface directly rather than only through
-        :meth:`move_to_joints`. :meth:`move_home` routes through here too, which is what
-        closes it.
+        It was the public ``move_joint`` until the legacy verbs left the Protocol (2026-09-19); the public
+        joint verb is :meth:`move_to_joints`, which returns the same refusals as a typed result.
 
         It judges what :meth:`move_to_joints` judges, through the same helper: the destination in
-        mock mode and on any planner but cuRobo, the whole line on a cuRobo cell, so the joint verb
-        runners reach directly has its path judged as well.
+        mock mode and on any planner but cuRobo, the whole line on a cuRobo cell.
 
         The gate runs before the mock branch on purpose. A configuration the guard would
         refuse on the articulation is one it refuses on the mock as well, because a mock
@@ -921,12 +920,12 @@ class IsaacRobotArm(RobotArm):
         )
         if refused is not None:
             raise RobotMotionRejected(
-                f"move_joint refused before planning: {refused.message}", result=refused,
+                f"joint move refused before planning: {refused.message}", result=refused,
             )
         rejected = self._judge_joint_move(joints, command=MotionCommand.MOVE_JOINTS)
         if rejected is not None:
             raise RobotMotionRejected(
-                f"move_joint refused by the safety preflight: {rejected.message}", result=rejected,
+                f"joint move refused by the safety preflight: {rejected.message}", result=rejected,
             ) from rejected.exception
         self._drive_joints(joints, velocity=velocity, acceleration=acceleration)
 
@@ -946,9 +945,9 @@ class IsaacRobotArm(RobotArm):
             return
         if not self._connected or self._arm_subset is None:
             raise RobotConnectionError(
-                "IsaacRobotArm.move_joint requires a connected articulation."
+                "IsaacRobotArm: a joint move requires a connected articulation."
             )
-        self._check_dof(joints, "move_joint")
+        self._check_dof(joints, "joint move")
         # Drive the six arm joints alone: the subset maps them onto their indices in the
         # combined articulation and leaves the gripper DoFs untouched. velocity and
         # acceleration are accepted for Protocol parity and do not apply, because the
@@ -977,7 +976,7 @@ class IsaacRobotArm(RobotArm):
         # With `plan_joint_moves` the path comes from cuRobo instead, in joint space, so
         # the goal configuration is the one that was asked for rather than any IK branch
         # reaching the same tool pose. It is off by default, because it changes the
-        # trajectory of every move_joint call and each runner that adopts it owes its own
+        # trajectory of every joint move and each runner that adopts it owes its own
         # on-box measurement.
         waypoints: list[np.ndarray] | None = None
         if self._plan_joint_moves and self._motion_planner == "curobo":
@@ -1084,27 +1083,6 @@ class IsaacRobotArm(RobotArm):
             )
         return True
 
-    def move_to(
-        self,
-        pose: Pose,
-        *,
-        linear: bool = False,
-        vel: float | None = None,
-        acc: float | None = None,
-        register: bool = True,
-    ) -> bool:
-        if self.mock_mode:
-            if not self._connected or pose.frame is not Frame.BASE:
-                return False
-            if self._preflight_reject(pose, target_joints=None, current_joints=None) is not None:
-                return False
-            self._tcp = pose
-            return True
-        result = self.move(pose, linear=linear, vel=vel, acc=acc, register=register)
-        if result.status is MotionStatus.UNSUPPORTED:
-            _LOGGER.error("move_to REFUSED by %s: %s", result.status, result.message)
-        return result.status is MotionStatus.EXECUTED
-
     def move_home(self) -> bool:
         """Drive to the configured home, gated like every other joint move.
 
@@ -1113,7 +1091,7 @@ class IsaacRobotArm(RobotArm):
         guard would refuse is how a regression stays invisible off-box. It returns
         ``bool`` like its two siblings, and the typed reason is logged.
 
-        On a cuRobo cell the whole line home is judged, through :meth:`move_joint`, and a refused
+        On a cuRobo cell the whole line home is judged, through :meth:`_move_joint_gated`, and a refused
         line returns ``False``. A camera that could not vouch for the cell still raises. With neither a
         camera world nor a decline in scope on a cuRobo arm it is refused first, and logged.
         """
@@ -1135,7 +1113,7 @@ class IsaacRobotArm(RobotArm):
             self._tcp = self._home_tcp
             self._joints = self._home_joints
             return True
-        # Drive to the configured home through the interpolated move_joint, which is the
+        # Drive to the configured home through the interpolated joint move, which is the
         # path the runners use for homing between runs. A home move is a deliberate
         # trajectory restart, so the preflight continuity memo is cleared and the next
         # move() is not compared across it, mirroring reset_safety_continuity.
@@ -1144,7 +1122,7 @@ class IsaacRobotArm(RobotArm):
         if self._preflight is not None:
             self._preflight.reset()
         try:
-            self.move_joint(self._home_joints)
+            self._move_joint_gated(self._home_joints)
         except RobotMotionRejected as exc:
             _LOGGER.error("move_home REFUSED: %s", exc)
             return False
@@ -1287,7 +1265,7 @@ class IsaacRobotArm(RobotArm):
         if guard is None:
             return values
         capabilities = self.capabilities
-        limits = guard.limits_for(vendor=capabilities.vendor, model=capabilities.model)
+        limits = guard.limits_for(model=capabilities.model)
         if limits is None or len(limits[0]) != values.shape[0]:
             return values
         low_deg, high_deg = limits
@@ -1421,7 +1399,7 @@ class IsaacRobotArm(RobotArm):
         except Exception as exc:  # noqa: BLE001 (no planner is "no plan", reported by the caller)
             _LOGGER.warning("planned joint move requested but cuRobo is unavailable: %s", exc)
             return None
-        stale = self._refresh_planner_world(goal_tcp_mm=self._tcp_at_joints_mm(JointPositions(target)))
+        stale = self._refresh_planner_world(goal_tcp_mm=self.tcp_at_joints_mm(JointPositions(target)))
         if stale:
             # The one caller refuses on a `None` path, which is what a world nobody can
             # vouch for has to produce: a joint move plans through the same cell a pose
@@ -1440,7 +1418,7 @@ class IsaacRobotArm(RobotArm):
             import os
 
             from src.contracts import chosen
-            from src.robot.drivers.sim.robot_models import curobo_arm_descriptor
+            from src.config.arms import curobo_descriptor_name
             from src.robot.safety.planning._curobo_body_links import BodyLinkError
             from src.robot.safety.planning.body_link import HandLink, coupling_bodies
             from src.robot.safety.planning.curobo_client import SidecarIdentity
@@ -1457,7 +1435,7 @@ class IsaacRobotArm(RobotArm):
                     "preflight), so the planner has no hand to add to its arm and is not started"
                 )
             try:
-                link = HandLink.from_hand(hand)
+                link = HandLink.from_hand(hand, arm=self._config.robot_model)
             except BodyLinkError as exc:
                 raise CuroboUnavailableError(str(exc)) from exc
             # The cuRobo robot config is the willy_{key}.yml of the configured model. The
@@ -1466,7 +1444,7 @@ class IsaacRobotArm(RobotArm):
             # cell planned with ur5e link lengths, with no visible symptom. A disagreeing
             # variable is therefore ignored loudly, and planning a different robot means
             # setting robot_model.
-            robot_yml = curobo_arm_descriptor(self._config.robot_model)
+            robot_yml = curobo_descriptor_name(self._config.robot_model)
             env_yml = os.environ.get(ENV_CUROBO_ROBOT)
             if env_yml and env_yml != robot_yml:
                 _LOGGER.warning(
@@ -1497,7 +1475,7 @@ class IsaacRobotArm(RobotArm):
                 raise CuroboUnavailableError(str(exc)) from exc
             client = CuroboPlanClient(
                 robot_config=robot_yml, self_collision_margin_mm=margin_mm,
-                body_links=[link.to_dict(), *coupling_bodies(hand)], default_q=default_q,
+                body_links=[link.to_dict(), *coupling_bodies(hand, arm=self._config.robot_model)], default_q=default_q,
             )
             if self._config.planner_reservation is not None:
                 # Before start: the sidecar allocates its collision storage once, when it spawns.
@@ -1662,7 +1640,7 @@ class IsaacRobotArm(RobotArm):
             return GoalKeepOut(region=None, reason="the TCP at this goal is not known, so no goal region is placed")
         return goal_keep_out(self._preflight, self, goal_tcp_mm)
 
-    def _tcp_at_joints_mm(self, joints: "JointPositions") -> "np.ndarray | None":
+    def tcp_at_joints_mm(self, joints: "JointPositions") -> "np.ndarray | None":
         """The TCP at ``joints``: the flange frame the guard's model and yaw place, times this cell's tool frame."""
         from src.geometry.quaternion import to_rotation_matrix
 
@@ -1835,7 +1813,7 @@ class IsaacRobotArm(RobotArm):
             if rejected is not None:
                 return rejected
             # And the path, always. `_execute_curobo_trajectory` applies every waypoint
-            # straight to the articulation and never routes through `move_joint`, which is
+            # straight to the articulation and never routes through `_drive_joints`, which is
             # the only place the in-motion monitor is consulted, so without this the middle
             # of a cuRobo plan executes unexamined on this driver too. The legs between the
             # waypoints are sampled as well, because applying them in turn is the
@@ -2241,7 +2219,7 @@ class IsaacRobotArm(RobotArm):
                         target_pose=pose,
                         message=f"IsaacRobotArm.move: IK failed: {exc}",
                     )
-            self.move_joint(target_joints)
+            self._move_joint_gated(target_joints)
             tcp = self.get_tcp_pose()
             err_mm = float(
                 np.linalg.norm(np.asarray(tcp.position_mm) - np.asarray(pose.position_mm))
@@ -2251,7 +2229,7 @@ class IsaacRobotArm(RobotArm):
                 return MotionResult.executed(
                     MotionCommand.MOVE_TO,
                     target_pose=pose,
-                    message=f"IK + move_joint reached target ({err_mm:.1f} mm, {ori_err_deg:.1f} deg).",
+                    message=f"IK + joint move reached target ({err_mm:.1f} mm, {ori_err_deg:.1f} deg).",
                 )
             if err_mm > _MOVE_RETRY_MAX_ERR_MM:
                 break  # a far miss: a re-resolve of the same target will not recover, so fail fast

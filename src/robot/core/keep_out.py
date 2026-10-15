@@ -28,6 +28,8 @@ import numpy as np
 
 from src.contracts import UNSET, Maybe, chosen
 
+from .camera_world import live_planner_world_of
+
 __all__ = [
     "GoalKeepOut", "KeepOutBox", "KeepOutScope", "KeepOutSummary", "SegmentationOffer", "holding_views", "keeping_out",
 ]
@@ -228,7 +230,7 @@ def keeping_out(arm: object, offer: SegmentationOffer) -> AbstractContextManager
 
 @contextmanager
 def _keeping_out(arm: object, offer: SegmentationOffer) -> Iterator[KeepOutScope]:
-    world = getattr(arm, "live_planner_world", None)
+    world = live_planner_world_of(arm)
     if world is None:
         yield KeepOutScope(world_wired=False, offer=offer)
         return
@@ -263,7 +265,7 @@ def holding_views(arm: object) -> AbstractContextManager[bool]:
 
 @contextmanager
 def _holding_views(arm: object) -> Iterator[bool]:
-    world = getattr(arm, "live_planner_world", None)
+    world = live_planner_world_of(arm)
     hold, forget = getattr(world, "hold_pick_views", None), getattr(world, "forget_pick_views", None)
     if not callable(hold) or not callable(forget):
         yield False

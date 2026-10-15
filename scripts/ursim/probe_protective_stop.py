@@ -2,8 +2,8 @@
 
 `URRobotArm.get_robot_status()` projects `isProtectiveStopped`, `isEmergencyStopped`, the safety
 mode and the controller's own text. This probe provokes a genuine stop through the driver's own
-motion path and then measures what that projection says, what `raise_if_stopped()` does about
-it, and what three retried motions do in the shape a pick loop issues them.
+motion path and then measures what that projection says, the fault the stack classifies from it
+(`ArmFault.from_status`), and what three retried motions do in the shape a pick loop issues them.
 
 Connect first, then trigger. The realistic case is a stop that happens while the cell is running,
 not a cell that boots into a stopped controller. Connecting to an already-stopped controller
@@ -11,7 +11,7 @@ measures something real but different: `connect()` fails with "Failed to start c
 before timeout" and names nothing, the way it does for local mode. `watch_stop.py` covers the third
 case, a human at the pendant pressing the stop while the driver is connected.
 
-`raise_if_stopped()` sits on the UR driver and on no Protocol, so the arm is built through the
+The status and fault seams sit on the UR driver and on no Protocol, so the arm is built through the
 vendor-neutral `create_arm` and then narrowed. A profile naming another vendor becomes a sentence
 rather than a missing attribute.
 
@@ -41,7 +41,7 @@ import numpy as np  # noqa: E402
 
 from src.config.loader import active_profile, load_robot_config  # noqa: E402
 from src.geometry import Frame, Pose  # noqa: E402
-from src.robot.core import JointPositions, RobotVendor  # noqa: E402
+from src.robot.core import ArmFault, JointPositions, RobotVendor  # noqa: E402
 from src.robot.drivers import create_arm  # noqa: E402
 from src.robot.drivers.ur.arm import URRobotArm  # noqa: E402
 
@@ -129,8 +129,8 @@ def _provoke(arm: URRobotArm, model: str) -> None:
     time.sleep(3.0)
 
 
-def _retry_motions(arm: URRobotArm) -> None:
-    """Three further motions, exactly as a pick loop would retry them."""
+def _retry_motions(arm: URRobotArm, fault: "ArmFault | None") -> None:
+    """Three further motions, exactly as a pick loop would retry them; ``fault`` is what step 3 read."""
     try:
         q = list(arm.get_joint_positions().values)
     except Exception as exc:  # noqa: BLE001
@@ -141,9 +141,12 @@ def _retry_motions(arm: URRobotArm) -> None:
         try:
             target = list(q)
             target[5] += 0.1 * attempt
-            arm.move_joint(JointPositions(target))
+            arm.move_to_joints(JointPositions(target)).raise_unless_executed()
+            # The label follows the reading of step 3. Measured 2026-09-22 (aurora): the singular move of step 2 is
+            # refused as ik_failed and stops nothing since P0e E14, so an operational cell that moves is right.
             print(f"   attempt {attempt}: ACCEPTED in {time.time() - t0:.1f}s. "
-                  f"A stopped cell that reports success is the dangerous answer.")
+                  + ("A stopped cell that reports success is the dangerous answer." if fault is not None
+                     else "Step 3 read the cell operational, so this is the right answer."))
         except Exception as exc:  # noqa: BLE001
             print(f"   attempt {attempt}: {type(exc).__name__} in {time.time() - t0:.1f}s: "
                   f"{str(exc)[:80]}")
@@ -154,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="python scripts/ursim/probe_protective_stop.py",
         description="Provoke a real controller protective stop through the driver's own "
-                    "motion path, then measure what RobotStatus, raise_if_stopped and three "
+                    "motion path, then measure what RobotStatus, the classified fault and three "
                     "retried motions report.",
     )
     ap.add_argument("--profile", type=str, default=None,
@@ -174,8 +177,8 @@ def main(argv: list[str] | None = None) -> int:
 
     chain = args.profile if args.profile is not None else (active_profile() or _DEFAULT_PROFILE)
     cfg = load_robot_config(profile=chain)
-    if cfg.vendor == "ur" and cfg.ur.model not in SINGULAR_Z_MM:
-        print(f"\nprofile {chain!r} is a {cfg.ur.model}: no height up the base axis is measured to provoke a stop on "
+    if cfg.vendor == "ur" and cfg.arm.model not in SINGULAR_Z_MM:
+        print(f"\nprofile {chain!r} is a {cfg.arm.model}: no height up the base axis is measured to provoke a stop on "
               f"it (the table names {', '.join(sorted(SINGULAR_Z_MM))}); measured on a CB3 UR10, the controller's IK "
               "finds no pose there and ends the control script instead. Nothing was moved. For a protective stop on "
               "a CB3, run scripts/ursim/probe_halt.py --only M7.")
@@ -198,26 +201,26 @@ def main(argv: list[str] | None = None) -> int:
         show_status(arm, "before")
 
         print("\n=== 2. provoke a real protective stop through the driver's own motion path ===")
-        _provoke(arm, cfg.ur.model)
+        _provoke(arm, cfg.arm.model)
 
         print("\n=== 3. what this stack sees now, on the connection it already had ===")
         show_status(arm, "after")
         stopped = arm.get_robot_status().is_stopped
-        try:
-            arm.raise_if_stopped()
-            print("   raise_if_stopped(): did NOT raise")
-        except Exception as exc:  # noqa: BLE001
-            print(f"   raise_if_stopped(): {type(exc).__name__}: {str(exc)[:110]}")
+        fault = ArmFault.from_status(arm.get_robot_status())
+        print("   ArmFault.from_status(): no fault" if fault is None
+              else f"   ArmFault.from_status(): {fault.kind.value}: {fault.render()[:110]}")
 
         print("\n=== 4. the point: three further motions, exactly as a pick loop would retry ===")
-        _retry_motions(arm)
+        _retry_motions(arm, fault)
 
         # The recovery runs while the connection is still open, so it goes through the library
-        # rather than through a second raw socket: `recover_from_protective_stop()` is the
+        # rather than through a second raw socket: `acknowledge_fault()` on a protective stop is the
         # dashboard `close safety popup` plus `unlock protective stop`, and `get_robot_status()`
-        # carries the resulting `safetystatus` text.
+        # carries the resulting `safetystatus` text. This probe is a person at the cell clearing
+        # the stop it provoked, which is the one caller acknowledge_fault has.
         print("\n=== 5. leave the cell as it was found ===")
-        print(f"   recover_from_protective_stop(): {arm.recover_from_protective_stop()}")
+        fault = ArmFault.from_status(arm.get_robot_status())
+        print(f"   acknowledge_fault(): {arm.acknowledge_fault(fault) if fault is not None else 'no fault to clear'}")
         time.sleep(2)
         show_status(arm, "recovered")
     finally:

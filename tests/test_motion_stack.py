@@ -17,6 +17,7 @@ from src.robot.safety.planning.environment import (
     PlanningEnvironment,
 )
 from src.robot.safety.planning.stack import ModelSource, MotionStack
+from src.config.schema.robot import ArmSelection
 
 ANCHORED = PlanningEnvironment(
     CuroboStatus("/py", True, "ur5e.yml"), CollisionEngineStatus("coal", True, None)
@@ -26,37 +27,51 @@ ANCHORED = PlanningEnvironment(
 class _Model:
     def __init__(self, value: object) -> None:
         self.model = value
-        self.kinematics_model = value
 
 
 class _Safety:
-    def __init__(self, kinematics_model: object = None) -> None:
-        self.self_collision = _Model(kinematics_model) if kinematics_model else None
+    self_collision = None
 
 
 class _Robot:
-    """The three fields the ladder reads, and the hand the descriptor is named by (Step 4i)."""
+    """The three fields the ladder reads, and the hand the descriptor is named by (Step 4i).
+
+    ``arm`` is what a real tree answers with since 2026-10-13 (`RobotConfig.arm`): the selected vendor's
+    model, rather than the UR block every tree materialises whatever its vendor says. A double that keeps
+    only the block would be describing a tree this repository no longer has.
+    """
 
     def __init__(
-        self, *, kinematics_model: object = None, ur_model: object = None, hand: object = "robotiq_2f85",
+        self, *, ur_model: object = None, sim_model: object = None, hand: object = "robotiq_2f85",
     ) -> None:
-        self.safety = _Safety(kinematics_model)
+        self.safety = _Safety()
         self.ur = _Model(ur_model) if ur_model else None
         self.gripper = _Model(hand)
+        self.arm = ArmSelection(
+            vendor="ur" if ur_model else "sim" if sim_model else "dummy",
+            model=str(ur_model or sim_model or ""),
+            controller="10.0.0.5" if ur_model else None,
+            planner="curobo" if ur_model else "",
+            owns_a_controller=bool(ur_model),
+        )
 
 
 class ModelResolutionTests(unittest.TestCase):
-    def test_the_self_collision_model_outranks_the_vendor_block(self) -> None:
-        """The guard's own model is authoritative, because it is what the guard keys its bundle on."""
-        s = MotionStack.from_robot_config(_Robot(kinematics_model="ur3e", ur_model="ur5e"))
-        self.assertEqual(s.model, "ur3e")
-        self.assertIs(s.source, ModelSource.SELF_COLLISION)
-        self.assertEqual(s.model_source, "robot.safety.self_collision.kinematics_model")
-
-    def test_the_vendor_block_answers_when_the_guard_does_not(self) -> None:
+    def test_a_ur_tree_names_the_ur_block(self) -> None:
         s = MotionStack.from_robot_config(_Robot(ur_model="ur3e"))
         self.assertEqual(s.model, "ur3e")
-        self.assertIs(s.source, ModelSource.VENDOR_BLOCK)
+        self.assertIs(s.source, ModelSource.UR_BLOCK)
+        self.assertEqual(s.model_source, "robot.ur.model")
+
+    def test_a_sim_tree_names_the_sim_block(self) -> None:
+        """The key the value came from, not the one every tree carries. A sim tree's model is its
+        `robot.sim.robot_model`, which the Isaac arm reports (P0d D5); naming `robot.ur.model` here would send an
+        operator to the inert UR block every tree materialises.
+        """
+        s = MotionStack.from_robot_config(_Robot(sim_model="ur3e"))
+        self.assertEqual(s.model, "ur3e")
+        self.assertIs(s.source, ModelSource.SIM_BLOCK)
+        self.assertEqual(s.model_source, "robot.sim.robot_model")
 
     def test_a_config_declaring_nothing_says_so_instead_of_pretending(self) -> None:
         """⛔⛔ THE DEFECT THIS MODULE EXISTS FOR. `probe_planning_environment()` with no arguments
@@ -85,7 +100,7 @@ class ReadingTests(unittest.TestCase):
             stack_mod, "probe_planning_environment", return_value=ANCHORED
         ) as probe:
             MotionStack.from_robot_config(_Robot(ur_model="ur3e")).probe()
-        probe.assert_called_once_with(robot_config="willy_ur3e.yml", kinematics_model="ur3e")
+        probe.assert_called_once_with(robot_config="willy_ur3e.yml", arm_model="ur3e")
 
     def test_the_descriptor_is_named_by_the_arm_whatever_the_hand(self) -> None:
         """UM lane S11: one descriptor per arm, and the hand is a body link the planner adds to it when it starts."""
@@ -93,15 +108,15 @@ class ReadingTests(unittest.TestCase):
             with self.subTest(hand=hand), \
                     mock.patch.object(stack_mod, "probe_planning_environment", return_value=ANCHORED) as probe:
                 MotionStack.from_robot_config(_Robot(ur_model="ur3e", hand=hand)).probe()
-            probe.assert_called_once_with(robot_config="willy_ur3e.yml", kinematics_model="ur3e")
+            probe.assert_called_once_with(robot_config="willy_ur3e.yml", arm_model="ur3e")
 
     def test_a_cell_that_names_no_hand_names_no_descriptor_and_is_not_anchored(self) -> None:
         """No implied 2F-85 (owner Q5): the reading says which key is missing, and exit 1 is its refusal."""
-        from src.robot.drivers.sim.robot_models import NO_DESCRIPTOR
+        from src.config.arms import NO_DESCRIPTOR
 
         with mock.patch.object(stack_mod, "probe_planning_environment", return_value=ANCHORED) as probe:
             report = MotionStack.from_robot_config(_Robot(ur_model="ur3e", hand=None)).probe()
-        probe.assert_called_once_with(robot_config=NO_DESCRIPTOR, kinematics_model="ur3e")
+        probe.assert_called_once_with(robot_config=NO_DESCRIPTOR, arm_model="ur3e")
         self.assertEqual(report.exit_code, 1, report.render())
         self.assertIn("robot.gripper.model", report.render().splitlines()[-1])
 

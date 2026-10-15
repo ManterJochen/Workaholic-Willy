@@ -99,6 +99,7 @@ with. **Moves** says what a route can do to the arm and the hand.
 | `GET /v1/health` | the server is up; says nothing about the cell | no |
 | `GET /v1/codes` | every typed code: run kinds, stop codes and their classes, event types, refusals, the ready bar's lights and blockers, the jaws question's stages and choices, the command reader's notes | no |
 | `GET /v1/preflight` | the cell checklist, each row with its fix | no |
+| `GET /v1/abilities` | what each operator function can do on the cell, asked of the arm its tree builds and never connected: the rows `real_cell --check` prints after its checklist; they block nothing | no |
 | `GET /v1/config/explain?key=...` | a value, its type, default, the layer that set it, and its YAML comment | no |
 | `GET /v1/config/writable` | the keys this server may write, described by the library | no |
 | `PATCH /v1/config` | write a group of keys, all or none | no |
@@ -162,7 +163,7 @@ The console starts tasks; it does not set parameters. Speed, acceleration, works
 switches are read-only here and edited in YAML, next to the comment that says why each value is what
 it is. The writable keys are an allowlist in [`src/config/edit.py`](../src/config/edit.py): the
 payload mass and centre of gravity, the three tool frame keys, each camera rig's serial number and
-whether it is enabled, which rig is primary, and the UR and KUKA controller addresses. A `PATCH`
+whether it is enabled, which rig is primary, and the UR controller address. A `PATCH`
 takes them as a group, because the three tool frame keys only validate together, and a refused write
 leaves every file byte-identical. **A taught pose is never a `PATCH`**: `robot.named_poses` and
 `robot.default_place_pose` are written by the pose door alone, after a person guided the arm there and the
@@ -198,7 +199,7 @@ controller refused, 400 an empty patch or an empty recording, 415 a recording th
 | `jaws_question_pending` | 409 | a moving route or a teach while a jaws question, its one change or its stroke is in progress | answer the question first |
 | `part_still_held` | 409 | a toggle's count says CLOSED, the planner still models a part, a hand measures one, or the stop record believes one in a hand that measures nothing | hold the part and answer "open now", or empty the hand and say "Backen leer" |
 | `jaws_not_confirmed` | 409 | a toggle's count nobody can vouch for, or, after a stop, jaws not answered open since | `POST /v1/cell/jaws/check` |
-| `route_refused` | 409 | the arm's place and return go through no planner that judges them: a UR on `ik`, a KUKA | run cuRobo; a part picked there could not be set down |
+| `route_refused` | 409 | the arm's place and return go through no planner that judges them: a UR on `ik` | run cuRobo; a part picked there could not be set down |
 | `carried_part_not_modelled` | 409 | a task on an arm that models no carried part | declare `safety.planning_world.payload.length_mm` |
 | `camera_target_unavailable` | 409 | a camera place on a cell with no camera to find it with (the rehearsal cell), or a wrist camera whose arm holds no frames | place at a taught pose |
 | `object_required` | 422 | a task's object is empty on a cell whose detector grounds a phrase, or a sort's rule names no kind (`detail.rule`) | name the part, or tick "everything the camera sees" (`options.pick_anything`); a sort names every kind |
@@ -472,7 +473,7 @@ waiting on a jaws question never holds it up. It is refused only `409 not_connec
   (`stopJ` or `stopL` at max(2.0, the move's own acceleration), from the thread that sent it) and `braking`
   is true. **Off, as shipped**, every move is sent exactly as it always was: the move in flight runs to its
   end, and nothing after it is sent.
-- **An arm without a latch** (sim, KUKA) answers `latched: false`: the run commands nothing more, and the
+- **An arm without a latch** (sim, dummy) answers `latched: false`: the run commands nothing more, and the
   current motion ends first.
 
 A halt reads `halted` everywhere, in every refusal, light and stop code, and never as a stopped controller,
@@ -516,7 +517,8 @@ Arriving there ends the record (`cell.recovery_ended {run_id, by: restart | home
 allowed while `built` or `connected`. It clears the arm's halt latch (and the halt the console carries to later
 builds), the service's latch of a recovery that needs a person, and stamps the record cleared
 (`cell.acknowledged`). It moves nothing, and it **never clears a protective stop**: a stopped controller refuses
-it (`409 controller_stopped`), because that is cleared at the pendant, where the arm is visible. Refused too:
+it (`409 controller_stopped`), because that is cleared where the arm is visible ([The status
+panel](#the-status-panel)). Refused too:
 `not_built`, `run_active`. **`jaws_empty: true`** is the person's word that the hand holds nothing ("Backen
 leer"): taken for a hand that cannot say it itself, refused `409 jaws_not_open` for a toggle whose count is not
 open (its way is the jaws question) and for a hand that measures a part. It tells the planner the hand is empty,
@@ -826,8 +828,15 @@ the run it names are the exception: `python -m api` keeps them across a restart
 running motion nothing. `?include_controller_state=true` adds robot mode, safety mode and the
 controller's message at the price of a dashboard round trip per call; poll it at seconds. Joint
 torques are never offered, because they go through the control interface a pick uses, and nothing
-here clears a protective stop: that is done at the pendant, where the arm is visible. The ready bar
-reads the controller from the receive stream alone (`quick_robot_status`), never the dashboard.
+here clears a protective stop: that is done where the arm is visible, for the same reason there is no
+E-stop button here: at the pendant, or by the person at the cell with `python -m src.robot.faults
+acknowledge`. With the controller state read, the status names the fault that state describes
+(`fault`), what a person does about it (`fault_what_to_do`) and, where software can clear it at all,
+that command with the console's own profile chain (`fault_clear_with`); the console shows them and
+never runs it. The console holds the cell lock while it is connected and the command takes the same
+lock, so where a command is shown, `fault_what_to_do` ends by saying to disconnect the console first.
+The ready bar reads the controller from the receive stream alone
+(`quick_robot_status`), never the dashboard.
 
 ## Files
 

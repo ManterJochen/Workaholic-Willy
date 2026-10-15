@@ -102,7 +102,7 @@ def placement_quaternion_xyzw(approach: str, closing: str) -> tuple[float, float
     """The declared tool frame rotation that places a hand ``approach`` + ``closing``, as XYZW.
 
     The inverse of what :meth:`HandPlacement.from_quaternion_xyzw` derives, so a refusal that knows only ``+Z+X``
-    can print a rotation a customer pastes into ``choose_ur_retract.py`` and ``matrix_gate.py``. ``w >= 0``, and
+    can print a rotation a customer pastes into ``scripts/arms/retract.py`` and ``scripts/arms/gate.py``. ``w >= 0``, and
     every component is snapped to 0, 0.5, sqrt(0.5) or 1 with its sign and no negative zero: ``+Z+X`` is
     ``(0, 0, 0, 1)`` and ``+Y+X`` the sim's ``(-sqrt(0.5), 0, 0, sqrt(0.5))``, exactly.
     """

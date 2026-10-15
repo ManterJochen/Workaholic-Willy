@@ -7,10 +7,12 @@ planned motion with no camera world says MISSING and is refused before it moves,
 DECLINED, and a decline on an arm whose live camera world is wired is refused before the planner is asked.
 
 The stamp is read off the built arm, never off config: the console_dummy profile leaves the base tree's
-``motion_planner: curobo`` on a dummy arm, and a dummy plans nothing.
+``motion.planner: curobo`` on a dummy arm, and a dummy plans nothing.
 
 No test here starts Isaac. The sim arms are either the mock or a non-mock arm that is never connected,
-the shape ``tests/test_sim_driver_skeleton.py`` already drives.
+the shape ``tests/test_sim_driver_skeleton.py`` already drives. The planned arm's rows run on the kit's
+``PlannedArm`` over the fake transport since P0g slice 13 (``tests/_arm_kit.ik_arm``, ``curobo_arm``), and the UR
+arm's own stance, which route its tree selects, is ``TheUrStanceTests``.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import io
 import unittest
 from contextlib import redirect_stdout
 from dataclasses import replace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 from src.config import load_robot_config
@@ -33,24 +36,21 @@ from src.robot.core import (
     RobotArm,
 )
 from src.robot.core import camera_world as cw
-from src.robot.core.camera_world import CameraWorldDecline, CameraWorldStamp, CameraWorldUse
+from src.robot.core.camera_world import CameraWorldDecline, CameraWorldStamp
 from src.robot.drivers.dummy.arm import DummyRobotArm
-from src.robot.drivers.kuka.arm import KukaRobotArm
+from src.robot.drivers.planned.arm import PlannedArm
 from src.robot.drivers.sim.arm import IsaacRobotArm
 from src.robot.drivers.sim.config import SimRobotConfig
-from src.robot.drivers.ur.arm import URRobotArm
-from src.robot.safety import SafetyPreflight
 from src.robot.safety.planning import CuroboUnavailableError
-from tests.test_ungated_motion_surfaces import _AcceptingGuard, _kuka_arm
-from tests.test_ur_arm import _FakePlanner, _pose
+from tests._arm_kit import HERE, curobo_arm, ik_arm
+from tests._arm_kit import kit_pose as _pose
 from tests.test_ur_arm import _arm as _ur_arm
 
-_JOINTS = JointPositions([0.0, -1.5, 1.5, 0.0, 1.5, 0.0])
+_JOINTS = JointPositions(HERE)
 
-_UR_IK = CameraWorldStamp.unplanned("robot.ur.motion_planner is 'ik'")
-_UR_NO_WORLD = CameraWorldStamp.missing(
-    "robot.ur.motion_planner is 'curobo' and no live camera world is wired to this arm")
-_KUKA = CameraWorldStamp.unplanned("KukaRobotArm has no planner")
+_PLANNED_IK = CameraWorldStamp.unplanned("robot.motion.planner is 'ik'")
+_PLANNED_NO_WORLD = CameraWorldStamp.missing(
+    "robot.motion.planner is 'curobo' and no live camera world is wired to this arm")
 _DUMMY = CameraWorldStamp.unplanned("DummyRobotArm has no planner")
 _SIM_MOCK = CameraWorldStamp.unplanned("mock_mode: the kinematic mock has no planner")
 _SIM_NO_WORLD = CameraWorldStamp.missing(
@@ -70,47 +70,12 @@ _VOUCHED = CameraWorldStamp.planned(cameras=("overhead",), captured_at_s=100.0)
 # ---------------------------------------------------------------------------------------------------
 
 
-def _ur_ik() -> URRobotArm:
-    arm = _ur_arm("ik")
-    arm.ik = lambda pose, **_: _JOINTS  # type: ignore[method-assign]
-    arm.get_joint_positions = lambda: _JOINTS  # type: ignore[method-assign]
-    arm._preflight = SafetyPreflight([_AcceptingGuard("workspace")])
-    arm._drive_pose = lambda *a, **k: True  # type: ignore[method-assign]
-    arm._motion.last_reject_status = None
-    return arm
-
-
-def _ur_curobo(planner: object | None = None, *, live_world: object | None = None) -> URRobotArm:
-    arm = _ur_arm("curobo")
-    arm._conn.get_joint_positions.return_value = _JOINTS.tolist()
-    arm._preflight = SafetyPreflight([_AcceptingGuard("workspace")])
-    if live_world is not None:
-        arm.set_live_planner_world(live_world)  # type: ignore[arg-type]
-    arm._curobo_ur = planner if planner is not None else _FakePlanner(  # type: ignore[assignment]
-        plan_result=[_JOINTS.tolist()],
-        execute_result=MotionResult.executed(MotionCommand.MOVE_TO, target_pose=_pose(),
-                                             message="curobo"),
-    )
-    arm._gate_planned_config = lambda pose, joints: None  # type: ignore[method-assign]
-    # And the plan's end. This double hands back one trajectory whatever it is asked, which a real planner never
-    # does, and what this file reads is not where a plan ends: the UR driver refuses a plan off its goal before
-    # anything moves (Step 8f), and tests/test_the_planner_sees_the_cell_where_the_controller_has_it.py holds that half.
-    arm._plan_end_refusal = lambda goal, joints, pose: None  # type: ignore[method-assign]
-    # The path gate too. This file is about the camera world stamp, and the preflight above holds
-    # one accepting stand-in rather than a self collision guard, which a judged path refuses for
-    # its own good reasons (tests/test_planned_paths_are_judged.py holds that half).
-    arm._preflight.gate_planned_path = (  # type: ignore[method-assign]
-        lambda waypoints, *, arm=None, command=None: None
-    )
-    return arm
-
-
-def _kuka() -> KukaRobotArm:
-    arm, _ = _kuka_arm(SafetyPreflight([_AcceptingGuard()]))
-    arm.ik = lambda pose, **_: _JOINTS  # type: ignore[method-assign]
-    arm.get_joint_positions = lambda: _JOINTS  # type: ignore[method-assign]
-    arm._drive_pose = lambda *a, **k: True  # type: ignore[method-assign]
-    return arm
+#: The planned arm on each route, from the kit: its plan's end, its path gate and its endpoint gate are stood down on
+#: cuRobo, because a planner double hands back one trajectory whatever it is asked and this file reads the stamp
+#: (tests/test_the_planner_sees_the_cell_where_the_controller_has_it.py and tests/test_planned_paths_are_judged.py
+#: hold those halves).
+_planned_ik = ik_arm
+_planned_curobo = curobo_arm
 
 
 def _dummy() -> DummyRobotArm:
@@ -145,16 +110,15 @@ def _sim_unconnected() -> IsaacRobotArm:
 
 
 class TheStampMatrixTests(unittest.TestCase):
-    """What each driver says for each typed verb, as literals."""
+    """What each driver says for each typed verb, as literals.
+
+    The planned arm's rows run on a bare PlannedArm since P0g slice 12
+    (tests/test_the_camera_world_matrix_on_a_planned_arm.py), after being asserted once on the UR arm as well
+    (``f391be03``); the UR's own stance, the route its tree selects, is ``TheUrStanceTests`` below.
+    """
 
     def test_every_driver_and_verb_says_what_stood_behind_the_motion(self) -> None:
         cases = (
-            ("ur ik move", lambda: _ur_ik().move(_pose()), _UR_IK),
-            ("ur ik move_to_joints", lambda: _ur_ik().move_to_joints(_JOINTS), _UR_IK),
-            ("ur curobo move, no live world", lambda: _ur_curobo().move(_pose()), _UR_NO_WORLD),
-            ("ur curobo move_to_joints, no live world", lambda: _ur_curobo().move_to_joints(_JOINTS), _UR_NO_WORLD),
-            ("kuka move", lambda: _kuka().move(_pose()), _KUKA),
-            ("kuka move_to_joints", lambda: _kuka().move_to_joints(_JOINTS), _KUKA),
             ("dummy move", lambda: _dummy().move(_pose()), _DUMMY),
             ("dummy move_to_joints", lambda: _dummy().move_to_joints(_JOINTS), _DUMMY),
             ("sim mock move", lambda: _sim_mock().move(_pose()), _SIM_MOCK),
@@ -166,36 +130,6 @@ class TheStampMatrixTests(unittest.TestCase):
                 self.assertIsInstance(result, MotionResult)
                 self.assertEqual(result.camera_world, expected)
 
-    def test_a_live_world_row_whose_planner_reports_no_refresh_stays_unstated(self) -> None:
-        """Nothing vouched: this planner double reports no refresh, so the row cannot say PLANNED.
-
-        Until Step 4 this row said UNSTATED because no refresh reported cameras and a capture time. A
-        refresh does now, and a move on a world its refresh vouched for says PLANNED
-        (tests/test_every_verb_meets_the_camera_world.py). What stays is the control: a stamp that
-        vouches needs a refresh that did.
-        """
-        result = _ur_curobo(live_world=object()).move(_pose())
-        self.assertIs(result.status, MotionStatus.EXECUTED)
-        self.assertIs(result.camera_world.use, CameraWorldUse.UNSTATED)
-
-    def test_a_ur_joint_move_whose_refresh_vouched_says_planned(self) -> None:
-        """Owner, Step 4 C: nothing plans a UR joint move, but on cuRobo its path is checked against the world its
-        refresh registered, so it says PLANNED as a move does. It said UNPLANNED, "no world could be consulted"."""
-        from src.robot.safety.planning.live_world import WorldRefresh, WorldVerdict
-
-        class _Refreshing(_FakePlanner):
-            last_world_refresh: object = None
-
-            def refresh_world(self, *, near_point_mm: object = None, goal_keep_out: object = None) -> None:
-                self.last_world_refresh = WorldRefresh(
-                    verdict=WorldVerdict.FRESH, sent=1, registered=1, build_ms=0.0, register_ms=0.0, age_ms=5.0,
-                    dropped_obstacles=0, cameras=("overhead",), captured_at_s=100.0,
-                )
-
-        result = _ur_curobo(_Refreshing(plan_result=[_JOINTS.tolist()]), live_world=object()).move_to_joints(_JOINTS)
-        self.assertIs(result.status, MotionStatus.EXECUTED, result.message)
-        self.assertEqual(result.camera_world, _VOUCHED)
-
     def test_only_the_stamp_changes_on_a_stamped_result(self) -> None:
         pose = _pose()
         result = _dummy().move(pose)
@@ -204,10 +138,25 @@ class TheStampMatrixTests(unittest.TestCase):
 
     def test_a_planner_double_that_returns_no_result_is_handed_back_untouched(self) -> None:
         planner = MagicMock()
-        arm = _ur_curobo(planner)
+        arm = _planned_curobo(planner)
         # Declined, so what is read is the planner double's result and not the refusal of a motion with no world.
         with arm.without_camera_world("the planner double's own result is what this test reads"):
             self.assertIs(arm.move(_pose()), planner.execute.return_value)
+
+
+class TheUrStanceTests(unittest.TestCase):
+    """What the UR arm says about itself, since the stamp matrix runs on the PlannedArm it is (P0g slice 12)."""
+
+    def test_the_ur_is_a_planned_arm_on_the_route_its_tree_names(self) -> None:
+        from src.robot.drivers.planned.arm import PlannedArm
+
+        for route, plans in (("ik", False), ("curobo", True)):
+            with self.subTest(route=route):
+                arm = _ur_arm(route)
+                self.assertIsInstance(arm, PlannedArm)
+                self.assertEqual(route, arm._motion_planner)
+                self.assertIs(plans, arm.plans_paths)
+                self.assertIs(plans, arm.camera_world_required)
 
 
 class TheSimArmTests(unittest.TestCase):
@@ -311,20 +260,20 @@ class PrecedenceTests(unittest.TestCase):
                 self.assertEqual(cw.resolve_camera_world(**arguments), expected)
 
     def test_a_keyword_beats_a_block(self) -> None:
-        arm = _ur_curobo()
+        arm = _planned_curobo()
         with arm.without_camera_world("the block"):
             result = arm.move(_pose(), camera_world=CameraWorldDecline("the keyword"))
         self.assertEqual(result.camera_world, CameraWorldStamp.declined(CameraWorldDecline("the keyword")))
 
     def test_a_block_on_one_arm_does_not_stamp_another(self) -> None:
-        declined, beside = _ur_curobo(), _ur_curobo()
+        declined, beside = _planned_curobo(), _planned_curobo()
         with declined.without_camera_world(_BENCH.reason):
             inside, other = declined.move(_pose()), beside.move(_pose())
         self.assertEqual(inside.camera_world, CameraWorldStamp.declined(_BENCH))
-        self.assertEqual(other.camera_world, _UR_NO_WORLD)
+        self.assertEqual(other.camera_world, _PLANNED_NO_WORLD)
 
     def test_the_innermost_block_wins_and_each_ends_with_its_with(self) -> None:
-        arm = _ur_curobo()
+        arm = _planned_curobo()
         with arm.without_camera_world("outer"):
             with arm.without_camera_world("inner"):
                 innermost = arm.move(_pose())
@@ -332,22 +281,22 @@ class PrecedenceTests(unittest.TestCase):
         after = arm.move(_pose())
         self.assertEqual(innermost.camera_world.reason, "inner")
         self.assertEqual(outer.camera_world.reason, "outer")
-        self.assertEqual(after.camera_world, _UR_NO_WORLD)
+        self.assertEqual(after.camera_world, _PLANNED_NO_WORLD)
 
     def test_a_block_ends_when_its_body_raises(self) -> None:
-        arm = _ur_curobo()
+        arm = _planned_curobo()
         with self.assertRaises(RuntimeError), arm.without_camera_world(_BENCH.reason):
             raise RuntimeError("the body failed")
-        self.assertEqual(arm.move(_pose()).camera_world, _UR_NO_WORLD)
+        self.assertEqual(arm.move(_pose()).camera_world, _PLANNED_NO_WORLD)
 
     def test_a_blank_reason_is_refused_when_the_block_is_asked_for(self) -> None:
-        for arm in (_ur_curobo(), _dummy()):
+        for arm in (_planned_curobo(), _dummy()):
             with self.subTest(type(arm).__name__), self.assertRaises(ValueError):
                 arm.without_camera_world("   ")
 
     def test_a_decline_is_a_decline_object_not_a_reason_or_none(self) -> None:
         """Matched on the message: an arm without the keyword raises TypeError too, for another reason."""
-        for arm in (_ur_curobo(), _dummy()):
+        for arm in (_planned_curobo(), _dummy()):
             for value in ("bench", None):
                 with self.subTest(arm=type(arm).__name__, value=value), \
                         self.assertRaisesRegex(TypeError, "is a CameraWorldDecline, not"):
@@ -355,8 +304,9 @@ class PrecedenceTests(unittest.TestCase):
 
     def test_unplanned_wins_over_a_decline(self) -> None:
         cases = (
-            ("ur ik move", lambda: _ur_ik().move(_pose(), camera_world=_BENCH), _UR_IK),
-            ("ur ik move_to_joints", lambda: _ur_ik().move_to_joints(_JOINTS, camera_world=_BENCH), _UR_IK),
+            ("planned ik move", lambda: _planned_ik().move(_pose(), camera_world=_BENCH), _PLANNED_IK),
+            ("planned ik move_to_joints", lambda: _planned_ik().move_to_joints(_JOINTS, camera_world=_BENCH),
+             _PLANNED_IK),
             ("dummy move in a block", lambda: _in_block(_dummy(), "move"), _DUMMY),
             ("sim mock move", lambda: _sim_mock().move(_pose(), camera_world=_BENCH), _SIM_MOCK),
         )
@@ -377,11 +327,11 @@ def _in_block(arm: DummyRobotArm, verb: str) -> MotionResult:
 
 class ADeclineOnALiveWorldIsRefusedTests(unittest.TestCase):
 
-    def test_the_ur_refuses_before_the_planner_is_asked(self) -> None:
+    def test_a_planned_arm_refuses_before_the_planner_is_asked(self) -> None:
         for label, enter in (("keyword", False), ("block", True)):
             with self.subTest(label):
                 planner = MagicMock()
-                arm = _ur_curobo(planner, live_world=object())
+                arm = _planned_curobo(planner, live_world=object())
                 pose = _pose()
                 if enter:
                     with arm.without_camera_world(_BENCH.reason):
@@ -396,20 +346,22 @@ class ADeclineOnALiveWorldIsRefusedTests(unittest.TestCase):
                 self.assertEqual(result.message, cw.DECLINE_ON_A_LIVE_WORLD_MESSAGE)
                 self.assertEqual(result.camera_world, CameraWorldStamp.declined(_BENCH))
 
-    def test_the_ur_refuses_a_declined_joint_move_before_its_path_is_judged(self) -> None:
+    def test_a_planned_arm_refuses_a_declined_joint_move_before_its_path_is_judged(self) -> None:
         """Owner, Step 4 C: the path of a cuRobo joint move is checked against the live world, which a decline cannot
-        set aside for one motion. It ran and said UNPLANNED."""
+        set aside for one motion. It ran and said UNPLANNED. Refused before the arm asks its controller anything, so
+        the fake's tape is empty; the kit's other files are the control that the tape records."""
         for label, enter in (("keyword", False), ("block", True)):
             with self.subTest(label):
                 planner = MagicMock()
-                arm = _ur_curobo(planner, live_world=object())
+                arm = _planned_curobo(planner, live_world=object())
                 if enter:
                     with arm.without_camera_world(_BENCH.reason):
                         result = arm.move_to_joints(_JOINTS)
                 else:
                     result = arm.move_to_joints(_JOINTS, camera_world=_BENCH)
                 planner.refresh_world.assert_not_called()
-                arm._conn.moveJ.assert_not_called()  # type: ignore[attr-defined]
+                fake: Any = arm._transport
+                self.assertEqual([], fake.tape)
                 self.assertIs(result.status, MotionStatus.UNSUPPORTED)
                 self.assertIs(result.command, MotionCommand.MOVE_JOINTS)
                 self.assertEqual(result.message, cw.DECLINE_ON_A_LIVE_WORLD_MESSAGE)
@@ -450,7 +402,7 @@ class TheStampComesFromTheArmTests(unittest.TestCase):
 
     def test_a_console_dummy_rehearsal_reads_unplanned_although_its_tree_says_curobo(self) -> None:
         tree = load_robot_config(profile="console_dummy")
-        self.assertEqual((str(tree.vendor), tree.ur.motion_planner), ("dummy", "curobo"))
+        self.assertEqual((str(tree.vendor), tree.motion.planner), ("dummy", "curobo"))
 
         from src.robot.execution.real_cell.__main__ import main
 
@@ -477,14 +429,14 @@ class TheStampComesFromTheArmTests(unittest.TestCase):
 class TheCapabilityTests(unittest.TestCase):
 
     def test_every_driver_offers_the_block_and_the_protocol_does_not_demand_it(self) -> None:
-        for arm in (_ur_curobo(), _kuka(), _sim_mock(), _dummy()):
+        for arm in (_planned_curobo(), _sim_mock(), _dummy()):
             with self.subTest(type(arm).__name__):
                 self.assertIsInstance(arm, cw.DeclinesCameraWorld)
         self.assertNotIsInstance(object(), cw.DeclinesCameraWorld)
         self.assertFalse(hasattr(RobotArm, "without_camera_world"))
 
     def test_both_typed_verbs_take_the_decline_as_a_keyword_that_defaults_to_unset(self) -> None:
-        for owner in (RobotArm, URRobotArm, KukaRobotArm, IsaacRobotArm, DummyRobotArm):
+        for owner in (RobotArm, PlannedArm, IsaacRobotArm, DummyRobotArm):
             for verb in ("move", "move_to_joints"):
                 with self.subTest(owner=owner.__name__, verb=verb):
                     parameter = inspect.signature(getattr(owner, verb)).parameters["camera_world"]

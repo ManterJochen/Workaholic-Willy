@@ -39,7 +39,7 @@ def arm_identity(
                          planner_margin_mm=planner_margin_mm, attach_spheres=attach_spheres)
     held = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
     return SidecarIdentity(
-        provenance={"arm": arm, "carries_hand": False, "generated_by": "scripts/curobo/build_ur_config.py"},
+        provenance={"arm": arm, "carries_hand": False, "generated_by": "scripts/arms/descriptor.py"},
         arm_descriptor_sha256=held.get("arm_descriptor_sha256", UNSET),
         urdf_sha256=held.get("urdf_sha256", UNSET),
         composed_sha256=held.get("composed_sha256", UNSET),

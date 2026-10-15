@@ -38,7 +38,6 @@ _provenance:
     fresh_reach_max_mm: 19.996
     fresh_samples: 20000
     sample_spacing_mm: 2.203
-    seconds: 42.3
   - body: lfinger
     frame: 6
     why: one jaw, at the evidence model's reach
@@ -52,7 +51,6 @@ _provenance:
     fresh_reach_max_mm: 11.939
     fresh_samples: 20000
     sample_spacing_mm: 1.083
-    seconds: 27.1
   - body: rfinger
     frame: 6
     why: the other jaw
@@ -66,7 +64,6 @@ _provenance:
     fresh_reach_max_mm: 11.968
     fresh_samples: 20000
     sample_spacing_mm: 1.083
-    seconds: 22.0
   origin: flange
   frame: tool0 (Y=approach, X=closing, Z=depth), metres
 collision_spheres:

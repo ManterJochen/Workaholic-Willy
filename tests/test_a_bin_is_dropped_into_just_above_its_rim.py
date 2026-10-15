@@ -574,9 +574,9 @@ class TheWorstHangBelowTheToolTests(unittest.TestCase):
         from src.config.schema.robot import RobotConfig
 
         return RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"model": "ur10", "motion_planner": "curobo"},
+            "vendor": "ur", "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
             "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "hand_adapter", "thickness_mm": 23.0}],
-                        "tool_frame": {"source": "polyscope", "offset_mm": [0.0, 0.0, 157.0],
+                        "tool_frame": {"source": "controller", "offset_mm": [0.0, 0.0, 157.0],
                                        "rotation_quat_xyzw": [0.0, 0.0, -0.7071068, 0.7071068]}},
         })
 

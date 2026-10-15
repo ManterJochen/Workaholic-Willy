@@ -28,7 +28,7 @@ _ENVELOPE = (
 
 
 def _rule():
-    path = _ROOT / "scripts" / "curobo" / "_retract_rule.py"
+    path = _ROOT / "scripts" / "arms" / "_retract_rule.py"
     spec = importlib.util.spec_from_file_location("_retract_rule_under_test", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -186,7 +186,7 @@ class TheRuleChoosesTests(unittest.TestCase):
 class TheTableIsReadStrictlyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.rule = _rule()
-        self.table = Path(self.enterContext(__import__("tempfile").TemporaryDirectory())) / "ur_retract.yaml"
+        self.table = Path(self.enterContext(__import__("tempfile").TemporaryDirectory())) / "retract.yaml"
         self.table.write_text(
             "rule:\n"
             "  placement: +Y+X\n"
@@ -228,7 +228,7 @@ class TheTableIsReadStrictlyTests(unittest.TestCase):
             with self.subTest(arm=arm, hand=hand, plate=plate):
                 with self.assertRaises(self.rule.RetractMissing) as ctx:
                     self.rule.read_retract(arm, hand, plate, placement="+Y+X", table_path=self.table)
-                self.assertIn("choose_ur_retract.py", str(ctx.exception))
+                self.assertIn("scripts/arms/retract.py", str(ctx.exception))
 
 
 class TheRetractBelongsToThePlacementTests(unittest.TestCase):
@@ -237,7 +237,7 @@ class TheRetractBelongsToThePlacementTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.rule = _rule()
-        self.table = Path(self.enterContext(__import__("tempfile").TemporaryDirectory())) / "ur_retract.yaml"
+        self.table = Path(self.enterContext(__import__("tempfile").TemporaryDirectory())) / "retract.yaml"
         self.table.write_text(
             "rule:\n"
             "  placement: +Y+X\n"
@@ -446,7 +446,7 @@ class ARunReplacesOnlyWhatItJudgedTests(unittest.TestCase):
         merged = merge_judged(self._committed(), self._run([self._row("robotiq_2f85", 0.0, 6.0, 6.0)], planner_margin_mm=6.0))
         self.assertEqual(merged["rule"]["planner_margin_mm"], 4.0)
         folder = Path(self.enterContext(__import__("tempfile").TemporaryDirectory()))
-        table = folder / "ur_retract.yaml"
+        table = folder / "retract.yaml"
         table.write_text(yaml.safe_dump(merged, sort_keys=False), encoding="utf-8")
         self.assertEqual(read_retract("ur5e", "robotiq_2f85", 0.0, 6.0, placement="+Z+X", table_path=table), [6.0] * 6)
         self.assertNotEqual(read_retract("ur5e", "robotiq_2f85", 0.0, 4.0, placement="+Z+X", table_path=table), [6.0] * 6)

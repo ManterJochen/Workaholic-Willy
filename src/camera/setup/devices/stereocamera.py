@@ -4,6 +4,7 @@ import logging
 import cv2 as cv
 
 from src.config.schema.camera import SingleDeviceRigConfig
+from src.camera.setup.capture_backend import refuse_a_backend_this_platform_lacks
 from src.camera.setup.quality import configure_camera_for_quality
 
 
@@ -19,6 +20,7 @@ class StereoVisionCalibrationSingleDevice:
     """
 
     def __init__(self, dev_cfg: SingleDeviceRigConfig):
+        refuse_a_backend_this_platform_lacks(dev_cfg)
         self.cfg = dev_cfg
 
         self.device_index = int(dev_cfg.device_index)

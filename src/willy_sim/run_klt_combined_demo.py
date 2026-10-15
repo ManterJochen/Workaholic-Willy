@@ -239,7 +239,7 @@ def record_suction_deep(out: str, *, hold_steps: int = HOLD, lift_mm: float = 13
         for _ in range(k):
             session.step(render=True)
 
-    arm.move_joint(JointPositions(home_q))
+    arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
     arm.session.step_n(10)
     z_before = float(np.asarray(obj.get_world_pose()[0])[2])
     state["on"] = True
@@ -247,7 +247,7 @@ def record_suction_deep(out: str, *, hold_steps: int = HOLD, lift_mm: float = 13
 
     _park = getattr(sim, "park_joint_positions", None)
     park_q = np.asarray(_park if _park is not None else sim.home_joint_positions, dtype=np.float64)
-    arm.move_joint(JointPositions(park_q))
+    arm.move_to_joints(JointPositions(park_q)).raise_unless_executed()
     arm.session.step_n(15)
     try:
         handles.camera.set_clipping_range(0.05, 1.0e6)
@@ -281,7 +281,7 @@ def record_suction_deep(out: str, *, hold_steps: int = HOLD, lift_mm: float = 13
     closing = closing / (float(np.linalg.norm(closing)) or 1.0)
     quat = _quaternion_from_axes(closing, approach)
 
-    arm.move_joint(JointPositions(home_q))
+    arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
     arm.session.step_n(10)
     for label, gap in (("standoff", 60.0), ("contact", 22.0)):
         arm.move(Pose(position_mm=pos - approach * gap, quaternion_xyzw=quat, frame=Frame.BASE,

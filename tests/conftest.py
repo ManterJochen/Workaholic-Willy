@@ -47,6 +47,7 @@ import os
 
 import pytest
 
+from tests import _injection_guard as injection_guard
 from tests._determinism import (
     DRIFT_PROBES,
     PLATFORM_FLOAT_LOCKED_NODEIDS,
@@ -55,7 +56,7 @@ from tests._determinism import (
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Fingerprint the committed replay goldens before a single test has run.
+    """Fingerprint the committed replay goldens before a single test has run, and guard injection.
 
     ``TreeCleanlinessTests`` compares against this, so it detects a test rewriting a golden DURING
     the run and stays quiet about an edit someone made before it.
@@ -63,6 +64,8 @@ def pytest_configure(config: pytest.Config) -> None:
 
     del config
     snapshot_lf_locked_goldens()
+    # A test may only inject what the arm already carries; see tests/_injection_guard.py.
+    injection_guard.install()
 
 
 def pytest_collection_modifyitems(

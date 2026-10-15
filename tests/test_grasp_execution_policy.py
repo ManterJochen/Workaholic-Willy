@@ -16,6 +16,7 @@ from src.robot.grasping.motion.execution_policy import (
     _yaw_axes_to_base_x,
 )
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
+from src.robot.core.motion_result import MotionCommand, MotionResult
 
 
 # ---------------------------------------------------------------------------
@@ -36,10 +37,11 @@ class _FakeArm:
             label="home",
         )
 
-    def move_to(self, pose: Pose, **_: object) -> None:
+    def move(self, pose: Pose, **_: object) -> MotionResult:
         if self.fail_after is not None and len(self.move_to_calls) >= self.fail_after:
             raise RuntimeError("simulated motion failure")
         self.move_to_calls.append(pose)
+        return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
 
 
 class _SteadyArm(_FakeArm):
@@ -166,40 +168,35 @@ class RetreatStepsTests(unittest.TestCase):
 
 
 class SteadyGateTests(unittest.TestCase):
-    """L2.5: the pre-move steady-state gate (require_steady_before_motion)."""
+    """The steady gate (``safety.dwell``) is the arm's own since P0e E9, inside every motion verb of the planned arm.
 
-    def test_off_by_default_passes_through(self) -> None:
-        # Default gate OFF + a driver with no wait_until_steady -> unchanged behaviour (regression).
-        report = GraspExecutionPolicy(arm=_FakeArm(), gripper=None).execute(_grasp())
-        self.assertIs(report.outcome, PolicyOutcome.EXECUTED)
+    The policy held a copy until then, turned on by the pick service from the arm's tree; the planned arm waiting in
+    ``move`` made it a second wait before every move. What the policy owes the gate now is only to read the arm's
+    TIMEOUT as a failed motion and command nothing after it.
+    """
 
-    def test_on_steady_arm_executes_and_gates_each_move(self) -> None:
-        arm = _SteadyArm(steady=True)
-        report = GraspExecutionPolicy(
-            arm=arm, gripper=None, require_steady_before_motion=True,
-        ).execute(_grasp())
-        self.assertIs(report.outcome, PolicyOutcome.EXECUTED)
-        self.assertGreater(len(arm.move_to_calls), 0)
-        # wait_until_steady gated before every commanded move.
-        self.assertEqual(arm.steady_calls, len(arm.move_to_calls))
-
-    def test_on_timeout_fails_closed_with_no_motion(self) -> None:
+    def test_the_policy_never_asks_the_arm_to_wait(self) -> None:
         arm = _SteadyArm(steady=False)
-        report = GraspExecutionPolicy(
-            arm=arm, gripper=None, require_steady_before_motion=True, steady_timeout_s=0.01,
-        ).execute(_grasp())
-        self.assertIs(report.outcome, PolicyOutcome.MOTION_FAILED)
-        self.assertEqual(arm.move_to_calls, [])  # fail-closed: NOT a single move commanded
-        self.assertIs(report.motion_status, MotionStatus.TIMEOUT)
-
-    def test_on_driver_without_steady_signal_passes_through(self) -> None:
-        # Gate ON but the driver lacks wait_until_steady -> getattr guard -> pass through, no crash.
-        arm = _FakeArm()
-        report = GraspExecutionPolicy(
-            arm=arm, gripper=None, require_steady_before_motion=True,
-        ).execute(_grasp())
+        report = GraspExecutionPolicy(arm=arm, gripper=None).execute(_grasp())
         self.assertIs(report.outcome, PolicyOutcome.EXECUTED)
-        self.assertGreater(len(arm.move_to_calls), 0)
+        self.assertEqual(0, arm.steady_calls)
+        self.assertFalse(hasattr(GraspExecutionPolicy(arm=arm, gripper=None), "require_steady_before_motion"))
+
+    def test_a_timeout_the_arm_reports_fails_the_motion_and_nothing_follows(self) -> None:
+        arm = _TimesOutArm()
+        report = GraspExecutionPolicy(arm=arm, gripper=None).execute(_grasp())
+        self.assertIs(report.outcome, PolicyOutcome.MOTION_FAILED)
+        self.assertIs(report.motion_status, MotionStatus.TIMEOUT)
+        self.assertEqual(1, len(arm.move_to_calls))
+
+
+class _TimesOutArm(_FakeArm):
+    """An arm whose own steady gate times out: its move answers TIMEOUT and moves nothing."""
+
+    def move(self, pose: Pose, **_: object) -> MotionResult:
+        self.move_to_calls.append(pose)
+        return MotionResult.failed(MotionStatus.TIMEOUT, MotionCommand.MOVE_TO, target_pose=pose,
+                                   message="the arm did not come to rest within 5.00 s before the motion (safety.dwell)")
 
 
 class PolicyNoGripperTests(unittest.TestCase):

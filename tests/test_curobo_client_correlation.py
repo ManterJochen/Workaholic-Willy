@@ -3,7 +3,7 @@
 ⛔⛔ **THIS IS A MOTION PATH ON A ROBOT ARM, AND THE FAILURE WAS SILENT.** `CuroboPlanClient` is
 request/response over a single queue. A call that times out stops waiting but leaves its request
 outstanding, so the sidecar's late answer lands in the queue and used to be handed to whatever asked
-next. Three callers in `drivers/ur/curobo_motion.py` swallow the timeout exception and return
+next. Three callers in `drivers/planned/curobo_motion.py` swallow the timeout exception and return
 `False`, so the poisoned queue survived with nothing said.
 
 Reproduced end to end against a stub sidecar that answers the first plan too late and the second on

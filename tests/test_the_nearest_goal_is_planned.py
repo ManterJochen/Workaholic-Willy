@@ -14,9 +14,15 @@ after it, and screens each with the planner and the endpoint gate. Then, in that
 * a branch other than the arm's only once every goal on it failed, with a warning naming both;
 * no line and no plan is the no-plan refusal, and cuRobo is never left to choose a goal.
 
+After a plan that is not taken, the world is refreshed before the next goal is screened, lined or planned to (P0g R1):
+a plan that fails costs seconds, and screen, line, plan and judge share one world.
+
 What this file holds with a planner double: which configuration is asked for, in what order lines and plans are
 tried, the clearance a line is judged at, the detour bound, the branch preference, and that what runs is what was
 judged. The GPU half, with the real sidecar, is for the lead's bench run, not here.
+
+The arms are ``PlannedArm`` over the fake transport since P0g slice 13 (``tests/_arm_kit.planned_arm``), on UR trees:
+the goals are ranked by the UR closed-form IK the planning half still reads, so every model here is a UR's until P1.
 """
 
 from __future__ import annotations
@@ -26,20 +32,28 @@ import math
 import pathlib
 import unittest
 from typing import Any
-from unittest.mock import MagicMock
+
+from unittest import mock
 
 import numpy as np
+import pytest
 
-from src.config.schema.robot import RobotConfig
-from src.robot.core import NO_PLAN_FAIL_SAFE_MESSAGE, MotionCommand, MotionResult, MotionStatus
-from src.robot.drivers.ur.arm import URRobotArm
-from src.robot.drivers.ur.curobo_motion import PLANNER_JOINT_ENVELOPE_RAD, UR_ARM_JOINT_NAMES, CuroboUrPlanner
+from src.config.arms import admitted_arms, load_arm
+from src.robot.core import NO_PLAN_FAIL_SAFE_MESSAGE, MotionCommand, MotionResult, MotionSent, MotionStatus
+from src.robot.drivers.planned.arm import PlannedArm
+from src.robot.drivers.planned.curobo_motion import CuroboPlanner, planner_envelope_rad
+from src.robot.drivers.planned.goal_set import goal_set_for
 from src.robot.safety._ur_ik import nearest_goals, ur_branch, ur_flange_ik
 from src.robot.safety._ur_kinematics import ur_link_transforms_mm
 from src.robot.safety.path_samples import span_overshoot_rad
 from src.robot.safety.planning import CuroboUnavailableError, StateRefusal, StateRefusalKind, StateWhere
+from tests._arm_kit import LOGGER_NAME, kit_tree, planned_arm
+from tests._fake_transport import fake_transport
 from tests._plan_end import OPEN_WORKSPACE, pose_where_it_ends
 from tests._route_planner import RoutePlanner, line
+
+#: The controller's joint order as the ur5e description states it; the planner is handed it since P0e E4.
+_UR_JOINT_NAMES = tuple(joint.name for joint in load_arm("ur5e").joints)
 
 _DECLINED = "unit double: this file reads which goal a planner double is asked for, and no camera world is wired"
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -50,34 +64,29 @@ _THERE = [0.3, -1.4, 1.4, -1.6, -1.5, 0.2]
 _CANDLE = [0.0, -math.pi / 2.0, 0.0, -math.pi / 2.0, 0.0, 0.0]
 
 
-def _arm(planner: RoutePlanner, *, model: str = "ur5e", safety: "dict[str, Any] | None" = None) -> URRobotArm:
-    arm = URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": model, "motion_planner": "curobo"},
-        "safety": {"payload": {"enforce": False}, **(safety or {})}, "gripper": {"model": "robotiq_2f85"},
-        "workspace_limits": OPEN_WORKSPACE,
-    }))
-    arm._conn = MagicMock()
-    arm._conn.is_connected = True
-    arm._conn.get_joint_positions.return_value = list(planner.here)
-    arm._curobo_ur = planner  # type: ignore[assignment]
+def _arm(planner: RoutePlanner, *, model: str = "ur5e", safety: "dict[str, Any] | None" = None) -> Any:
+    config = kit_tree("curobo", model=model, safety={"payload": {"enforce": False}, **(safety or {})},
+                      workspace_limits=OPEN_WORKSPACE)
+    arm: Any = planned_arm(config, transport=fake_transport(joints=planner.here))
+    arm._curobo = planner
     # The local gate and the end have their own tests; this file reads which goal was asked for and how.
-    arm._preflight.gate_planned_path = lambda waypoints, *, arm=None, command=None: None  # type: ignore[method-assign]
-    arm._gate_planned_config = lambda pose, joints: None  # type: ignore[method-assign]
+    arm._preflight.gate_planned_path = lambda waypoints, *, arm=None, command=None: None
+    arm._gate_planned_config = lambda pose, joints: None
     return arm
 
 
-def _move(arm: URRobotArm, end: "list[float]") -> MotionResult:
+def _move(arm: PlannedArm, end: "list[float]") -> MotionResult:
     with arm.without_camera_world(_DECLINED):
         return arm.move(pose_where_it_ends(arm, end))
 
 
-def _ranked(arm: URRobotArm, end: "list[float]", here: "list[float]") -> list[Any]:
+def _ranked(arm: PlannedArm, end: "list[float]", here: "list[float]") -> list[Any]:
     """The order of the goals by time alone, from the pure function the arm calls."""
     frames = ur_link_transforms_mm(str(arm.config.ur.model), np.asarray(end, dtype=np.float64))
     assert frames is not None
     solutions = ur_flange_ik(str(arm.config.ur.model), frames[-1], q6_if_singular=here[-1])
     assert solutions is not None
-    lower, upper = arm._goal_joint_window()
+    lower, upper = arm.goal_joint_window()
     return list(nearest_goals(solutions, current=here, lower=lower, upper=upper, velocity=1.0))
 
 
@@ -130,13 +139,13 @@ class AClearLineRunsTests(unittest.TestCase):
         planner = RoutePlanner(here=here)
         planner.line_clear = lambda start, end: False
         _move(_arm(planner), end)
-        lower, upper = PLANNER_JOINT_ENVELOPE_RAD
+        lower, upper = planner_envelope_rad("ur5e")
         asked = ([c[1] for c in planner.named("plan_joint")] + [c[1][0] for c in planner.named("check") if len(c[1]) == 1]
                  + [c[1][-1] for c in planner.lines()])
         self.assertTrue(planner.named("plan_joint"), "no joint goal was asked for, so nothing here was tested")
         for goal in asked:
             for axis, value in enumerate(goal):
-                self.assertTrue(lower[axis] <= value <= upper[axis], f"{UR_ARM_JOINT_NAMES[axis]} asked at {value}")
+                self.assertTrue(lower[axis] <= value <= upper[axis], f"{_UR_JOINT_NAMES[axis]} asked at {value}")
 
     def test_the_guards_window_narrows_the_planners(self) -> None:
         """A cell that limits wrist 3 to +-100 deg (less a 5 deg margin) is never asked to go one turn on."""
@@ -145,7 +154,7 @@ class AClearLineRunsTests(unittest.TestCase):
         end = [*_THERE[:5], 1.2]
         planner = RoutePlanner(here=here)
         arm = _arm(planner, safety=limits)
-        self.assertAlmostEqual(math.radians(95.0), arm._goal_joint_window()[1][5])
+        self.assertAlmostEqual(math.radians(95.0), arm.goal_joint_window()[1][5])
         _move(arm, end)
         self.assertAlmostEqual(1.2, _executed_goal(planner)[5], places=6)
 
@@ -179,8 +188,53 @@ class WhatIsRefusedBeforeAnythingIsAskedTests(unittest.TestCase):
         self.assertEqual([], planner.calls)
 
     def test_the_glue_has_no_cartesian_plan_so_cuRobo_can_never_choose_a_goal(self) -> None:
-        self.assertFalse(hasattr(CuroboUrPlanner, "plan"))
-        self.assertFalse(hasattr(CuroboUrPlanner, "plans_joint_goals"))
+        self.assertFalse(hasattr(CuroboPlanner, "plan"))
+        self.assertFalse(hasattr(CuroboPlanner, "plans_joint_goals"))
+
+    def test_the_arm_never_asks_the_planner_for_a_cartesian_plan(self) -> None:
+        """The double has no ``plan``: a route that handed cuRobo the pose would fail here as it would on the glue."""
+        planner = RoutePlanner(here=_HERE)
+        self.assertFalse(hasattr(planner, "plan"))
+        planner.line_clear = lambda start, end: False
+        planner.answer = lambda goal: None
+        result = _move(_arm(planner), _THERE)
+        self.assertIs(MotionStatus.TIMEOUT, result.status)
+        self.assertIs(MotionSent.NOTHING, result.sent)
+
+
+class AnArmWithNoClosedFormTests(unittest.TestCase):
+    """The seam: the goal set comes from the arm's description, and an arm whose description states none is refused."""
+
+    def test_every_described_ur_has_the_ur_closed_form_and_an_undescribed_model_none(self) -> None:
+        for model in ("ur3", "ur3e", "ur5", "ur5e", "ur10", "ur10e", "ur16e"):
+            with self.subTest(model=model):
+                goal_set = goal_set_for(model)
+                assert goal_set is not None
+                self.assertEqual("the UR closed form", goal_set.family)
+        for model in ("dummy-6dof", "kr6_r900", ""):
+            with self.subTest(model=model):
+                self.assertIsNone(goal_set_for(model))
+
+    def test_the_goal_set_is_the_closed_form_and_its_branch_reader(self) -> None:
+        goal_set = goal_set_for("ur5e")
+        assert goal_set is not None
+        frames = ur_link_transforms_mm("ur5e", np.asarray(_THERE, dtype=np.float64))
+        assert frames is not None
+        solutions = goal_set.solve(np.asarray(frames[-1], dtype=np.float64), _HERE[-1])
+        self.assertTrue(any(_near(s, _THERE) for s in solutions), "the configuration the pose came from is missing")
+        self.assertEqual(ur_branch("ur5e", _THERE), goal_set.branch(_THERE))
+
+    def test_an_arm_whose_description_states_none_is_refused_and_cuRobo_is_never_asked(self) -> None:
+        planner = RoutePlanner(here=_HERE)
+        arm = _arm(planner)
+        with mock.patch("src.robot.drivers.planned.goal_set.goal_set_for", return_value=None):
+            result = _move(arm, _THERE)
+        self.assertIs(MotionStatus.CONTROLLER_REJECTED, result.status)
+        self.assertIn("states no closed form", result.message or "")
+        self.assertIn("goal_set.py", result.message or "")
+        self.assertIn("cuRobo is never left to choose one", result.message or "")
+        self.assertIs(MotionSent.NOTHING, result.sent)
+        self.assertEqual([], planner.calls, "the planner was asked something about a goal nobody could choose")
 
 
 class ScreenedLinedAndPlannedTests(unittest.TestCase):
@@ -201,7 +255,7 @@ class ScreenedLinedAndPlannedTests(unittest.TestCase):
         arm = _arm(planner)
         first = _ranked(arm, _THERE, _HERE)[0].joints
         refusal = MotionResult.failed(MotionStatus.SELF_COLLISION_REJECTED, MotionCommand.MOVE_TO, message="the spy")
-        arm._gate_planned_config = (  # type: ignore[method-assign]
+        arm._gate_planned_config = (
             lambda pose, joints: refusal if _near(joints.tolist(), first, 1e-9) else None)
         result = _move(arm, _THERE)
         self.assertTrue(result.ok, result.message)
@@ -211,7 +265,7 @@ class ScreenedLinedAndPlannedTests(unittest.TestCase):
         planner = RoutePlanner(here=_HERE)
         arm = _arm(planner)
         refusal = MotionResult.failed(MotionStatus.WORKSPACE_REJECTED, MotionCommand.MOVE_TO, message="the box")
-        arm._gate_planned_config = lambda pose, joints: refusal  # type: ignore[method-assign]
+        arm._gate_planned_config = lambda pose, joints: refusal
         result = _move(arm, _THERE)
         self.assertIs(MotionStatus.WORKSPACE_REJECTED, result.status)
         self.assertIn("passes the endpoint gate", result.message or "")
@@ -240,7 +294,7 @@ class ScreenedLinedAndPlannedTests(unittest.TestCase):
             judged.append([tuple(w) for w in waypoints])
             return refused if len(judged) == 1 else None
 
-        arm._preflight.gate_planned_path = gate  # type: ignore[method-assign]
+        arm._preflight.gate_planned_path = gate
         result = _move(arm, _THERE)
         self.assertTrue(result.ok, result.message)
         self.assertEqual(1, len(planner.named("plan_joint")))
@@ -299,7 +353,7 @@ class ScreenedLinedAndPlannedTests(unittest.TestCase):
         planner.line_clear = lambda start, end: False
         planner.answer = lambda goal: None
         arm = _arm(planner)
-        with self.assertLogs("URRobotArm", level="ERROR") as logs:
+        with self.assertLogs(LOGGER_NAME, level="ERROR") as logs:
             result = _move(arm, _THERE)
         self.assertIs(MotionStatus.TIMEOUT, result.status)
         self.assertEqual(NO_PLAN_FAIL_SAFE_MESSAGE, result.message)
@@ -326,7 +380,8 @@ class ScreenedLinedAndPlannedTests(unittest.TestCase):
                 self.assertIs(MotionStatus.CONNECTION_ERROR, result.status, result.message)
                 self.assertIn("nothing was sent", result.message or "")
                 self.assertEqual([], planner.named("execute"))
-                arm._conn.moveJ.assert_not_called()
+                self.assertTrue(arm._transport.tape, "the fake recorded nothing, so 'nothing was sent' would read nothing")
+                self.assertEqual([], arm._transport.calls("run_trajectory"))
 
     def test_a_planner_lost_while_it_plans_is_still_the_planner_unavailable(self) -> None:
         """⭐ THE CONTROL: ``CuroboUnavailableError`` is a ``RuntimeError``, and the transport catch does not take it."""
@@ -357,7 +412,7 @@ class ScreenedLinedAndPlannedTests(unittest.TestCase):
         planner = RoutePlanner(here=_HERE)
         planner.line_clear = lambda start, end: False
         arm = _arm(planner)
-        arm._live_world = object()  # type: ignore[assignment]  # wired, so the refresh is asked; the double holds none
+        arm._live_world = object()  # wired, so the refresh is asked; the double holds none
         pose = pose_where_it_ends(arm, _THERE)
         result = arm._drive_curobo(pose)
         self.assertTrue(result.ok, result.message)
@@ -367,9 +422,119 @@ class ScreenedLinedAndPlannedTests(unittest.TestCase):
         self.assertTrue(all(call[2] is False for call in planner.named("check")))
         self.assertTrue(all(call[2] is False for call in planner.named("plan_joint")))
 
+    def test_a_goal_planned_after_a_failed_plan_is_screened_and_planned_in_a_world_refreshed_after_it(self) -> None:
+        """A failed plan costs seconds (P0g R1). One refresh served up to three plans, and a failed goal costs 7 to 9 s
+        on the UR10, so after two failures the plan that was taken and its judges used a world 14 to 18 s old against a
+        500 ms limit. After a plan that is not taken, the world is refreshed again before the next goal is screened, so
+        screen, plan and judge share one world."""
+        planner = RoutePlanner(here=_CANDLE)
+        planner.line_clear = lambda start, end: False
+        asked: list[list[float]] = []
+
+        def answer(goal: "list[float]") -> "list[list[float]] | None":
+            asked.append(goal)
+            return None if len(asked) == 1 else line(_CANDLE, goal, 21)
+
+        planner.answer = answer
+        arm = _arm(planner)
+        arm._live_world = object()  # wired, so the refresh is asked; the double holds none
+        result = arm._drive_curobo(pose_where_it_ends(arm, _THERE))
+        self.assertTrue(result.ok, result.message)
+        names = [call[0] if call[0] != "check" else ("line" if call[3] > 0.0 else "screen") for call in planner.calls]
+        refreshes = [index for index, name in enumerate(names) if name == "refresh"]
+        plans = [index for index, name in enumerate(names) if name == "plan_joint"]
+        self.assertEqual(2, len(plans), names)
+        self.assertEqual(2, len(refreshes), names)
+        self.assertLess(plans[0], refreshes[1])
+        self.assertLess(refreshes[1], plans[1])
+        screens = [index for index, name in enumerate(names) if name == "screen"]
+        self.assertTrue(any(refreshes[1] < index < plans[1] for index in screens),
+                        "the next goal is screened in the new world too")
+
+    def test_after_a_failed_plan_every_goal_planned_to_is_screened_in_the_world_after_it(self) -> None:
+        """The refresh after a failed plan served the next goal, and a goal after that one, whose first screen was older
+        than the plan that failed, was planned to on that old screen. Here the first plan fails, the next goal fails its
+        screen in the new world, and the goal after it is screened there again before it is planned to."""
+        planner = RoutePlanner(here=_CANDLE)
+        planner.line_clear = lambda start, end: False
+        arm = _arm(planner)
+        ranked = [g.joints for g in _ranked(arm, _THERE, _CANDLE)]
+        self.assertGreaterEqual(len(ranked), 3)
+        refreshed: list[int] = []
+        first_refresh = planner.refresh_world
+
+        def refresh_world(**kwargs: Any) -> None:
+            refreshed.append(len(planner.calls))
+            first_refresh(**kwargs)
+
+        planner.refresh_world = refresh_world  # type: ignore[method-assign]
+        # The second goal is clear before the first plan and refused after it: the world moved in between.
+        planner.screen = lambda config: not (len(refreshed) > 1 and _near(config, ranked[1], 1e-9))
+        asked: list[list[float]] = []
+
+        def answer(goal: "list[float]") -> "list[list[float]] | None":
+            asked.append(goal)
+            return None if len(asked) == 1 else line(_CANDLE, goal, 21)
+
+        planner.answer = answer
+        arm._live_world = object()
+        result = arm._drive_curobo(pose_where_it_ends(arm, _THERE))
+        self.assertTrue(result.ok, result.message)
+        self.assertEqual(2, len(asked))
+        np.testing.assert_allclose(asked[1], ranked[2], atol=1e-9, err_msg="the goal after the refused one was not next")
+        after = refreshed[1]
+        screens_after = [c[1][0] for c in planner.calls[after:] if c[0] == "check" and len(c[1]) == 1]
+        self.assertTrue(any(_near(s, ranked[2], 1e-9) for s in screens_after),
+                        "a goal was planned to on a screen older than the plan that failed before it")
+
+    def test_after_a_failed_plan_the_other_branch_is_screened_in_a_refreshed_world(self) -> None:
+        """The second group: every goal on the arm's branch fails to plan, and the refresh after that serves the screen
+        of the goals on the other branch, before any of them is lined or planned to."""
+        here = [0.3, -1.4, 1.4, -1.6, -0.3, 0.2]
+        planner = RoutePlanner(here=here)
+        planner.line_clear = lambda start, end: False
+        held = ur_branch("ur5e", here)
+        assert held is not None
+        planner.answer = lambda goal: (None if held.agrees_with(ur_branch("ur5e", goal))
+                                       else line(here, goal, 21))
+        arm = _arm(planner)
+        arm._live_world = object()
+        with self.assertLogs(LOGGER_NAME, level="WARNING"):
+            result = arm._drive_curobo(pose_where_it_ends(arm, [0.3, -1.4, 1.4, -1.6, 0.3, 0.2]))
+        self.assertTrue(result.ok, result.message)
+        names = [c[0] for c in planner.calls]
+        last_failed = max(i for i, c in enumerate(planner.calls)
+                          if c[0] == "plan_joint" and held.agrees_with(ur_branch("ur5e", c[1])))
+        other = [i for i, c in enumerate(planner.calls) if c[0] == "check" and len(c[1]) == 1
+                 and not held.agrees_with(ur_branch("ur5e", c[1][0]))]
+        self.assertTrue(other, "no goal of the other branch was screened")
+        self.assertIn("refresh", names[last_failed:other[0]], "the other branch was screened in the world before")
+
+    def test_a_refresh_after_a_failed_plan_that_refuses_stops_the_move(self) -> None:
+        planner = RoutePlanner(here=_CANDLE)
+        planner.line_clear = lambda start, end: False
+        planner.answer = lambda goal: None
+        refreshed: list[int] = []
+        first = planner.refresh_world
+
+        def refresh_world(**kwargs: Any) -> None:
+            refreshed.append(1)
+            if len(refreshed) == 2:
+                raise CuroboUnavailableError("the sidecar went away")
+            first(**kwargs)
+
+        planner.refresh_world = refresh_world  # type: ignore[method-assign]
+        arm = _arm(planner)
+        arm._live_world = object()
+        result = arm._drive_curobo(pose_where_it_ends(arm, _THERE))
+        self.assertFalse(result.ok)
+        self.assertIn("cuRobo planner unavailable", result.message or "")
+        self.assertEqual(1, len(planner.named("plan_joint")))
+        self.assertEqual([], planner.named("execute"))
+
     def test_the_route_log_names_how_the_goal_was_reached(self) -> None:
         planner = RoutePlanner(here=_HERE)
-        with self.assertLogs("URRobotArm", level="INFO") as logs:
+        with self.assertLogs(LOGGER_NAME, level="INFO") as logs:
             _move(_arm(planner), _THERE)
         said = "\n".join(logs.output)
         self.assertIn("direct line to goal 1 of", said)
@@ -401,7 +566,7 @@ class TheDetourBoundTests(unittest.TestCase):
 
     def test_a_plan_past_the_bound_is_not_taken_and_the_next_goal_is_planned(self) -> None:
         planner = self._planner(degrees_first=60.0, degrees_rest=10.0)
-        with self.assertLogs("URRobotArm", level="INFO") as logs:
+        with self.assertLogs(LOGGER_NAME, level="INFO") as logs:
             result = _move(_arm(planner), _THERE)
         self.assertTrue(result.ok, result.message)
         self.assertEqual(2, len(planner.named("plan_joint")))
@@ -463,7 +628,7 @@ class TheBranchTheArmHoldsTests(unittest.TestCase):
     _FROM = [0.3, -1.4, 1.4, -1.6, -0.3, 0.2]
     _TO = [0.3, -1.4, 1.4, -1.6, 0.3, 0.2]
 
-    def _on_the_branch(self, arm: URRobotArm) -> "tuple[float, ...]":
+    def _on_the_branch(self, arm: PlannedArm) -> "tuple[float, ...]":
         held = ur_branch("ur5e", self._FROM)
         assert held is not None
         same = [g.joints for g in _ranked(arm, self._TO, self._FROM) if held.agrees_with(ur_branch("ur5e", g.joints))]
@@ -480,7 +645,7 @@ class TheBranchTheArmHoldsTests(unittest.TestCase):
     def test_the_branch_the_arm_holds_goes_first(self) -> None:
         planner = RoutePlanner(here=self._FROM)
         arm = _arm(planner)
-        with self.assertNoLogs("URRobotArm", level="WARNING"):
+        with self.assertNoLogs(LOGGER_NAME, level="WARNING"):
             result = _move(arm, self._TO)
         self.assertTrue(result.ok, result.message)
         np.testing.assert_allclose(_executed_goal(planner), self._on_the_branch(arm), atol=1e-9)
@@ -491,7 +656,7 @@ class TheBranchTheArmHoldsTests(unittest.TestCase):
         same = self._on_the_branch(arm)
         planner.line_clear = lambda start, end: not _near(end, same, 1e-9)
         planner.answer = lambda goal: None
-        with self.assertLogs("URRobotArm", level="WARNING") as logs:
+        with self.assertLogs(LOGGER_NAME, level="WARNING") as logs:
             result = _move(arm, self._TO)
         self.assertTrue(result.ok, result.message)
         (asked,) = planner.named("plan_joint")
@@ -506,7 +671,7 @@ class TheBranchTheArmHoldsTests(unittest.TestCase):
         self.assertEqual((0, 0, 0), tuple(vars_of(ur_branch("ur10", _CANDLE))))
         planner = RoutePlanner(here=_CANDLE)
         arm = _arm(planner, model="ur10")
-        with self.assertNoLogs("URRobotArm", level="WARNING"):
+        with self.assertNoLogs(LOGGER_NAME, level="WARNING"):
             result = _move(arm, _THERE)
         self.assertTrue(result.ok, result.message)
         np.testing.assert_allclose(_executed_goal(planner), _ranked(arm, _THERE, _CANDLE)[0].joints, atol=1e-9)
@@ -517,7 +682,7 @@ def vars_of(branch: Any) -> "tuple[int, int, int]":
 
 
 class ThePlannerGlueTests(unittest.TestCase):
-    """``CuroboUrPlanner.plan_joint``: the only plan the glue asks for."""
+    """``CuroboPlanner.plan_joint``: the only plan the glue asks for."""
 
     class _Client:
         def __init__(self, joint_names: "list[str]", answer: "list[list[float]] | None") -> None:
@@ -534,13 +699,12 @@ class ThePlannerGlueTests(unittest.TestCase):
             self.asked = (list(start), list(goal))
             return self.answer
 
-    def _glue(self, client: Any, here: "list[float]") -> CuroboUrPlanner:
-        conn = MagicMock()
-        conn.get_joint_positions.return_value = list(here)
-        return CuroboUrPlanner(conn, client_factory=lambda: client)
+    def _glue(self, client: Any, here: "list[float]") -> CuroboPlanner:
+        return CuroboPlanner(fake_transport(joints=here), joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180,
+                             client_factory=lambda: client)
 
     def test_the_start_and_the_goal_go_in_planner_order_and_the_plan_comes_back_in_ur_order(self) -> None:
-        permuted = list(reversed(UR_ARM_JOINT_NAMES))
+        permuted = list(reversed(_UR_JOINT_NAMES))
         client = self._Client(permuted, [[5.0, 4.0, 3.0, 2.0, 1.0, 0.0]])
         glue = self._glue(client, [0.0, 1.0, 2.0, 3.0, 4.0, 5.0])
         trajectory = glue.plan_joint([10.0, 11.0, 12.0, 13.0, 14.0, 15.0])
@@ -550,7 +714,7 @@ class ThePlannerGlueTests(unittest.TestCase):
         self.assertEqual([[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]], trajectory)
 
     def test_the_world_is_refreshed_unless_the_caller_already_did(self) -> None:
-        client = self._Client(list(UR_ARM_JOINT_NAMES), [[0.0] * 6])
+        client = self._Client(list(_UR_JOINT_NAMES), [[0.0] * 6])
         glue = self._glue(client, [0.0] * 6)
         refreshed: list[Any] = []
         glue._refresh_world = lambda **kwargs: refreshed.append(kwargs)  # type: ignore[method-assign]
@@ -560,24 +724,37 @@ class ThePlannerGlueTests(unittest.TestCase):
         self.assertEqual(1, len(refreshed))
 
     def test_no_plan_is_none_and_the_reason_is_logged(self) -> None:
-        client = self._Client(list(UR_ARM_JOINT_NAMES), None)
+        client = self._Client(list(_UR_JOINT_NAMES), None)
         client.last_refusal = StateRefusal(where=StateWhere.GOAL, kind=StateRefusalKind.WORLD, joints=(0.0,) * 6)
         glue = self._glue(client, [0.0] * 6)
-        with self.assertLogs("CuroboUrPlanner", level="WARNING") as logs:
+        with self.assertLogs("CuroboPlanner", level="WARNING") as logs:
             self.assertIsNone(glue.plan_joint([0.1] * 6))
         self.assertIn("joint goal", "\n".join(logs.output))
 
 
-def test_the_planners_window_is_the_one_the_descriptor_builder_declares() -> None:
-    """Restated here because the builder runs under the cuRobo interpreter; the two may not drift."""
-    path = _ROOT / "scripts" / "curobo" / "_planner_limits.py"
-    spec = importlib.util.spec_from_file_location("_planner_limits_for_the_driver", path)
+def _builder_script(name: str) -> Any:
+    spec = importlib.util.spec_from_file_location(f"{name}_for_the_driver", _ROOT / "scripts" / "arms" / f"{name}.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    lower, upper = module.planner_envelope_rad()
-    np.testing.assert_allclose(PLANNER_JOINT_ENVELOPE_RAD[0], lower, atol=1e-12)
-    np.testing.assert_allclose(PLANNER_JOINT_ENVELOPE_RAD[1], upper, atol=1e-12)
+    return module
+
+
+def test_the_planners_window_is_the_one_the_descriptor_builder_declares() -> None:
+    """Computed twice, from the same arm description: by the driver, and by the builder that runs under the cuRobo
+    interpreter and cannot import the driver. The two may not drift, on any admitted arm."""
+    limits, arm_file = _builder_script("_planner_limits"), _builder_script("_arm_file")
+    for model in admitted_arms():
+        lower, upper = limits.planner_envelope_rad(arm_file.planner_limits_deg(model),
+                                                   arm_file.position_limit_clip_rad(model))
+        np.testing.assert_allclose(planner_envelope_rad(model)[0], lower, atol=1e-12, err_msg=model)
+        np.testing.assert_allclose(planner_envelope_rad(model)[1], upper, atol=1e-12, err_msg=model)
+    # And on a UR it is +-(2 pi - 0.1) on every joint and +-(pi - 0.1) on the elbow, the window the driver was written
+    # against.
+    elbow = [joint.name for joint in load_arm("ur10").joints].index("elbow_joint")
+    for axis, (low, high) in enumerate(zip(*planner_envelope_rad("ur10"))):
+        limit = (math.pi if axis == elbow else 2.0 * math.pi) - 0.1
+        assert (low, high) == pytest.approx((-limit, limit), abs=1e-12)
 
 
 if __name__ == "__main__":

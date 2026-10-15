@@ -36,6 +36,7 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 try:
@@ -46,17 +47,15 @@ except ImportError:  # loaded by the sidecar as a plain sibling, with no package
     from _curobo_margin import apply_self_collision_margin  # type: ignore[import-not-found,no-redef]
 
 __all__ = [
+    "ArmLinks",
     "COUPLING_JOINT",
     "COUPLING_LINK",
     "COUPLING_REACH_MM",
     "ENV_BODY_LINKS",
     "ENV_DEFAULT_Q",
     "ENV_WRIST_BODY_LINKS",
-    "HAND_IGNORE",
     "HAND_JOINT",
     "HAND_LINK",
-    "HAND_PARENT",
-    "WRIST_BODY_IGNORE",
     "WRIST_BODY_PREFIX",
     "WRIST_BODY_REACH_MM",
     "BodyLinkError",
@@ -79,17 +78,14 @@ __all__ = [
 ENV_BODY_LINKS = "WILLY_CUROBO_BODY_LINKS"
 
 #: The retract this arm and hand were judged at, as a JSON list of joint values. Set by the client from the committed
-#: table (`robot/ur_retract.yaml`), because the descriptor is per arm and its own retract can only be right about a
+#: table (`robot/retract.yaml`), because the descriptor is per arm and its own retract can only be right about a
 #: bare arm: at the ur3's own retract the exact meshes clear the Hand-E by 13.4 mm and the planner's sphere model reads
 #: the same pose as a self collision, so the sidecar would never become ready.
 ENV_DEFAULT_Q = "WILLY_CUROBO_DEFAULT_Q"
 
-#: The link a hand is added as, the frame it hangs from on a UR flange, and its joint.
+#: The link a hand is added as, and its joint. It hangs from the arm's flange link, which ``ArmLinks`` names.
 HAND_LINK = "hand"
-HAND_PARENT = "tool0"
 HAND_JOINT = "hand_joint"
-#: The links a hand is never checked against: the flange frame, and the two wrist links the exact guard skips too.
-HAND_IGNORE = ("tool0", "wrist_3_link", "wrist_2_link")
 
 #: The link the declared coupling plates are added as. One link for the whole stack, because the plates are bolted to
 #: each other and to the flange and never move relative to it. It ignores exactly what the hand ignores, for the same
@@ -115,16 +111,9 @@ WRIST_BODY_PREFIX = "wrist_camera_"
 #: gives wrist_1 and wrist_2, the two arm links a camera on the flange can meet.
 WRIST_BODY_REACH_MM = 8.0
 
-#: The links a camera is never checked against: the flange frame and wrist_3, which it is bolted to, and the hand and
-#: the plates, which are bolted to the same flange. wrist_1 and wrist_2 stay checked, as does a carried part.
-WRIST_BODY_IGNORE = ("tool0", "wrist_3_link", HAND_LINK, COUPLING_LINK)
-
-#: The arm links a camera body may never ignore, because they are the ones it can hit.
-_WRIST_BODY_NEVER_IGNORES = ("wrist_1_link", "wrist_2_link")
-
-#: The one arm link a hand on a UR flange is always checked against. The hand ignores wrist_2 and wrist_3, as the exact
-#: guard skips them, so wrist_1 is where a hand in the wrong place shows.
-_HAND_NEVER_IGNORES = "wrist_1_link"
+# What a body on the flange ignores and may never ignore is by position (P0f F9b): ``ArmLinks`` gives the builders the
+# arm's names, and ``apply_body_links`` reads the arm's links off the descriptor it composes onto, so both sides apply
+# one rule to the arm that is really there. On a UR the names are tool0, wrist_3_link, wrist_2_link and wrist_1_link.
 
 #: Where a hand map's numbers start (``robot/gripper_spheres.py``, which this module cannot import).
 _FLANGE = "flange"
@@ -138,15 +127,51 @@ class BodyLinkError(ValueError):
     """A body link that cannot be composed into this config as described."""
 
 
+@dataclass(frozen=True)
+class ArmLinks:
+    """The arm a body on its flange is placed against: the flange link it hangs from and the joint links, base first.
+
+    The caller reads them from the arm description: ``from_description`` in the venv, ``scripts/arms/_arm_file.py`` in
+    the cuRobo environment. This module imports neither, because it runs on both sides of the process boundary.
+    """
+
+    flange: str
+    links: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.links) < 3:
+            raise BodyLinkError(
+                f"an arm of {len(self.links)} joint links has no wrist to judge a body on its flange against: a hand "
+                "ignores the last two and is always checked against the one before them"
+            )
+
+    @classmethod
+    def from_description(cls, description: Any) -> "ArmLinks":
+        """From an arm description (``ArmSpec``), read by attribute so this module need not import the config layer."""
+        return cls(flange=str(description.flange.link), links=tuple(str(joint.link) for joint in description.joints))
+
+    @property
+    def hand_ignore(self) -> tuple[str, ...]:
+        """What a hand or a plate is never checked against: the flange, and the two last links the exact guard skips."""
+        return (self.flange, self.links[-1], self.links[-2])
+
+    @property
+    def wrist_body_ignore(self) -> tuple[str, ...]:
+        """What a camera is never checked against: the flange and the last link it is bolted to, the hand and the plates
+        bolted to the same flange. The two links before the last stay checked, as does a carried part."""
+        return (self.flange, self.links[-1], HAND_LINK, COUPLING_LINK)
+
+
 def hand_body_link(
     *,
+    arm_links: ArmLinks,
     spheres: Sequence[Mapping[str, Any]],
     rotation: Sequence[Sequence[float]],
     approach_in_tool0: Sequence[float],
     origin: str,
     coupling_mm: float,
 ) -> dict[str, Any]:
-    """The hand as a body under tool0, in the shape :func:`apply_body_links` reads.
+    """The hand as a body under the flange ``arm_links`` names, tool0 on a UR, in the shape :func:`apply_body_links` reads.
 
     ``spheres`` are the hand map's, in the hand model's frame. ``rotation`` is where that frame sits on tool0 (R_TM) and
     ``approach_in_tool0`` its approach, both from the placement the cell's declared tool frame gives. A mounting face
@@ -159,7 +184,7 @@ def hand_body_link(
     plate_m = float(coupling_mm) / 1000.0 if origin == _MOUNTING_FACE else 0.0
     return {
         "link": HAND_LINK,
-        "parent": HAND_PARENT,
+        "parent": arm_links.flange,
         "joint": HAND_JOINT,
         "fixed_transform": fixed_transform_wxyz(rotation, [plate_m * float(axis) for axis in approach_in_tool0]),
         "spheres": [
@@ -167,17 +192,19 @@ def hand_body_link(
         ],
         "slots": 0,
         "buffer_m": 0.0,
-        "ignore": list(HAND_IGNORE),
+        "ignore": list(arm_links.hand_ignore),
     }
 
 
 def coupling_body_link(
     *,
+    arm_links: ArmLinks,
     boxes: Sequence[Any],
     rotation: Sequence[Sequence[float]],
     reach_mm: float = COUPLING_REACH_MM,
 ) -> "dict[str, Any] | None":
-    """The declared coupling plates as one body under tool0, or ``None`` where a cell declared none.
+    """The declared coupling plates as one body under the flange ``arm_links`` names, or ``None`` where a cell declared
+    none.
 
     ``boxes`` are :class:`_declared_body.Box` in the hand model's own axes, stacked from the flange along the
     approach; ``rotation`` is where that frame sits on tool0, the same R_TM the hand link carries. The plates do not
@@ -198,25 +225,26 @@ def coupling_body_link(
         spheres.extend(box_spheres(box, reach_mm=float(reach_mm)))
     return {
         "link": COUPLING_LINK,
-        "parent": HAND_PARENT,
+        "parent": arm_links.flange,
         "joint": COUPLING_JOINT,
         "fixed_transform": fixed_transform_wxyz(rotation, [0.0, 0.0, 0.0]),
         "spheres": spheres,
         "slots": 0,
         "buffer_m": 0.0,
-        "ignore": list(HAND_IGNORE),
+        "ignore": list(arm_links.hand_ignore),
     }
 
 
 def wrist_body_link(
     *,
+    arm_links: ArmLinks,
     rig_id: str,
     boxes: Sequence[Any],
     rotation: Sequence[Sequence[float]],
     translation_m: Sequence[float],
     reach_mm: float = WRIST_BODY_REACH_MM,
 ) -> dict[str, Any]:
-    """A wrist camera's grown boxes as one body under tool0, in the shape :func:`apply_body_links` reads.
+    """A wrist camera's grown boxes as one body under the flange ``arm_links`` names, in the shape :func:`apply_body_links` reads.
 
     ``boxes`` are :class:`_declared_body.Box` in the colour camera's optical frame, already grown by the rig's margin.
     ``rotation`` and ``translation_m`` place that frame on tool0: the recorded flange to TCP times the calibrated
@@ -233,13 +261,13 @@ def wrist_body_link(
     link = f"{WRIST_BODY_PREFIX}{rig_id}"
     return {
         "link": link,
-        "parent": HAND_PARENT,
+        "parent": arm_links.flange,
         "joint": f"{link}_joint",
         "fixed_transform": fixed_transform_wxyz(rotation, translation_m),
         "spheres": spheres,
         "slots": 0,
         "buffer_m": 0.0,
-        "ignore": list(WRIST_BODY_IGNORE),
+        "ignore": list(arm_links.wrist_body_ignore),
     }
 
 
@@ -298,7 +326,7 @@ def apply_body_links(
     if not isinstance(spheres, dict):
         raise BodyLinkError(
             f"collision_spheres is a {type(spheres).__name__}, not an inline table, so a body's spheres have nowhere to "
-            "go: compose onto a descriptor that writes its spheres out, as build_ur_config.py does"
+            "go: compose onto a descriptor that writes its spheres out, as scripts/arms/descriptor.py does"
         )
     tool_frames = kinematics.get("tool_frames") or []
     if not tool_frames:
@@ -315,8 +343,20 @@ def apply_body_links(
     if tool_frame in (kinematics.get("collision_link_names") or ()):
         raise BodyLinkError(
             f"this config guards the tool frame {tool_frame!r} as a collision link and holds no spheres for it, which "
-            "cuRobo raises on: it is a template, not an arm descriptor. Build the arm with build_ur_config.py"
+            "cuRobo raises on: it is a template, not an arm descriptor. Build the arm with scripts/arms/descriptor.py"
         )
+
+    # The arm's own links, base first, as the descriptor lists them before any body joins: what a body may never ignore
+    # is read off the arm this config really holds, by the same position ``ArmLinks`` gives the builders.
+    arm_links = [name for name in kinematics.get("collision_link_names") or ()
+                 if name not in (kinematics.get("extra_links") or {})]
+    if len(arm_links) < 3:
+        raise BodyLinkError(
+            f"the config lists {len(arm_links)} arm links, and a body on the flange is checked against the link before "
+            "the two it ignores, so there is no wrist to judge it against"
+        )
+    hand_never_ignores = arm_links[-3]
+    wrist_body_never_ignores = tuple(arm_links[-3:-1])
 
     added: list[str] = []
     for body in bodies:
@@ -345,9 +385,9 @@ def apply_body_links(
                 f"body {link!r} is not ignored against its parent {parent!r}, which it touches by construction, so the "
                 "planner would refuse every configuration"
             )
-        if link == HAND_LINK and _HAND_NEVER_IGNORES in ignore:
+        if link == HAND_LINK and hand_never_ignores in ignore:
             raise BodyLinkError(
-                f"the hand ignores {_HAND_NEVER_IGNORES}, the one link whose distance to the hand shows a wrong "
+                f"the hand ignores {hand_never_ignores}, the one link whose distance to the hand shows a wrong "
                 "placement, so a hand in the wrong place would plan with nothing noticing"
             )
         if link.startswith(WRIST_BODY_PREFIX):
@@ -356,7 +396,7 @@ def apply_body_links(
                     f"wrist camera {link!r} hangs from {parent!r}, and a camera is placed on the flange by its "
                     f"calibration, so it hangs from the tool frame {tool_frame!r}"
                 )
-            blind = [name for name in _WRIST_BODY_NEVER_IGNORES if name in ignore]
+            blind = [name for name in wrist_body_never_ignores if name in ignore]
             if blind:
                 raise BodyLinkError(
                     f"wrist camera {link!r} ignores {blind}, the arm links a camera on the flange can hit, so a "

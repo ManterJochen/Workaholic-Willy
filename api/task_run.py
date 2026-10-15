@@ -844,11 +844,12 @@ def drive_planner(console: "Console", run: "Run") -> StopCode:
                         human="Starting the planner; this takes about a minute and moves nothing.")
     console.hub.publish(CELL_STREAM, "cell.planner", severity=Severity.INFO, human="The planner is starting.",
                         state="starting")
-    start = getattr(arm, "start_planner", None)
+    from src.robot.core.camera_world import StartsAPlanner  # noqa: PLC0415
+
     try:
-        if not callable(start):
-            raise RuntimeError("this arm has no planner to start")
-        loaded = start()
+        if not isinstance(arm, StartsAPlanner):
+            raise RuntimeError(f"{type(arm).__name__} has no planner a desk can start (StartsAPlanner)")
+        loaded = arm.start_planner()
     except Exception as exc:  # noqa: BLE001 (a planner that did not start is the run's answer, not a crash)
         refusal = f"{type(exc).__name__}: {exc}"
         run.error = f"the planner did not start: {refusal}"

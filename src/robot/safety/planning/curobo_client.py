@@ -10,7 +10,7 @@ type-checks in this environment.
 Paths default to the in-repo ``ext_deps/`` install location, whose contents are
 gitignored, and ``WILLY_CUROBO_PYTHON`` and ``WILLY_CUROBO_ROBOT`` override them, so
 nothing machine-specific is baked into the driver. The whole path is opt-in and is
-reached only where ``motion_planner="curobo"``.
+reached only where the planner is ``curobo`` (``robot.motion.planner``, or the sim driver's own).
 """
 from __future__ import annotations
 
@@ -298,12 +298,14 @@ def world_near(cuboids: "Sequence[Mapping[str, Any]]", points_mm: Any,
 
 
 def _ur_model_of(descriptor: str) -> str | None:
-    """The UR model a sidecar descriptor's file name names (``ur10.yml``, ``willy_ur5e.yml``), where the bundled DH table
-    knows it; ``None`` otherwise."""
-    from src.robot.safety._ur_kinematics import UR_DH_TABLES_M  # noqa: PLC0415
+    """The UR model a sidecar descriptor's file name names (``ur10.yml``, ``willy_ur5e.yml``), where the arm registry
+    describes it; ``None`` otherwise."""
+    from src.config.arms import available_arms  # noqa: PLC0415
+    from src.robot.safety._ur_kinematics import ur_dh_rows  # noqa: PLC0415
 
     stem = Path(str(descriptor)).stem.lower()
-    found = [model for model in UR_DH_TABLES_M if re.search(rf"(^|[^a-z0-9]){re.escape(model)}($|[^a-z0-9])", stem)]
+    found = [model for model in available_arms() if ur_dh_rows(model) is not None
+             and re.search(rf"(^|[^a-z0-9]){re.escape(model)}($|[^a-z0-9])", stem)]
     return max(found, key=len) if found else None
 
 

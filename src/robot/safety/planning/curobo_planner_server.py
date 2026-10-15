@@ -465,7 +465,7 @@ try:
                   file=sys.stderr, flush=True)
 
     # Who this sidecar is, said once in the ready line. `_provenance` names the arm and hand
-    # the descriptor was built for, as build_ur_config.py writes it, and the client refuses a
+    # the descriptor was built for, as scripts/arms/descriptor.py writes it, and the client refuses a
     # descriptor for another hand. The hashes name the bytes: the descriptor's robot_cfg and
     # the composed config as canonical JSON, and the URDF the kinematics resolved.
     _descriptor = _raw.get("_provenance")

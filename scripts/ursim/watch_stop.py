@@ -36,7 +36,7 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 from src.config.loader import active_profile, load_robot_config  # noqa: E402
-from src.robot.core import JointPositions, RobotVendor  # noqa: E402
+from src.robot.core import ArmFault, JointPositions, RobotVendor  # noqa: E402
 from src.robot.drivers import create_arm  # noqa: E402
 from src.robot.drivers.ur.arm import URRobotArm  # noqa: E402
 
@@ -93,7 +93,7 @@ def _retry_motions(arm: URRobotArm) -> None:
         try:
             target = list(q)
             target[5] += 0.08 * attempt
-            arm.move_joint(JointPositions(target))
+            arm.move_to_joints(JointPositions(target)).raise_unless_executed()
             print(f"   attempt {attempt}: ACCEPTED in {time.time() - t0:.1f}s. "
                   f"A stopped cell reporting success is the dangerous answer.")
         except Exception as exc:  # noqa: BLE001
@@ -106,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="python scripts/ursim/watch_stop.py",
         description="Poll RobotStatus while a person presses the stop at the pendant, then ask "
-                    "whether raise_if_stopped notices and what three retried motions do.",
+                    "whether the classified fault notices and what three retried motions do.",
     )
     ap.add_argument("--profile", type=str, default=None,
                     help="config profile chain, e.g. 'ursim' or 'ursim,ursim_ur3'")
@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
         return _BAD_REQUEST
 
     try:
-        print(f"connected to {cfg.ur.model} at {cfg.ur.ip}\n")
+        print(f"connected to {cfg.arm.model} at {cfg.arm.controller}\n")
         baseline = line(arm)
         print("  BEFORE :", baseline)
 
@@ -145,11 +145,9 @@ def main(argv: list[str] | None = None) -> int:
         print("  AFTER  :", changed)
 
         print("\n=== does the driver's own guard notice? ===")
-        try:
-            arm.raise_if_stopped()
-            print("   raise_if_stopped(): did NOT raise. A pick loop would carry straight on.")
-        except Exception as exc:  # noqa: BLE001
-            print(f"   raise_if_stopped(): {type(exc).__name__}: {str(exc)[:110]}")
+        fault = ArmFault.from_status(arm.get_robot_status())
+        print("   ArmFault.from_status(): no fault. A pick loop would carry straight on." if fault is None
+              else f"   ArmFault.from_status(): {fault.kind.value}: {fault.render()[:110]}")
 
         print("\n=== and what does a commanded motion do, three retries as a pick loop would? ===")
         _retry_motions(arm)

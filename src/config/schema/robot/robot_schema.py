@@ -5,6 +5,7 @@ from __future__ import annotations
 import keyword
 import math
 import re
+from dataclasses import dataclass
 from typing import Final, Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -13,7 +14,6 @@ from .._base import StrictModel
 from ..grippers.gripper_schema import MODEL_NAME_PATTERN
 
 from .ur_schema import URConfig
-from .kuka_schema import KukaConfig, KukaEkiConfig
 from .dummy_schema import DummyConfig
 from .sim_schema import (
     SimCameraSchema,
@@ -93,9 +93,8 @@ __all__ = [
     "GraspingWatchdogConfig",
     "GripperConfig",
     "IkQualitySafetyConfig",
+    "ArmSelection",
     "JointLimitSafetyConfig",
-    "KukaConfig",
-    "KukaEkiConfig",
     "LimitsSafetyConfig",
     "MotionContinuitySafetyConfig",
     "MotionLimitsConfig",
@@ -155,7 +154,14 @@ class MotionLimitsConfig(StrictModel):
 
 
 class RobotMotionConfig(StrictModel):
-    """When the next leg of a pick or a place is judged: as it runs, or ahead while the arm waits or moves.
+    """How this cell's motions are planned, whichever arm drives them, and when the next leg of a pick or a place is
+    judged: as it runs, or ahead while the arm waits or moves.
+
+    ``planner`` was ``robot.ur.motion_planner`` until 2026-10-13 (aurora's P0c), where it sat in a vendor block that
+    every tree materialises: a sim or dummy tree carried ``curobo`` as well, and readers outside the UR driver acted on
+    it. Every vendor plans the same way, so the choice is the cell's rather than one vendor's. The Isaac driver is not
+    governed by this key yet and says so: its planner lives in its own driver config (``robot.sim``), and a runner can
+    override it per run.
 
     ``judge_next_leg`` (map4 motion C7, the owner, 2026-10-09):
 
@@ -173,6 +179,15 @@ class RobotMotionConfig(StrictModel):
     is judged again where the arm stands. Judging ahead sends nothing and switches no output.
     """
 
+    #: ``curobo``, the default, plans a global collision-free trajectory in the process-isolated cuRobo planner
+    #: (``safety.planning``), to the goal configuration nearest the arm, and runs it as one ``moveJ`` per kept waypoint:
+    #: the plan is shortened to the fewest of its own waypoints whose legs stay within the path gate's step of it, the
+    #: local path gate and the planner both judge those legs, and exactly that list runs. ``ik`` is the controller's
+    #: calibrated IK and a ``moveJ``/``moveL`` straight line, which knows nothing about the cell and will drive through
+    #: anything in it. ``curobo`` fails closed: a move returns CONTROLLER_REJECTED when the planner is unavailable and
+    #: TIMEOUT when no collision-free plan exists, and never degrades to blind IK, so a cell without a cuRobo environment
+    #: does not move at all. Check that environment with ``python -m src.robot.safety.planning --doctor``.
+    planner: Literal["ik", "curobo"] = "curobo"
     judge_next_leg: Literal["off", "in_settles", "in_settles_and_motion"] = Field(default="off")
 
 
@@ -439,7 +454,7 @@ class JawIOGripperConfig(StrictModel):
                 "controller applies an output once per controller cycle (8 ms on a CB3) and reports it back a cycle "
                 "or two later, so a pulse of a few cycles may never reach the device, or reach it too short to "
                 f"register. Set pulse_s to at least {_MIN_PULSE_S}, and measure the pulse the device needs with "
-                "`python -m src.robot.drivers.ur --pulse PIN --for SECONDS --yes`: one call must throw the valve once."
+                "`python -m src.robot.execution.io_bench --pulse PIN --for SECONDS --yes`: one call must throw the valve once."
             )
         return self
 
@@ -783,14 +798,70 @@ def _called(pose: NamedPoseConfig) -> str:
     return f"label {pose.label!r}" if pose.label else "no label"
 
 
+@dataclass(frozen=True, slots=True)
+class ArmSelection:
+    """The arm a tree selects: read from the block its own ``vendor`` names, and from no other.
+
+    Every vendor block is materialised whether or not it is selected (each is a ``default_factory``), so a
+    ``vendor: sim`` tree carried ``ur.model = "ur5e"`` and, until 2026-10-13, ``ur.ip = "192.168.1.100"`` as well, and a
+    reader that reached for ``robot.ur.model`` got an answer on a cell with no UR in it (aurora measured ten such
+    readers, one stamping ``arm='ur5e'`` on the very report that refuses a non-UR tree).
+
+    So this is the one place a tree says which arm it means. A reader that needs the model, the controller address or
+    the planner asks here and gets the selected vendor's answer or nothing at all. ``controller`` and
+    :attr:`owns_a_controller` are two facts: "this vendor drives no controller of its own" (a simulator, a desk dummy)
+    is not "this vendor drives one and nobody said where it is", which is a cell that must not be built.
+
+    Attributes:
+        vendor (str): The selected vendor, as the tree spells it.
+        model (str): The arm model key of that vendor's block, or ``""`` where its block names none.
+        controller (str | None): The address the driver talks to, or ``None`` where none is declared or none exists.
+        planner (str): How this cell's motions are planned, or ``""`` where the selected vendor's driver does not read
+            ``robot.motion.planner``.
+        owns_a_controller (bool): Whether this vendor drives a controller at all. A simulator and a desk dummy do not.
+    """
+
+    vendor: str
+    model: str
+    controller: str | None
+    planner: str
+    owns_a_controller: bool
+
+    def render(self) -> str:
+        """Describe this to a person.
+
+        Returns:
+            str: One line, ASCII, no trailing newline.
+        """
+        model = self.model or "no model"
+        planner = self.planner or "no planner"
+        if not self.owns_a_controller:
+            return f"{self.vendor} ({model}, {planner}, owns no controller)"
+        where = self.controller or "NO ADDRESS DECLARED"
+        return f"{self.vendor} ({model}, {planner}) at {where}"
+
+
+#: Vendors whose driver reads ``robot.motion.planner``. The Isaac driver does not yet (:class:`RobotMotionConfig`).
+_HONOURS_THE_PLANNER_KEY: Final[frozenset[str]] = frozenset({"ur"})
+
+#: Which block holds each vendor's arm, and whether that vendor drives a controller of its own. A vendor with no block
+#: here is a name the config layer does not describe yet: it owns a controller until its own block says otherwise,
+#: because assuming the opposite would hand a real robot a cell with no lock (``cell_lock.py``).
+_VENDOR_ARM_BLOCKS: Final[dict[str, tuple[str, bool]]] = {
+    "ur": ("ur", True),
+    "sim": ("sim", False),
+    "dummy": ("dummy", False),
+}
+
+
 class RobotConfig(StrictModel):
     """Top-level robot configuration tree.
 
     ``vendor`` selects which driver the robot runtime instantiates and defaults to ``ur``.
-    Vendor-specific transport settings live in named sibling blocks (``ur``, ``sim``, ``dummy``,
-    ``kuka``) so each driver owns its own typed surface: a UR cell's transport under ``ur``, a
-    KUKA cell's controller address under ``kuka.controller_ip``. Only the block matching
-    ``vendor`` is consulted at runtime; the others stay valid but unused.
+    Vendor-specific transport settings live in named sibling blocks (``ur``, ``sim``, ``dummy``) so
+    each driver owns its own typed surface: a UR cell's transport under ``ur``. Only the block
+    matching ``vendor`` is consulted at runtime; the others stay valid but unused. The ``kuka:``
+    block went with the EthernetKRL driver (2026-09-19).
 
     The config layer imports no robot runtime module, so validation works on hosts that only edit
     or lint YAML.
@@ -800,25 +871,26 @@ class RobotConfig(StrictModel):
     ur: URConfig = Field(default_factory=URConfig)
     sim: SimConfig = Field(default_factory=SimConfig)
     dummy: DummyConfig = Field(default_factory=DummyConfig)
-    kuka: KukaConfig = Field(default_factory=KukaConfig)
     motion_limits: MotionLimitsConfig = Field(default_factory=MotionLimitsConfig)
-    #: When the next leg of a pick or a place is judged (:class:`RobotMotionConfig`).
+    #: How this cell's motions are planned, and when the next leg of a pick or a place is judged
+    #: (:class:`RobotMotionConfig`).
     motion: RobotMotionConfig = Field(default_factory=RobotMotionConfig)
     workspace_limits: WorkspaceLimitsConfig = Field(default_factory=WorkspaceLimitsConfig)
     gripper: GripperConfig = Field(default_factory=GripperConfig)
-    #: Joint configuration the arm returns to on ``move_home()``, in radians. ``None`` uses
-    #: :data:`HOME_JOINTS_DEFAULT`, which is a UR5e pose: on a UR3e it puts the grasp centre at
+    #: Joint configuration the arm returns to on ``move_home()``, in radians. ``None`` uses the home the
+    #: arm's description states (``home_rad`` per joint, ``config/arms/``), which for every UR is the pose
+    #: authored for a UR5e, shoulder lift and wrist 1 at -pi/2: on a UR3e it puts the grasp centre at
     #: z = 561.9 mm and r = 466.9 mm, 93.4% of that arm's 500 mm reach and past the 85% this project
     #: treats as near-singular, while a UR3e cell's own ``workspace_limits`` stop at z = 320. A cell
     #: on any other arm gives its own value, or its first motion leaves the declared workspace.
     #: ``sim.home_joint_positions`` is the sim-side twin of this field.
     home_joint_positions: tuple[float, ...] | None = None
-    #: The same home in DEGREES, as the pendant shows it and ``python -m src.robot.drivers.ur --where`` prints it.
+    #: The same home in DEGREES, as the pendant shows it and ``python -m src.robot.execution.io_bench --where`` prints it.
     #: Exactly one of the two may be given. Read once, at load: the loaded config carries the home in radians in
     #: ``home_joint_positions`` and ``None`` here, so every consumer reads the one unit it always read.
     home_joint_positions_deg: tuple[float, ...] | None = None
     #: Where the camera looks from before each pick when its program names no look: one list per look, in DEGREES,
-    #: one value per joint, as the pendant shows them and ``python -m src.robot.drivers.ur --where`` prints them,
+    #: one value per joint, as the pendant shows them and ``python -m src.robot.execution.io_bench --where`` prints them,
     #: visited in this order. A wrist camera's pick fuses each look with the ones before it and stops at the first
     #: whose grasp is safe. A fixed camera's arm is moved to them too, before it perceives, and its pick stops at the
     #: first look that finds something. Kept in degrees in the loaded config, and read once by the pick service into
@@ -990,68 +1062,6 @@ class RobotConfig(StrictModel):
         return value
 
     @model_validator(mode="after")
-    def _check_self_collision_model_matches_sim_robot(self) -> "RobotConfig":
-        """On an enabled sim cell, ``kinematics_model`` must equal ``sim.robot_model``.
-
-        ``safety.self_collision.kinematics_model`` and ``sim.robot_model`` are independent
-        hand-edited keys, and the self-collision guard feeds the first into the UR DH table
-        (``safety/_ur_kinematics.py``) to derive per-link transforms. A cell naming a different
-        model in each evaluates every motion against the other arm's link lengths (ur5e a2/a3 =
-        -425/-392.2 mm vs ur3e -243.55/-213.2 mm) and returns wrong self-collision verdicts
-        silently, so config load refuses it. Inert when the sim block is disabled, which is the
-        real-robot config.
-        """
-        sc = self.safety.self_collision
-        if self.sim.enabled and sc.kinematics_model and sc.kinematics_model != self.sim.robot_model:
-            raise ValueError(
-                f"safety.self_collision.kinematics_model={sc.kinematics_model!r} does not match "
-                f"sim.robot_model={self.sim.robot_model!r}. The self-collision guard would derive link "
-                "transforms from the wrong robot's DH chain. Set both to the same model."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _check_self_collision_model_matches_ur_robot(self) -> "RobotConfig":
-        """The same coupling for a real UR cell: ``kinematics_model`` must equal ``ur.model``.
-
-        Identical mechanism to the sim check above, with a physical arm on the other end: the guard
-        would derive link transforms from another robot's DH chain and return wrong self-collision
-        verdicts for real motion. Gated on ``vendor == "ur"``, so a sim or dummy cell, whose ``ur``
-        block is inert boilerplate, is unaffected.
-        """
-        sc = self.safety.self_collision
-        if self.vendor == "ur" and sc.kinematics_model and sc.kinematics_model != self.ur.model:
-            raise ValueError(
-                f"safety.self_collision.kinematics_model={sc.kinematics_model!r} does not match "
-                f"ur.model={self.ur.model!r}. On real hardware the self-collision guard would derive link "
-                "transforms from the wrong robot's DH chain. Set both to the same model."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _check_self_collision_model_is_meaningful_for_this_vendor(self) -> "RobotConfig":
-        """``kinematics_model`` selects a UR DH table, so it means nothing on a non-UR, non-sim cell.
-
-        The two rules above couple the key to ``sim.robot_model`` and to ``ur.model``; neither
-        fires on a cell that is neither. Profiles compose, so that gap is reachable:
-        ``WILLY_PROFILE=sim,web`` loads with ``vendor='kuka'`` and ``kinematics_model='ur5e'``, and
-        the guard then evaluates a KUKA arm against UR5e link lengths.
-
-        Only the bundled UR tables exist, so no value here is correct for another vendor. Unset is
-        always accepted and leaves the guard on the capsule path, or failing closed if the mesh
-        backend was demanded.
-        """
-        model = self.safety.self_collision.kinematics_model
-        if model and self.vendor not in ("ur", "sim"):
-            raise ValueError(
-                f"safety.self_collision.kinematics_model={model!r} is set on a vendor={self.vendor!r} "
-                f"cell. That key selects a Universal Robots DH table; there is none for this vendor, so "
-                f"the self-collision guard would evaluate this arm against another robot's link lengths. "
-                f"Leave it unset."
-            )
-        return self
-
-    @model_validator(mode="after")
     def _check_safe_pose_in_workspace(self) -> "RobotConfig":
         """The safe (retreat) pose must lie inside ``workspace_limits``.
 
@@ -1069,6 +1079,27 @@ class RobotConfig(StrictModel):
                 "the WorkspaceGuard would reject the retreat-to-safe motion."
             )
         return self
+
+    @property
+    def arm(self) -> ArmSelection:
+        """Which arm this tree selects, read from the block its own ``vendor`` names (:class:`ArmSelection`).
+
+        A plain property rather than a ``computed_field`` on purpose: it is a reading of the tree, not a key of it, so it
+        stays out of the schema index, out of ``python -m src.config explain`` and out of the generated example tree, as
+        :attr:`GripperConfig.coupling_mm` does.
+
+        Returns:
+            ArmSelection: The selected vendor's model, controller address and planner.
+        """
+        block_name, owns = _VENDOR_ARM_BLOCKS.get(self.vendor, ("", True))
+        block = getattr(self, block_name, None) if block_name else None
+        model = str(getattr(block, "model", "") or getattr(block, "robot_model", "") or "")
+        address = getattr(block, "ip", None) if owns else None
+        # The planner key governs the drivers that read it. The Isaac driver keeps its own (RobotMotionConfig), so a
+        # sim tree answers "" here rather than quoting a key its driver never consults.
+        planner = self.motion.planner if self.vendor in _HONOURS_THE_PLANNER_KEY else ""
+        return ArmSelection(vendor=self.vendor, model=model, controller=str(address) if address else None,
+                            planner=planner, owns_a_controller=owns)
 
     @field_validator("vendor")
     @classmethod

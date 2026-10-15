@@ -97,8 +97,7 @@ def _service(arm: TaskArm, mat: _Mat, log: list[Any], *, fails: "Callable[[], bo
 
     source = RealSenseVisionPerceptionSource(streamer=mat, detector=_Grounder(mat, log),
                                              segmenter=_CountingSegmenter(mat, log), prompt="object", warmup_grabs=0)
-    policy = GraspExecutionPolicy(arm=arm, gripper=jaws, pre_open_width_mm=49.99,  # type: ignore[arg-type]
-                                  require_steady_before_motion=True)
+    policy = GraspExecutionPolicy(arm=arm, gripper=jaws, pre_open_width_mm=49.99)  # type: ignore[arg-type]
     resolver = EyeInHandFrameResolver(t_cam_to_tool=Transform.from_matrix(_MOUNT, from_frame=Frame.CAMERA,
                                                                           to_frame=Frame.TOOL))
     service = AutonomousGraspService.from_components(

@@ -3,7 +3,7 @@
 ``Robot.move``, ``Robot.move_joints`` and ``Robot.home`` each return one report, and everything that moves the arm goes
 through cuRobo and the exact mesh guard (Coal) with the camera world. So each verb reads the arm's route before any
 command: PLANNED on a cuRobo arm whose paths are judged, UNPLANNED on a desk arm (the dummy, the kinematic mock), and
-REFUSED on an arm that plans nothing where a real arm would move (a UR on the ik planner, a KUKA), with nothing
+REFUSED on an arm that plans nothing where a real arm would move (a UR on the ik planner), with nothing
 commanded. ``decline="reason"`` is a keyword on every verb that moves, beside the block. A verb that promises a report
 does not raise for a domain refusal; a programmer's error still raises.
 
@@ -37,13 +37,13 @@ from src.robot.drivers.sim.arm import IsaacRobotArm
 from src.robot.drivers.sim.config import SimRobotConfig
 from src.robot.execution.robot import Robot
 from src.robot.safety.preflight import SafetyPreflight
-from tests.test_camera_world_on_every_driver import _JOINTS, _dummy, _kuka, _sim_mock, _ur_curobo, _ur_ik
+from tests._arm_kit import curobo_arm, ik_arm, kit_pose
+from tests.test_camera_world_on_every_driver import _JOINTS, _dummy, _sim_mock
 from tests.test_robot import _ROBOT_MUST_NOT_LOAD
 from tests.test_robot_hand_verbs import _Hand
 from tests.test_robot_parts import _loaded_after
 from tests.test_robot_pick_and_place import _Log, _robot
 from tests.test_robot_pick_and_place import _pose as _pick_pose
-from tests.test_ur_arm import _pose
 
 _BENCH = "bench check, no cameras mounted"
 
@@ -76,7 +76,7 @@ def _tripwires(arm: Any) -> dict[str, MagicMock]:
 
 
 def _every_verb(robot: Robot, **decline: str) -> list[Any]:
-    return [robot.move(_pose(), **decline), robot.move_joints(_JOINTS, **decline), robot.home(**decline)]
+    return [robot.move(kit_pose(), **decline), robot.move_joints(_JOINTS, **decline), robot.home(**decline)]
 
 
 class _Claims(DummyRobotArm):
@@ -84,7 +84,7 @@ class _Claims(DummyRobotArm):
 
     @property
     def capabilities(self) -> RobotCapabilities:
-        return RobotCapabilities(vendor="ur", model="ur5e")
+        return RobotCapabilities(vendor="ur", model="ur5e", dof=6, controller=None, owns_a_controller=True)
 
 
 class _Keywords(DummyRobotArm):
@@ -136,10 +136,9 @@ class TheRouteTests(unittest.TestCase):
         rows: list[tuple[str, object, Any, str]] = [
             ("dummy", _dummy(), motion.MotionRoute.UNPLANNED, "DummyRobotArm has no controller"),
             ("sim mock", _sim_mock(), motion.MotionRoute.UNPLANNED, "mock_mode"),
-            ("ur ik", _ur_ik(), motion.MotionRoute.REFUSED, "'ik'"),
-            ("kuka", _kuka(), motion.MotionRoute.REFUSED, "KukaRobotArm"),
+            ("planned ik", ik_arm(), motion.MotionRoute.REFUSED, "'ik'"),
             ("sim ik", sim_ik, motion.MotionRoute.REFUSED, "'ik'"),
-            ("ur curobo, no path guard", _ur_curobo(), motion.MotionRoute.REFUSED, "no self_collision guard"),
+            ("planned curobo, no path guard", curobo_arm(), motion.MotionRoute.REFUSED, "no self_collision guard"),
             ("a caller's teleport on a real controller", _Claims(), motion.MotionRoute.REFUSED, "nothing plans"),
             ("an object", object(), motion.MotionRoute.REFUSED, "object does not say"),
         ]
@@ -149,7 +148,7 @@ class TheRouteTests(unittest.TestCase):
                 self.assertIs(route, reading.route, reading.reason)
                 self.assertIn(words, reading.reason)
         with _judged():
-            judged = motion.route_of(_ur_curobo())
+            judged = motion.route_of(curobo_arm())
         self.assertIs(motion.MotionRoute.PLANNED, judged.route, judged.reason)
         self.assertIn("exact mesh guard", judged.reason)
 
@@ -168,7 +167,7 @@ class ADeskArmMovesTests(unittest.TestCase):
     def test_a_desk_arm_moves_and_says_unplanned(self) -> None:
         motion = _motion()
         robot = _desk()
-        target = _pose()
+        target = kit_pose()
 
         report = robot.move(target)
 
@@ -182,7 +181,7 @@ class ADeskArmMovesTests(unittest.TestCase):
     def test_a_line_carries_what_the_arm_keeps_of_it(self) -> None:
         from src.robot.core.arm_capabilities import LineMotion
 
-        report = _desk().move(_pose(), linear=True)
+        report = _desk().move(kit_pose(), linear=True)
 
         assert report.line is not None
         self.assertIs(LineMotion.TELEPORT, report.line.motion)
@@ -191,8 +190,8 @@ class ADeskArmMovesTests(unittest.TestCase):
         arm = _Keywords()
         robot = _desk(arm)
 
-        robot.move(_pose())
-        robot.move(_pose(), vel=0.1, acc=0.2)
+        robot.move(kit_pose())
+        robot.move(kit_pose(), vel=0.1, acc=0.2)
 
         self.assertEqual([{"linear": False}, {"linear": False, "vel": 0.1, "acc": 0.2}], arm.calls)
 
@@ -216,11 +215,11 @@ class ADeskArmMovesTests(unittest.TestCase):
 
 
 class AnArmThatPlansNothingIsRefusedTests(unittest.TestCase):
-    """The arm verbs of a UR on ik and a KUKA drive unplanned, so the robot verbs refuse them before any command."""
+    """The arm verbs of a UR on ik drive unplanned, so the robot verbs refuse them before any command."""
 
     def test_a_ur_on_ik_commands_nothing(self) -> None:
         motion = _motion()
-        arm = _ur_ik()
+        arm = ik_arm()
         wires = _tripwires(arm)
         robot = Robot.from_parts(arm=arm, gripper=None, lock_key=None)
 
@@ -233,23 +232,10 @@ class AnArmThatPlansNothingIsRefusedTests(unittest.TestCase):
         for wire in wires.values():
             wire.assert_not_called()
 
-    def test_a_kuka_commands_nothing(self) -> None:
-        motion = _motion()
-        arm = _kuka()
-        wires = _tripwires(arm)
-        robot = Robot.from_parts(arm=arm, gripper=None, lock_key=None)
-
-        for report in _every_verb(robot, decline=_BENCH):
-            with self.subTest(report.verb.value):
-                self.assertIs(motion.MotionOutcome.REFUSED, report.outcome, report.render())
-                self.assertIn("KukaRobotArm", report.message)
-        for wire in wires.values():
-            wire.assert_not_called()
-
     def test_a_curobo_arm_whose_paths_cannot_be_judged_commands_nothing(self) -> None:
         """Declined, so the camera world lets it through; the route stops it, because Coal would judge no path."""
         motion = _motion()
-        arm = _ur_curobo()
+        arm = curobo_arm()
         wires = _tripwires(arm)
         robot = Robot.from_parts(arm=arm, gripper=None, lock_key=None)
 
@@ -265,7 +251,7 @@ class AnArmThatPlansNothingIsRefusedTests(unittest.TestCase):
         from src.robot.execution.handling import HandlingOutcome
 
         hand = _Hand(hold=HoldEvidence.HELD)
-        robot = Robot.from_parts(arm=_ur_ik(), gripper=hand, lock_key=None)
+        robot = Robot.from_parts(arm=ik_arm(), gripper=hand, lock_key=None)
 
         report = robot.pick(_pick_pose(), 40.0)
 
@@ -284,7 +270,7 @@ class TheCameraWorldStandsBehindEveryMotionTests(unittest.TestCase):
 
     def test_no_world_and_no_decline_commands_nothing(self) -> None:
         motion = _motion()
-        arm = _ur_curobo()
+        arm = curobo_arm()
         wires = _tripwires(arm)
         robot = Robot.from_parts(arm=arm, gripper=None, lock_key=None)
 
@@ -302,11 +288,11 @@ class TheCameraWorldStandsBehindEveryMotionTests(unittest.TestCase):
 
     def test_a_declined_motion_runs_and_says_declined(self) -> None:
         motion = _motion()
-        robot = Robot.from_parts(arm=_ur_curobo(), gripper=None, lock_key=None)
+        robot = Robot.from_parts(arm=curobo_arm(), gripper=None, lock_key=None)
         declined = CameraWorldStamp.declined(CameraWorldDecline(_BENCH))
 
         with _judged():
-            reports = [robot.move(_pose(), decline=_BENCH), robot.move_joints(_JOINTS, decline=_BENCH)]
+            reports = [robot.move(kit_pose(), decline=_BENCH), robot.move_joints(_JOINTS, decline=_BENCH)]
 
         for report in reports:
             with self.subTest(report.verb.value):
@@ -315,7 +301,7 @@ class TheCameraWorldStandsBehindEveryMotionTests(unittest.TestCase):
 
     def test_a_decline_on_a_wired_world_commands_nothing(self) -> None:
         motion = _motion()
-        arm = _ur_curobo(live_world=object())
+        arm = curobo_arm(live_world=object())
         wires = _tripwires(arm)
         robot = Robot.from_parts(arm=arm, gripper=None, lock_key=None)
 
@@ -335,7 +321,7 @@ class TheCameraWorldStandsBehindEveryMotionTests(unittest.TestCase):
         The arm's own verb runs, down to the drive, so the stamp is the one the verb put on its result.
         """
         motion = _motion()
-        arm = _ur_curobo()
+        arm = curobo_arm()
         seen: list[Any] = []
         # The home box reads the controller's FK, which this double does not answer; what is read here is the decline.
         arm._home_refusal = lambda joints: None  # type: ignore[method-assign]
@@ -352,10 +338,10 @@ class TheCameraWorldStandsBehindEveryMotionTests(unittest.TestCase):
 
     def test_the_block_declines_the_verbs_inside_it(self) -> None:
         motion = _motion()
-        robot = Robot.from_parts(arm=_ur_curobo(), gripper=None, lock_key=None)
+        robot = Robot.from_parts(arm=curobo_arm(), gripper=None, lock_key=None)
 
         with _judged(), robot.without_camera_world(_BENCH):
-            report = robot.move(_pose())
+            report = robot.move(kit_pose())
 
         self.assertIs(motion.MotionOutcome.EXECUTED, report.outcome, report.render())
         self.assertIs(CameraWorldUse.DECLINED, report.camera_world.use)
@@ -406,7 +392,7 @@ class DeclineIsAReasonTests(unittest.TestCase):
         robot = _desk(arm)
 
         with self.assertRaises(ValueError):
-            robot.move(_pose(), decline="   ")
+            robot.move(kit_pose(), decline="   ")
         with self.assertRaisesRegex(TypeError, "reason as text"):
             robot.home(decline=CameraWorldDecline(_BENCH))  # type: ignore[arg-type]
         for wire in wires.values():
@@ -435,7 +421,7 @@ class ARefusalIsAReportTests(unittest.TestCase):
         arm = DummyRobotArm()
         wires = _tripwires(arm)
 
-        report = _desk(arm).move(_pose(Frame.TOOL))
+        report = _desk(arm).move(kit_pose(Frame.TOOL))
 
         self.assertIs(motion.MotionOutcome.REFUSED, report.outcome)
         self.assertIs(MotionStatus.INVALID_TARGET, report.status)
@@ -444,7 +430,7 @@ class ARefusalIsAReportTests(unittest.TestCase):
     def test_a_camera_that_cannot_vouch_ends_a_move_as_its_own_outcome(self) -> None:
         motion = _motion()
 
-        report = _desk(_SilentCamera()).move(_pose())
+        report = _desk(_SilentCamera()).move(kit_pose())
 
         self.assertIs(motion.MotionOutcome.CAMERA_WORLD_UNAVAILABLE, report.outcome, report.render())
         self.assertIn("'overhead'", report.message)
@@ -491,7 +477,7 @@ class ARefusalIsAReportTests(unittest.TestCase):
 
     def test_an_arm_that_breaks_the_contract_raises(self) -> None:
         with self.assertRaisesRegex(TypeError, "not a MotionResult"):
-            _desk(_Untyped()).move(_pose())
+            _desk(_Untyped()).move(kit_pose())
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -503,9 +489,9 @@ class TheMotionReportTests(unittest.TestCase):
 
     def test_both_halves_on_every_outcome(self) -> None:
         reports = [
-            _desk().move(_pose(), linear=True),
+            _desk().move(kit_pose(), linear=True),
             Robot.from_parts(arm=DummyRobotArm(), gripper=None, lock_key=None).home(),
-            _desk(_SilentCamera()).move(_pose()),
+            _desk(_SilentCamera()).move(kit_pose()),
             _desk(_RefusesHome()).home(),
         ]
         self.assertEqual({"executed", "refused", "camera_world_unavailable", "motion_refused"},

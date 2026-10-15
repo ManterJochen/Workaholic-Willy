@@ -4,6 +4,7 @@ import logging
 import cv2 as cv
 
 from src.config.schema.camera import WebcamPairRigConfig
+from src.camera.setup.capture_backend import refuse_a_backend_this_platform_lacks
 from src.camera.setup.quality import configure_camera_for_quality
 
 
@@ -19,6 +20,7 @@ class StereoVisionCalibrationWebcams:
     """
 
     def __init__(self, wc_cfg: WebcamPairRigConfig):
+        refuse_a_backend_this_platform_lacks(wc_cfg)
         self.cfg = wc_cfg
         self.logger = logging.getLogger(f"{__name__}.{wc_cfg.rig_id}")
 

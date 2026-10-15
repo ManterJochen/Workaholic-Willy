@@ -180,9 +180,11 @@ WILLY_PROFILE=<your cell> python -m src.robot.execution.real_cell --start-planne
 ```
 
 `--check` lists every stop-the-cell condition decidable at a desk, each with its fix, and exits 1 while
-anything blocks; the fixes go into your layer. The planner and the guard need the arm's geometry, a
-planner description and a collision-mesh bundle, built once per arm by the vendor's tooling (see the
-vendor section). `--start-planner` then starts the planner the way the first planned move does, with
+anything blocks; the fixes go into your layer. After the rows it prints what each operator function can
+do on this cell (`=== ABILITIES ===`: `ok`, `no` with the function's own refusal, or `bench`), asked of
+the arm the tree builds without connecting it; they never change the exit code. The planner and the
+guard need the arm's geometry, a planner description and a collision-mesh bundle, built once per arm by
+the vendor's tooling (see the vendor section). `--start-planner` then starts the planner the way the first planned move does, with
 every refusal that move meets, and needs neither a camera nor a controller: it exits 0 when the planner
 started, and screens every look `robot.look_joint_positions_deg` configures, one line each: `clear`, `in
 the planner's cushion band`, or `ERROR`, with a pose nearby both clear where one exists (Diagnose 6). The
@@ -282,7 +284,7 @@ The bring-up is additive, and every step is reversible without touching another 
    the base tree again. The `*.<your cell>.yaml` files can stay on disk; an unreferenced layer is inert.
 2. **Drop a behaviour key.** `isotropic_radial_closing` is default off. The planner margin has no neutral
    value: a planner cell starts its planner only with a committed evidence file measured at its margin,
-   so the planner's rollback is the arm's `motion_planner: ik`. That stops the cell rather than degrading
+   so the planner's rollback is the cell's `robot.motion.planner: ik`. That stops the cell rather than degrading
    it: the robot's verbs (`Robot.move`, `move_joints`, `home`, `pick`, `place`) refuse a UR on the ik
    planner before any command. Neither needs a code change.
 3. **Restore geometry.** The collision-mesh bundles are committed, so check the previous one back out. A
@@ -303,6 +305,10 @@ The bring-up is additive, and every step is reversible without touching another 
 Each vendor that joins adds one section here with the same five parts, so a cell on any robot reads the
 same way: the controller simulator and how to install and start it, its traps, the profile that points a
 cell at it, the geometry the planner and the guard need for its arms, and the models it covers.
+What a vendor's arm can do is not listed here: each operator function asks the arm for the Protocol it
+needs (hand guiding for teaching and a calibration by hand, digital I/O for the I/O bench, controller
+status for acknowledging a fault, a planner for the planner start), and the desk check's ability rows
+say which a cell on it answers.
 
 ### UR
 
@@ -349,9 +355,12 @@ a protective stop.
 
   When diagnosing a dead container, read the journal with `-b`, or you read a previous boot's log.
 * Every start comes up in Local mode, and in Local mode the controller never runs an externally sent
-  program. Enable Remote Control at `http://localhost:6080/vnc.html` (Settings, System, Remote Control),
-  then switch the selector at the top right from Local to Remote, after every start. A real controller
-  needs the same, powered, with its brakes released and no pendant program owning it.
+  program. `ursim.sh up` sets Remote Control itself: it runs `enable_remote.py` inside the container, which
+  clicks the pendant's own path (Settings, System, Remote Control, Enable, then the selector at the top
+  right) over the container's VNC server and then asks the dashboard whether it took. By hand it is the same
+  path at `http://localhost:6080/vnc.html`, and `URSIM_NO_REMOTE=1` leaves it to you. A real controller needs
+  the same, powered, with its brakes released and no pendant program owning it; nothing here clicks on a real
+  pendant.
 * **A CB3 comes up differently.** It has no Remote/Local switch. First comes a "Power off" notice (click
   **Not now**); power on and release the brakes (the dashboard's `power on` and `brake release`); only then does
   "Confirm Safety Configuration" appear, and RTDE refuses until it is confirmed. After a protective stop the
@@ -368,9 +377,9 @@ records the resulting radius and percentage of reach beside each pose it sets, w
 **The geometry.**
 
 ```bash
-ext_deps/curobo_env/python.exe scripts/curobo/fetch_ur_meshes.py         # the pinned UR arm meshes, once per box
-ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py <model>  # -> {curobo content}/configs/robot/willy_<model>.yml
-python scripts/isaac/bake_ur_meshes_from_urdf.py <model> --write          # -> src/robot/safety/data/
+ext_deps/curobo_env/python.exe scripts/arms/fetch.py         # the pinned UR arm meshes, once per box
+ext_deps/curobo_env/python.exe scripts/arms/descriptor.py <model>  # -> {curobo content}/configs/robot/willy_<model>.yml
+python scripts/arms/bake.py <model> --write          # -> src/robot/safety/data/
 ```
 
 cuRobo ships the meshes of ur5e and ur10e only, so without the fetch any other arm's build refuses with
@@ -382,7 +391,7 @@ The bake is self-validating, and that is the gate: it compares the fresh bake wi
 committed for the same model and refuses to write a difference nobody named, because a wrong frame would
 silently corrupt a fail-closed guard. Run it without `--write` first. It needs no simulator and no GPU:
 the geometry is the collision STL files of Universal Robots, pinned to one upstream commit. The evidence
-file a planner starts on is measured by `scripts/curobo/matrix_gate.py`, step 5 of
+file a planner starts on is measured by `scripts/arms/gate.py`, step 5 of
 [your_own_gripper.md](your_own_gripper.md).
 
 The planner margin was measured across this family. Against the refitted sphere map no UR arm has a
@@ -391,9 +400,9 @@ every UR runs **4.0 mm**; `robot.sim.yaml` carries the measurement. The margin p
 only: where the padded spheres alone refuse a pose the exact guard accepts, on the arm's own pairs, the
 guard decides (Diagnose 6).
 
-**The models.** [ur_family_bringup.md](ur_family_bringup.md) lists the UR arms this stack models, what
-each has, how to add one, and the trap between a CB-series arm and its e-series namesake, which report
-the same model string to a controller.
+**The models.** [add_an_arm_model.md](add_an_arm_model.md) lists the arms this stack describes, what
+each has, how to add one through the build, and the trap between a UR CB-series arm and its e-series
+namesake, which report the same model string to a controller.
 
 ---
 

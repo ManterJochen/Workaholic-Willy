@@ -44,6 +44,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/abilities": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** What can each operator function do on this cell? */
+        get: operations["get_abilities_v1_abilities_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/config/writable": {
         parameters: {
             query?: never;
@@ -220,7 +237,9 @@ export interface paths {
          *     the default tick. Poll it at seconds, not at frames.
          *
          *     Read-only in the strong sense: there is no counterpart that clears a protective stop. That is done
-         *     where the arm is visible, at the pendant, for the same reason there is no E-stop button here.
+         *     where the arm is visible, for the same reason there is no E-stop button here: at the pendant, or by the
+         *     person at the cell with the command ``fault_clear_with`` names (``src.robot.faults``), which this
+         *     console shows beside the fault and never runs.
          */
         get: operations["get_status_v1_cell_status_get"];
         put?: never;
@@ -1339,6 +1358,46 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AbilitiesOut
+         * @description Every operator function of the console's cell, asked of the arm its tree builds, never connected.
+         *
+         *     Beside the checklist, never a verdict of its own: a refused function blocks nothing (owner, 2026-09-26, decision 3).
+         */
+        AbilitiesOut: {
+            /** Abilities */
+            abilities: components["schemas"]["AbilityRowOut"][];
+            /** N Available */
+            n_available: number;
+            /** N Refused */
+            n_refused: number;
+            /** N Bench */
+            n_bench: number;
+            /** Profile */
+            profile?: string | null;
+            /** Vendor */
+            vendor: string;
+        };
+        /**
+         * AbilityRowOut
+         * @description One operator function and what the desk says of it, exactly as ``CellAbilities`` produced it (P0i i4).
+         */
+        AbilityRowOut: {
+            /** Ability */
+            ability: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "available" | "refused" | "bench";
+            /** Reason */
+            reason: string;
+            /**
+             * Fix
+             * @default
+             */
+            fix: string;
+        };
         /**
          * AcknowledgeIn
          * @description A person's word that the cell is clear, and, where they emptied the hand, that the jaws hold nothing.
@@ -3196,6 +3255,12 @@ export interface components {
             emergency_stopped?: boolean | null;
             /** Controller Message */
             controller_message?: string | null;
+            /** Fault */
+            fault?: string | null;
+            /** Fault What To Do */
+            fault_what_to_do?: string | null;
+            /** Fault Clear With */
+            fault_clear_with?: string | null;
             /** Controller Is Simulator */
             controller_is_simulator?: boolean | null;
             /** Controller Serial */
@@ -3249,6 +3314,8 @@ export interface components {
             ready: boolean;
             /** Note */
             note: string;
+            /** Platforms */
+            platforms?: string[];
             /** Sdks */
             sdks?: components["schemas"]["SdkOut"][];
         };
@@ -3376,6 +3443,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PreflightOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    get_abilities_v1_abilities_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AbilitiesOut"];
                 };
             };
             /** @description The one failure envelope. */

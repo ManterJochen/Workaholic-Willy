@@ -134,6 +134,10 @@ const de = {
   'cl.tel.k.protective': 'Schutzstopp',
   'cl.tel.k.emergency': 'Not-Halt',
   'cl.tel.k.says': 'Steuerung sagt',
+  'cl.tel.k.fault': 'Fehler',
+  'cl.tel.k.whatToDo': 'Was zu tun ist',
+  'cl.tel.k.clearWith': 'an der Zelle quittieren',
+  'cl.tel.notFromSoftware': 'nicht per Software: siehe „Was zu tun ist“',
   'cl.tel.stopped': 'gestoppt',
   'cl.tel.no': 'nein',
   'cl.tel.notAsked':
@@ -193,7 +197,7 @@ const de = {
   'cf.key.cog.hint': 'Vom Flansch aus messen, in derselben Sitzung wie die Masse. [0, 0, 0] setzte das ganze Werkzeug als Punkt in den Flansch.',
   'cf.key.tfSource.label': 'Werkzeugrahmen: wer ihn führt',
   'cf.key.tfSource.hint':
-    '„willy“, wenn die Steuerung einen nackten Flansch fährt und der Treiber den Versatz rechnet; „polyscope“, wenn der TCP am Handbediengerät eingestellt ist. Verbinden prüft beides.',
+    '„willy“, wenn die Steuerung einen nackten Flansch fährt und der Treiber den Versatz rechnet; „controller“, wenn der TCP am Handbediengerät eingestellt ist. Verbinden prüft beides.',
   'cf.key.tfOffset.label': 'Werkzeugrahmen: Versatz Flansch → Greifmitte',
   'cf.key.tfOffset.hint': 'Wo die Greifmitte von der Flanschfläche aus sitzt, an der echten Kupplung gemessen.',
   'cf.key.tfRotation.label': 'Werkzeugrahmen: Drehung Flansch → Greifmitte',

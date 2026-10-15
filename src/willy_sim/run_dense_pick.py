@@ -488,8 +488,6 @@ def wire_safety_guards(
     continuous_guard: bool = False,
     continuous_guard_margin_mm: float = 8.0,
     fixtures: Sequence[object] = (),
-    kinematics_model: str = "ur5e",
-    kinematics_base_yaw_deg: float = 180.0,
     guard_hand: "Maybe[PlannerHand]" = UNSET,
 ) -> None:
     """Owner-set the safety guards onto a sim arm; every runner's build calls this.
@@ -503,6 +501,11 @@ def wire_safety_guards(
     stays opt-in. The mesh backend needs Coal or python-fcl, with ``WILLY_COAL_PREFIX`` set on Windows; if
     it is unavailable the guard logs a warning. This is software collision avoidance, not certified
     functional safety.
+
+    The monitor watches the arm the one-shot guard judges, with the base yaw it turns the DH chain by: both
+    are read off the arm's own preflight (``self_kinematics``). They were parameters with ``"ur5e"`` and
+    ``180.0`` as defaults until P0d D5, so a ur3e cell run with the continuous guard was watched with a
+    UR5e's link lengths.
     """
     # Unconditional, one line per build: what this run asked for. The request has to be on file for the
     # "requested but off" warning below to mean anything.
@@ -523,9 +526,26 @@ def wire_safety_guards(
     # Pass the model, yaw and hand the one-shot guard was built with. Hard-coded values would watch a
     # run on a mounted gripper with the baked 2F-85 meshes while the guard used the mounted gripper's,
     # and would watch a ur3e cell with ur5e link lengths.
+    preflight = getattr(arm, "safety_preflight", None)
+    placed = preflight.self_kinematics(arm) if preflight is not None else None
+    if placed is None:
+        from src.robot.safety._ur_kinematics import described_ur_model
+
+        reported = getattr(getattr(arm, "capabilities", None), "model", None)
+        if preflight is None:
+            why = "the arm carries no safety preflight"
+        elif described_ur_model(reported) is None:
+            why = f"the arm reports {reported!r}, which is no UR the arm registry describes"
+        else:
+            why = ("no self collision guard is wired (safety.self_collision.enforce: false), so there is no judged arm "
+                   "and base yaw for the monitor to share")
+        _GUARD_LOG.warning("continuous guard REQUESTED but %s -> guard OFF; this run proceeds unguarded", why)
+        print(f"[continuous-guard] WARN: {why} -> guard OFF", flush=True)
+        return
+    arm_model, base_yaw_deg = placed
     mon = ContinuousCollisionMonitor.from_model(
-        kinematics_model,
-        kinematics_base_yaw_deg,
+        arm_model,
+        base_yaw_deg,
         _fix,
         ContinuousGuardProfile(enabled=True, margin_mm=continuous_guard_margin_mm),
         variant=guard_hand.guard_variant if chosen(guard_hand) else None,
@@ -597,10 +617,10 @@ def build_service(
     bin_height_mm: float = 50.0,      # wall height; low so the arm links clear it on a top-down descent while
     #                                   the low tool (grasp z~37) still reaches a near wall and is rejected
     near_wall_offset_mm: float = 120.0,  # +X shift of the target for the near-wall reject case
-    self_collision_arm: bool = False,  # enable the UR-DH arm-link capsules and the 180 deg base-frame
-    #                                    reconcile, so the guard checks the arm links against the bin walls and
-    #                                    not only the tool. The Isaac cell is a UR5e but its vendor is not 'ur',
-    #                                    so this opt-in is required; default-off keeps the tool-only guard.
+    self_collision_arm: bool = False,  # the measured 180 deg base-frame reconcile and the reject-pair
+    #                                    diagnostics. The arm links are checked against the bin walls without it:
+    #                                    until P0d D5 through the sim profile's kinematics_model, since then
+    #                                    through the model the Isaac arm reports. The sim profile sets the yaw too.
     finger_tool: bool = False,         # tool_model='finger' models the 2F-85 descending fingers as a thin
     #                                    capsule along the grasp closing axis instead of the r=70 bounding
     #                                    cylinder, a rotation-aware bin-wall footprint. Default-off keeps r=70.
@@ -789,7 +809,6 @@ def build_service(
         _n_world = arm.set_curobo_world(_cub)
         print(f"[curobo-world] registered {_n_world}/{len(_cub)} obstacles (bin walls + floor) -> cuRobo plans "
               f"AROUND the walls (bin 'really real' for the planner)", flush=True)
-    _dwell = cell.dwell  # the steady-state gate
     # Owner-set the opt-in natural-aim IK seed and the continuous collision-avoidance guard; both default off.
     # The guard's fixtures = the bin walls (if wired) so an in-motion approach into a wall is also caught.
     _cg_fix = (list(_bin_fixtures) if (_bin_fixtures is not None
@@ -799,11 +818,6 @@ def build_service(
     # gripper's, and would watch a ur3e cell with ur5e link lengths. The hand comes from the one name the
     # cell gives it, the one the bootstrap built the arm's preflight with.
     _guard_hand = planner_hand(cell.robot)
-    wire_safety_guards(arm, natural_aim=natural_aim, continuous_guard=continuous_guard,
-                       continuous_guard_margin_mm=continuous_guard_margin_mm, fixtures=_cg_fix,
-                       kinematics_model="ur5e",  # must track the _sc_update below
-                       kinematics_base_yaw_deg=180.0,
-                       guard_hand=_guard_hand)
     # Owner-set the SelfCollisionGuard fixtures onto the arm preflight. `bootstrap_sim_cell` built the
     # preflight from the config, which ships an empty fixtures list, so the bin walls are injected here and
     # an approach into a wall is self-collision-rejected. Without --bin the preflight is unchanged.
@@ -813,11 +827,11 @@ def build_service(
         _sc_update["fixtures"] = list(_bin_fixtures)
     # A mounted gripper needs no update here: the guard loads its meshes from the hand, passed below.
     if self_collision_arm:
-        # Opt the sim cell, a UR5e whose vendor is not 'ur', into the bundled UR-DH arm-link capsules and
-        # the 180 deg base-frame reconcile, so the guard checks the arm links against the bin-wall fixtures
-        # and not only the tool capsule. Arm-versus-arm distance is rotation-invariant; the reconcile only
-        # aligns arm against base, tool and wall.
-        _sc_update["kinematics_model"] = "ur5e"
+        # The measured 180 deg base-frame reconcile, so the arm links line up with the bin-wall fixtures. The
+        # arm-link capsules themselves need no opt-in since P0d D5: the Isaac arm reports the UR it drives and
+        # the guard takes its chain from that. The sim profile already sets this yaw, so what the flag still
+        # adds is the reject-pair diagnostics below. Arm-versus-arm distance is rotation-invariant; the
+        # reconcile only aligns arm against base, tool and wall.
         _sc_update["kinematics_base_yaw_deg"] = 180.0
     if finger_tool:
         # A faithful 2F-85 finger footprint: a thin capsule along the grasp closing axis instead of the
@@ -829,7 +843,9 @@ def build_service(
 
         _bin_sc = cell.robot.safety.self_collision.model_copy(update=_sc_update)
         _safety = cell.robot.safety.model_copy(update={"self_collision": _bin_sc})
-        arm._preflight = SafetyPreflight.from_safety_config(_safety, cell.robot.workspace_limits, hand=_guard_hand)
+        arm._preflight = SafetyPreflight.from_safety_config(
+            _safety, cell.robot.workspace_limits, hand=_guard_hand, arm_model=cell.robot.arm.model or None,
+        )
         print(f"[self-collision] arm_capsules={self_collision_arm} tool_model={'finger' if finger_tool else 'capsule'} "
               f"bin_walls={'yes' if _wire_bin else 'no'} (half_width_x={bin_half_width_mm:.0f} "
               f"half_width_y={bin_half_width_y_mm if bin_half_width_y_mm is not None else bin_half_width_mm:.0f}mm, "
@@ -854,6 +870,12 @@ def build_service(
 
                 _g.evaluate = _bin_traced  # type: ignore[method-assign]
                 break
+    # Wired after the rebuild above, because the monitor takes its arm model and base yaw from the preflight that
+    # judges the arm (P0d D5): wired before it, a --self-collision-arm run on a tree without the 180 degree yaw had
+    # the guard on 180 and the monitor on 0, so the in-motion check saw the bin walls mirrored through the base.
+    wire_safety_guards(arm, natural_aim=natural_aim, continuous_guard=continuous_guard,
+                       continuous_guard_margin_mm=continuous_guard_margin_mm, fixtures=_cg_fix,
+                       guard_hand=_guard_hand)
 
     # Off-axis clutter needs the convention-correct overhead extrinsic. `handles.camera_to_base` is a
     # hand-built grasp transform 180 deg in-plane from the true one, so it flips off-centre positions about
@@ -874,7 +896,7 @@ def build_service(
             _fn()
         except Exception:  # noqa: BLE001 (annotator/clip best-effort)
             pass
-    arm.move_joint(JointPositions(park_q))  # clean overhead view for the extrinsic fit + every perceive
+    arm.move_to_joints(JointPositions(park_q)).raise_unless_executed()  # clean overhead view for the extrinsic fit + every perceive
     app = getattr(arm.session, "app", None)
     t_overhead_true = None
     for attempt in range(6):
@@ -1039,8 +1061,6 @@ def build_service(
         pre_open_width_mm=pre_open_width_mm, close_width_mm=effective_close_width,
         close_squeeze_mm=effective_close_squeeze,
         require_base_frame_grasp=True,
-        require_steady_before_motion=(_dwell.require_steady_before_motion if _dwell else False),
-        steady_timeout_s=(_dwell.steady_timeout_s if _dwell else 5.0),
         # Yaw a close that points near base Y onto the base-X line so the overhead move converges; a base-Y
         # close times out. A natural base-X close is left alone, and the cubes are symmetric.
         # cuRobo plans the natural free-yaw close and has no base-Y IK timeout, so the base-X yaw is
@@ -1983,9 +2003,10 @@ def main() -> None:
     ap.add_argument("--near-wall-offset", type=float, default=120.0,
                     help="H3.1b: +X shift (mm) of the target for the near-wall reject case")
     ap.add_argument("--self-collision-arm", action="store_true",
-                    help="H3.1c: enable the UR-DH arm-link capsules (L2.7 hook) + the measured 180deg base-frame "
-                         "reconcile so the guard checks ARM links (not just the tool) vs the bin walls. The sim is "
-                         "a UR5e but vendor!='ur' so this opt-in is required; default-off byte-identical.")
+                    help="H3.1c: the measured 180deg base-frame reconcile plus the reject-pair diagnostics. The "
+                         "arm links are checked against the bin walls without it (until P0d D5 through the sim "
+                         "profile's kinematics_model, since then through the model the Isaac arm reports), and the "
+                         "sim profile sets the yaw as well.")
     ap.add_argument("--curobo-bin-world", action="store_true",
                     help="H3.2 re-open: register the --bin walls into cuRobo's collision WORLD so the planner "
                          "ACTIVELY threads the gripper into the bin AROUND the walls (the bin becomes 'really real' "

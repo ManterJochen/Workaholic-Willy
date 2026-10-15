@@ -11,11 +11,14 @@ CONTROLLER_REJECTED (not UNKNOWN) and says it had been sent; the planner's own k
 (a joint limit is not a self collision); and a planner that will not start from where the arm stands is not "no plan".
 
 The judged configuration is the sent one: one ``JointPositions`` object reaches every gate and the drive.
+
+The home is decided in ``PlannedArm``, so since P0g slice 13 these run on the kit's planned arm over the fake transport
+(``tests/_arm_kit.planned_arm``), with the real guards: a joint move is a ``run_trajectory`` on the fake's tape, the
+home's pose is read through ``controller_fk``, and a stopped controller is a status the fake reports.
 """
 
 from __future__ import annotations
 
-import asyncio
 import unittest
 from types import SimpleNamespace
 from typing import Any
@@ -23,7 +26,6 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from src.config.schema.robot import RobotConfig
 from src.robot.core import (
     NO_PLAN_FAIL_SAFE_MESSAGE,
     JointPositions,
@@ -31,19 +33,24 @@ from src.robot.core import (
     MotionResult,
     MotionStatus,
     RobotArm,
+    RobotMode,
+    RobotStatus,
+    SafetyMode,
 )
 from src.robot.core.arm_capabilities import HomesTyped
 from src.robot.core.camera_world import CameraWorldUse
 from src.robot.core.errors import RobotMotionRejected
 from src.robot.drivers.dummy.arm import DummyRobotArm
-from src.robot.drivers.ur.arm import URRobotArm
+from src.robot.drivers.planned.arm import PlannedArm
 from src.robot.execution.robot import Robot
 from src.robot.safety._fcl_self_collision import mesh_backend_status
 from src.robot.safety.planning import JointCheckVerdict, StateRefusal, StateRefusalKind, StateWhere
+from tests._arm_kit import bare_arm, controller_pose, kit_pose, kit_tree, planned_arm
+from tests._fake_transport import Raises, fake_transport
 
 _BENCH = "bench check, no cameras mounted"
 
-#: Clear, and where the fake controller says the arm is standing (tests/test_ur_checked_joint_verbs.py).
+#: Clear, and where the fake controller says the arm is standing (tests/test_a_joint_move_is_judged_as_a_path.py).
 _HERE = (0.0, -1.5, 1.5, 0.0, 0.0, 0.0)
 #: Clear, a short joint move away. The home in most tests below.
 _THERE = (0.2, -1.5, 1.5, 0.0, 0.0, 0.0)
@@ -85,33 +92,40 @@ class _Planner:
 
 
 def _arm(*, home: tuple[float, ...] | None = _THERE, planner: _Planner | None = None,
-         motion_planner: str = "curobo") -> URRobotArm:
-    """A UR with the real guards and a fake controller that stands at ``_HERE`` and completes every moveJ."""
-    config = RobotConfig.model_validate({
-        "vendor": "ur",
-        "ur": {"motion_planner": motion_planner},
-        "safety": {"payload": {"enforce": False}},
-        "gripper": {"model": "robotiq_2f85", "tool_frame": _TOOL},
-        **({"home_joint_positions": home} if home is not None else {}),
-    })
-    arm = URRobotArm(config)
-    arm._conn = MagicMock()
-    arm._conn.is_connected = True
-    arm._conn.get_joint_positions.return_value = list(_HERE)
-    arm._conn.moveJ.return_value = True
-    arm._conn.fk.return_value = list(_INSIDE)
+         motion_planner: str = "curobo") -> Any:
+    """A planned arm with the real guards on a fake controller that stands at ``_HERE``, completes every moveJ and
+    reports the home ``_INSIDE`` the box."""
+    blocks: dict[str, Any] = {"safety": {"payload": {"enforce": False}}, "gripper": {"tool_frame": _TOOL}}
+    if home is not None:
+        blocks["home_joint_positions"] = home
+    fake = fake_transport(joints=_HERE)
+    fake.always("controller_fk", controller_pose(_INSIDE))
+    arm: Any = planned_arm(kit_tree(motion_planner, **blocks), transport=fake)
     if motion_planner == "curobo":
-        arm._curobo_ur = planner if planner is not None else _Planner()  # type: ignore[assignment]
+        arm._curobo = planner if planner is not None else _Planner()
     return arm
 
 
-def _stopped(arm: URRobotArm) -> None:
+def _fake(arm: PlannedArm) -> Any:
+    return arm._transport
+
+
+def _moves(arm: PlannedArm) -> list[Any]:
+    """Every joint move the arm sent: one ``run_trajectory`` each, its one waypoint the goal."""
+    return _fake(arm).calls("run_trajectory")  # type: ignore[no-any-return]
+
+
+def _assert_nothing_sent(test: unittest.TestCase, arm: PlannedArm, *, anchor: str = "controller_fk") -> None:
+    """No joint move, on a tape that holds what the refused home read first (the anchor)."""
+    test.assertTrue(_fake(arm).calls(anchor), f"the fake recorded no {anchor}, so 'nothing was sent' reads nothing")
+    test.assertEqual([], _moves(arm))
+
+
+def _stopped(arm: PlannedArm) -> None:
     """The fake controller reports a protective stop, as the measured URSim did when moveJ came back False."""
-    arm._conn.get_robot_mode.return_value = 7
-    arm._conn.get_safety_mode.return_value = 3
-    arm._conn.is_protective_stopped.return_value = True
-    arm._conn.is_emergency_stopped.return_value = False
-    arm._conn.dashboard_safety_status.return_value = "Safetystatus: PROTECTIVE_STOP"
+    _fake(arm).always("read_status", RobotStatus(
+        robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.PROTECTIVE_STOP, protective_stopped=True,
+        emergency_stopped=False, message="Safetystatus: PROTECTIVE_STOP", program_running=True))
 
 
 def _home(arm: Any) -> Any:
@@ -134,7 +148,7 @@ def _refused_by(refusal: StateRefusal | None) -> JointCheckVerdict:
 
 class WhichArmGoesHomeTypedTests(unittest.TestCase):
 
-    def test_the_ur_arm_goes_home_typed_and_the_protocol_names_no_such_member(self) -> None:
+    def test_a_planned_arm_goes_home_typed_and_the_protocol_names_no_such_member(self) -> None:
         """A member on ``RobotArm`` would reach every driver that subclasses it as a stub that returns ``None``."""
         self.assertIsInstance(_arm(), HomesTyped)
         self.assertNotIsInstance(DummyRobotArm(), HomesTyped)
@@ -175,15 +189,15 @@ class RobotHomeNamesTheGateTests(unittest.TestCase):
         self.assertTrue(report.ok, report.render())
         self.assertIs(MotionCommand.MOVE_HOME, report.result.command)
         self.assertIs(CameraWorldUse.DECLINED, report.camera_world.use)
-        self.assertEqual(1, arm._conn.moveJ.call_count)
+        (move,) = _moves(arm)
         assert planner.checked is not None
-        np.testing.assert_allclose(arm._conn.moveJ.call_args.args[0], planner.checked[-1], atol=1e-12)
-        np.testing.assert_allclose(arm._conn.moveJ.call_args.args[0], _THERE, atol=1e-12)
+        np.testing.assert_allclose(move.args[0], [planner.checked[-1]], atol=1e-12)
+        np.testing.assert_allclose(move.args[0], [_THERE], atol=1e-12)
 
     def test_a_home_outside_the_box_is_workspace_rejected_and_names_the_box(self) -> None:
         planner = _Planner()
         arm = _arm(planner=planner)
-        arm._conn.fk.return_value = list(_ABOVE)
+        _fake(arm).always("controller_fk", controller_pose(_ABOVE))
 
         report = _home(arm)
 
@@ -193,12 +207,12 @@ class RobotHomeNamesTheGateTests(unittest.TestCase):
         self.assertIn("workspace_limits (x -500.0 to 500.0, y -500.0 to 500.0, z 0.0 to 500.0 mm)", report.message)
         self.assertIn("plus the declared tool frame, and not the flange itself", report.message)
         self.assertIn("in radians", report.message)
-        arm._conn.moveJ.assert_not_called()
+        _assert_nothing_sent(self, arm)
         self.assertIsNone(planner.checked, "a home the box refused was judged as a path")
 
     def test_the_shipped_default_home_says_it_is_the_default(self) -> None:
         arm = _arm(home=None)
-        arm._conn.fk.return_value = list(_ABOVE)
+        _fake(arm).always("controller_fk", controller_pose(_ABOVE))
 
         report = _home(arm)
 
@@ -215,76 +229,36 @@ class RobotHomeNamesTheGateTests(unittest.TestCase):
         self.assertIs(MotionCommand.MOVE_HOME, report.result.command, "the destination gate's label is relabelled")
         self.assertIn("[safety:joint_limit/joint_limit] axis 1", report.message)
         self.assertIn("reads as degrees", report.message)
-        arm._conn.fk.assert_not_called()
-        arm._conn.moveJ.assert_not_called()
+        self.assertEqual([], _fake(arm).calls("controller_fk"), "a home in degrees was boxed")
+        _assert_nothing_sent(self, arm, anchor="wait_until_steady")
 
     def test_a_home_the_controller_cannot_place_is_controller_rejected(self) -> None:
         arm = _arm()
-        arm._conn.fk.side_effect = RuntimeError("controller dropped")
+        _fake(arm).always("controller_fk", RuntimeError("controller dropped"))
 
         report = _home(arm)
 
         self.assertIs(MotionStatus.CONTROLLER_REJECTED, report.status, report.render())
         self.assertIn("could not check the home pose", report.message)
         self.assertIn("RuntimeError: controller dropped", report.message)
-        arm._conn.moveJ.assert_not_called()
-
-    def test_a_home_after_the_control_program_ended_runs_on_a_fresh_one(self) -> None:
-        """The cell, 2026-10-12: after a stop on the pendant every home read no FK and was refused until the cell was
-        taken down. A home a person asks for now starts a fresh control program and reads the FK again."""
-        arm = _arm()
-        arm._conn.fk.side_effect = [RuntimeError("getForwardKinematics() function did not succeed!"), list(_INSIDE)]
-        arm._conn.is_protective_stopped.return_value = False
-        arm._conn.is_emergency_stopped.return_value = False
-        arm._conn.is_program_running.return_value = False
-
-        report = _home(arm)
-
-        self.assertTrue(report.ok, report.render())
-        arm._conn.restart_control_script.assert_called_once_with()
-        arm._conn.moveJ.assert_called()
-
-    def test_a_home_in_a_protective_stop_says_to_clear_it_and_restarts_nothing(self) -> None:
-        arm = _arm()
-        arm._conn.fk.side_effect = RuntimeError("getForwardKinematics() function did not succeed!")
-        arm._conn.is_protective_stopped.return_value = True
-        arm._conn.is_emergency_stopped.return_value = False
-        arm._conn.is_program_running.return_value = False
-
-        report = _home(arm)
-
-        self.assertIs(MotionStatus.CONTROLLER_REJECTED, report.status, report.render())
-        self.assertIn("protective stop: clear it at the pendant", report.message)
-        arm._conn.restart_control_script.assert_not_called()
-        arm._conn.moveJ.assert_not_called()
-
-    def test_a_program_that_still_runs_is_not_restarted(self) -> None:
-        arm = _arm()
-        arm._conn.fk.side_effect = RuntimeError("controller dropped")
-        arm._conn.is_protective_stopped.return_value = False
-        arm._conn.is_emergency_stopped.return_value = False
-        arm._conn.is_program_running.return_value = True
-
-        report = _home(arm)
-
-        self.assertIs(MotionStatus.CONTROLLER_REJECTED, report.status, report.render())
-        arm._conn.restart_control_script.assert_not_called()
+        _assert_nothing_sent(self, arm)
 
     def test_a_joint_read_that_raises_is_a_connection_error_not_a_raise(self) -> None:
-        """``URConnection.get_joint_positions`` raises ``RuntimeError``, which is not a robot error the facade catches."""
+        """A transport's joint read may raise ``RuntimeError`` (the UR's does), which is not a robot error the facade
+        catches."""
         arm = _arm()
-        arm._conn.get_joint_positions.side_effect = RuntimeError("Not connected: call connect() first.")
+        _fake(arm).always("read_joints", RuntimeError("Not connected: call connect() first."))
 
         report = _home(arm)
 
         self.assertIs(MotionStatus.CONNECTION_ERROR, report.status, report.render())
         self.assertIn("joint positions could not be read", report.message)
         self.assertIn("nothing was sent", report.message)
-        arm._conn.moveJ.assert_not_called()
+        _assert_nothing_sent(self, arm, anchor="read_joints")
 
     def test_a_movej_the_controller_did_not_complete_says_it_was_sent_and_why(self) -> None:
         arm = _arm()
-        arm._conn.moveJ.return_value = False
+        _fake(arm).always("run_trajectory", False)
         _stopped(arm)
 
         report = _home(arm)
@@ -294,11 +268,11 @@ class RobotHomeNamesTheGateTests(unittest.TestCase):
         self.assertIn("may have moved part of the way", report.message)
         self.assertIn("safety mode protective_stop, with a protective stop active", report.message)
         self.assertIn("Safetystatus: PROTECTIVE_STOP", report.message)
-        self.assertEqual(1, arm._conn.moveJ.call_count)
+        self.assertEqual(1, len(_moves(arm)))
 
     def test_a_movej_that_raises_says_it_was_sent(self) -> None:
         arm = _arm()
-        arm._conn.moveJ.side_effect = RuntimeError("RTDE control script is not running")
+        _fake(arm).always("run_trajectory", Raises(RuntimeError("RTDE control script is not running")))
 
         report = _home(arm)
 
@@ -325,18 +299,18 @@ class RobotHomeNamesTheGateTests(unittest.TestCase):
                 self.assertIs(status, report.status, report.render())
                 self.assertIn("sample 3 of 27", report.message)
                 self.assertIn(said, report.message)
-                arm._conn.moveJ.assert_not_called()
+                _assert_nothing_sent(self, arm)
 
     def test_an_arm_standing_inside_a_guard_s_margin_is_refused_at_sample_1(self) -> None:
         """Pinned as it stands: the path gate judges where the arm is, so an arm inside a margin cannot be homed."""
         arm = _arm()
-        arm._conn.get_joint_positions.return_value = [0.0, -1.5, 1.5, 0.0, 0.0, np.radians(357.0)]
+        _fake(arm).joints = [0.0, -1.5, 1.5, 0.0, 0.0, float(np.radians(357.0))]
 
         report = _home(arm)
 
         self.assertIs(MotionStatus.JOINT_LIMIT_REJECTED, report.status, report.render())
         self.assertIn("sample 1 of", report.message)
-        arm._conn.moveJ.assert_not_called()
+        _assert_nothing_sent(self, arm)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -351,39 +325,37 @@ class TheBoolIsTheTypedVerbsOkTests(unittest.TestCase):
             self.skipTest("no exact mesh backend on this box")
 
     def _cases(self) -> dict[str, Any]:
-        def box(arm: URRobotArm) -> None:
-            arm._conn.fk.return_value = list(_ABOVE)
+        def box(arm: PlannedArm) -> None:
+            _fake(arm).always("controller_fk", controller_pose(_ABOVE))
 
-        def fk(arm: URRobotArm) -> None:
-            arm._conn.fk.side_effect = RuntimeError("controller dropped")
+        def fk(arm: PlannedArm) -> None:
+            _fake(arm).always("controller_fk", RuntimeError("controller dropped"))
 
-        def movej(arm: URRobotArm) -> None:
-            arm._conn.moveJ.return_value = False
+        def movej(arm: PlannedArm) -> None:
+            _fake(arm).always("run_trajectory", False)
 
         return {"box": (box, MotionStatus.WORKSPACE_REJECTED), "fk": (fk, MotionStatus.CONTROLLER_REJECTED),
                 "moveJ": (movej, MotionStatus.CONTROLLER_REJECTED)}
 
-    def test_each_refusal_is_false_on_all_three_verbs_with_one_status(self) -> None:
+    def test_each_refusal_is_false_on_both_verbs_with_one_status(self) -> None:
         for label, (arrange, status) in self._cases().items():
             with self.subTest(label):
-                arms = [_arm(), _arm(), _arm()]
+                arms = [_arm(), _arm()]
                 for arm in arms:
                     arrange(arm)
                     self.enterContext(arm.without_camera_world(_BENCH))
                 typed = arms[0].move_to_home()
                 self.assertIs(status, typed.status, typed.render())
                 self.assertFalse(arms[1].move_home())
-                self.assertFalse(asyncio.run(arms[2].amove_home()))
 
-    def test_a_clear_home_is_true_on_all_three_verbs(self) -> None:
-        arms = [_arm(), _arm(), _arm()]
+    def test_a_clear_home_is_true_on_both_verbs(self) -> None:
+        arms = [_arm(), _arm()]
         for arm in arms:
             self.enterContext(arm.without_camera_world(_BENCH))
         self.assertTrue(arms[0].move_to_home().ok)
         self.assertTrue(arms[1].move_home())
-        self.assertTrue(asyncio.run(arms[2].amove_home()))
         for arm in arms:
-            self.assertEqual(1, arm._conn.moveJ.call_count)
+            self.assertEqual(1, len(_moves(arm)))
 
     def test_a_degrees_home_is_false_and_reads_joint_limit(self) -> None:
         arm = _arm(home=_DEGREES)
@@ -414,7 +386,7 @@ class OneHomeIsJudgedAndSentTests(unittest.TestCase):
         for name, joints in seen:
             self.assertIs(first, joints, f"{name} saw another JointPositions than the destination gate")
         self.assertIs(first, result.target_joints)
-        np.testing.assert_allclose(arm._conn.fk.call_args.args[0], first.values, atol=0.0)
+        np.testing.assert_allclose(_fake(arm).calls("controller_fk")[-1].args[0], first.values, atol=0.0)
 
     def test_a_destination_refusal_keeps_its_status_and_reads_move_home(self) -> None:
         arm = _arm(motion_planner="ik")
@@ -427,7 +399,7 @@ class OneHomeIsJudgedAndSentTests(unittest.TestCase):
         self.assertIs(MotionStatus.SELF_COLLISION_REJECTED, result.status)
         self.assertIs(MotionCommand.MOVE_HOME, result.command)
         self.assertEqual("test veto", result.message)
-        arm._conn.moveJ.assert_not_called()
+        _assert_nothing_sent(self, arm, anchor="wait_until_steady")
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -443,7 +415,7 @@ class AFailedMoveJIsTypedTests(unittest.TestCase):
 
     def test_robot_move_joints_reads_controller_rejected_not_unknown(self) -> None:
         arm = _arm()
-        arm._conn.moveJ.return_value = False
+        _fake(arm).always("run_trajectory", False)
 
         report = Robot.from_parts(arm=arm, gripper=None, lock_key=None).move_joints(_THERE, decline=_BENCH)
 
@@ -452,13 +424,14 @@ class AFailedMoveJIsTypedTests(unittest.TestCase):
         self.assertIn("moveJ was sent", report.message)
         self.assertIs(CameraWorldUse.DECLINED, report.camera_world.use, "the typed result is stamped like any other")
 
-    def test_the_raising_verb_carries_the_same_typed_result(self) -> None:
+    def test_the_raise_carries_the_same_typed_result(self) -> None:
+        """What the raising ``move_joint`` carried until 2026-09-19, ``raise_unless_executed`` carries now."""
         arm = _arm()
-        arm._conn.moveJ.return_value = False
+        _fake(arm).always("run_trajectory", False)
         self.enterContext(arm.without_camera_world(_BENCH))
 
         with self.assertRaises(RobotMotionRejected) as caught:
-            arm.move_joint(JointPositions(_THERE))
+            arm.move_to_joints(JointPositions(_THERE)).raise_unless_executed()
 
         result = caught.exception.result
         assert isinstance(result, MotionResult)
@@ -467,7 +440,7 @@ class AFailedMoveJIsTypedTests(unittest.TestCase):
 
     def test_a_joint_read_that_raises_is_a_connection_error_on_move_joints(self) -> None:
         arm = _arm()
-        arm._conn.get_joint_positions.side_effect = OSError("socket closed")
+        _fake(arm).always("read_joints", OSError("socket closed"))
 
         report = Robot.from_parts(arm=arm, gripper=None, lock_key=None).move_joints(_THERE, decline=_BENCH)
 
@@ -485,7 +458,7 @@ class AWrongNumberOfJointsIsAnInvalidTargetTests(unittest.TestCase):
 
         self.assertIs(MotionStatus.INVALID_TARGET, result.status, result.render())
         self.assertIn("moveJ was not sent", result.message)
-        arm._conn.moveJ.assert_not_called()
+        _assert_nothing_sent(self, arm, anchor="wait_until_steady")
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -500,14 +473,13 @@ class ALineRefusalKeepsTheKindTests(unittest.TestCase):
             self.skipTest("no exact mesh backend on this box")
 
     def test_a_joint_limit_on_the_line_reads_joint_limit(self) -> None:
-        from tests.test_ur_checked_linear import _arm as _line_arm
-        from tests.test_ur_checked_linear import _pose as _line_pose
-        from tests.test_ur_checked_linear import _RecordingPlanner
+        from tests._arm_kit import RecordingPlanner, line_arm
+        from tests.test_a_checked_line_is_sampled_and_solved import _pose as _line_pose
 
         for refusal, status in ((_refusal(StateRefusalKind.JOINT_LIMIT), MotionStatus.JOINT_LIMIT_REJECTED),
                                 (_refusal(StateRefusalKind.WORLD), MotionStatus.SELF_COLLISION_REJECTED)):
             with self.subTest(kind=refusal.kind.value):
-                arm = _line_arm(planner=_RecordingPlanner(_refused_by(refusal)))
+                arm = line_arm(planner=RecordingPlanner(_refused_by(refusal)))
                 self.enterContext(arm.without_camera_world(_BENCH))
 
                 result = arm.move(_line_pose(x=450.0), linear=True)
@@ -515,30 +487,34 @@ class ALineRefusalKeepsTheKindTests(unittest.TestCase):
                 self.assertIs(status, result.status, result.render())
                 self.assertIn("the planner refused this line", result.message)
                 self.assertIn(refusal.render(), result.message)
-                arm._motion.move_to.assert_not_called()
+                fake: Any = arm._transport
+                self.assertTrue(fake.calls("read_joints"), "the line never read where the arm stands")
+                self.assertEqual([], fake.calls("move_pose"))
 
     def test_a_controller_refusal_below_the_judge_keeps_its_cause(self) -> None:
-        from tests.test_ur_checked_linear import _arm as _line_arm
-        from tests.test_ur_checked_linear import _pose as _line_pose
+        from tests._arm_kit import line_arm
+        from tests._fake_transport import Rejects
+        from tests.test_a_checked_line_is_sampled_and_solved import _pose as _line_pose
 
         cases = ((MotionStatus.IK_QUALITY_REJECTED, "before moveL was sent"),
                  (MotionStatus.CONTROLLER_REJECTED, "sent as moveL"),
                  (None, "gave no cause"))
         for status, said in cases:
             with self.subTest(status=status):
-                arm = _line_arm()
+                arm = line_arm()
                 self.enterContext(arm.without_camera_world(_BENCH))
-                arm._motion.move_to.return_value = False
-                arm._motion.last_reject_status = status
+                fake: Any = arm._transport
+                fake.script("move_pose", Rejects(status=status))
 
                 result = arm.move(_line_pose(x=450.0), linear=True)
 
                 self.assertIs(status or MotionStatus.CONTROLLER_REJECTED, result.status, result.render())
                 self.assertIn(said, result.message)
+                self.assertEqual(1, len(fake.calls("move_pose")), "the refusal was not the controller's")
 
 
 class _NoPlan:
-    """A cuRobo glue double that finds no plan and says why, as ``CuroboUrPlanner.last_refusal`` does.
+    """A cuRobo glue double that finds no plan and says why, as ``CuroboPlanner.last_refusal`` does.
 
     It passes every goal it screens and refuses every straight line, so each move asks it for a plan.
     """
@@ -565,14 +541,11 @@ class AStartThePlannerWillNotLeaveTests(unittest.TestCase):
     """``_drive_curobo`` read every empty plan as TIMEOUT "no plan", including a refused start."""
 
     def _move(self, refusal: StateRefusal | None) -> MotionResult:
-        from tests.test_ur_arm import _arm as _plain_arm
-        from tests.test_ur_arm import _pose
-
-        arm = _plain_arm("curobo")
-        arm._conn.get_joint_positions.return_value = list(_HERE)
-        arm._curobo_ur = _NoPlan(refusal)  # type: ignore[assignment]
+        arm: Any = bare_arm("curobo")
+        arm._transport.joints = list(_HERE)  # where the straight line to the goal starts
+        arm._curobo = _NoPlan(refusal)
         self.enterContext(arm.without_camera_world(_BENCH))
-        return arm.move(_pose())
+        return arm.move(kit_pose())  # type: ignore[no-any-return]
 
     def test_a_refused_start_reads_its_kind_and_says_where_the_arm_stands(self) -> None:
         for kind, status in ((StateRefusalKind.JOINT_LIMIT, MotionStatus.JOINT_LIMIT_REJECTED),

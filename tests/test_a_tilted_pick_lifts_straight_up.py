@@ -233,7 +233,7 @@ class AnotherCandidateMayFollowTests(unittest.TestCase):
         self.assertIs(True, report.another_candidate_may_follow)
 
     def test_false_where_anything_was_sent_stopped_or_unknown(self) -> None:
-        from tests.test_camera_world_on_every_driver import _ur_curobo
+        from tests._arm_kit import curobo_arm
 
         cases: dict[str, Any] = {
             "a sent motion the controller rejected": lambda: self._pick(
@@ -244,7 +244,7 @@ class AnotherCandidateMayFollowTests(unittest.TestCase):
                 refuse={1: _refusal(MotionStatus.SELF_COLLISION_REJECTED)}),
             "a stopped controller": lambda: self._pick(statuses=(_PROTECTIVE,)),
             "the toggle question": lambda: _toggle_says_closed(),
-            "a camera world refusal": lambda: _pick_on(_ur_curobo()),
+            "a camera world refusal": lambda: _pick_on(curobo_arm()),
             "a route refusal": lambda: _pick_on(_IkArm()),
             "a gripper fault": lambda: _pick_with_a_hand_that_raises(),
             "a refusal after the jaws were told to pre-open": lambda: self._pick(

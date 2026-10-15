@@ -898,7 +898,7 @@ def run_multiview_gate(
     # is the realistic in-workspace case, then synthesize a grasp from each camera and report which view
     # wins.
     if compare_views:
-        arm.move_joint(JointPositions(home_q))
+        arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
         session.step_n(20)
         cmp, _grasps = compare_grasp_views(cameras, target_idx, cfg, data_dir=data_dir)
         print("\n=== H5.1 Lever A: best grasp-synthesis view (arm at home) ===", flush=True)
@@ -959,7 +959,7 @@ def run_multiview_gate(
         for i in range(runs):
             try:
                 gripper.open()
-                arm.move_joint(JointPositions(home_q))
+                arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
                 # Seeded per-episode target jitter so occlusion (hence the state cell) varies across episodes.
                 jx = (_perception_seeded_uniform(seed, i, salt="jx") - 0.5) * 2.0 * perception_jitter_mm
                 jy = (_perception_seeded_uniform(seed, i, salt="jy") - 0.5) * 2.0 * perception_jitter_mm
@@ -1076,7 +1076,7 @@ def run_multiview_gate(
     # residual below 5 mm, and the disturbance defeats open-loop, with a stale error above 12 mm, the
     # parallel jaw's half tolerance. Nothing is grasped: only the target pose is mutated.
     if probe_refine:
-        arm.move_joint(JointPositions(home_q))
+        arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
         session.step_n(20)
         home_xy_mm = np.asarray(home_pos, dtype=np.float64)[:2] * 1000.0
         results: list[dict[str, Any]] = []
@@ -1142,7 +1142,7 @@ def run_multiview_gate(
         for i in range(runs):
             try:
                 gripper.open()
-                arm.move_joint(JointPositions(home_q))
+                arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
                 obj.set_world_pose(position=np.asarray(home_pos), orientation=np.asarray(home_quat))
                 try:
                     obj.set_linear_velocity(np.zeros(3))
@@ -1203,7 +1203,7 @@ def run_multiview_gate(
         # it. The obliques localize from home, seeing past the arm.
         try:
             gripper.open()
-            arm.move_joint(JointPositions(home_q))  # reachable reset and clean view, as run_fused_pick
+            arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()  # reachable reset and clean view, as run_fused_pick
             obj.set_world_pose(position=np.asarray(home_pos), orientation=np.asarray(home_quat))
             try:
                 obj.set_linear_velocity(np.zeros(3))

@@ -19,6 +19,11 @@ Neither can ever be a hard import:
 * Coal has no Windows wheel. Install it from conda-forge and point
   :data:`ENV_COAL_PREFIX` at that environment.
 
+An environment is laid out per platform (:func:`env_python`, :func:`coal_prefix_layout`):
+on Windows its interpreter is ``python.exe`` in its root and its packages lie in
+``Lib/site-packages``, everywhere else they are ``bin/python`` and
+``lib/pythonX.Y/site-packages``. The platform is read when a path is asked for (P0h h1).
+
 Both therefore stay lazily imported and fail closed. What this module adds is a
 discoverable surface: every environment-variable name and default path lives here once,
 and the ``probe_*`` helpers report what is wired on this box.
@@ -35,6 +40,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from src.robot.constants import PLANNING_ENVIRONMENT_LOG_FILE, create_robot_logger
+from src.utility.interpreters import conda_interpreter_parts
 from src.utility.paths import project_root
 
 from ._hand_bundle import HAND_PARTS, RECORD_PREFIX, HandBundleRefused, hand_bundle_refusal
@@ -51,6 +57,9 @@ __all__ = [
     "ENV_CUROBO_GRAPH_FROM_ATTEMPT",
     "ENV_COAL_PREFIX",
     "COLLISION_MESH_DIR",
+    "CoalPrefixLayout",
+    "coal_prefix_layout",
+    "env_python",
     "curobo_python_path",
     "curobo_robot_config",
     "curobo_cuboid_cache",
@@ -101,11 +110,20 @@ _DEFAULT_CUROBO_ROBOT = "ur5e.yml"
 _DEFAULT_CUROBO_CUBOID_CACHE = "16"
 
 
+def env_python(prefix: str | os.PathLike[str], *, platform: str | None = None) -> str:
+    """The interpreter of the conda or micromamba environment at ``prefix``.
+
+    ``python.exe`` in the environment's root on Windows, ``bin/python`` everywhere else. ``platform`` is
+    ``sys.platform`` read now when it is not given, so a caller asks for another platform's layout by naming it. The
+    layout is :func:`~src.utility.interpreters.conda_interpreter_parts`, the one a printed command names too.
+    """
+    return str(Path(prefix).joinpath(*conda_interpreter_parts(platform)))
+
+
 def curobo_python_path() -> str:
-    """Path to the python of the cuRobo environment, from the variable or the ``ext_deps`` install."""
-    return os.environ.get(
-        ENV_CUROBO_PYTHON, str(project_root() / "ext_deps" / "curobo_env" / "python.exe")
-    )
+    """Path to the python of the cuRobo environment, from the variable or the ``ext_deps`` install, laid out per
+    platform (:func:`env_python`)."""
+    return os.environ.get(ENV_CUROBO_PYTHON, env_python(project_root() / "ext_deps" / "curobo_env"))
 
 
 def curobo_robot_config() -> str:
@@ -194,7 +212,7 @@ def hand_writers_sentence(hand: str) -> str:
 
 def sphere_map_writer_sentence(hand: str) -> str:
     """How a hand with a body gets the planner map every reader of a missing one names."""
-    return f"fit its planner map from its body with scripts/curobo/fit_cover_spheres.py --hand {hand} --write"
+    return f"fit its planner map from its body with scripts/arms/fit.py --hand {hand} --write"
 
 
 def hand_mesh_bundle(hand: str) -> Path:
@@ -311,16 +329,45 @@ def compose_collision_meshes(model: str, hand: str | None, mesh_dir: str | Path 
     return composed
 
 
+@dataclass(frozen=True, slots=True)
+class CoalPrefixLayout:
+    """Where a conda environment keeps what Coal needs: the directory of its DLLs, where the platform has one to add,
+    and the ``site-packages`` its package lies in."""
+
+    #: ``<prefix>/Library/bin`` on Windows, where the extension's dependency DLLs lie; ``None`` elsewhere, where the
+    #: shared libraries are found through the run path the package was linked with.
+    dll_dir: str | None
+    site_packages: str
+
+
+def coal_prefix_layout(
+    prefix: str, *, platform: str | None = None, python_version: tuple[int, int] | None = None,
+) -> CoalPrefixLayout:
+    """The layout of the Coal environment at ``prefix`` on ``platform`` (``sys.platform`` read now by default).
+
+    On Windows ``Library/bin`` and ``Lib/site-packages``; elsewhere no DLL directory and
+    ``lib/python<major>.<minor>/site-packages`` for ``python_version``, this interpreter's by default, because an
+    extension is importable only by the Python it was built for.
+    """
+    if (sys.platform if platform is None else platform) == "win32":
+        return CoalPrefixLayout(os.path.join(prefix, "Library", "bin"), os.path.join(prefix, "Lib", "site-packages"))
+    major, minor = python_version if python_version is not None else sys.version_info[:2]
+    return CoalPrefixLayout(None, os.path.join(prefix, "lib", f"python{major}.{minor}", "site-packages"))
+
+
 def inject_coal_prefix() -> None:
     """Where :data:`ENV_COAL_PREFIX` points at a conda environment, make its Coal importable.
 
     On Windows the dependency DLLs of the Coal extension live in
     ``<prefix>/Library/bin``, which PATH has not reached for extension modules since
-    python 3.8, and the package lives in ``<prefix>/Lib/site-packages``. site-packages
+    python 3.8, and the package lives in ``<prefix>/Lib/site-packages``. Elsewhere there
+    is no DLL directory to add, and the package lives in
+    ``<prefix>/lib/pythonX.Y/site-packages`` (:func:`coal_prefix_layout`). site-packages
     is appended rather than prepended, so the host interpreter own numpy still wins, and
     Coal works against numpy 1.x and 2.x either way. With the variable unset it falls
-    back to the in-repo ``ext_deps/coal_env``, and it does nothing off Windows or where
-    neither is present.
+    back to the in-repo ``ext_deps/coal_env``. It does nothing where neither is present,
+    or where the prefix holds no ``site-packages`` where this platform and this python
+    look for one.
     """
     prefix = os.environ.get(ENV_COAL_PREFIX)
     if not prefix:
@@ -328,9 +375,10 @@ def inject_coal_prefix() -> None:
         if not default.is_dir():
             return
         prefix = str(default)
-    bindir = os.path.join(prefix, "Library", "bin")
-    site = os.path.join(prefix, "Lib", "site-packages")
-    if hasattr(os, "add_dll_directory") and os.path.isdir(bindir):
+    layout = coal_prefix_layout(prefix)
+    bindir = layout.dll_dir
+    site = layout.site_packages
+    if bindir is not None and hasattr(os, "add_dll_directory") and os.path.isdir(bindir):
         try:
             os.add_dll_directory(bindir)
         except OSError:
@@ -536,7 +584,7 @@ def probe_collision_engine(model: str = "ur5e") -> CollisionEngineStatus:
 
 
 def probe_planning_environment(
-    *, robot_config: str | None = None, kinematics_model: str = "ur5e",
+    *, robot_config: str | None = None, arm_model: str = "ur5e",
 ) -> PlanningEnvironment:
     """Probe both engines and return the combined anchor status for one cell.
 
@@ -545,5 +593,5 @@ def probe_planning_environment(
     describes the robot that will run.
     """
     return PlanningEnvironment(
-        curobo=probe_curobo(robot_config), collision=probe_collision_engine(kinematics_model),
+        curobo=probe_curobo(robot_config), collision=probe_collision_engine(arm_model),
     )

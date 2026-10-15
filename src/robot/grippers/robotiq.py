@@ -475,3 +475,104 @@ class GripperController:
     def _normalise_to_count(value: float) -> int:
         v = min(1.0, max(0.0, float(value)))
         return int(round(v * 255))
+
+
+# ---- the driver as the stack reads it (P0g slice 8, grippers/spec.py) -----------------------------------------------
+def _refuse(robot_cfg: Any, facts: Any) -> Any:
+    """The Robotiq lives on the UR controller's tool I/O, reached over a socket the URCap opens at that controller's
+    address, so two separate facts have to hold.
+
+    The arm in hand is asked (``facts``), not ``robot_cfg.vendor``. A supplied handle replaces the arm construction
+    step, so from that point the config does not describe the arm the cell runs on: asked instead, a ``vendor: ur``
+    tree beside a ``DummyRobotArm`` would yield a real Robotiq driver aimed at a real controller address, next to an
+    arm holding no controller connection, and nothing on the built cell would say so. The two I/O drivers ask the
+    handle too (``facts.has_digital_io``), for the same reason.
+
+    The address comes off the arm as well: ``capabilities.controller`` is the controller this arm talks to (since P0e;
+    before that it was read off the tree the UR driver keeps, ``arm.config.ur.ip``, which nothing but that driver
+    declares). The tree is the wrong source for a supplied arm: it reads the UR block whatever the tree names, and
+    until 2026-10-13 that block carried 192.168.1.100 as a schema default, a plausible address on a real subnet that
+    nobody chose. The default is gone (a cell names its controller or is refused), and the arm still answers for
+    itself.
+    """
+    from src.robot.core import RobotVendor
+
+    from .null import SubstitutionReason
+    from .spec import Refusal
+
+    if facts.vendor != RobotVendor.UR.value:
+        # A config requesting Robotiq on a non-UR arm (notably the Isaac sim, whose `sim` profile sets
+        # gripper.vendor=robotiq + arm vendor=sim) cannot build a real gripper through from_robot_config. Warn instead
+        # of silently booting gripper-less; the sim builds its IsaacGripper via
+        # AutonomousGraspService.from_components (shared session).
+        return Refusal(
+            SubstitutionReason.ROBOTIQ_NEEDS_UR,
+            f"gripper.vendor='robotiq' but the arm in hand reports vendor {facts.vendor!r}, "
+            f"which is not a UR. A Robotiq lives on the UR controller's tool I/O, so an arm "
+            f"that is not on such a controller cannot reach one.",
+            "For the Isaac sim use AutonomousGraspService.from_components (the IsaacGripper "
+            "needs the shared session). On a real cell, set robot.vendor: ur and either let "
+            "this build the arm or hand in the UR arm you built yourself.",
+        )
+    if not facts.controller:
+        # The other half of the same refusal, and it is stated separately because an operator cannot act on the two the
+        # same way. Falling back to `robot_cfg.ur.ip` here is the thing that must not happen: on a tree that names no UR
+        # that value is whatever the unselected block holds, and pointing a real driver at an address nobody chose is
+        # exactly what this half of the refusal prevents.
+        return Refusal(
+            SubstitutionReason.ROBOTIQ_NEEDS_UR,
+            f"gripper.vendor='robotiq' and the arm in hand does report vendor "
+            f"{RobotVendor.UR.value!r}, but it names no controller address: its "
+            f"capabilities.controller is None. The Robotiq is reached over a socket on "
+            f"that arm's controller, and robot.ur.ip in this tree ({robot_cfg.ur.ip!r}) "
+            f"describes whatever the config names, not the arm that was handed in.",
+            "Hand in an arm that names its controller (URRobotArm reads robot.ur.ip of the "
+            "tree it was built from), or supply no arm at all and set robot.vendor: ur so this "
+            "builds the arm from this tree and both halves come from the same place.",
+        )
+    return None
+
+
+def _build(robot_cfg: Any, arm: Any, facts: Any) -> Any:
+    from src.robot.core import GripperVendor
+
+    from .registry import create_gripper
+
+    # When `resolve_arm` built the arm itself it built it from this tree (`create_arm(RobotVendor.UR,
+    # config=robot_cfg)`), so the shipped no-handle UR cell reads the address it always read.
+    return create_gripper(GripperVendor.ROBOTIQ, config=robot_cfg.gripper, ip=str(facts.controller))
+
+
+def _wiring(robot_cfg: Any) -> Any:
+    from .spec import Row
+
+    return Row("bench", "the Robotiq URCap on the controller (it opens port 63352, not any pip package)",
+               "confirm physically; a missing URCap looks like a gripper that never answers")
+
+
+def _hazards(robot_cfg: Any, gripper: Any, asked: str) -> Any:
+    from .spec import Hazard
+
+    return (Hazard(
+        what="The Robotiq activates on connect, and activation is a CALIBRATION: the fingers "
+             "travel their entire range, at full speed, immediately.",
+        precaution="Keep hands clear of the jaws. Make sure nothing is between them: activation "
+                   "with a workpiece in the gripper is how a part gets crushed or launched.",
+    ),)
+
+
+def _driver() -> Any:
+    from src.robot.core import GripperVendor
+
+    from .spec import GripperDriver
+
+    # No SDK. Naming `robotiq_gripper` would be unsatisfiable, because it is not a package: `pip index versions
+    # robotiq_gripper` answers that no matching distribution was found, and the installed `ur_rtde` ships nothing by
+    # that name. It is one example file from SDU's repository that an operator drops on the path by hand, so the doctor
+    # would read an uninstalled SDK on every box, correctly, and no install would fix it. `robotiq_socket.py` speaks
+    # the URCap port-63352 grammar directly.
+    return GripperDriver(vendor=GripperVendor.ROBOTIQ, refuse=_refuse, build=_build, wiring=_wiring,
+                         hazards=_hazards, sdk_modules=(), opens_as_needed=True)
+
+
+DRIVER = _driver()

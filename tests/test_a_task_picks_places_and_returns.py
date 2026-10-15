@@ -420,8 +420,7 @@ class TheRealServiceTests(unittest.TestCase):
 
         arm = TaskArm(log)
         jaws = toggle(log, arm=arm)
-        policy = GraspExecutionPolicy(arm=arm, gripper=jaws, pre_open_width_mm=49.99,  # type: ignore[arg-type]
-                                      require_steady_before_motion=True)
+        policy = GraspExecutionPolicy(arm=arm, gripper=jaws, pre_open_width_mm=49.99)  # type: ignore[arg-type]
         service = AutonomousGraspService.from_components(
             arm=arm, calculator=_Calculator(), perception=_Emptying(), mode=GraspMode.EASY,  # type: ignore[arg-type]
             gripper=jaws, policy=policy, max_attempts=1)

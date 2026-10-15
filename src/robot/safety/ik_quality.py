@@ -147,14 +147,11 @@ class IKQualityGuard:
 
         # ---- Limit-proximity -----------------------------------------
         # Reusing the joint-limit resolver keeps this guard and the joint-limit guard
-        # on one envelope. The check is soft: with no static or vendor table available
+        # on one envelope. The check is soft: with no static lists and no registry envelope resolving
         # it skips rather than fails closed, which the joint-limit guard handles.
         if self._joint_limits_config is not None:
-            vendor = ctx.arm.capabilities.vendor if ctx.arm is not None else None
             model = ctx.arm.capabilities.model if ctx.arm is not None else None
-            limits = resolve_joint_limits_deg(
-                self._joint_limits_config, vendor=vendor, model=model,
-            )
+            limits = resolve_joint_limits_deg(self._joint_limits_config, model=model)
             if limits is not None and len(limits[0]) == joints.dof:
                 lo_deg, hi_deg = limits
                 buffer_deg = self._limit_proximity_deg

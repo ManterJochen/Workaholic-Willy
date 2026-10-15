@@ -7,7 +7,7 @@ that only shrink its time step towards cuRobo's own acceleration and jerk limits
 them (the pinned checkout, ``motion/motion_planner.py``).
 
 The UR driver keeps the positions of a plan and nothing else: it shortens them to the waypoints both authorities judge
-and runs those with ``moveJ`` at its own speed (``CuroboUrPlanner.execute``). So the three passes after the first shape
+and runs those with ``moveJ`` at its own speed (``CuroboPlanner.execute``). So the three passes after the first shape
 a timing nobody runs. Nor do they decide whether a plan is found: an attempt whose first pass finds no trajectory stops
 there, and a later pass only replaces a trajectory with a faster one (``TrajOptSolver._solve_impl``), so an attempt
 succeeds with one pass exactly where it succeeds with four. What one pass changes is which positions come back, and

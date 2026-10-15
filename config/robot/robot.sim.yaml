@@ -156,10 +156,9 @@ robot:
       # On real hardware the same call reads a controller steady signal and steps nothing, so the
       # gate works there and robot.yaml leaves it on.
       require_steady_before_motion: false
-    # The arm is physically a UR5e, so `kinematics_model` opts this non-UR vendor into the bundled
-    # UR DH table: the guard then measures arm against arm and arm against gripper instead of base,
-    # tool and fixture capsules alone. It must equal `sim.robot_model`, which the config load
-    # cross-validates. The bundled DH base frame is rotated 180 deg about Z from the Isaac UR5e USD
+    # The arm is physically a UR5e and reports it (`sim.robot_model`, P0d D5), so the guard measures
+    # arm against arm and arm against gripper with the UR DH chain, not base, tool and fixture
+    # capsules alone; no safety key names the arm a second time. The bundled DH base frame is rotated 180 deg about Z from the Isaac UR5e USD
     # `base_link`, and `kinematics_base_yaw_deg` is what turns the arm capsules back into the frame
     # the base, tool and fixture capsules already use. `backend: fcl` is the vertex-exact mesh
     # check, Coal preferred with python-fcl as the fallback; it needs one of those engines plus the
@@ -167,7 +166,6 @@ robot:
     # capsule proxy, which over-rejects the reach-down grasps this cell makes.
     self_collision:
       backend: "fcl"
-      kinematics_model: "ur5e"
       kinematics_base_yaw_deg: 180.0
       min_distance_mm: 3.0
       # The same clearance handed to the trajectory planner, so it stops returning paths this guard

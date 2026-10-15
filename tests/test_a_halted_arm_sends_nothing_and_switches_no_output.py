@@ -21,7 +21,6 @@ Each test says what the code before the halt did.
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import time
 import unittest
@@ -44,7 +43,8 @@ from src.robot.core import (
 from src.robot.core.arm_capabilities import DigitalIOPort
 from src.robot.drivers.dummy.arm import DummyRobotArm
 from src.robot.drivers.ur import connection as connection_module
-from src.robot.drivers.ur.connection import MoveEnd, URConnection
+from src.robot.core.arm_capabilities import MoveEnd
+from src.robot.drivers.ur.connection import URConnection
 from src.robot.grippers.jaw_io import JawIOGripper
 from tests._halt_fakes import RecordingRtde, SimulatedUr, VirtualClock, ur_arm_on
 
@@ -80,17 +80,12 @@ class TheLatchOnAUrArmTests(unittest.TestCase):
 
     def _verbs(self, arm: Any) -> dict[str, Any]:
         return {
-            "move_to": lambda: arm.move_to(_POSE),
-            "move_to linear": lambda: arm.move_to(_POSE, linear=True),
             "move": lambda: arm.move(_POSE),
             "move linear": lambda: arm.move(_POSE, linear=True),
-            "move_joint": lambda: arm.move_joint(_Q),
             "move_to_joints": lambda: arm.move_to_joints(_Q),
             "move_linear": lambda: arm.move_linear(_POSE),
             "move_home": lambda: arm.move_home(),
             "move_to_home": lambda: arm.move_to_home(),
-            "amove_to": lambda: asyncio.run(arm.amove_to(_POSE)),
-            "amove_home": lambda: asyncio.run(arm.amove_home()),
         }
 
     def test_every_motion_verb_of_a_halted_arm_refuses_cancelled_and_sends_nothing(self) -> None:
@@ -114,16 +109,16 @@ class TheLatchOnAUrArmTests(unittest.TestCase):
             self.assertEqual([], rtde.calls, f"a halted {planner} arm reached its controller")
 
     def test_the_raw_transports_refuse_too(self) -> None:
-        """``arm.motion`` and ``arm.connection`` are below the gates, and still send nothing while halted."""
+        """The raw transports (``arm._motion``, ``arm._conn``) are below the gates, and still send nothing while
+        halted."""
         rtde = RecordingRtde()
         arm = ur_arm_on(rtde)
         arm.halt(_REASON)
-        self.assertFalse(arm.motion.move_to(arm._pose_to_controller(_POSE)))
-        self.assertIs(MotionStatus.CANCELLED, arm.motion.last_reject_status)
-        self.assertFalse(arm.motion.move_home())
-        self.assertFalse(arm.connection.moveJ(list(_Q.tolist())))
-        self.assertIs(MoveEnd.REFUSED_HALTED, arm.connection.last_move_end)
-        self.assertFalse(arm.connection.moveL([0.45, -0.12, 0.45, 0.0, 3.14, 0.0], 0.1, 0.2))
+        self.assertFalse(arm._motion.move_to(arm._pose_to_controller(_POSE)))
+        self.assertIs(MotionStatus.CANCELLED, arm._motion.last_reject_status)
+        self.assertFalse(arm._conn.moveJ(list(_Q.tolist())))
+        self.assertIs(MoveEnd.REFUSED_HALTED, arm._conn.last_move_end)
+        self.assertFalse(arm._conn.moveL([0.45, -0.12, 0.45, 0.0, 3.14, 0.0], 0.1, 0.2))
         self.assertEqual([], rtde.calls)
 
     def test_a_halted_arm_switches_no_output_and_still_reads_them(self) -> None:
@@ -135,7 +130,7 @@ class TheLatchOnAUrArmTests(unittest.TestCase):
             "tool DO0 on": lambda: arm.set_digital_output(0, True, port=DigitalIOPort.TOOL),
             "standard DO3 off": lambda: arm.set_digital_output(3, False),
             "analog AO0": lambda: arm.set_analog_output(0, 2.5),
-            "the connection's own": lambda: arm.connection.set_digital_out(0, True, "tool"),
+            "the connection's own": lambda: arm._conn.set_digital_out(0, True, "tool"),
         }.items():
             with self.subTest(output=name):
                 with self.assertRaises(ArmHalted) as raised:
@@ -167,7 +162,9 @@ class TheLatchOnAUrArmTests(unittest.TestCase):
         self.assertIsNone(arm.halt_state())
         self.assertIs(MotionStatus.EXECUTED, arm.move_to_joints(_Q).status)
         arm.set_digital_output(0, True, port=DigitalIOPort.TOOL)
-        self.assertEqual(["moveJ", "setToolDigitalOut"], [call[1] for call in rtde.calls])
+        # The arm's own steady gate goes first since P0e E9: every motion verb waits once before it sends. Every output
+        # write asks first whether the IO link is up (P0g io1).
+        self.assertEqual(["isSteady", "moveJ", "isConnected", "setToolDigitalOut"], [call[1] for call in rtde.calls])
 
     def test_the_latch_outlives_a_disconnect_and_a_connect_of_the_same_arm(self) -> None:
         """It lives on the connection object, which the arm keeps from build to rebuild (build plan 1.3.5)."""
@@ -184,8 +181,8 @@ class TheLatchOnAUrArmTests(unittest.TestCase):
         }
         with mock.patch.multiple(connection_module, **fake_modules), \
                 mock.patch.object(URConnection, "_open_control", return_value=rtde.ctrl):
-            arm.connection.connect()
-        self.assertTrue(arm.connection.is_connected)
+            arm._conn.connect()
+        self.assertTrue(arm._conn.is_connected)
         state = arm.halt_state()
         self.assertIsNotNone(state)
         assert state is not None
@@ -277,12 +274,12 @@ class TheLatchOnAUrArmTests(unittest.TestCase):
         arm = ur_arm_on(rtde)
         arm.halt(_REASON)
         arm.end_output_pulse(0, port=DigitalIOPort.TOOL)
-        arm.connection.end_output_pulse(3, "standard")
-        self.assertEqual([["io", "setToolDigitalOut", [0, False], {}], ["io", "setStandardDigitalOut", [3, False], {}]],
-                         rtde.calls)
+        arm._conn.end_output_pulse(3, "standard")
+        self.assertEqual([["io", "isConnected", [], {}], ["io", "setToolDigitalOut", [0, False], {}],
+                          ["io", "isConnected", [], {}], ["io", "setStandardDigitalOut", [3, False], {}]], rtde.calls)
         with self.assertRaises(ArmHalted):
             arm.set_digital_output(0, False, port=DigitalIOPort.TOOL)
-        self.assertEqual(2, len(rtde.calls), "a plain write went out on a halted arm")
+        self.assertEqual(4, len(rtde.calls), "a plain write went out on a halted arm")
         arm.clear_halt()
         arm.end_output_pulse(1, port=DigitalIOPort.TOOL)
         self.assertEqual(["io", "setToolDigitalOut", [1, False], {}], rtde.calls[-1])
@@ -306,11 +303,9 @@ class TheLatchOnTheDummyArmTests(unittest.TestCase):
         state = self.arm.halt(_REASON)
         self.assertEqual((_REASON, False, False, None), (state.reason, state.in_motion, state.braked, state.brake_s))
         for name, verb in {
-            "move_to": lambda: self.arm.move_to(_POSE),
             "move_home": lambda: self.arm.move_home(),
             "move": lambda: self.arm.move(_POSE),
             "move_to_joints": lambda: self.arm.move_to_joints(_Q),
-            "move_joint": lambda: self.arm.move_joint(_Q),
             "move_linear": lambda: self.arm.move_linear(_POSE),
         }.items():
             with self.subTest(verb=name):
@@ -331,10 +326,10 @@ class TheLatchOnTheDummyArmTests(unittest.TestCase):
         self.arm.disconnect()
         self.arm.connect()
         self.assertIsNotNone(self.arm.halt_state())
-        self.assertFalse(self.arm.move_to(_POSE))
+        self.assertTrue(_cancelled(self.arm.move(_POSE)))
         self.arm.clear_halt()
         self.assertIsNone(self.arm.halt_state())
-        self.assertTrue(self.arm.move_to(_POSE))
+        self.assertTrue(self.arm.move(_POSE).ok)
 
 
 if __name__ == "__main__":  # pragma: no cover

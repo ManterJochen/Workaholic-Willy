@@ -227,7 +227,7 @@ class ItPricesEVERYTrainingPassTests(unittest.TestCase):
 class OneImplementationForTheCommandAndTheCodeTests(unittest.TestCase):
     """`datagen cost` and `DatasetBuild.cost()` answer the same question, so they call one function.
 
-    Two copies of a cost model is two answers waiting to disagree, and this is the one tool whose
+    Two copies of a cost model are two answers waiting to disagree, and this is the one tool whose
     whole value is that its number can be trusted before a night is spent on it. The command is a
     formatter over `estimate_for_config`, and so is the verb.
     """
@@ -260,6 +260,32 @@ class OneImplementationForTheCommandAndTheCodeTests(unittest.TestCase):
             self.assertEqual(main(["cost", "--scenes", "500", "--engine", "none", "--jobs", "4"]), 0)
         verb = self._build(scenes=500, engine="none").cost(jobs=4)      # type: ignore[attr-defined]
         self.assertIn(format_estimate(verb), out.getvalue())
+
+    def test_the_mesh_count_comes_from_the_configs_own_restriction(self) -> None:
+        """The decompose line moved from the command into the shared function, and it must still
+        count the config's id restriction on `mujoco`, since that is the stage the render needs first."""
+        build = self._build(scenes=800, engine="mujoco",
+                            overrides={"assets": {"mesh_asset_ids": ["a1", "b2", "c3"]}})
+        result = build.cost()                                           # type: ignore[attr-defined]
+        decompose = [stage for stage in result.stages if stage.name == "decompose"]
+        self.assertEqual(1, len(decompose), [stage.name for stage in result.stages])
+        self.assertIn("3 scanned mesh", decompose[0].note)
+
+    def test_the_shared_function_restates_no_default_of_estimate(self) -> None:
+        """`estimate` is the one declaration of `jobs=1`, `refit=True` and the rest. A second copy
+        in the wrapper agrees today and is free to stop agreeing without any test noticing."""
+        import inspect
+
+        from src.contracts.options import chosen
+        from datagen.cost import estimate_for_config
+
+        theirs = inspect.signature(estimate).parameters
+        competing = [
+            f"{name}={mine.default!r}"
+            for name, mine in inspect.signature(estimate_for_config).parameters.items()
+            if name in theirs and mine.default is not inspect.Parameter.empty
+            and chosen(mine.default)]
+        self.assertEqual([], competing)
 
     def test_printing_an_estimate_is_its_report(self) -> None:
         """`print(build.cost())` is the documented call; a repr there would be a different tool."""

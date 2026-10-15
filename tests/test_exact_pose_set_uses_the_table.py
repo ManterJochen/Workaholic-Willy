@@ -19,16 +19,16 @@ import numpy as np
 import yaml
 
 _ROOT = Path(__file__).resolve().parents[1]
-_TABLE = _ROOT / "src" / "robot" / "safety" / "planning" / "robot" / "ur_retract.yaml"
+_TABLE = _ROOT / "src" / "robot" / "safety" / "planning" / "robot" / "retract.yaml"
 
 
 def _judge_module():
-    path = _ROOT / "scripts" / "curobo" / "exact_self_collision_poses.py"
+    path = _ROOT / "scripts" / "arms" / "exact_self_collision_poses.py"
     spec = importlib.util.spec_from_file_location("exact_self_collision_poses_under_test", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    sys.path.insert(0, str(_ROOT / "scripts" / "curobo"))
+    sys.path.insert(0, str(_ROOT / "scripts" / "arms"))
     spec.loader.exec_module(module)
     return module
 

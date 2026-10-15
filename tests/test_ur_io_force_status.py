@@ -14,7 +14,8 @@ from src.config.schema.robot import RobotConfig
 from src.geometry import Frame
 from src.robot.core import (
     DigitalIOPort,
-    RobotEmergencyStop,
+    ArmFault,
+    ArmFaultClass,
     RobotMode,
     RobotStatus,
     SafetyMode,
@@ -24,6 +25,7 @@ from src.robot.core import (
     SupportsRobotStatus,
     Wrench,
 )
+from src.robot.core.errors import RobotConnectionError
 from src.robot.drivers.ur.arm import URRobotArm
 from src.robot.drivers.ur.connection import URConnection
 
@@ -34,16 +36,16 @@ from src.robot.drivers.ur.connection import URConnection
 # test dependency and its Windows build is unreliable. Keep these lists in sync with the driver.
 _RECV_API = [
     "disconnect", "getActualQ", "getActualQd", "getActualTCPForce", "getActualTCPPose", "getDigitalInState",
-    "getDigitalOutState", "getPayload", "getPayloadCog", "getRobotMode", "getSafetyMode", "getSafetyStatusBits",
+    "getDigitalOutState", "getPayload", "getPayloadCog", "getRobotMode", "getSafetyMode",
     "isEmergencyStopped", "isProtectiveStopped",
 ]
 _CTRL_API = [
-    "disconnect", "endTeachMode", "getAsyncOperationProgressEx", "getForwardKinematics", "getInverseKinematics",
+    "disconnect", "endTeachMode", "getAsyncOperationProgressEx", "getForwardKinematics", "getInverseKinematics", "getInverseKinematicsHasSolution",
     "getJointTorques", "isProgramRunning", "isSteady", "kickWatchdog", "moveJ", "moveL", "setPayload",
     "setWatchdog", "stopJ", "stopL", "stopScript", "teachMode",
 ]
 _IO_API = [
-    "disconnect", "setAnalogOutputCurrent", "setAnalogOutputVoltage", "setConfigurableDigitalOut",
+    "disconnect", "isConnected", "setAnalogOutputCurrent", "setAnalogOutputVoltage", "setConfigurableDigitalOut",
     "setStandardDigitalOut", "setToolDigitalOut",
 ]
 _DASH_API = ["closeSafetyPopup", "connect", "disconnect", "safetystatus", "unlockProtectiveStop"]
@@ -66,10 +68,10 @@ class ValueObjectTests(unittest.TestCase):
         self.assertFalse(SafetyMode.REDUCED.is_stopped)
 
     def test_robot_status_operational_flags(self) -> None:
-        ok = RobotStatus(RobotMode.RUNNING, SafetyMode.NORMAL, False, False)
+        ok = RobotStatus(RobotMode.RUNNING, SafetyMode.NORMAL, False, False, program_running=True)
         self.assertTrue(ok.is_operational)
         self.assertFalse(ok.is_stopped)
-        stopped = RobotStatus(RobotMode.RUNNING, SafetyMode.PROTECTIVE_STOP, True, False, "Protective stop")
+        stopped = RobotStatus(RobotMode.RUNNING, SafetyMode.PROTECTIVE_STOP, True, False, "Protective stop", program_running=True)
         self.assertFalse(stopped.is_operational)
         self.assertTrue(stopped.is_stopped)
 
@@ -103,7 +105,25 @@ class URConnectionCapabilityTests(unittest.TestCase):
         conn.set_analog_out(1, 0.02, current=True)
         io.setAnalogOutputCurrent.assert_called_once_with(1, 0.02)
 
-    def test_set_io_without_interface_raises(self) -> None:
+    def test_a_write_the_controller_did_not_take_answers_false(self) -> None:
+        """P0g io1: ur_rtde's setters return False for a write they could not deliver, and that answer was thrown
+        away, so a gripper's belief moved on a write that never happened (the 2026-09-23 toggle-cell finding)."""
+        conn, io, *_ = self._conn()
+        io.setToolDigitalOut.return_value = False
+        self.assertIs(False, conn.set_digital_out(0, True, "tool"))
+        io.setStandardDigitalOut.return_value = True
+        self.assertIs(True, conn.set_digital_out(2, True, "standard"))
+        io.setAnalogOutputVoltage.return_value = False
+        self.assertIs(False, conn.set_analog_out(0, 3.3))
+
+    def test_a_write_on_an_io_link_that_is_down_is_refused_before_any_setter(self) -> None:
+        conn, io, *_ = self._conn()
+        io.isConnected.return_value = False
+        with self.assertRaises(RuntimeError) as caught:
+            conn.set_digital_out(0, True, "tool")
+        io.setToolDigitalOut.assert_not_called()
+        self.assertIn("not connected", str(caught.exception))
+
         conn = URConnection(ip="127.0.0.1")
         conn._recv = MagicMock()  # connected for reads, but no _io
         with self.assertRaises(RuntimeError):
@@ -248,6 +268,24 @@ class URArmCapabilityTests(unittest.TestCase):
         self.assertTrue(arm.get_digital_input(2))
         conn.get_digital_in.assert_called_once_with(2, "standard")
 
+    def test_a_write_the_controller_did_not_take_raises_naming_the_bank_and_the_pin(self) -> None:
+        """P0g io1: a refused write raises before a caller moves its belief, which is the path jaw_io and vacuum
+        already take fail-closed for a write that raises (tests/test_jaw_io_gripper.py)."""
+        arm, conn = _ur_arm()
+        conn.set_digital_out.return_value = False
+        with self.assertRaises(RobotConnectionError) as caught:
+            arm.set_digital_output(0, True, port=DigitalIOPort.TOOL)
+        said = str(caught.exception)
+        self.assertIn("tool", said)
+        self.assertIn("output 0", said)
+        conn.set_analog_out.return_value = False
+        with self.assertRaises(RobotConnectionError):
+            arm.set_analog_output(0, 5.0)
+        conn.end_output_pulse.return_value = False
+        with self.assertRaises(RobotConnectionError) as caught:
+            arm.end_output_pulse(1, port=DigitalIOPort.TOOL)
+        self.assertIn("output 1 = low", str(caught.exception))
+
     def test_tcp_wrench_and_joint_torques(self) -> None:
         arm, conn = _ur_arm()
         conn.get_tcp_force.return_value = [10.0, 0.0, 0.0, 0.0, 0.0, 2.0]
@@ -282,37 +320,46 @@ class URArmCapabilityTests(unittest.TestCase):
         self.assertEqual(s.robot_mode, RobotMode.UNKNOWN)
         self.assertEqual(s.safety_mode, SafetyMode.UNKNOWN)
 
-    def test_raise_if_stopped_enriches_error(self) -> None:
+    def test_a_protective_stop_reads_as_the_classified_fault(self) -> None:
+        """What the deleted ``raise_if_stopped`` raised, asked the way the stack asks it (P0e)."""
         arm, conn = _ur_arm()
         conn.get_robot_mode.return_value = 7
         conn.get_safety_mode.return_value = 3     # PROTECTIVE_STOP
         conn.is_protective_stopped.return_value = True
         conn.is_emergency_stopped.return_value = False
         conn.dashboard_safety_status.return_value = "Protective stop: joint torque"
-        with self.assertRaises(RobotEmergencyStop) as ctx:
-            arm.raise_if_stopped()
-        msg = str(ctx.exception)
+        fault = ArmFault.from_status(arm.get_robot_status())
+        assert fault is not None
+        self.assertIs(ArmFaultClass.PROTECTIVE_STOP, fault.kind)
+        self.assertTrue(fault.acknowledgeable)
+        msg = fault.render()
         self.assertIn("protective_stop", msg)
         self.assertIn("Protective stop: joint torque", msg)  # ENRICHED with controller text
+        self.assertIn("clear the stop where the arm is visible", msg)  # and what to do about it
 
-    def test_raise_if_stopped_noop_when_operational(self) -> None:
+    def test_an_operational_controller_reads_as_no_fault(self) -> None:
         arm, conn = _ur_arm()
         conn.get_robot_mode.return_value = 7
         conn.get_safety_mode.return_value = 1
         conn.is_protective_stopped.return_value = False
         conn.is_emergency_stopped.return_value = False
         conn.dashboard_safety_status.return_value = ""
-        arm.raise_if_stopped()  # must not raise
+        self.assertIsNone(ArmFault.from_status(arm.get_robot_status()))
 
-    def test_recover_delegates_to_connection(self) -> None:
+    def test_a_person_acknowledges_a_protective_stop_and_nothing_else(self) -> None:
+        """Recovery is never automatic, and only one class is clearable from software at all."""
         arm, conn = _ur_arm()
         conn.unlock_protective_stop.return_value = True
-        self.assertTrue(arm.recover_from_protective_stop())
+        stopped = ArmFault(ArmFaultClass.PROTECTIVE_STOP, "joint torque")
+        self.assertTrue(arm.acknowledge_fault(stopped))
         conn.unlock_protective_stop.assert_called_once()
 
-    def test_capabilities_flag_backed(self) -> None:
-        arm, _ = _ur_arm()
-        self.assertTrue(arm.capabilities.has_force_control)
+        for kind in (ArmFaultClass.EMERGENCY_STOP, ArmFaultClass.CONTROLLER_FAULT,
+                     ArmFaultClass.LINK_LOST, ArmFaultClass.NO_REMOTE_CONTROL, ArmFaultClass.PROGRAM_STOPPED):
+            with self.subTest(kind=kind):
+                conn.unlock_protective_stop.reset_mock()
+                self.assertFalse(arm.acknowledge_fault(ArmFault(kind)))
+                conn.unlock_protective_stop.assert_not_called()
 
 
 if __name__ == "__main__":

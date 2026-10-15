@@ -31,16 +31,19 @@ from unittest.mock import patch
 
 import numpy as np
 
+from src.config.arms import load_arm
 from src.geometry import Frame, Pose
 from src.robot.core import JointPositions, MotionStatus, RobotKinematicsError
 from src.robot.core.arm_capabilities import HaltState
 from src.robot.core.camera_world import CameraWorldUse
-from src.robot.drivers.ur import curobo_motion
-from src.robot.drivers.ur.curobo_motion import UR_ARM_JOINT_NAMES
+from src.robot.drivers.planned import curobo_motion
 from src.robot.drivers.ur.pose_adapter import pose_to_urpose
 from src.robot.safety._ur_ik import ur_flange_ik
 from tests.test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards import HandKnownOpen
 from tests.test_every_verb_meets_the_camera_world import _Camera, _Client, _mesh_backend_available, _ur, _world
+
+#: The controller's joint order as the ur5e description states it; the planner is handed it since P0e E4.
+_UR_JOINT_NAMES = tuple(joint.name for joint in load_arm("ur5e").joints)
 
 #: A part on the bench in front of the arm: the grasp, its standoff 80 mm over it, the lift's top 100 mm over it, all tool
 #: down, and where the arm stands before it leaves for it, 60 mm over the standoff.
@@ -94,7 +97,7 @@ def _configuration(arm: Any, pose: Pose, near: "list[float]") -> "list[float]":
 def _stand(arm: Any, joints: "list[float]") -> None:
     """The controller reports the arm at ``joints``: its joints, and its TCP (the controller holds the tool here)."""
     arm._conn.get_joint_positions.return_value = [float(v) for v in joints]
-    tcp = arm._tcp_at_joints_mm(JointPositions(tuple(joints)))
+    tcp = arm.tcp_at_joints_mm(JointPositions(tuple(joints)))
     arm._motion.get_current_pose.return_value = pose_to_urpose(Pose.from_matrix(tcp, frame=Frame.BASE))
 
 
@@ -114,10 +117,9 @@ def _cell(client: "_Client | None" = None) -> "tuple[Any, list[str], list[Pose]]
     ``solved``, standing over the part. No speed is asked of a move, so the configured maximum ranks its goals, as a
     grasp judged ahead ranks them."""
     events: list[str] = []
-    arm = _ur(_world(_Camera(silent=False)), client or _Client(joint_names=UR_ARM_JOINT_NAMES), events)
+    arm = _ur(_world(_Camera(silent=False)), client or _Client(joint_names=_UR_JOINT_NAMES), events)
     solved: list[Pose] = []
     arm.ik = _controller_ik(arm, solved)
-    arm._motion._clamp.side_effect = lambda vel, acc: (vel, acc)
     _stand(arm, _configuration(arm, _ABOVE, [float(np.radians(v)) for v in _ABOVE_NEAR_DEG]))
     return arm, events, solved
 
@@ -258,7 +260,7 @@ class TheMoveToTheStandoffRunsTheRouteJudgedAheadTests(unittest.TestCase):
 
     def test_a_refresh_in_between_has_the_route_judged_again(self) -> None:
         arm, events, _ahead = self._ready()
-        arm._curobo_ur_planner().refresh_world(near_point_mm=[350.0, -150.0, 200.0])
+        arm._curobo_planner().refresh_world(near_point_mm=[350.0, -150.0, 200.0])
         self.assertTrue(self._judged_again(arm, events).ok)
 
     def test_more_than_half_a_second_has_the_route_judged_again(self) -> None:
@@ -387,7 +389,7 @@ class TheLineUpRunsOnTheLiftJudgedAtThePartTests(unittest.TestCase):
     def test_a_cell_that_models_the_part_judges_the_line_up_carrying_it(self) -> None:
         """The lift judged at the part only stood in for the part the planner then carries: its line up is judged with
         it (``safety.planning_world.payload.length_mm``)."""
-        arm, events, solved = _at_the_part(_CarryingClient(joint_names=UR_ARM_JOINT_NAMES))
+        arm, events, solved = _at_the_part(_CarryingClient(joint_names=_UR_JOINT_NAMES))
         world = arm.config.safety.planning_world
         modelled = world.model_copy(update={"payload": world.payload.model_copy(update={"length_mm": 120.0})})
         arm.config = arm.config.model_copy(update={"safety": arm.config.safety.model_copy(

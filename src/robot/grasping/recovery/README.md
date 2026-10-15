@@ -319,7 +319,7 @@ refused or failed, a failed move back to the look, a controller that cannot be r
 nobody can vouch for before a contact leg or once the arm is up (DO0 switched while the push drives), or an
 arm not at rest is `unsafe_recovery_refused`, and a controller that says it cannot move, a protective stop, is
 `controller_not_operational`. The arm stays where it stopped: no planned escape, no automatic recovery
-(`recover_from_protective_stop` is never called). A `CameraWorldUnavailable` on the way is raised out, as
+(`acknowledge_fault` is never called). A `CameraWorldUnavailable` on the way is raised out, as
 on every motion of a pick, and its report carries the stopped push too.
 
 The report then **needs a person** (`needs_person`), the campaign ends, and the service **refuses every

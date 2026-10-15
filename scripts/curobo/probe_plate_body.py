@@ -28,9 +28,10 @@ import numpy as np
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(REPO / "scripts" / "arms"))
 
-from exact_self_collision_poses import ARM_LINKS, _hand_bundle, _parts, judged_pose_set  # noqa: E402
+import _arm_file  # noqa: E402
+from exact_self_collision_poses import _hand_bundle, _parts, judged_pose_set  # noqa: E402
 
 from src.robot.safety._fcl_self_collision import (  # noqa: E402
     _HAND_PARTS,
@@ -91,7 +92,8 @@ class PlateJudge:
         self.arm = arm
         self.engine = kind
         self._adapter = _EngineAdapter(mod, kind)
-        meshes = {**_parts(collision_mesh_bundle(arm), ARM_LINKS, 0.0),
+        arm_parts = tuple(part for part, _link, _frame in _arm_file.collision_links(arm))
+        meshes = {**_parts(collision_mesh_bundle(arm), arm_parts, 0.0),
                   **_parts(_hand_bundle(arm, hand), tuple(_HAND_PARTS), plate_mm)}
         if radius_mm > 0.0:
             meshes[PLATE] = plate_part(plate_mm, radius_mm)

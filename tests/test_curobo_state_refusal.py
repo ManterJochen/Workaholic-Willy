@@ -598,10 +598,15 @@ class TheSimReportsItTooTests(unittest.TestCase):
 
 class TheMeasureOnlyFlagReachesNoDriverTests(unittest.TestCase):
     def test_no_driver_asks_to_measure(self) -> None:
-        """⭐ THE CONTROL. A planner that refuses to plan is not a planner: only the gate may ask for one."""
-        for name in ("drivers/ur/arm.py", "drivers/ur/curobo_motion.py", "drivers/sim/arm.py"):
-            source = (_ROOT / "src" / "robot" / name).read_text(encoding="utf-8")
-            self.assertNotIn("measure_only", source, name)
+        """The control. A planner that refuses to plan is not a planner: only the gate may ask for one.
+
+        Every driver file, not three named ones: P0e moves the UR planning half into `drivers/planned/`."""
+        from tests._driver_sources import driver_source_files
+
+        files = driver_source_files()
+        self.assertIn("curobo_motion.py", {path.name for path in files}, "the walk found no planner client")
+        for path in files:
+            self.assertNotIn("measure_only", path.read_text(encoding="utf-8"), path.relative_to(_ROOT).as_posix())
 
 
 if __name__ == "__main__":

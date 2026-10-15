@@ -241,10 +241,10 @@ that only pays off if the numbers are cheap to measure.
 ### The bench
 
 ```bash
-python -m src.robot.drivers.ur --read                         # read every pin, change nothing
-python -m src.robot.drivers.ur --watch 0 --for 15             # trip a sensor by hand, see it
-python -m src.robot.drivers.ur --measure 4=1 --watch 0 --yes  # the number you came for
-python -m src.robot.drivers.ur --where                        # the joints as JointPositions.deg(...), and the TCP
+python -m src.robot.execution.io_bench --read                         # read every pin, change nothing
+python -m src.robot.execution.io_bench --watch 0 --for 15             # trip a sensor by hand, see it
+python -m src.robot.execution.io_bench --measure 4=1 --watch 0 --yes  # the number you came for
+python -m src.robot.execution.io_bench --where                        # the joints as JointPositions.deg(...), and the TCP
 ```
 
 Name your cell with `--profile NAME` or `WILLY_PROFILE`. Without either the bench loads the base tree,
@@ -484,7 +484,7 @@ back up the line, and the outcome is `CARRIED_RETREAT_REFUSED` ([04](04-robot-an
 Before any command both verbs refuse a robot with no usable gripper, a closed link, a pose not in BASE, a
 camera world the arm would refuse the motion for, and an arm whose motions do not go through cuRobo and the
 exact mesh guard. A cuRobo UR or simulator arm judges every sample of the line before it runs; the dummy
-and the simulator mock set the pose; an ik UR, a KUKA and a simulator on ik or RMPflow are refused. A
+and the simulator mock set the pose; an ik UR and a simulator on ik or RMPflow are refused. A
 refused motion ends the verb with nothing commanded after it, and so does a camera that could not vouch for
 the cell, as the outcome `CAMERA_WORLD_UNAVAILABLE`. A close that measures nothing opens and backs out, and
 a release the gripper does not confirm leaves the arm where it stands. `camera_world=CameraWorldDecline("<why>")`
@@ -511,7 +511,7 @@ The bench is a noun too, and its interlock is not optional:
 ```python
 from willy import Robot, load_tree
 from src.robot.core.arm_capabilities import SupportsDigitalIO
-from src.robot.drivers.ur.bench import Bench, Measure
+from src.robot.execution.io_bench import Bench, Measure
 
 tree = load_tree()
 robot = Robot.from_tree(tree, gripper=None)            # the arm alone; the bench switches its pins

@@ -65,10 +65,9 @@ class _FutureVendorArm(DummyRobotArm):
         super().__init__()
         self._caps = RobotCapabilities(
             vendor=str(_FUTURE.value), model="fr-42", dof=6,
-            supports_joint_move=True, supports_linear_move=True,
-            supports_async_move=False,
-            has_native_fk=False, has_native_ik=False,
-            has_force_control=False, is_simulated=False,
+            has_native_fk=False,
+            is_simulated=False,
+                                     controller=None, owns_a_controller=str(_FUTURE.value) not in ("sim", "dummy"),
         )
         if pipeline is None:
             pipeline = SafetyPreflight([JointLimitGuard(joint_limits or JointLimitSafetyConfig())])
@@ -90,10 +89,9 @@ class _UngatedFutureVendorArm(DummyRobotArm):
     def capabilities(self) -> RobotCapabilities:
         return RobotCapabilities(
             vendor=str(_FUTURE.value), model="fr-42", dof=6,
-            supports_joint_move=True, supports_linear_move=True,
-            supports_async_move=False,
-            has_native_fk=False, has_native_ik=False,
-            has_force_control=False, is_simulated=False,
+            has_native_fk=False,
+            is_simulated=False,
+                                     controller=None, owns_a_controller=str(_FUTURE.value) not in ("sim", "dummy"),
         )
 
 
@@ -137,7 +135,7 @@ class ANewVendorWithNoLimitTableIsRefusedAtBuild(unittest.TestCase):
         never the flag, so a hand-wired guard with no table is still refused whatever the flag says.
         """
         safety = RobotSafetyConfig(joint_limits=JointLimitSafetyConfig(enforce=False))
-        pipeline = SafetyPreflight.from_safety_config(safety, WorkspaceLimitsConfig())
+        pipeline = SafetyPreflight.from_safety_config(safety, WorkspaceLimitsConfig(), arm_model=None)
         self.assertNotIn(JointLimitGuard.name, pipeline.guard_names)
         self._register(lambda **_: _FutureVendorArm(pipeline=pipeline))
         arm = create_arm(_FUTURE)

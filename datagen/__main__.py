@@ -505,7 +505,7 @@ def _cmd_cost(args: argparse.Namespace, config: DatagenConfig) -> int:
     engine = args.engine or config.render.engine
     try:
         result = estimate_for_config(
-            config, scenes=int(args.scenes) if args.scenes else None, engine=args.engine or None,
+            config, scenes=int(args.scenes) if args.scenes else UNSET, engine=args.engine or UNSET,
             jobs=max(1, int(args.jobs)), epochs=int(args.epochs),
             folds=max(1, int(args.train_folds)), refit=not args.no_refit,
             dense=(args.density == "dense"))

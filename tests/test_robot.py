@@ -17,7 +17,6 @@ from src.config.schema.robot import RobotConfig
 from src.robot.core import MotionCommand, MotionResult, RobotCapabilities
 from src.robot.core.camera_world import CameraWorldDecline, CameraWorldStamp, CameraWorldUse
 from src.robot.drivers.dummy.arm import DummyRobotArm
-from src.robot.drivers.kuka.arm import KukaRobotArm
 from src.robot.drivers.ur.arm import URRobotArm
 from src.robot.execution.cell_lock import CellBusy, CellLock, lock_path_for
 from src.robot.execution.lifecycle import (
@@ -34,8 +33,7 @@ from src.robot.grippers.robotiq import GripperController
 from src.robot.safety import SafetyPosture
 from tests.test_cell_lifecycle import _Recorder, _service
 from tests.test_robot_parts import _BUILDER_MUST_NOT_LOAD, _loaded_after
-from tests.test_ur_arm import _FakePlanner, _pose
-from tests.test_ur_arm import _arm as _ur_arm
+from tests._arm_kit import PlannerDouble, bare_arm, kit_pose, planned_arm
 
 _READY = "src.robot.drivers.doctor.require_arm_vendor_ready"
 
@@ -52,10 +50,11 @@ class _RecordingLock:
 
 
 class _Reports:
-    """An arm double that reports a vendor and carries no config tree, so no lock key derives."""
+    """An arm double that reports a vendor and names no controller (``capabilities.controller`` is None): a sim or
+    dummy vendor drives none and takes no lock, any other vendor is refused."""
 
     def __init__(self, vendor: str) -> None:
-        self.capabilities = RobotCapabilities(vendor=vendor, model="double")
+        self.capabilities = RobotCapabilities(vendor=vendor, model="double", dof=6, controller=None, owns_a_controller=vendor not in ("sim", "dummy"))
 
 
 #: The lock, the narration hook and both handles on one log, so the interleaving is the assertion.
@@ -202,9 +201,7 @@ class FromPartsTests(unittest.TestCase):
 
     def test_the_lock_key_comes_from_the_tree_the_arm_was_built_with(self) -> None:
         ur = URRobotArm(RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "10.9.9.9"}, "gripper": {"model": "robotiq_2f85"}}))
-        kuka = KukaRobotArm(RobotConfig.model_validate(
-            {"vendor": "kuka", "kuka": {"controller_ip": "10.8.8.8"}}))
-        for arm, key in ((ur, "ur@10.9.9.9"), (kuka, "kuka@10.8.8.8"), (DummyRobotArm(), None),
+        for arm, key in ((ur, "ur@10.9.9.9"), (DummyRobotArm(), None),
                          (_Reports("sim"), None), (_Recorder([], "arm"), None)):
             with self.subTest(type(arm).__name__):
                 self.assertEqual(
@@ -213,9 +210,9 @@ class FromPartsTests(unittest.TestCase):
                 )
 
     def test_a_real_arm_with_no_derivable_key_is_refused(self) -> None:
-        """A UR driver built from a tree naming another vendor, and an adapter that keeps no tree,
-        both report ``ur`` and derive no key. Taking no lock on either would let a second process
-        compete for the controller."""
+        """A UR driver built from a tree that names another vendor and declares no ``ur.ip``, and an adapter
+        whose capabilities name no controller, both report ``ur`` and name no controller address, so no key
+        derives. Taking no lock on either would let a second process compete for the controller."""
         foreign_tree = URRobotArm(RobotConfig.model_validate({"vendor": "dummy", "gripper": {"model": "robotiq_2f85"}}))
         for arm in (foreign_tree, _Reports("ur")):
             with self.subTest(type(arm).__name__):
@@ -243,10 +240,10 @@ class WithoutCameraWorldTests(unittest.TestCase):
 
     @staticmethod
     def _robot() -> Robot:
-        arm = _ur_arm("curobo")
-        arm._curobo_ur = _FakePlanner(  # type: ignore[assignment]
+        arm = bare_arm("curobo")
+        arm._curobo = PlannerDouble(  # type: ignore[assignment]
             plan_result=[[0.0, -1.5, 1.5, 0.0, 1.5, 0.0]],
-            execute_result=MotionResult.executed(MotionCommand.MOVE_TO, target_pose=_pose()),
+            execute_result=MotionResult.executed(MotionCommand.MOVE_TO, target_pose=kit_pose()),
         )
         arm._gate_planned_config = lambda pose, joints: None  # type: ignore[method-assign]
         return Robot.from_parts(arm=arm, gripper=None, lock_key=None)
@@ -254,9 +251,9 @@ class WithoutCameraWorldTests(unittest.TestCase):
     def test_a_block_on_one_robot_declines_its_arm_and_not_another(self) -> None:
         declined, other = self._robot(), self._robot()
         with declined.without_camera_world("bench check, no cameras mounted"):
-            inside = declined.arm.move(_pose())
-            beside = other.arm.move(_pose())
-        after = declined.arm.move(_pose())
+            inside = declined.arm.move(kit_pose())
+            beside = other.arm.move(kit_pose())
+        after = declined.arm.move(kit_pose())
         self.assertEqual(
             inside.camera_world,
             CameraWorldStamp.declined(CameraWorldDecline("bench check, no cameras mounted")),
@@ -283,7 +280,8 @@ class _RigOwner:
 
 
 def _world_cell(*, world: bool = True) -> RobotConfig:
-    """A UR cuRobo cell that asks for a live world from its cameras, and names its hand (the guard reads it)."""
+    """A cuRobo cell on a UR tree that asks for a live world from its cameras, and names its hand (the guard reads
+    it)."""
     from tests.test_camera_world_wiring import _cell
 
     cfg = _cell(world=world)
@@ -295,18 +293,22 @@ class ARobotTakesItsCamerasTests(unittest.TestCase):
 
     The caller opens and releases the cameras (one owner per rig); `Robot` only reads them. Behaviour changes
     only for a caller that passes `cameras`, and no caller in the repository does yet.
+    The arm is the kit's planned arm since P0g slice 13 (``tests/_arm_kit.planned_arm``): the world is handed to the
+    planning half every planned vendor shares.
     """
 
     def test_a_robot_built_with_cameras_hands_its_arm_the_world(self) -> None:
-        arm = URRobotArm(_world_cell())
-        robot = Robot.from_parts(arm=arm, gripper=None, lock_key=None, cameras=[_RigOwner("overhead")])
+        cell = _world_cell()
+        arm = planned_arm(cell)
+        robot = Robot.from_parts(arm=arm, gripper=None, lock_key=None, cameras=[_RigOwner("overhead")],
+                                 robot_config=cell)
         self.assertIsNotNone(arm._live_world)
         assert robot.camera_world is not None
         self.assertIs(robot.camera_world.world, arm._live_world)
 
     def test_a_robot_built_without_cameras_hands_its_arm_nothing(self) -> None:
         """The control: the same cell with no cameras chosen is the robot it was before."""
-        arm = URRobotArm(_world_cell())
+        arm = planned_arm(_world_cell())
         robot = Robot.from_parts(arm=arm, gripper=None, lock_key=None)
         self.assertIsNone(arm._live_world)
         self.assertIsNone(robot.camera_world)
@@ -333,34 +335,38 @@ class ARobotTakesItsCamerasTests(unittest.TestCase):
         self.assertEqual(robot.camera_world.world.cameras[0].depth_source._tool_pose, arm.get_tcp_pose)
 
     def test_cameras_without_a_tree_to_read_the_world_from_are_refused(self) -> None:
-        with self.assertRaises(ValueError) as caught:
-            Robot.from_parts(arm=DummyRobotArm(), gripper=None, lock_key=None, cameras=[_RigOwner("overhead")])
-        for part in ("arm.config", "robot_config"):
-            self.assertIn(part, str(caught.exception))
+        """A planned arm keeps the tree it was built from and is refused all the same: the robot reads the tree it
+        keeps and never one an arm keeps, because a fallback would hold only for the vendors whose arm keeps one
+        (P0e)."""
+        for arm in (DummyRobotArm(), planned_arm(_world_cell())):
+            with self.subTest(type(arm).__name__), self.assertRaises(ValueError) as caught:
+                Robot.from_parts(arm=arm, gripper=None, lock_key=None, cameras=[_RigOwner("overhead")])
+            self.assertIn("robot_config", str(caught.exception))
 
     def test_cameras_none_is_refused_naming_unset(self) -> None:
         with self.assertRaises(TypeError) as caught:
-            Robot.from_parts(arm=URRobotArm(_world_cell()), gripper=None, lock_key=None, cameras=None)
+            Robot.from_parts(arm=planned_arm(_world_cell()), gripper=None, lock_key=None, cameras=None)
         self.assertIn("UNSET", str(caught.exception))
 
     def test_the_camera_world_line_says_what_the_robot_holds(self) -> None:
-        untouched = Robot.from_parts(arm=URRobotArm(_world_cell()), gripper=None, lock_key=None)
+        untouched = Robot.from_parts(arm=planned_arm(_world_cell()), gripper=None, lock_key=None)
         self.assertEqual(untouched.camera_world_line(),
                          "camera world  not handed any camera: every planned motion needs a decline")
         # By owner decision a calibrated camera on a cuRobo arm with the block off is refused, not built without a world.
         from src.robot.execution.camera_world_wiring import CameraWorldRequired
 
+        off = _world_cell(world=False)
         with self.assertRaises(CameraWorldRequired) as caught:
-            Robot.from_parts(arm=URRobotArm(_world_cell(world=False)), gripper=None, lock_key=None,
-                             cameras=[_RigOwner("overhead")])
+            Robot.from_parts(arm=planned_arm(off), gripper=None, lock_key=None, cameras=[_RigOwner("overhead")],
+                             robot_config=off)
         self.assertIn("safety.planning_world.enabled is false", str(caught.exception))
         # An uncalibrated camera builds with no world, and every planned motion needs a decline.
-        none = Robot.from_parts(arm=URRobotArm(_world_cell()), gripper=None, lock_key=None,
-                                cameras=[_RigOwner("overhead", calibrated=False)])
+        none = Robot.from_parts(arm=planned_arm(_world_cell()), gripper=None, lock_key=None,
+                                cameras=[_RigOwner("overhead", calibrated=False)], robot_config=_world_cell())
         self.assertTrue(none.camera_world_line().startswith("camera world  none: "), none.camera_world_line())
         self.assertTrue(none.camera_world_line().endswith(": every planned motion needs a decline"))
-        wired = Robot.from_parts(arm=URRobotArm(_world_cell()), gripper=None, lock_key=None,
-                                 cameras=[_RigOwner("overhead")])
+        wired = Robot.from_parts(arm=planned_arm(_world_cell()), gripper=None, lock_key=None,
+                                 cameras=[_RigOwner("overhead")], robot_config=_world_cell())
         self.assertEqual(wired.camera_world_line(), "camera world  wired: 'overhead'")
         # The control: a dummy arm needs no world, and neither refuses nor says it needs a decline.
         dummy = Robot.from_parts(arm=DummyRobotArm(), gripper=None, lock_key=None,

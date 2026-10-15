@@ -28,7 +28,7 @@ from src.config.schema.robot import RobotConfig
 
 #: The committed table, read for the pairs it refuses rather than carrying their names here.
 _TABLE = (Path(__file__).resolve().parents[1] / "src" / "robot" / "safety" / "planning"
-          / "robot" / "ur_retract.yaml")
+          / "robot" / "retract.yaml")
 
 _GOOD_FRAME = {"source": "willy", "offset_mm": [0.0, 132.0, 0.0],
                "rotation_quat_xyzw": [-0.70710678, 0.0, 0.0, 0.70710678]}
@@ -42,18 +42,18 @@ def _cell(hand: str, *, model: str = "ur5e", margin: float = 4.0, plates=None) -
         gripper["coupling_plates"] = [{"name": f"plate_{i}", "thickness_mm": float(mm)} for i, mm in enumerate(plates)]
     return RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": model, "motion_planner": "curobo"},
+        "ur": {"model": model}, "motion": {"planner": "curobo"},
         "gripper": gripper,
-        "safety": {"self_collision": {"kinematics_model": model, "planner_margin_mm": margin}},
+        "safety": {"self_collision": {"planner_margin_mm": margin}},
     })
 
 
 class TheDriverReadsThePairsRowTests(unittest.TestCase):
     def _built(self, config: RobotConfig):
-        from src.robot.drivers.ur.arm import URRobotArm
+        from tests._arm_kit import planned_arm
 
-        with mock.patch("src.robot.drivers.ur.arm.CuroboPlanClient") as client_class:
-            URRobotArm(config)._default_curobo_client_factory()()  # noqa: SLF001
+        with mock.patch("src.robot.drivers.planned.arm.CuroboPlanClient") as client_class:
+            planned_arm(config)._default_curobo_client_factory()()  # noqa: SLF001
         return client_class.call_args.kwargs
 
     def test_the_client_is_handed_the_pose_this_pair_was_judged_at(self) -> None:
@@ -62,7 +62,7 @@ class TheDriverReadsThePairsRowTests(unittest.TestCase):
 
         table = yaml.safe_load(
             (Path(__file__).resolve().parents[1]
-             / "src/robot/safety/planning/robot/ur_retract.yaml").read_text(encoding="utf-8"))
+             / "src/robot/safety/planning/robot/retract.yaml").read_text(encoding="utf-8"))
         row = next(r for r in table["retracts"]
                    if r["arm"] == "ur5e" and r["hand"] == "robotiq_2f85" and r["plate_mm"] == 0.0)
 
@@ -78,7 +78,7 @@ class TheDriverReadsThePairsRowTests(unittest.TestCase):
 
         table = yaml.safe_load(
             (Path(__file__).resolve().parents[1]
-             / "src/robot/safety/planning/robot/ur_retract.yaml").read_text(encoding="utf-8"))
+             / "src/robot/safety/planning/robot/retract.yaml").read_text(encoding="utf-8"))
         rows = {(r["arm"], r["hand"], r["plate_mm"]): r["retract"] for r in table["retracts"]}
         pairs = [(arm, hand, plate) for (arm, hand, plate) in rows if arm == "ur3"]
         if len({tuple(round(float(v), 6) for v in rows[key]) for key in pairs}) < 2:
@@ -103,14 +103,14 @@ class TheDriverReadsThePairsRowTests(unittest.TestCase):
         from the table rather than kept by hand.
         """
         from src.robot.safety.planning import CuroboUnavailableError
-        from src.robot.drivers.ur.arm import URRobotArm
+        from tests._arm_kit import planned_arm
 
         refused = (yaml.safe_load(_TABLE.read_text(encoding="utf-8"))
                    ["rule"].get("pairs_with_no_retract") or [])
         self.assertTrue(refused, "no pair is refused, so this assertion has nothing to check")
         row = refused[0]
 
-        arm = URRobotArm(_cell(row["hand"], model=row["arm"]))
+        arm = planned_arm(_cell(row["hand"], model=row["arm"]))
         with self.assertRaises(CuroboUnavailableError) as caught:
             arm._default_curobo_client_factory()()  # noqa: SLF001
         said = str(caught.exception)
@@ -119,9 +119,9 @@ class TheDriverReadsThePairsRowTests(unittest.TestCase):
 
     def test_a_margin_the_pair_was_never_judged_at_refuses(self) -> None:
         from src.robot.safety.planning import CuroboUnavailableError
-        from src.robot.drivers.ur.arm import URRobotArm
+        from tests._arm_kit import planned_arm
 
-        arm = URRobotArm(_cell("robotiq_2f85", margin=7.5))
+        arm = planned_arm(_cell("robotiq_2f85", margin=7.5))
         with self.assertRaises(CuroboUnavailableError) as caught:
             arm._default_curobo_client_factory()()  # noqa: SLF001
         self.assertIn("7.5", str(caught.exception))

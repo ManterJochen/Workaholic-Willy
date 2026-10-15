@@ -217,7 +217,7 @@ class ARestartKeepsTheRefusalsOfANewTaskTests(ConsoleCase):
     def test_a_camera_target_the_cell_can_no_longer_find(self) -> None:
         cell = self._wrist_cell("blue bin")
         stopped = self._stopped(object="red cube", place={"kind": "camera", "phrase": "blue bin"})
-        cell.arm.live_planner_world = None
+        cell.arm.set_live_planner_world(None)
         moved = list(cell.motions())
         refused = self.refused(self.client.post("/v1/task/restart", json={"run_id": stopped["id"]}), 409,
                                "camera_target_unavailable")

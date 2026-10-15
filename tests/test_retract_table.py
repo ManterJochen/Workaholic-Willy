@@ -6,14 +6,14 @@ own candidate family, at ur3's committed pose the meshes clear the Hand-E by 13.
 model calls the same pose a self collision, so the sidecar never becomes ready and the cell does not come up.
 The rule now takes the first pose BOTH models accept, and the pose that works is different for each hand.
 
-``src/robot/safety/planning/robot/ur_retract.yaml`` holds one retract per arm, hand, plate, planner margin and
+``src/robot/safety/planning/robot/retract.yaml`` holds one retract per arm, hand, plate, planner margin and
 placement, chosen by the rule on the exact meshes and the planner's spheres. Every shipped hand is asked about on every
 arm, and a customer's hand on the arms its profiles name (owner, 2026-09-17). The descriptor builder reads the table in
 the cuRobo environment, where neither Coal nor the bundles can be loaded, so nothing there can check the numbers: these
 are the checks.
 
 What this file can check off the box is the table against itself and against the committed bundles. What it cannot is
-the distances, which only Coal can measure; ``choose_ur_retract.py --check`` does that on the box.
+the distances, which only Coal can measure; ``retract.py --check`` does that on the box.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from src.config.grippers import available_grippers
 from src.robot.safety.planning.environment import collision_mesh_bundle, hand_mesh_bundle
 
 _ROOT = Path(__file__).resolve().parents[1]
-_TABLE = _ROOT / "src" / "robot" / "safety" / "planning" / "robot" / "ur_retract.yaml"
+_TABLE = _ROOT / "src" / "robot" / "safety" / "planning" / "robot" / "retract.yaml"
 
 
 #: The hands this repository ships. Each is judged on every arm the table judges (owner decision 4 of 2026-09-17), so a
@@ -43,19 +43,25 @@ def _arms_a_profile_names(hand: str) -> set[str]:
 
     Read rather than loaded: a cell layer chains on its arm's layer (``--profile ur10e,acme_2f_ur10e``), so loaded alone
     it inherits the base tree's arm, and MEASURED 2026-09-17 in the customer chain trial that asked for a ur5e row
-    nobody needs. A layer that names the hand and states no arm raises, naming itself: a customer layer states
-    ``safety.self_collision.kinematics_model``, the arm its guard models.
+    nobody needs. A layer that names the hand and states no arm raises, naming itself: a customer layer states the
+    model in the vendor block it selects, ``robot.ur.model`` (``robot.sim.robot_model`` on a sim layer), which is the
+    arm the guard judges since P0d D5.
     """
     arms: set[str] = set()
     for path in sorted((_ROOT / "config" / "robot").glob("robot.*.yaml")):
         robot = (yaml.safe_load(path.read_text(encoding="utf-8")) or {}).get("robot") or {}
         if (robot.get("gripper") or {}).get("model") != hand:
             continue
-        stated = (((robot.get("safety") or {}).get("self_collision") or {}).get("kinematics_model")
-                  or (robot.get("ur") or {}).get("model"))
+        block, field = ("sim", "robot_model") if robot.get("vendor") == "sim" else ("ur", "model")
+        stated = (robot.get(block) or {}).get(field)
+        if not stated and block == "sim":
+            # A sim layer drives the default arm unless it names another; the shipped sim layer does exactly that.
+            from src.config.schema.robot.sim_schema import SimConfig
+
+            stated = SimConfig().robot_model
         if not stated:
             raise AssertionError(f"{path.name} names the hand {hand} and no arm: state "
-                                 f"safety.self_collision.kinematics_model, the arm its guard models")
+                                 f"robot.{block}.{field}, the arm its guard judges")
         arms.add(str(stated))
     return arms
 
@@ -84,8 +90,14 @@ def _pairs_nobody_asked(table: dict, *, hands, profile_arms) -> list[str]:
     return missing
 
 
+def _anchored() -> list[str]:
+    """The arms whose description anchors a retract search: the arms this rule judges."""
+    arm_file = _module("_arm_file.py")
+    return [arm for arm in arm_file.described() if arm_file.retract_anchor(arm) is not None]
+
+
 def _module(name: str):
-    path = _ROOT / "scripts" / "curobo" / name
+    path = _ROOT / "scripts" / "arms" / name
     spec = importlib.util.spec_from_file_location(f"{path.stem}_under_test", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -103,7 +115,7 @@ class TheCommittedTableTests(unittest.TestCase):
         self.arms = sorted({row["arm"] for row in self.rows})
 
     def test_it_judges_exactly_the_arms_that_have_a_bundle(self) -> None:
-        anchors = _module("_retract_rule.py").ANCHORS
+        anchors = _anchored()
         with_bundle = sorted(arm for arm in anchors if collision_mesh_bundle(arm).is_file())
         judged = sorted(set(self.arms) | {row["arm"] for row in self.rule["pairs_with_no_retract"]})
         self.assertEqual(judged, with_bundle,
@@ -121,7 +133,7 @@ class TheCommittedTableTests(unittest.TestCase):
         import tempfile
         from unittest import mock
 
-        anchors = _module("_retract_rule.py").ANCHORS
+        anchors = _anchored()
         with tempfile.TemporaryDirectory() as empty, mock.patch(
             "src.robot.safety.planning.environment.COLLISION_MESH_DIR", Path(empty)
         ):
@@ -148,7 +160,7 @@ class TheCommittedTableTests(unittest.TestCase):
         table["rule"]["pairs_with_no_retract"] = [row for row in table["rule"]["pairs_with_no_retract"] if other(row)]
         missing = _pairs_nobody_asked(table, hands=available_grippers(), profile_arms=_arms_a_profile_names)
         self.assertEqual(len(missing), 1, missing)
-        for part in ("ur3", "schunk_egu50", "choose_ur_retract.py ur3 --hand schunk_egu50", "--tool-rotation-xyzw"):
+        for part in ("ur3", "schunk_egu50", "scripts/arms/retract.py ur3 --hand schunk_egu50", "--tool-rotation-xyzw"):
             self.assertIn(part, missing[0])
 
     def test_the_committed_table_passes_the_same_method(self) -> None:
@@ -189,9 +201,10 @@ class TheCommittedTableTests(unittest.TestCase):
                                   f"pose this table commits")
 
     def test_every_retract_lies_inside_the_planner_envelope(self) -> None:
-        limits = _module("_planner_limits.py")
-        lower, upper = limits.planner_envelope_rad()
+        limits, arm_file = _module("_planner_limits.py"), _module("_arm_file.py")
         for row in self.rows:
+            lower, upper = limits.planner_envelope_rad(arm_file.planner_limits_deg(row["arm"]),
+                                                       arm_file.position_limit_clip_rad(row["arm"]))
             for axis, value in enumerate(row["retract"]):
                 with self.subTest(arm=row["arm"], hand=row["hand"], axis=axis):
                     self.assertGreaterEqual(value, lower[axis])
@@ -220,12 +233,27 @@ class TheCommittedTableTests(unittest.TestCase):
                     self.assertEqual(hashlib.sha256(hand_mesh_bundle(hand).read_bytes()).hexdigest(), digest)
 
     def test_the_hash_check_can_fail(self) -> None:
-        """⭐ THE CONTROL for the check above: one changed byte in a recorded digest must be caught."""
+        """⭐ THE CONTROL for the check above: a re-bake with the very same arrays is still caught.
+
+        ⛔ The control this replaces altered the recorded digest string, so it compared a hash with a different string
+        and could not fail. The case that matters to P0f is a new baker writing equal arrays in another order: the
+        guard holds the same meshes, and the table, which hashes the FILE, must still say it was judged on other bytes.
+        """
+        import tempfile
+
+        import numpy as np
+
         row = self.rows[0]
-        digest = row["bundles"]["arm"]
-        altered = ("0" if digest[0] != "0" else "1") + digest[1:]
-        self.assertNotEqual(
-            hashlib.sha256(collision_mesh_bundle(row["arm"]).read_bytes()).hexdigest(), altered)
+        shipped = collision_mesh_bundle(row["arm"])
+        with np.load(shipped, allow_pickle=False) as bundle:
+            arrays = {name: np.array(bundle[name]) for name in bundle.files}
+        with tempfile.TemporaryDirectory() as folder:
+            rebaked = Path(folder) / shipped.name
+            np.savez_compressed(rebaked, **{name: arrays[name] for name in sorted(arrays)})
+            with np.load(rebaked, allow_pickle=False) as bundle:
+                for name in arrays:
+                    np.testing.assert_array_equal(arrays[name], bundle[name])
+            self.assertNotEqual(row["bundles"]["arm"], hashlib.sha256(rebaked.read_bytes()).hexdigest())
 
     def test_the_table_says_which_placement_and_which_plates_it_judged(self) -> None:
         self.assertEqual(self.rule["placement"], "+Y+X")
@@ -236,7 +264,8 @@ class TheCommittedTableTests(unittest.TestCase):
 
 class TheAnchorsAreIsaacsPosesTests(unittest.TestCase):
     def test_every_anchor_is_the_lula_default_q_where_isaac_is_installed(self) -> None:
-        anchors = _module("_retract_rule.py").ANCHORS
+        arm_file = _module("_arm_file.py")
+        anchors = {arm: arm_file.retract_anchor(arm) for arm in _anchored()}
         isaac = Path("D:/isaacsim/isaac-sim-standalone-5.1.0-windows-x86_64/exts/"
                      "isaacsim.robot_motion.motion_generation/motion_policy_configs/universal_robots")
         if not isaac.is_dir():

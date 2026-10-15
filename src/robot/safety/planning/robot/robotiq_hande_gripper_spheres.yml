@@ -1,10 +1,10 @@
 _provenance:
   what: robotiq_hande hand bodies
   source: robotiq_hande_hand_meshes.npz
-  generated_by: scripts/curobo/fit_cover_spheres.py
+  generated_by: scripts/arms/fit.py
   recipe: 'cover fit: every surface sample inside a sphere, no sphere reaching further
     past the body than the reach it was fitted at'
-  asked_for: scripts/curobo/fit_cover_spheres.py ARM_PLAN / HAND_PLAN, per body
+  asked_for: scripts/arms/fit.py ARM_PLAN / HAND_PLAN, per body
   overrides: null
   seed: 0
   bodies:
@@ -23,7 +23,6 @@ _provenance:
     fresh_reach_max_mm: 11.982962373888785
     fresh_samples: 60000
     sample_spacing_mm: 1.869
-    seconds: 97.6
   - body: lfinger
     frame: 6
     why: one jaw
@@ -39,7 +38,6 @@ _provenance:
     fresh_reach_max_mm: 11.969423994890317
     fresh_samples: 60000
     sample_spacing_mm: 0.658
-    seconds: 11.3
   - body: rfinger
     frame: 6
     why: the other jaw
@@ -55,7 +53,6 @@ _provenance:
     fresh_reach_max_mm: 11.93944836108508
     fresh_samples: 60000
     sample_spacing_mm: 0.658
-    seconds: 11.6
   gripper: Robotiq Hand-E
   origin: mounting_face
   frame: tool0 (Y=approach, X=closing, Z=depth), metres

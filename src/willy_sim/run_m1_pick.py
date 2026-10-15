@@ -93,7 +93,6 @@ def build_service(
     cell = bootstrap_sim_cell(data_dir, headless=headless, **(cell_kwargs or {}),
                               camera_world=camera_world)
     arm, gripper, handles, cfg, sim = cell.arm, cell.gripper, cell.handles, cell.cfg, cell.sim
-    _dwell = cell.dwell  # the steady-state dwell gate
     from src.willy_sim.run_dense_pick import wire_safety_guards  # opt-in guards, default-off
     wire_safety_guards(arm, natural_aim=natural_aim, continuous_guard=continuous_guard,
                        continuous_guard_margin_mm=continuous_guard_margin_mm, fixtures=())
@@ -156,9 +155,6 @@ def build_service(
         arm=arm, gripper=gripper, standoff_mm=standoff_mm, retreat_mm=retreat_mm,
         pre_open_width_mm=pre_open_width_mm, close_width_mm=close_width_mm,
         require_base_frame_grasp=True,
-        # Gate every commanded move on the dwell steady-state config (the sim arm settles fast).
-        require_steady_before_motion=(_dwell.require_steady_before_motion if _dwell else False),
-        steady_timeout_s=(_dwell.steady_timeout_s if _dwell else 5.0),
     )
     grasp_mode = resolve_demo_mode(mode)
     service = AutonomousGraspService.from_components(
@@ -215,7 +211,7 @@ def run_gate(runs: int = 10, *, headless: bool = True, data_dir: str | None = No
     for i in range(runs):
         # Clean reset before each run: release the jaw, home the arm, re-place + settle the object.
         gripper.open()
-        arm.move_joint(JointPositions(home_q))
+        arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
         z0 = reset_object_to_home_z0(obj, home_pos, home_quat, arm.session, settle_steps=30)
         report = service.pick()
         lift_mm = lift_mm_since(obj, z0)

@@ -110,7 +110,7 @@ class PickSessionReport:
         Terminal :class:`PickOutcome` from the orchestrator.
     robot_vendor
         Vendor label as reported by :attr:`RobotCapabilities.vendor`
-        (e.g. ``"ur"``, ``"kuka"``, ``"sim"``).
+        (e.g. ``"ur"``, ``"sim"``).
     is_simulated
         Mirror of :attr:`RobotCapabilities.is_simulated`. Lets callers
         gate "real hardware only" actions without re-checking the
@@ -130,10 +130,7 @@ class PickSessionReport:
         Score of the executed grasp, or ``0.0`` when none ran.
     motion_status_chain
         Ordered tuple of every typed :class:`MotionStatus` observed
-        along the attempt. Empty when the underlying driver only
-        exposed the bool ``move_to`` path, which stays supported: an
-        empty chain means the driver predates the typed contract, not
-        that the attempt failed.
+        along the attempt. Empty when no motion was commanded.
     motion_message
         Free-text detail from the last :class:`MotionResult`, useful
         for surfacing controller-side rejection messages.
@@ -143,8 +140,7 @@ class PickSessionReport:
         :attr:`PolicyReport.camera_worlds` and read weakest first through
         :attr:`camera_world`. Stamps from an earlier attempt of the same
         session survive only on :attr:`attempts` and in the progress
-        events. Empty for a legacy ``move_to`` driver and when no motion
-        was commanded.
+        events. Empty when no motion was commanded.
     object_detected
         Threaded from :attr:`PolicyReport.object_detected`. :data:`None`
         when the gripper has no detection capability.
@@ -350,8 +346,9 @@ class RuntimePickService:
 
         A Robotiq is the one end-effector whose construction reads the arm rather than only the tree:
         it lives on the UR controller's tool I/O, so it is built only when the arm in hand reports
-        vendor ``ur``, and against the controller address that arm was built with
-        (``arm.config.ur.ip``) rather than against ``robot.ur.ip`` of the tree being picked with.
+        vendor ``ur``, and against the controller address that arm names in its own identity
+        (``arm.capabilities.controller``, which URRobotArm takes from ``robot.ur.ip`` of the tree it was
+        built from) rather than against ``robot.ur.ip`` of the tree being picked with.
         Whenever this method built the arm the two are the same object. See the comment on the branch
         in :func:`~src.robot.execution.robot_parts.build_gripper`.
 

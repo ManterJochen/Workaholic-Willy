@@ -55,6 +55,7 @@ from src.robot.grasping.recovery.exclusion_zones import ExclusionZones
 from src.robot.grippers.jaw_io import JawIOGripper
 from src.robot.perception.locator import Located, LocatedObject
 from src.robot.safety.planning.band import PoseScreen, PoseVerdict
+from tests._helpers import PlansItsMotions
 from tests.test_a_stopped_controller_moves_no_jaws import _IO, _Write
 
 __all__ = [
@@ -93,12 +94,12 @@ __all__ = [
 ]
 
 RUNNING = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.NORMAL, protective_stopped=False,
-                      emergency_stopped=False)
+                      emergency_stopped=False, program_running=True)
 PROTECTIVE = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.PROTECTIVE_STOP,
-                         protective_stopped=True, emergency_stopped=False, message="Safetystatus: PROTECTIVE_STOP")
+                         protective_stopped=True, emergency_stopped=False, message="Safetystatus: PROTECTIVE_STOP", program_running=True)
 _CAPS = RobotCapabilities(
-    vendor="ur", model="ur10", dof=6, supports_joint_move=True, supports_linear_move=True,
-    supports_async_move=False, has_native_fk=True, has_native_ik=True, has_force_control=False, is_simulated=False,
+    vendor="ur", model="ur10", dof=6,
+    has_native_fk=True, is_simulated=False, controller=None, owns_a_controller=True,
 )
 
 #: Where the arm's home puts the tool, and the arm's home joints.
@@ -194,7 +195,7 @@ class _World:
         self.log.append(("forget_offer",))
 
 
-class TaskArm:
+class TaskArm(PlansItsMotions):
     """A UR-like arm whose motions a planner plans and judges, writing every motion on ``log``.
 
     ``fk_table`` maps joints (rounded degrees) to the TCP pose they put the tool at; ``screens`` maps joints to the
@@ -227,7 +228,7 @@ class TaskArm:
         self._statuses = list(statuses)
         self.declined = declined
         self.attaches = attaches
-        self.live_planner_world: Any = _World(log, holds=holds) if world else None
+        self.set_live_planner_world(_World(log, holds=holds) if world else None)
         self.is_connected = True
         self.home_joint_positions = tuple(HOME_JOINTS.tolist())
         self._tcp = HOME
@@ -258,7 +259,7 @@ class TaskArm:
         self.log.append(("status",))
         return self._statuses.pop(0) if len(self._statuses) > 1 else self._statuses[0]
 
-    def recover_from_protective_stop(self) -> bool:  # pragma: no cover - never called, by design
+    def acknowledge_fault(self, fault: object) -> bool:  # pragma: no cover - never called, by design
         raise AssertionError("nothing on a task's path may clear a protective stop")
 
     def halt_state(self) -> Any:

@@ -200,107 +200,26 @@ def motion_warnings(robot_config: "RobotConfig", gripper: object) -> tuple[Motio
 
     The built gripper holds the veto: a config asking for a Robotiq that fell back to a
     ``NullGripper`` moves nothing, and warning about a finger sweep that cannot happen trains an
-    operator to skip the warning that can. Past that veto the branch is chosen by
-    ``robot_config.gripper.vendor``, a config string; only the ``jaw_io`` sentence is read off the
-    built gripper, and a new branch whose wording depends on the wiring should do the same.
+    operator to skip the warning that can. Past that veto the driver's spec of the configured vendor
+    says what its connect moves (P0g slice 8), and a spec whose words depend on the wiring reads them
+    off the built gripper, as the ``jaw_io`` one does.
     """
-    from src.robot.core.gripper import toggle_without_sensor_of
+    from src.robot.grippers import gripper_driver
     from src.robot.grippers.null import NullGripper
 
-    warnings: list[MotionWarning] = []
     if isinstance(gripper, NullGripper) or gripper is None:
         return ()
+    driver = gripper_driver(str(robot_config.gripper.vendor))
+    if driver is None:
+        return ()
+    # A hand that asks at connect where its jaws stand is asked in the browser (`api.jaws`), never at the terminal this
+    # console runs in, and a question nobody answers in time is refused, never taken for "open".
+    from api.jaws import JAW_QUESTION_TIMEOUT_S  # noqa: PLC0415 (the session module loads no browser code first)
 
-    vendor = str(robot_config.gripper.vendor)
-    if vendor == "robotiq":
-        warnings.append(MotionWarning(
-            subject="gripper",
-            what="The Robotiq activates on connect, and activation is a CALIBRATION: the fingers "
-                 "travel their entire range, at full speed, immediately.",
-            precaution="Keep hands clear of the jaws. Make sure nothing is between them: activation "
-                       "with a workpiece in the gripper is how a part gets crushed or launched.",
-        ))
-    elif vendor == "vacuum":
-        warnings.append(MotionWarning(
-            subject="gripper",
-            what="Connecting a vacuum cup asserts the ejector output immediately, and fires a blow-off "
-                 "pulse if one is configured.",
-            precaution="If the cup is currently holding anything, it will be RELEASED. Clear the "
-                       "workspace below the tool before connecting.",
-        ))
-    elif vendor == "onrobot":
-        # No warning about connecting, which is the honest answer rather than an omission: an RG
-        # has no activation stroke, so `connect()` reads two registers and commands nothing. The
-        # hazard here is a different one, and it gets its own sentence because no amount of
-        # software can detect it.
-        warnings.append(MotionWarning(
-            subject="gripper",
-            what="Connecting an OnRobot RG moves NOTHING: it has no activation stroke. But the "
-                 "Modbus unit id is chosen by the MOUNTING, not by the tool, so an RG2-FT in the "
-                 "same Quick Changer answers on the same address with an incompatible register map.",
-            precaution="Confirm the model in the Compute Box Web Client before running. A wrong "
-                       "identity here writes a FORCE value into a WIDTH field, and every reading "
-                       "looks healthy.",
-        ))
-    elif vendor == "jaw_io":
-        # This dispatch is hand-kept: a gripper vendor without a branch here gets no warning at all.
-        # `JawIOGripper.connect()` calls `_actuate(close=False)`, which opens the jaws, whenever the
-        # state reads empty, and unconditionally when there is no feedback and the operator opted
-        # in. It is the one vendor whose connect behaviour depends on the wiring.
-        #
-        # The sentence is read off the built gripper, which is the rule this function's own
-        # docstring states and which matters more here than for the other two: with feedback wired
-        # the driver refuses to drop a held part, and without it the behaviour is whatever the
-        # operator opted into. A flat "the jaws will open" would be false half the time, and a
-        # warning that is false half the time is one an operator learns to skip.
-        has_feedback = bool(getattr(gripper, "has_feedback", False))
-        opts_in = bool(getattr(gripper, "_open_on_connect_without_feedback", False))
-        # A toggle is the one jaw cell whose connect always depends on a PERSON: nothing reads its jaws back, so the
-        # driver asks where they stand before anything moves, and counts its own changes from the answer. A solenoid
-        # asks too where it opted in (confirm_open_at_start), and then connects by its feedback as below. The console
-        # asks in the browser (`api.jaws`), never at the terminal it runs in, and a question nobody answers in time is
-        # refused, never taken for "open".
-        from api.jaws import JAW_QUESTION_TIMEOUT_S  # noqa: PLC0415 (the session module loads no browser code first)
-
-        waits = (f"in the browser (never at the terminal this console runs in), and waits "
-                 f"{JAW_QUESTION_TIMEOUT_S:g} s for the answer; unanswered, the connect is refused.")
-        toggle = toggle_without_sensor_of(gripper) is not None
-        if not toggle and getattr(gripper, "asks_at_connect", False) is True:
-            warnings.append(MotionWarning(
-                subject="gripper",
-                what=f"Connecting first ASKS whether the jaws stand open (confirm_open_at_start), {waits}",
-                precaution="Look at the jaws before you answer. If they stand closed you are offered to OPEN them, "
-                           "which releases anything between them where the arm stands; choose abort instead.",
-            ))
-        if toggle:
-            warnings.append(MotionWarning(
-                subject="gripper",
-                what=f"Connecting first ASKS where the jaws stand, {waits} The hand is a toggle on one output with no "
-                     "sensor, so every change of the output, on or off, moves the jaws, and only a person can say "
-                     "where the program's count of its changes starts.",
-                precaution="Look at the jaws before you answer. If they stand closed you are offered ONE CHANGE "
-                           "of the output to open them, which releases anything between them where the arm stands, "
-                           "and goes out only while the controller says it can move; choose abort instead.",
-            ))
-        elif has_feedback:
-            warnings.append(MotionWarning(
-                subject="gripper",
-                what="Connecting the jaws reads the end-stop switches first. If they report EMPTY the "
-                     "jaws are opened immediately; if they report a part, the driver holds it and "
-                     "warns instead of dropping it.",
-                precaution="Keep hands clear of the jaws. If the switches are miswired an empty "
-                           "reading is what a held part looks like.",
-            ))
-        elif opts_in:
-            warnings.append(MotionWarning(
-                subject="gripper",
-                what="Connecting OPENS THE JAWS UNCONDITIONALLY. This cell has no end-stop feedback "
-                     "wired and open_on_connect_without_feedback is set, so the driver cannot check "
-                     "whether anything is held first.",
-                precaution="Anything between the jaws WILL BE DROPPED where the arm is standing. "
-                           "Clear the tool before connecting.",
-            ))
-    return tuple(warnings)
+    asked = (f"in the browser (never at the terminal this console runs in), and waits "
+             f"{JAW_QUESTION_TIMEOUT_S:g} s for the answer; unanswered, the connect is refused.")
+    return tuple(MotionWarning(subject="gripper", what=hazard.what, precaution=hazard.precaution)
+                 for hazard in driver.hazards(robot_config, gripper, asked))
 
 
 @dataclass

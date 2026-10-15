@@ -21,6 +21,7 @@ them apart.
 
 This is not a second importer. `grasp_anything.import_scenes` keeps its name, its signature and its
 module, and this wraps it, owns the glue the CLI handler owned privately, and returns something typed.
+The CLI calls this noun, so the command and a program cannot drift apart.
 """
 
 from __future__ import annotations
@@ -28,14 +29,17 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Mapping
+
+from src.contracts import UNSET, Maybe, chosen, resolve
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from collections.abc import Callable  # noqa: F401 (the reader registry's value type)
 
     from src.robot.grasping.deep.foreign.grasp_anything import ForeignSource
 
-__all__ = ["ImportReport", "PublicCorpus", "public_sources"]
+__all__ = ["DEFAULT_SOURCE", "ImportReport", "PublicCorpus", "public_sources"]
 
 #: Built without a backslash escape, as the other renderers in this repository are.
 _NEWLINE = chr(10)
@@ -108,8 +112,8 @@ class ImportReport:
     #: contract, and what that found. Empty when `validate=0` asked for none.
     contract_checked: int = 0
     contract_failures: tuple[str, ...] = ()
-    #: The provenance block the importer wrote beside the scenes, verbatim.
-    provenance: Mapping[str, Any] = field(default_factory=dict)
+    #: The provenance block the importer wrote beside the scenes, verbatim and read-only.
+    provenance: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
 
     @property
     def scenes(self) -> int:
@@ -172,15 +176,15 @@ class PublicCorpus:
     gripper: str
 
     @classmethod
-    def from_source(cls, key: str = DEFAULT_SOURCE, *, out_dir: str | Path,
-                    gripper: str | None = None) -> "PublicCorpus":
+    def from_source(cls, *, key: str = DEFAULT_SOURCE, out_dir: str | Path,
+                    gripper: Maybe[str] = UNSET) -> "PublicCorpus":
         """A named public corpus, landing in a folder. Reads nothing and opens no connection.
 
         Args:
             key (str): The corpus (default: "grasp_anything_6d").
             out_dir (str | Path): Where its scenes land.
-            gripper (str | None): The jaw the grasps are read for; checked here, before any download; ``None`` the
-                default jaw (default: None).
+            gripper (Maybe[str]): The jaw the grasps are read for; checked here, before any download; unset is the
+                reader's own ``DEFAULT_GRIPPER``, which the reader declares and this does not repeat (default: UNSET).
 
         Returns:
             PublicCorpus: The corpus.
@@ -191,10 +195,11 @@ class PublicCorpus:
         from src.robot.grasping.deep.net.gripper import JAW_GEOMETRY  # noqa: PLC0415 (pulls torch)
 
         module = _reader(key)
-        chosen = gripper if gripper is not None else str(module.DEFAULT_GRIPPER)
-        if chosen not in JAW_GEOMETRY:
-            raise ValueError(f"unknown gripper {chosen!r}; choose from {', '.join(JAW_GEOMETRY)}")
-        return cls(key=key, out_dir=Path(out_dir), gripper=chosen)
+        hand = resolve("gripper", gripper, str(module.DEFAULT_GRIPPER))
+        if hand not in JAW_GEOMETRY:
+            # Sorted, as the command printed this refusal before the check moved here.
+            raise ValueError(f"unknown gripper {hand!r}; choose from {', '.join(sorted(JAW_GEOMETRY))}")
+        return cls(key=key, out_dir=Path(out_dir), gripper=hand)
 
     @property
     def source(self) -> "ForeignSource":
@@ -226,24 +231,28 @@ class PublicCorpus:
         """
         return sum(1 for _ in self.out_dir.glob("*.npz")) if self.out_dir.is_dir() else 0
 
-    def fetch(self, *, limit: int = 200, jobs: int = 8, validate: int = 3,
-              centre_offset_m: float | None = None, cache_dir: str | Path | None = None,
-              report: "Callable[[str], None] | None" = None) -> ImportReport:
+    def fetch(self, *, limit: Maybe[int] = UNSET, jobs: Maybe[int] = UNSET, validate: Maybe[int] = UNSET,
+              centre_offset_m: Maybe[float | None] = UNSET, cache_dir: Maybe[str | Path | None] = UNSET,
+              report: "Maybe[Callable[[str], None] | None]" = UNSET) -> ImportReport:
         """Fetch scenes by range request (the source is 229 GB; a scene costs about 200 KB) and write them as the
         ``.npz`` files the training loop reads. Each scene is written as it converts, so an interrupted fetch keeps what
         it got.
 
+        An argument left unset is the reader's own default (``import_scenes``), and only what the caller chose is
+        forwarded, so this wrapper holds no second copy of a number the reader owns. ``None`` is a value here, not
+        absence: ``centre_offset_m=None`` asks for the per-scene fit.
+
         Args:
-            limit (int): How many scenes (default: 200).
-            jobs (int): Conversions in parallel (default: 8).
-            validate (int): Read this many written scenes back through the corpus loader and the sample contract; 0
-                skips it (default: 3).
-            centre_offset_m (float | None): How far along the approach the published translation sits from the grasp
-                centre, metres; ``None`` fits it from the data (default: None).
-            cache_dir (str | Path | None): Where the archive's directory index is cached; ``None`` is
-                ``out_dir/.directories`` (default: None).
-            report (Callable[[str], None] | None): Called with one progress line at a time; ``None`` says nothing
-                (default: None).
+            limit (Maybe[int]): How many scenes; unset is 200 (default: UNSET).
+            jobs (Maybe[int]): Conversions in parallel; unset is 8 (default: UNSET).
+            validate (Maybe[int]): Read this many written scenes back through the corpus loader and the sample contract;
+                0 skips it; unset is 3 (default: UNSET).
+            centre_offset_m (Maybe[float | None]): How far along the approach the published translation sits from the
+                grasp centre, metres; ``None`` and unset fit it from the data (default: UNSET).
+            cache_dir (Maybe[str | Path | None]): Where the archive's directory index is cached; ``None`` and unset are
+                ``out_dir/.directories`` (default: UNSET).
+            report (Maybe[Callable[[str], None] | None]): Called with one progress line at a time; ``None`` and unset
+                say nothing (default: UNSET).
 
         Returns:
             ImportReport: The source, its licence, the fitted offset, what was written and what was refused.
@@ -253,10 +262,13 @@ class PublicCorpus:
             RuntimeError: The archive will not address.
             ValueError: A member will not parse.
         """
-        provenance = _reader(self.key).import_scenes(
-            self.out_dir, limit=limit, jobs=jobs, validate=validate,
-            centre_offset_m=centre_offset_m, cache_dir=cache_dir, gripper=self.gripper,
-            report=report if report is not None else (lambda _line: None))
+        forwarded: dict[str, Any] = {
+            name: value for name, value in (
+                ("limit", limit), ("jobs", jobs), ("validate", validate),
+                ("centre_offset_m", centre_offset_m), ("cache_dir", cache_dir), ("report", report))
+            if chosen(value)
+        }
+        provenance = _reader(self.key).import_scenes(self.out_dir, gripper=self.gripper, **forwarded)
         return self._report(provenance)
 
     def report(self) -> ImportReport | None:
@@ -288,5 +300,5 @@ class PublicCorpus:
             training_units=int(provenance.get("training_units", 0)),
             contract_checked=int(contract.get("checked", 0)),
             contract_failures=tuple(str(f) for f in contract.get("failures", ())),
-            provenance=dict(provenance),
+            provenance=MappingProxyType(dict(provenance)),
         )

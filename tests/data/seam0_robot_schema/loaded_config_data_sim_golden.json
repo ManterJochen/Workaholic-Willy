@@ -366,7 +366,6 @@
       "model": "ur5e",
       "ip": "192.168.1.100",
       "rtde_frequency": 0.0,
-      "motion_planner": "curobo",
       "brake_on_halt": false
     },
     "sim": {
@@ -551,24 +550,12 @@
       }
     },
     "dummy": {},
-    "kuka": {
-      "model": "kr6-r900",
-      "dof": 6,
-      "controller_ip": "192.168.1.20",
-      "eki": {
-        "role": "server",
-        "host": "0.0.0.0",
-        "port": 7000,
-        "timeout_s": 5.0,
-        "heartbeat_s": 0.5,
-        "buffer_size": 65536
-      }
-    },
     "motion_limits": {
       "max_velocity": 1.0,
       "max_acceleration": 0.5
     },
     "motion": {
+      "planner": "curobo",
       "judge_next_leg": "off"
     },
     "workspace_limits": {
@@ -713,7 +700,6 @@
         "fixtures": [],
         "perceived_min_distance_mm": 2.0,
         "mesh_dir": null,
-        "kinematics_model": "ur5e",
         "kinematics_base_yaw_deg": 180.0,
         "tool_length_mm": 150.0,
         "tool_radius_mm": 70.0,

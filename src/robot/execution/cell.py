@@ -35,6 +35,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema import AppConfig
     from src.config.schema.robot import RobotConfig
     from src.config.tree import LoadedTree
+    from src.robot.execution.abilities import CellAbilities
     from src.robot.execution.planner_start import PlannerStartReport
     from src.robot.execution.robot import Robot
     from src.robot.execution.autonomous_grasp.config import GraspMode
@@ -192,6 +193,7 @@ class Cell:
     @classmethod
     def rehearsal(
         cls, robot_config: "RobotConfig", *, data_dir: "str | Path | None" = None,
+        app_config: "Maybe[AppConfig]" = UNSET,
         motion: "Maybe[GraspMotion]" = UNSET, mode: "Maybe[GraspMode | str]" = UNSET,
     ) -> "Cell":
         """The same cell with a dummy arm and a synthetic scene: the operator's own config with the vendor changed, so
@@ -203,6 +205,8 @@ class Cell:
         Args:
             robot_config (RobotConfig): The robot section to rehearse.
             data_dir (str | Path | None): The tree's root; ``None`` is the repository's (default: None).
+            app_config (Maybe[AppConfig]): The camera half of the same tree, whose calibrations a cell that fuses
+                two cameras still reads; unset, the build reads no camera half (default: UNSET).
             motion (Maybe[GraspMotion]): How the picks move (default: UNSET).
             mode (Maybe[GraspMode | str]): The grasp mode (default: UNSET).
 
@@ -212,6 +216,9 @@ class Cell:
         return cls(
             robot_config=robot_config.model_copy(update={"vendor": _REHEARSAL_VENDOR}),
             is_rehearsal=True,
+            # The camera half of the same tree: a rehearsal opens no camera, and a cell that fuses two still reads
+            # their calibrations. Unset, the build reads no camera half, as before (`build_rehearsal_cell`).
+            app_config=app_config,
             data_dir=data_dir,
             motion=motion,
             mode=mode,
@@ -273,6 +280,8 @@ class Cell:
             if chosen(self.mode):
                 motion["mode"] = self.mode
             if self.is_rehearsal:
+                if chosen(self.app_config):
+                    motion["app_config"] = self.app_config
                 self._service = build_rehearsal_cell(self.robot_config, data_dir=self.data_dir, **motion)
             else:
                 # Forwarded only when chosen, so an unspecified prompt reaches the callee's own
@@ -285,6 +294,24 @@ class Cell:
                     extra["app_config"] = self.app_config
                 self._service = build_real_cell(self.robot_config, data_dir=self.data_dir, **extra, **motion)
         return self._service
+
+    def abilities(self) -> "CellAbilities":
+        """What each operator function of this cell can do, asked of the arm the tree builds, never connected.
+
+        Beside :meth:`preflight`, which reads the tree's facts: this asks the arm and the hand the tree builds through
+        their capability Protocols (P0i, owner decisions 1 and 2), one row per function, and connects, opens and
+        starts nothing. Needs no build. A rehearsal asks its dummy arm.
+
+        Returns:
+            CellAbilities: One row per operator function, in the order the declarations list them; ``render()``
+                is what ``real_cell --check`` prints.
+        """
+        from src.config import load_config  # noqa: PLC0415
+        from src.robot.execution.abilities import desk_abilities  # noqa: PLC0415
+
+        # The camera half of the same tree, as the preflight reads it: the calibration rows and the pick's world read it.
+        app_config = self.app_config if chosen(self.app_config) else load_config(self.data_dir)
+        return desk_abilities(self.robot_config, camera=app_config.camera, data_dir=self.data_dir)
 
     def safety(self) -> SafetyAttestation:
         """What this cell's arm will actually refuse, asked of the built arm: a config can request a preflight the
@@ -386,7 +413,7 @@ class Cell:
 
     @property
     def vendor(self) -> str:
-        """The arm's vendor, ``robot.vendor``: ``"ur"``, ``"kuka"``, ``"sim"`` or ``"dummy"``."""
+        """The arm's vendor, ``robot.vendor``: ``"ur"``, ``"sim"`` or ``"dummy"``."""
         raw = getattr(self.robot_config, "vendor", "")
         return str(getattr(raw, "value", raw))
 

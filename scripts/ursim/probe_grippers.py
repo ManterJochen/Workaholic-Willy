@@ -75,7 +75,7 @@ def _confirm(yes: bool, what: str) -> bool:
 
     Refusing rather than prompting where stdin is not a terminal is deliberate: a prompt that reads
     EOF and takes the default is how an unattended script drives a coil nobody authorised. It is
-    the rule `python -m src.robot.drivers.ur` follows for the same writes.
+    the rule `python -m src.robot.execution.io_bench` follows for the same writes.
     """
     if yes:
         return True
@@ -99,6 +99,22 @@ def _read(io: SupportsDigitalIO, pin: int) -> bool:
     are under test rather than a gripper's.
     """
     return bool(io.get_digital_output(pin, port=DigitalIOPort.TOOL))
+
+
+def _read_settled(io: SupportsDigitalIO, pin: int, expected: bool, timeout_s: float = 0.5) -> bool:
+    """The output's level once the RTDE receive stream has caught up with the write, or the last read at the timeout.
+
+    An immediate read returns the level before the write: on URSim UR5e (aurora, 2026-09-24) engage read back False
+    and release read back True, one step behind, which reads exactly like an inverted pin. The jaw steps settle through
+    ``close_settle_s``; the vacuum's did not, so they printed the previous command (the bench's ``pins`` polls for the same
+    reason). A pin that never follows still returns its real level, and the step reports it NOT OK.
+    """
+    deadline = time.monotonic() + timeout_s
+    read = _read(io, pin)
+    while read != expected and time.monotonic() < deadline:
+        time.sleep(0.01)
+        read = _read(io, pin)
+    return read
 
 
 def _probe_jaw(arm: SupportsDigitalIO) -> None:
@@ -158,13 +174,15 @@ def _probe_vacuum(arm: SupportsDigitalIO) -> None:
     note("vacuum.connect()", "connected")
 
     gripper.set_width_mm(0.0)
-    note("vacuum.set_width_mm(0.0) [engage]",
-         f"pin 1 read back {_read(arm, 1)}, vacuum_on={gripper.vacuum_on}")
+    read = _read_settled(arm, 1, gripper.vacuum_on)
+    note("vacuum.set_width_mm(0.0) [engage]", f"pin 1 read back {read}, vacuum_on={gripper.vacuum_on}",
+         ok=read == gripper.vacuum_on)
     note("vacuum.is_object_detected()", f"{gripper.is_object_detected()}, no vacuum switch wired")
     time.sleep(0.2)
     gripper.set_width_mm(gripper.max_width_mm)
-    note("vacuum.set_width_mm(max) [release]",
-         f"pin 1 read back {_read(arm, 1)}, vacuum_on={gripper.vacuum_on}")
+    read = _read_settled(arm, 1, gripper.vacuum_on)
+    note("vacuum.set_width_mm(max) [release]", f"pin 1 read back {read}, vacuum_on={gripper.vacuum_on}",
+         ok=read == gripper.vacuum_on)
 
     gripper.disconnect()
     note("vacuum.disconnect()", "clean")
@@ -184,7 +202,7 @@ def main(argv: list[str] | None = None) -> int:
 
     chain = args.profile if args.profile is not None else (active_profile() or _DEFAULT_PROFILE)
     config = load_robot_config(profile=chain)
-    print(f"=== profile {chain!r}: vendor={config.vendor} ip={config.ur.ip} ===")
+    print(f"=== profile {chain!r}: vendor={config.vendor} ip={config.arm.controller} ===")
     print("=== URSim validates the call path, never the wiring. See the module docstring. ===\n")
 
     arm = create_arm(RobotVendor.from_string(config.vendor), config=config)

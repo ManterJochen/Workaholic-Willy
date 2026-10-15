@@ -31,6 +31,7 @@ from src.robot.safety.planning.perceived import (
     WorldBuildTuning,
 )
 from src.robot.safety.planning.world import planner_cuboid
+from tests._helpers import HoldsAWorld
 
 _FX = _FY = 500.0
 _CX = _CY = 100.0
@@ -436,7 +437,7 @@ class TwoCamerasThroughThePickLoopTests(unittest.TestCase):
         depth, mask = _scene_with_a_block()
         world = _two_camera_world(depth)
         orchestrator = BinPickingOrchestrator(
-            arm=SimpleNamespace(live_planner_world=world),  # type: ignore[arg-type]
+            arm=HoldsAWorld(world),  # type: ignore[arg-type]
             calculator=None,  # type: ignore[arg-type]
             perception=SimpleNamespace(streamer=SimpleNamespace(rig_id="overhead")),  # type: ignore[arg-type]
         )
@@ -1131,7 +1132,8 @@ class LoopHandsOverItsMasksTests(unittest.TestCase):
 
         offer = self._offer(self._frame(("x",)), 0)
         assert offer is not None
-        for arm in (SimpleNamespace(live_planner_world=None), SimpleNamespace()):
+        # An arm that holds no world, and one that cannot hold one: neither keeps a target out.
+        for arm in (HoldsAWorld(None), SimpleNamespace()):
             with keeping_out(arm, offer) as scope:
                 self.assertFalse(scope.world_wired)
 

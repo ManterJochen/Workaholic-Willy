@@ -8,7 +8,6 @@ from .decision import SafetyDecision, SafetyReason, safety_reason_to_motion_stat
 from .guard import SafetyContext, SafetyGuard
 from .ik_quality import IKQualityGuard
 from .joint_limits import (
-    UR_JOINT_LIMITS_DEG,
     JointLimitGuard,
     resolve_joint_limits_deg,
 )
@@ -52,7 +51,6 @@ __all__ = [
     "SingularityGuard",
     "SingularityReport",
     "SingularityThresholds",
-    "UR_JOINT_LIMITS_DEG",
     "WorkspaceGuard",
     "WorkspaceSafetyGuard",
     "analyze_joint_singularity",

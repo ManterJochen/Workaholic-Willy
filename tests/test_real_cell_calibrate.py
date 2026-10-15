@@ -17,6 +17,8 @@ prints actually VALIDATES against the schema it tells them to paste it into.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import unittest
 from unittest import mock
 
@@ -110,22 +112,52 @@ class RefusalTests(unittest.TestCase):
 
 
 class CheckTouchesNothingTests(unittest.TestCase):
-    def test_check_returns_before_the_arm_is_ever_built(self) -> None:
+    def test_check_never_connects_frees_or_moves_the_arm(self) -> None:
         """⚠ THE ONE THAT MATTERS AT A CELL. `--check` must be safe to run with the controller live
-        and a person inside the fence. Asserted by making the arm factory EXPLODE: if `--check` still
-        returns OK, it provably never reached it."""
+        and a person inside the fence.
+
+        Until P0i i3 this was asserted by making the arm factory explode, because `--check` built no arm at
+        all. A run by hand now asks at the desk whether a person can guide the arm, of the arm the tree builds
+        (owner, 2026-09-26, decision 2: built, never connected), so the factory IS reached, and the property
+        that matters is asserted instead: the arm it hands back explodes on anything that would reach the
+        controller, and `--check` still returns OK. The factory being called is asserted too, so the arm this
+        test arms is the one `--check` held."""
+        from src.robot.drivers.dummy.arm import DummyRobotArm
+
+        touched: list[str] = []
+
+        def trap(what: str) -> "object":
+            def touch(*_a: object, **_k: object) -> None:
+                # Recorded before it raises: a caller that swallows the raise (the check leaves an arm that does
+                # not build to the build) cannot swallow the record (review of P0i i3).
+                touched.append(what)
+                raise AssertionError(f"--check touched the arm: {what}")
+            return touch
+
+        class _Live(DummyRobotArm):
+            """An arm a person can guide, standing at a live controller: touching it is the failure."""
+
+            connect = trap("connect")
+            freedrive = trap("freedrive")
+            controller_payload = trap("controller_payload")
+            move = trap("move")
+            move_to_joints = trap("move_to_joints")
+            move_linear = trap("move_linear")
+            move_home = trap("move_home")
+            stop = trap("stop")
+            set_digital_output = trap("set_digital_output")
+
         cfg = mock.Mock()
-        cfg.robot.vendor = "ur"
+        cfg.robot = RobotConfig.model_validate({"vendor": "ur"})
         cfg.camera = _CameraCfg([_real_rgbd("overhead")])
         cfg.camera.hand_eye = _hand_eye()
-
-        def explode(*_a, **_k):  # pragma: no cover - it must never be called
-            raise AssertionError("--check built the arm")
-
+        factory = mock.Mock(side_effect=lambda *_a, **_k: _Live())
         with mock.patch.object(calibrate, "_load", return_value=cfg), \
-             mock.patch("src.robot.drivers.create_arm", side_effect=explode):
+             mock.patch("src.robot.drivers.create_arm", factory):
             code = calibrate.main(["--rig", "overhead", "--freedrive", "--check"])
+        self.assertEqual(touched, [])
         self.assertEqual(code, calibrate._EXIT_OK)
+        factory.assert_called()
 
     def test_the_exploding_arm_factory_IS_reached_without_check(self) -> None:
         """Proves the test above is not vacuous. The same patch, `--check` dropped, a real UR robot
@@ -144,10 +176,13 @@ class CheckTouchesNothingTests(unittest.TestCase):
         patched_load = mock.patch.object(calibrate, "_load", return_value=cfg)
         patched_gate = mock.patch("src.robot.drivers.doctor.require_arm_vendor_ready")
         patched_arm = mock.patch("src.robot.drivers.create_arm", explode)
-        with patched_load, patched_gate, patched_arm:
+        said = io.StringIO()
+        with patched_load, patched_gate, patched_arm, contextlib.redirect_stdout(said):
             code = calibrate.main(["--rig", "overhead", "--freedrive", "--dry-run"])
         self.assertEqual(code, calibrate._EXIT_CONFIG)
-        explode.assert_called_once()
+        # The build reached the factory and was refused there. Since P0i i3 the desk's check reaches it as well, for
+        # the hand guiding row, and leaves an arm that does not build to the build, which says why.
+        self.assertIn("[build] REFUSED: RuntimeError: no controller here", said.getvalue())
 
     def test_check_REFUSES_a_disabled_rig_instead_of_calling_it_usable(self) -> None:
         """The sentence `--check` prints is what an operator acts on. Calling a switched-off rig

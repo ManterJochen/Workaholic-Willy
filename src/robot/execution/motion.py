@@ -12,10 +12,9 @@ motions reach it (:func:`route_of`):
   cannot be judged, or an arm that does not say. The verb commands nothing.
 
 Before any command a verb also refuses a link that is not open, a pose not in BASE, and a camera world the arm's own
-motion would be refused for (``ReadsCameraWorld``), in that order and before the route. It then waits for the arm's
-own steady gate where its tree asks for one (``safety.dwell``), unless the arm gates its own sends
-(``safety.dwell.gate_at`` ``send``, :func:`gates_its_own_sends`): such an arm judges the motion first, while it settles,
-and waits for steady right before it sends. A decline reaches ``move`` and ``move_joints`` as the arm's own keyword, and
+motion would be refused for (``PlansMotions``), in that order and before the route. The arm waits for its own steady
+gate (``safety.dwell``) inside its verb since P0e, so a timeout comes back as the arm's TIMEOUT result and reads
+MOTION_REFUSED. A decline reaches ``move`` and ``move_joints`` as the arm's own keyword, and
 ``home`` as a block around the arm's home verb, which takes no keyword.
 
 Every verb returns a frozen :class:`MotionReport`. A camera that could not vouch for the cell
@@ -56,16 +55,17 @@ from src.robot.core.arm_capabilities import (
 from src.robot.core.camera_world import (
     CameraWorldDecline,
     CameraWorldStamp,
-    ReadsCameraWorld,
+    PlansMotions,
     active_decline,
     camera_world_refusal,
+    plans_motions,
     without_camera_world,
 )
 from src.robot.core.capabilities import RobotCapabilities
 from src.robot.core.errors import (
+    ArmFault,
     CameraWorldUnavailable,
     RobotConnectionError,
-    RobotEmergencyStop,
     RobotError,
     RobotKinematicsError,
     RobotMotionRejected,
@@ -81,7 +81,6 @@ __all__ = [
     "RouteReading",
     "decline_of",
     "expecting_next",
-    "gates_its_own_sends",
     "home",
     "move",
     "move_joints",
@@ -200,7 +199,8 @@ def route_of(arm: object) -> RouteReading:
         return RouteReading(MotionRoute.REFUSED, (
             f"{type(arm).__name__} does not say what it keeps of a path (KeepsLines), so nothing shows that its motions "
             "go through cuRobo and the exact mesh guard"))
-    plans = bool(getattr(arm, "plans_paths", False))
+    planner = plans_motions(arm)
+    plans = bool(planner is not None and planner.plans_paths)
     if line.motion is LineMotion.CHECKED and plans:
         return RouteReading(MotionRoute.PLANNED, line.reason, line)
     if line.motion is LineMotion.TELEPORT and _simulated(arm):
@@ -213,20 +213,15 @@ def route_of(arm: object) -> RouteReading:
 
 
 def steady_timeout_of(arm: object) -> float | None:
-    """The arm's own steady gate, where its tree asks for one and it can wait; ``None`` otherwise."""
+    """The arm's own steady gate, where its tree asks for one and it can wait; ``None`` otherwise. The push reads it for
+    the rest it waits for before each of its legs (``push_motion``); a motion verb leaves the gate to the arm since
+    P0e."""
     dwell = getattr(getattr(getattr(arm, "config", None), "safety", None), "dwell", None)
     if dwell is None or not callable(getattr(arm, "wait_until_steady", None)):
         return None
     if not bool(getattr(dwell, "require_steady_before_motion", False)):
         return None
     return float(getattr(dwell, "steady_timeout_s", 5.0))
-
-
-def gates_its_own_sends(arm: object) -> bool:
-    """Whether ``arm`` waits for steady right before it sends a motion, after it judged it (the cuRobo UR with
-    ``safety.dwell.gate_at`` ``send``): its ``gates_its_own_sends`` read as ``is True``, so a double that answers every
-    attribute is not taken for one, and its verbs keep their own gate."""
-    return getattr(arm, "gates_its_own_sends", False) is True
 
 
 def expecting_next(arm: object, joints: "JointPositions | str | None") -> AbstractContextManager[Any]:
@@ -480,16 +475,10 @@ class _Motion:
         route = route_of(self.arm)
         line = route.line if self.linear else None
         stamp = self._stamp_before(route)
-        refused = self._refusal(route, stamp)
+        refused = self._refusal(stamp)
         if refused is not None:
             return MotionReport(self.verb, MotionOutcome.REFUSED, route, refused, line)
         try:
-            # An arm that gates its own sends (``gate_at`` ``send``) waits right before it sends, after its judgement.
-            timeout = None if gates_its_own_sends(self.arm) else steady_timeout_of(self.arm)
-            if timeout is not None and not self.arm.wait_until_steady(timeout):
-                return MotionReport(self.verb, MotionOutcome.REFUSED, route, self._failed(
-                    MotionStatus.TIMEOUT, f"the arm did not come to rest within {timeout:.2f} s before the motion "
-                    "(safety.dwell)", stamp), line)
             answer = command()
         except CameraWorldUnavailable as exc:
             return MotionReport(self.verb, MotionOutcome.CAMERA_WORLD_UNAVAILABLE, route,
@@ -504,25 +493,30 @@ class _Motion:
 
     def _stamp_before(self, route: RouteReading) -> CameraWorldStamp:
         """The camera world a motion would carry, read as the arm is now; UNPLANNED on a desk arm that does not say."""
-        if isinstance(self.arm, ReadsCameraWorld):
+        if isinstance(self.arm, PlansMotions):
             return self.arm.camera_world_for_move(self.decline)
         if route.route is MotionRoute.UNPLANNED:
             return CameraWorldStamp.unplanned(route.reason)
         return CameraWorldStamp.unstated()
 
-    def _refusal(self, route: RouteReading, stamp: CameraWorldStamp) -> MotionResult | None:
+    def _refusal(self, stamp: CameraWorldStamp) -> MotionResult | None:
         if not bool(getattr(self.arm, "is_connected", False)):
             return self._failed(MotionStatus.CONNECTION_ERROR, (
                 f"the arm is not connected; call {self.verb.value} inside robot.connected()"), stamp)
         if self.target_pose is not None and self.target_pose.frame is not Frame.BASE:
             return self._failed(MotionStatus.INVALID_TARGET, (
                 f"the pose is in {self.target_pose.frame.value!r}, and {self.verb.value} takes a pose in BASE"), stamp)
-        if isinstance(self.arm, ReadsCameraWorld):
+        if isinstance(self.arm, PlansMotions):
             sentence = camera_world_refusal(stamp, live_world_wired=self.arm.live_camera_world_wired())
             if sentence is not None:
                 return self._failed(MotionStatus.UNSUPPORTED, sentence, stamp)
-        if not route.runs:
-            return self._failed(MotionStatus.UNSUPPORTED, route.reason, stamp)
+        # Whether a motion may run on this arm at all is the desk's move row, where the route check stood and in its
+        # words (P0i i3).
+        from src.robot.execution.abilities import Ability, row_of
+
+        move = row_of(Ability.MOVE, arm=self.arm)
+        if not move.available:
+            return self._failed(MotionStatus.UNSUPPORTED, move.reason, stamp)
         return None
 
     # ---- what the arm said ------------------------------------------------------------------
@@ -542,7 +536,7 @@ class _Motion:
             status = MotionStatus.CONNECTION_ERROR
         elif isinstance(exc, RobotKinematicsError):
             status = MotionStatus.IK_FAILED
-        elif isinstance(exc, RobotEmergencyStop):
+        elif isinstance(exc, ArmFault):
             status = MotionStatus.CONTROLLER_REJECTED
         else:
             status = MotionStatus.UNKNOWN

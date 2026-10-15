@@ -68,7 +68,7 @@ class TheFourPosturesTests(unittest.TestCase):
         cfg = RobotConfig()
 
         class Gated:
-            safety_preflight = SafetyPreflight.from_safety_config(cfg.safety, cfg.workspace_limits)
+            safety_preflight = SafetyPreflight.from_safety_config(cfg.safety, cfg.workspace_limits, arm_model=None)
 
         attestation = SafetyAttestation.of(Gated())
         self.assertIs(attestation.posture, SafetyPosture.GATED)
@@ -92,7 +92,7 @@ class TheFourPosturesTests(unittest.TestCase):
         })
 
         class Partial:
-            safety_preflight = SafetyPreflight.from_safety_config(off, cfg.workspace_limits)
+            safety_preflight = SafetyPreflight.from_safety_config(off, cfg.workspace_limits, arm_model=None)
 
         attestation = SafetyAttestation.of(Partial())
         self.assertIn("self_collision", attestation.omitted)
@@ -108,7 +108,7 @@ class TheFourPosturesTests(unittest.TestCase):
         cfg = RobotConfig()
 
         class Gated:
-            safety_preflight = SafetyPreflight.from_safety_config(cfg.safety, cfg.workspace_limits)
+            safety_preflight = SafetyPreflight.from_safety_config(cfg.safety, cfg.workspace_limits, arm_model=None)
 
         attestation = SafetyAttestation.of(Gated())
         self.assertEqual(attestation.omitted, ())
@@ -125,7 +125,7 @@ class TheFourPosturesTests(unittest.TestCase):
             for field in ("joint_limits", "ik_quality", "self_collision", "payload",
                           "motion_continuity")
         })
-        preflight = SafetyPreflight.from_safety_config(nothing_enforced, cfg.workspace_limits)
+        preflight = SafetyPreflight.from_safety_config(nothing_enforced, cfg.workspace_limits, arm_model=None)
         self.assertNotIn("workspace", preflight.omitted_guards)
         self.assertIn("workspace", preflight.guard_names)
 
@@ -167,7 +167,7 @@ class EveryDriverWeShipAnswersTests(unittest.TestCase):
     #: is `IsaacRobotArm`, not `SimRobotArm`), which is the stale-list failure the convention
     #: rejects everywhere else. Importing these needs no vendor SDK: the house rule keeps those
     #: inside `connect()`.
-    DRIVER_MODULES = ("dummy", "ur", "kuka", "sim")
+    DRIVER_MODULES = ("dummy", "ur", "sim")
 
     @classmethod
     def _arm_classes(cls) -> list[tuple[str, type]]:

@@ -22,7 +22,7 @@ def _every_kind() -> tuple[CameraWorldStamp, ...]:
         CameraWorldStamp.unstated(),
         CameraWorldStamp.planned(cameras=("realsense_d435", "oblique_left"), captured_at_s=12.5),
         CameraWorldStamp.declined(CameraWorldDecline("calibration sweep, no CAMERA->BASE yet")),
-        CameraWorldStamp.unplanned("robot.ur.motion_planner is 'ik'"),
+        CameraWorldStamp.unplanned("robot.motion.planner is 'ik'"),
         CameraWorldStamp.missing("cuRobo plans this motion and no live camera world is wired"),
     )
 
@@ -140,7 +140,7 @@ class TheStampIsPartOfTheResultTests(unittest.TestCase):
         self.assertNotEqual(plain, declined)
 
     def test_every_constructor_carries_a_supplied_stamp(self) -> None:
-        stamp = CameraWorldStamp.unplanned("robot.ur.motion_planner is 'ik'")
+        stamp = CameraWorldStamp.unplanned("robot.motion.planner is 'ik'")
         built = (
             MotionResult.executed(MotionCommand.MOVE_TO, camera_world=stamp),
             MotionResult.failed(

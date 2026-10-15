@@ -1,13 +1,13 @@
 """The URDF written from Universal Robots' description moves every link exactly as the guard's DH chain does.
 
-``build_ur_config.py`` places each link's exact mesh with ``inv(URDF link frame at q=0) @ Rz(pi) @ DH frame`` and the
+``descriptor.py`` places each link's exact mesh with ``inv(URDF link frame at q=0) @ Rz(pi) @ DH frame`` and the
 guard places the same mesh by the DH frame alone. Both are right only if that product is the same at EVERY joint vector,
 not just at zero. So for every model with a DH row, at q = 0 and at 64 seeded joint vectors, this proves
 
     C(link, q) = inv(F_urdf(link, q)) @ Rz(pi) @ F_dh(frame, q)  is constant,
 
 that ``base_link_inertia`` is the DH base turned half a turn, and that ``wrist_3_link`` and ``tool0`` are both the DH
-flange itself, the frame every hand model hangs from (``build_ur_config.py`` measured the same on 2026-09-10). F_dh is
+flange itself, the frame every hand model hangs from (``descriptor.py`` measured the same on 2026-09-10). F_dh is
 the guard's own ``ur_link_transforms_mm``; F_urdf chains the rendered joint origins (URDF rpy is Rz(yaw) Ry(pitch)
 Rx(roll)) with a rotation about each joint's z axis.
 
@@ -30,10 +30,11 @@ from types import MappingProxyType
 
 import numpy as np
 
-from src.robot.safety._ur_kinematics import UR_DH_TABLES_M, ur_link_transforms_mm
+from src.config.arms import available_arms
+from src.robot.safety._ur_kinematics import ur_dh_rows, ur_link_transforms_mm
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-_MODULE = _ROOT / "scripts" / "curobo" / "_ur_description.py"
+_MODULE = _ROOT / "scripts" / "arms" / "_ur_description.py"
 _ARM_JOINTS = ("shoulder_pan_joint", "shoulder_lift_joint", "elbow_joint", "wrist_1_joint", "wrist_2_joint",
                "wrist_3_joint")
 _LINK_FRAMES = (("base_link_inertia", 0), ("shoulder_link", 1), ("upper_arm_link", 2), ("forearm_link", 3),
@@ -145,11 +146,13 @@ class TheRenderedChainIsTheDhChainTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.ur = _load()
-        cls.robots = {model: ET.fromstring(cls.ur.render_urdf(model)) for model in UR_DH_TABLES_M}
+        cls.robots = {model: ET.fromstring(cls.ur.render_urdf(model)) for model in available_arms()}
 
     def test_the_local_dh_chain_is_the_guard_s(self) -> None:
         """The controls below perturb a local chain; it has to be the guard's chain before it is perturbed."""
-        for model, table in UR_DH_TABLES_M.items():
+        for model in available_arms():
+            table = ur_dh_rows(model)
+            assert table is not None
             rows = [(r.a_m, r.d_m, r.alpha_rad) for r in table]
             for q in _samples()[:8]:
                 for mine, guard in zip(_dh_frames(rows, q), _guard_frames(model, q)):
@@ -177,7 +180,7 @@ class TheRenderedChainIsTheDhChainTests(unittest.TestCase):
                     np.testing.assert_allclose(offsets[link], np.eye(4), atol=_TOL)
 
     def test_a_micrometre_in_d4_breaks_it(self) -> None:
-        rows = [(r.a_m, r.d_m, r.alpha_rad) for r in UR_DH_TABLES_M["ur5e"]]
+        rows = [(r.a_m, r.d_m, r.alpha_rad) for r in (ur_dh_rows("ur5e") or ())]
         rows[3] = (rows[3][0], rows[3][1] + 1e-6, rows[3][2])
         drift = _worst_drift(self.robots["ur5e"], lambda q: _dh_frames(rows, q))
         self.assertGreater(max(drift["wrist_1_link"], drift["wrist_2_link"], drift["tool0"]), _TOL)

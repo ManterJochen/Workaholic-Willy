@@ -36,7 +36,8 @@ import numpy as np
 
 from src.geometry import Frame, Pose
 from src.robot.core import JointPositions, MotionStatus, RobotMotionRejected
-from src.robot.drivers.ur.connection import MoveEnd, URConnection
+from src.robot.core.arm_capabilities import MoveEnd
+from src.robot.drivers.ur.connection import URConnection
 from tests._halt_fakes import SimulatedUr, VirtualClock, ur_arm_on
 
 _HERE = [0.0, -1.2, 1.3, -0.4, 1.5, 0.2]
@@ -601,10 +602,10 @@ class TheArmAnswersABrakedMoveCancelledTests(unittest.TestCase):
         self.assertIn(_REASON, result.message)
         self.assertEqual(1, len(sim.named("stopJ")))
 
-    def test_move_joint_raises_the_cancelled_result(self) -> None:
+    def test_the_raise_carries_the_cancelled_result(self) -> None:
         arm, _clock, _sim = self._arm()
         with self.assertRaises(RobotMotionRejected) as raised:
-            arm.move_joint(JointPositions(_FAR))
+            arm.move_to_joints(JointPositions(_FAR)).raise_unless_executed()
         assert raised.exception.result is not None
         self.assertIs(MotionStatus.CANCELLED, raised.exception.result.status)
 

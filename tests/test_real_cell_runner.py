@@ -50,6 +50,12 @@ def _calibrated_camera(artifact_path: str):
     return type(shipped).model_validate(data)
 
 
+
+def _named_hand(vendor: str) -> RobotConfig:
+    """A tree of ``vendor`` that names the hand every committed arm bundle carries, as the shipped profiles do."""
+    return RobotConfig.model_validate({"vendor": vendor, "gripper": {"model": "robotiq_2f85"}})
+
+
 class PreflightTests(unittest.TestCase):
     def test_the_shipped_config_as_a_real_cell_blocks_on_its_known_traps(self) -> None:
         """This is the whole point of the runner: the DEFAULT state of a freshly configured real cell
@@ -59,7 +65,8 @@ class PreflightTests(unittest.TestCase):
         primary rig declares no calibration, so the camera row blocks for that and not for a missing
         argument. Since UM lane S22 the planner margin is one too: the base tree plans with cuRobo and
         declares no margin, which the planner refused at start since B1 S17 and the desk now says before
-        anybody is at the arm."""
+        anybody is at the arm. Since 2026-10-13 the controller address is one too: a tree that never had an
+        address typed into it names none (the owner's base tree names the cell's own)."""
         from src.config import load_config
 
         report = run_config_preflight(RobotConfig(vendor="ur"), camera=load_config().camera,
@@ -67,7 +74,7 @@ class PreflightTests(unittest.TestCase):
         blocking = {c.name for c in report.blocking}
         # Step 8e: the carried part is modelled by default and the base tree declares no length for it.
         self.assertEqual(blocking, {"tool frame", "payload", "camera -> base", "camera world", "hand", "planner margin",
-                                    "carried part"})
+                                    "carried part", "controller address"})
         self.assertFalse(report.ok)
 
     def test_the_checklist_blocks_a_real_curobo_ur_with_no_carried_length(self) -> None:
@@ -75,7 +82,7 @@ class PreflightTests(unittest.TestCase):
         naming the key, rather than planning every carry as if the hand were empty."""
         def row(payload: dict, planner: str = "curobo"):  # noqa: ANN202
             report = run_config_preflight(
-                RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": planner},
+                RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "127.0.0.1"}, "motion": {"planner": planner},
                                             "safety": {"planning_world": {"payload": payload}}}),
                 curobo_available=True, collision_engine="coal",
             )
@@ -100,7 +107,7 @@ class PreflightTests(unittest.TestCase):
         anybody stands next to the arm.
         """
         report = run_config_preflight(
-            RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": "curobo"}}),
+            RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "127.0.0.1"}, "motion": {"planner": "curobo"}}),
             curobo_available=False, collision_engine="coal",
         )
         blocking = {c.name for c in report.blocking}
@@ -117,7 +124,7 @@ class PreflightTests(unittest.TestCase):
     def test_an_ik_cell_is_warned_rather_than_blocked(self) -> None:
         """An ik cell plans nothing, so a missing sidecar stops nothing. What it loses is the check."""
         report = run_config_preflight(
-            RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": "ik"}}),
+            RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "127.0.0.1"}, "motion": {"planner": "ik"}}),
             curobo_available=False,
         )
         row = _named(report, "cuRobo environment")
@@ -127,7 +134,7 @@ class PreflightTests(unittest.TestCase):
     def test_sim_and_dummy_carry_no_curobo_row(self) -> None:
         for vendor in ("sim", "dummy"):
             with self.subTest(vendor=vendor):
-                report = run_config_preflight(RobotConfig(vendor=vendor), curobo_available=False)
+                report = run_config_preflight(_named_hand(vendor), curobo_available=False)
                 self.assertNotIn(
                     "cuRobo environment", {c.name for c in report.checks}
                 )
@@ -137,7 +144,7 @@ class PreflightTests(unittest.TestCase):
         """Self failing control: with the probe patched to False, UNSET has to block as False does."""
         from unittest.mock import patch
 
-        cfg = RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": "curobo"}})
+        cfg = RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "127.0.0.1"}, "motion": {"planner": "curobo"}})
         with patch(
             "src.robot.execution.real_cell.preflight.curobo_env_available",
             return_value=False,
@@ -163,7 +170,7 @@ class PreflightTests(unittest.TestCase):
         from src.robot.safety.preflight import exact_mesh_path_refusal
 
         cfg = RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"motion_planner": "curobo"},
+            "vendor": "ur", "ur": {"ip": "127.0.0.1"}, "motion": {"planner": "curobo"},
             "safety": {"self_collision": {"planner_margin_mm": 4.0}},
         })
         row = _named(
@@ -173,9 +180,9 @@ class PreflightTests(unittest.TestCase):
 
     def test_the_engine_this_box_has_is_named_with_the_bundle_it_would_load(self) -> None:
         cfg = RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"model": "ur3e"},
+            "vendor": "ur", "ur": {"ip": "127.0.0.1", "model": "ur3e"},
             "gripper": {"model": "robotiq_2f85", "tool_frame": _GOOD_TOOL},
-            "safety": {"self_collision": {"kinematics_model": "ur3e", "planner_margin_mm": 4.0}},
+            "safety": {"self_collision": {"planner_margin_mm": 4.0}},
         })
         row = _named(run_config_preflight(cfg, curobo_available=True, collision_engine="coal"),
                      "exact mesh engine")
@@ -185,7 +192,7 @@ class PreflightTests(unittest.TestCase):
 
     def test_an_ik_cell_is_warned_about_the_engine_rather_than_blocked(self) -> None:
         """An ik cell plans no path, so the gate that needs the engine is not on its critical path."""
-        ik = RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": "ik"}})
+        ik = RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "127.0.0.1"}, "motion": {"planner": "ik"}})
         row = _named(run_config_preflight(ik, curobo_available=True, collision_engine=None),
                      "exact mesh engine")
         self.assertIs(row.status, CheckStatus.WARN)
@@ -195,7 +202,7 @@ class PreflightTests(unittest.TestCase):
         from src.robot.safety.preflight import no_path_guard_refusal
 
         cfg = RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"motion_planner": "curobo"},
+            "vendor": "ur", "ur": {"ip": "127.0.0.1"}, "motion": {"planner": "curobo"},
             "safety": {"self_collision": {"enforce": False, "planner_margin_mm": 4.0}},
         })
         row = _named(run_config_preflight(cfg, curobo_available=True, collision_engine="coal"),
@@ -219,22 +226,21 @@ class PreflightTests(unittest.TestCase):
     def test_a_fully_configured_real_cell_passes(self) -> None:
         cfg = RobotConfig.model_validate({
             "vendor": "ur",
-            # ur.model and self_collision.kinematics_model must agree -- a cross-field validator
-            # refuses the mismatch, because a UR3e driven against UR5e link lengths computes every
-            # self-collision verdict against the wrong arm.
-            "ur": {"model": "ur3e"},
+            # A real cell declares the controller it drives: there is no placeholder address any more, and the
+            # cell lock holds the cell by this same name.
+            "ur": {"ip": "127.0.0.1", "model": "ur3e"},
             "gripper": {"model": "robotiq_2f85", "tool_frame": _GOOD_TOOL},
             "safety": {"payload": {"enforce": True, "mass_kg": 1.1, "cog_mm": (0.0, 0.0, 55.0)},
                        # Every cuRobo cell declares its planner margin (B1 S17), and a fully configured one
                        # has a committed evidence file for its combination (S22): ur3e, 2F-85, +Y+X, 4 mm.
-                       "self_collision": {"kinematics_model": "ur3e", "planner_margin_mm": 4.0},
+                       "self_collision": {"planner_margin_mm": 4.0},
                        # A calibrated cuRobo cell feeds its planner a live world, by owner decision.
                        "planning_world": {
                            "enabled": True,
                            "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0},
                            # A cell states whether it carries a part (Step 8e). This one says it carries none: the
                            # committed evidence for its combination was measured with no attach slots, and a cell
-                           # that declares a length needs the `_a16` file measured first (matrix_gate.py --attach).
+                           # that declares a length needs the `_a16` file measured first (gate.py --attach).
                            "payload": {"enabled": False},
                        }},
         })
@@ -254,13 +260,13 @@ class PreflightTests(unittest.TestCase):
 
         world = {"enabled": True,
                  "support_plane": {"height_mm": 0.0, "extent_mm": [1600.0, 1600.0], "thickness_mm": 50.0}}
-        wired = RobotConfig.model_validate({"vendor": "ur", "safety": {"planning_world": world}})
+        wired = RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "127.0.0.1"}, "safety": {"planning_world": world}})
         rows = (
             ("the base tree and the shipped camera", RobotConfig(vendor="ur"), load_config().camera,
              CheckStatus.BLOCK, "planning_world.enabled is false"),
             ("a block, a plane and a calibrated primary", wired, _calibrated_camera("logs/eth.json"),
              CheckStatus.OK, "camera world from"),
-            ("an ik cell", RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": "ik"}}),
+            ("an ik cell", RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "127.0.0.1"}, "motion": {"planner": "ik"}}),
              load_config().camera, CheckStatus.WARN, "no planner reads a camera world"),
             ("no camera section", RobotConfig(vendor="ur"), None, CheckStatus.BLOCK, "not handed the camera section"),
         )
@@ -280,7 +286,16 @@ class PreflightTests(unittest.TestCase):
         """A rehearsal must not be gated on facts that only a physical cell has."""
         for vendor in ("sim", "dummy"):
             with self.subTest(vendor=vendor):
-                self.assertTrue(run_config_preflight(RobotConfig(vendor=vendor), curobo_available=True).ok)
+                self.assertTrue(run_config_preflight(_named_hand(vendor), curobo_available=True).ok)
+
+    def test_a_sim_cell_that_names_no_hand_is_blocked_on_the_hand_alone(self) -> None:
+        """The hand is not a physical cell's fact. Since P0d D5 a sim tree's arm names its UR, so its exact mesh guard
+        reads hand geometry and refuses to BUILD without a hand (`sim_safety_preflight`), and the desk says the same
+        thing first. Before D5 a sim tree without the safety key built with no hand refusal and no arm chain at all.
+        """
+        report = run_config_preflight(RobotConfig(vendor="sim"), curobo_available=True)
+        self.assertEqual({"hand"}, {c.name for c in report.blocking})
+        self.assertIn("robot.gripper.model", _named(report, "hand").detail)
 
     def test_the_bench_items_are_reported_but_never_block(self) -> None:
         """Remote Control, brakes, the URCap: no API reports these, so the checklist names them as
@@ -293,7 +308,7 @@ class PreflightTests(unittest.TestCase):
 
     def test_a_declared_but_zero_cog_is_caught(self) -> None:
         cfg = RobotConfig.model_validate({
-            "vendor": "ur", "safety": {"payload": {"enforce": True, "mass_kg": 2.2}},
+            "vendor": "ur", "ur": {"ip": "127.0.0.1"}, "safety": {"payload": {"enforce": True, "mass_kg": 2.2}},
         })
         self.assertIs(_named(run_config_preflight(cfg, curobo_available=True), "payload").status, CheckStatus.BLOCK)
 
@@ -467,12 +482,50 @@ class RunnerEndToEndTests(unittest.TestCase):
 
         config = RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "192.168.1.100"}})
         self.assertEqual(cell_lock_key(config), "ur@192.168.1.100")
-        # Vendor-scoped, so a KUKA and a UR that happen to share an address are still two cells.
-        kuka = RobotConfig.model_validate(
-            {"vendor": "kuka", "kuka": {"controller_ip": "192.168.1.100"}}
-        )
-        self.assertEqual(cell_lock_key(kuka), "kuka@192.168.1.100")
-        self.assertNotEqual(cell_lock_key(config), cell_lock_key(kuka))
+
+    def test_a_vendor_that_drives_a_controller_and_names_no_address_is_refused(self) -> None:
+        """Until 2026-10-13 this answered ``None``, which reads as the harmless case.
+
+        The key was a ladder of one vendor, ``if vendor == "ur"``, and everything else fell through to ``None``, which
+        is how a simulator says it owns no controller: another vendor's cell would have driven a real arm with no lock,
+        through the door that states the key.
+        """
+        from src.config.schema.robot import RobotConfig
+        from src.robot.execution.cell_lock import LockKeyRequired, cell_lock_key
+
+        for vendor in ("franka", "kuka", "ros2"):
+            with self.subTest(vendor=vendor), self.assertRaises(LockKeyRequired) as refused:
+                cell_lock_key(RobotConfig.model_validate({"vendor": vendor}))
+            self.assertIn(vendor, str(refused.exception))
+            self.assertIn("address", str(refused.exception))
+
+        with self.assertRaises(LockKeyRequired):
+            cell_lock_key(RobotConfig.model_validate({"vendor": "ur"}))
+
+    def test_a_key_is_built_from_the_selection_so_a_new_vendor_needs_no_branch(self) -> None:
+        """Every vendor's key has the shape ``<vendor>@<controller>``, from the tree's own selection."""
+        from src.config.schema.robot import RobotConfig
+        from src.robot.execution.cell_lock import cell_lock_key
+
+        self.assertEqual("ur@10.0.0.5",
+                         cell_lock_key(RobotConfig.model_validate({"vendor": "ur", "ur": {"ip": "10.0.0.5"}})))
+
+    def test_both_doors_answer_the_same_for_a_cell_that_cannot_be_locked(self) -> None:
+        """``Robot.from_config`` and ``Robot.from_parts`` used to disagree, and the silent one was the default.
+
+        ``from_config`` states the key it derived, and ``chosen(None)`` is true, so the ``LockKeyRequired`` guard in
+        ``from_parts`` was unreachable on that path. Both refuse now, because the derivation itself does.
+        """
+        from src.config.schema.robot import RobotConfig
+        from src.robot.execution.cell_lock import LockKeyRequired
+        from src.robot.execution.robot import Robot
+
+        # A UR, because a vendor with no driver at all is refused earlier, at the readiness gate: this is the case a
+        # customer meets, a real driver on a tree that never named the controller.
+        config = RobotConfig.model_validate({"vendor": "ur", "gripper": {"model": "robotiq_2f85"}})
+        with self.assertRaises(LockKeyRequired) as refused:
+            Robot.from_config(config)
+        self.assertIn("robot.ur.ip", str(refused.exception))
 
 
 if __name__ == "__main__":
@@ -677,7 +730,7 @@ class CuroboProbeHonestyTests(unittest.TestCase):
 
         text = _P("docs/runbooks/real_cell_first_pick.md").read_text(encoding="utf-8")
         self.assertIn("get_content_root", text)
-        self.assertIn("build_ur_config.py", text)
+        self.assertIn("scripts/arms/descriptor.py", text)
 
     # Customer chain lane C1i: the runbook's blocking table is the checklist's.
 

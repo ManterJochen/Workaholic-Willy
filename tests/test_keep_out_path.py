@@ -13,6 +13,7 @@ import unittest
 import numpy as np
 
 from src.contracts import UNSET
+from tests._helpers import HoldsAWorld
 from src.robot.core.keep_out import KeepOutBox, SegmentationOffer
 from src.robot.safety.planning.perceived import WorldBuildLimits, WorldBuildTuning, target_keep_out_box
 
@@ -115,14 +116,14 @@ class _HoldingWorld:
         self.holding = False
 
 
-class _WorldArm:
+class _WorldArm(HoldsAWorld):
     """The shared fake arm, carrying a live world and recording whether it held an offer at each motion."""
 
     def __init__(self, world: _HoldingWorld, *, raise_on_move: BaseException | None = None) -> None:
         from tests._helpers import _FakeArm
 
+        super().__init__(world)
         self._inner = _FakeArm()
-        self.live_planner_world = world
         self.held_at_motion: list[bool] = []
         self.forgets_at_motion: list[int] = []
         self._raise = raise_on_move
@@ -130,12 +131,12 @@ class _WorldArm:
     def get_tcp_pose(self):  # noqa: ANN201
         return self._inner.get_tcp_pose()
 
-    def move_to(self, pose, **kwargs):  # noqa: ANN001, ANN201
+    def move(self, pose, **kwargs):  # noqa: ANN001, ANN201
         self.held_at_motion.append(self.live_planner_world.holding)
         self.forgets_at_motion.append(self.live_planner_world.forgets)
         if self._raise is not None:
             raise self._raise
-        return self._inner.move_to(pose, **kwargs)
+        return self._inner.move(pose, **kwargs)
 
 
 def _stamped_frame(stamp: float = 100.0):  # noqa: ANN202

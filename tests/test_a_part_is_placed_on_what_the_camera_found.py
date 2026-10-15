@@ -54,6 +54,7 @@ from src.robot.drivers.dummy.arm import DummyRobotArm
 from src.robot.execution.robot import Robot
 from src.robot.grasping.scene import Scene
 from src.robot.perception.locator import Located, LocatedObject, Locator, LocatorRefused, SetDown, _Placed
+from tests._helpers import HoldsAWorld
 from tests.test_a_scene_plans_the_trees_hand import _CENTRE, _cube, _hande, _replace
 from tests.test_a_toggle_hand_pulses_only_where_the_owner_expects import (
     _MOTIONS,
@@ -484,12 +485,12 @@ class TheSetDownSaysWhatItMeasuredTests(unittest.TestCase):
 # ---------------------------------------------------------------------------------------------------
 
 
-class _WorldAskingArm(DummyRobotArm):
+class _WorldAskingArm(HoldsAWorld, DummyRobotArm):
     """The dummy arm with the cell's live world: at each motion it asks the world what it would plan against."""
 
     def __init__(self, world: Any, self_envelope: Any) -> None:
         super().__init__()
-        self.live_planner_world = world
+        self.set_live_planner_world(world)
         self.self_envelope = self_envelope
         self.perceived: list[int] = []
 

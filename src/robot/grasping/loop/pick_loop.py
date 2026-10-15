@@ -175,12 +175,14 @@ from src.robot.constants import create_robot_logger
 from src.robot.core.keep_out import KeepOutBox, SegmentationOffer, holding_views, keeping_out
 from src.robot.core import (
     NO_PLAN_FAIL_SAFE_MESSAGE,
+    ArmFault,
     CameraWorldStamp,
     CameraWorldUse,
     Gripper,
     MotionStatus,
     RobotArm,
     SupportsRobotStatus,
+    live_planner_world_of,
 )
 from src.robot.core.arm_capabilities import halt_state_of, halted_refusal
 from src.robot.core.gripper import why_not_known_open
@@ -442,7 +444,7 @@ class PickOutcome(str, Enum):
     #
     # A stopped controller reports commanded motions as a driver failure ("Driver reported moveJ()
     # failure"), which reads exactly like a bad grasp unless the driver is asked: get_robot_status
-    # reports the stop and raise_if_stopped raises on it.
+    # reports the stop, and ArmFault.from_status classifies it.
     CONTROLLER_NOT_OPERATIONAL = "controller_not_operational"
     # The gripper raised while it was commanded, or a hand that toggles with no sensor would not start
     # the pick (``PolicyOutcome.GRIPPER_FAULT``): it believed its jaws closed and nobody at a terminal
@@ -1328,8 +1330,8 @@ class BinPickingOrchestrator:
     ----------
     arm:
         Any :class:`RobotArm` driver. Only :meth:`get_tcp_pose` and
-        :meth:`move_to` are required for the default pipeline; a real
-        retreat motion additionally calls :meth:`move_to` once more.
+        :meth:`move` are required for the default pipeline; a real
+        retreat motion additionally calls :meth:`move` once more.
     calculator:
         Configured :class:`GraspCalculator` instance.
     perception:
@@ -1990,7 +1992,7 @@ class BinPickingOrchestrator:
         (``support_surfaces.find_supports``, contract 7 of the cell fixes). ``None`` where the arm has no live world, its
         world reads no support surfaces or declares no bench, or the frame has no placement: the pick then plans as it
         always did. The parts the pick may go for are held out, so a large flat part is never its own support."""
-        world = getattr(self.arm, "live_planner_world", None)
+        world = live_planner_world_of(self.arm)
         limits = getattr(world, "limits", None)
         tuning = getattr(world, "tuning", None)
         if camera_to_base is None or limits is None or tuning is None:
@@ -4966,7 +4968,7 @@ class BinPickingOrchestrator:
         return self._bench_top_mm()
 
     def _bench_top_mm(self) -> float | None:
-        limits = getattr(getattr(self.arm, "live_planner_world", None), "limits", None)
+        limits = getattr(live_planner_world_of(self.arm), "limits", None)
         plane = getattr(limits, "support_plane_top_mm", None)
         if plane is not None:
             return float(plane)
@@ -4981,8 +4983,7 @@ class BinPickingOrchestrator:
         intrinsics = np.asarray(judged.frame.intrinsics, dtype=np.float64)
         depth = np.asarray(look.depth if look.depth is not None else judged.frame.depth_map, dtype=np.float64)
         matrix = np.asarray(look.camera_to_base, dtype=np.float64)
-        stride = max(1, int(getattr(getattr(getattr(self.arm, "live_planner_world", None), "tuning", None),
-                                    "pixel_stride", 2) or 2))
+        stride = max(1, int(getattr(getattr(live_planner_world_of(self.arm), "tuning", None), "pixel_stride", 2) or 2))
         rows, cols = np.mgrid[0:depth.shape[0]:stride, 0:depth.shape[1]:stride]
         z = depth[rows, cols]
         valid = np.isfinite(z) & (z > 0.0)
@@ -4991,7 +4992,7 @@ class BinPickingOrchestrator:
                                   (rows - intrinsics[1, 2]) * z / intrinsics[1, 1], z])
         points = camera @ matrix[:3, :3].T + matrix[:3, 3]
         bench = self._bench_top_mm()
-        band = float(getattr(getattr(getattr(self.arm, "live_planner_world", None), "limits", None),
+        band = float(getattr(getattr(live_planner_world_of(self.arm), "limits", None),
                              "plane_clearance_mm", _SUPPORT_BAND_MM) or _SUPPORT_BAND_MM)
         reading = np.full(points.shape[0], np.nan if bench is None else float(bench))
         if model is not None and points.shape[0]:
@@ -5074,7 +5075,7 @@ class BinPickingOrchestrator:
         # The part back into the world: the blocker's pick meets it as any obstacle. The blocker out of it.
         self._keep_out.close()
         standoff = float(getattr(self.policy, "standoff_mm", 80.0))
-        world = getattr(self.arm, "live_planner_world", None)
+        world = live_planner_world_of(self.arm)
         with ExitStack() as scope:
             if world is not None:
                 try:
@@ -5420,7 +5421,7 @@ class BinPickingOrchestrator:
                     "(a mat, a table, a tray), not a part")
         from src.robot.safety.planning.perceived import PART_SIZED_MM  # noqa: PLC0415 (the world's rule)
 
-        limits = getattr(getattr(self.arm, "live_planner_world", None), "limits", None)
+        limits = getattr(live_planner_world_of(self.arm), "limits", None)
         bench = getattr(limits, "support_plane_top_mm", None)
         low = float(np.percentile(pts[:, 2], 5))
         if bench is not None and low - float(bench) > PART_SIZED_MM[1]:
@@ -5651,7 +5652,7 @@ class BinPickingOrchestrator:
             _LOG.exception("deep_ranker shadow scoring failed; the pick is unaffected")
 
     def _controller_cannot_move(self) -> str | None:
-        """A one-line reason when the controller is unable to move, else ``None``.
+        """A one-line reason when the controller is unable to move, else ``None``: a halt's sentence, or the fault's own.
 
         Asked only after a motion has already failed: a healthy run pays nothing, because a healthy
         run never calls this. ``get_robot_status()`` is four cheap enum reads plus one dashboard
@@ -5666,6 +5667,9 @@ class BinPickingOrchestrator:
         first, of any arm that carries one (``SupportsHalt``, the dummy included), then a status that
         says so (``RobotStatus.halted``). A halt is no controller stop, so it never reads "clear the
         stop": a person confirms the cell is clear, then Restart.
+
+        A controller that cannot move is said as the :class:`ArmFault` it is (``ArmFault.from_status``): its class,
+        the controller's own text and what a person does about it.
 
         Otherwise inert by construction for every arm that is not a real UR: only ``URRobotArm``
         implements ``SupportsRobotStatus``, so the sim arm, the dummy arm and every other arm that is
@@ -5686,16 +5690,8 @@ class BinPickingOrchestrator:
         said = getattr(status, "halted", "")
         if isinstance(said, str) and said:
             return halted_refusal(said, _HALTED_WHERE_IT_STANDS)
-        if status.is_operational:
-            return None
-        detail = f": {status.message}" if status.message else ""
-        return (
-            f"the controller cannot move: robot_mode={status.robot_mode.value}, "
-            f"safety_mode={status.safety_mode.value}, protective_stop={status.protective_stopped}, "
-            f"emergency_stop={status.emergency_stopped}{detail}. Nothing is wrong with the scene or "
-            "the grasp, and no retry or re-perceive will change it; the cell needs a human. Clear "
-            "the stop where the arm is visible, or power it back on, then run again."
-        )
+        fault = ArmFault.from_status(status)
+        return fault.render() if fault is not None else None
 
     def _map_policy_outcome(
         self, outcome: PolicyOutcome
@@ -6375,7 +6371,7 @@ class BinPickingOrchestrator:
         in place of this frame's surface of it, so the box leaves the part out of every frame the
         world holds for the pick, not only out of this one.
         """
-        world = getattr(self.arm, "live_planner_world", None)
+        world = live_planner_world_of(self.arm)
         if world is None:
             return
         transform = self._pending_camera_to_base
@@ -7587,7 +7583,7 @@ class BinPickingOrchestrator:
         fits round the points the pick offers it (its fused cloud, else its mask in this frame, and a push's swept
         path where this part was pushed), by the world's own limits and tuning. ``None`` where the arm has no such
         world or the part has no point."""
-        world = getattr(self.arm, "live_planner_world", None)
+        world = live_planner_world_of(self.arm)
         limits, tuning = getattr(world, "limits", None), getattr(world, "tuning", None)
         if limits is None or tuning is None:
             return None

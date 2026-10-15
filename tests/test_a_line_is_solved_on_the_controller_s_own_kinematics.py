@@ -37,13 +37,14 @@ from unittest.mock import patch
 
 import numpy as np
 
+from src.config.arms import available_arms
 from src.geometry import Frame, Pose
 from src.robot.core import JointPositions, MotionCommand, MotionStatus, RobotKinematicsError
 from src.robot.drivers.ur.connection import ControllerKinematics
 from src.robot.drivers.ur.pose import URPose
 from src.robot.drivers.ur.pose_adapter import pose_to_urpose
 from src.robot.safety._ur_ik import ChainSolution, ur_chain_ik_nearest, ur_flange_ik, ur_pose_matrix_m
-from src.robot.safety._ur_kinematics import UR_DH_TABLES_M, URDhChain, ur_link_transforms_mm
+from src.robot.safety._ur_kinematics import URDhChain, ur_dh_rows, ur_link_transforms_mm
 from tests.test_a_grasp_judged_ahead_runs_as_it_was_judged import _GRASP, _STANDOFF, _cell
 from tests.test_a_line_judged_ahead_is_solved_at_knots import _recorded
 from tests.test_every_verb_meets_the_camera_world import _mesh_backend_available
@@ -60,7 +61,8 @@ _DELTAS = {
 
 def _rows(model: str, *, a2_off_m: float = 0.0, deltas: "dict[str, tuple[float, ...]] | None" = None) -> ControllerKinematics:
     """The kinematics info a controller of ``model`` with ``deltas`` (the calibration above) reports."""
-    table = UR_DH_TABLES_M[model]
+    table = ur_dh_rows(model)
+    assert table is not None, f"no arm description for {model}"
     add = _DELTAS if deltas is None else deltas
     a = [row.a_m + da for row, da in zip(table, add["a_m"])]
     a[1] += a2_off_m
@@ -250,7 +252,8 @@ class ALineIsSolvedOnTheControllersOwnKinematicsTests(unittest.TestCase):
     def test_a_line_refused_on_its_way_is_refused_in_the_same_words(self) -> None:
         line = _Line()
         inside = line.arm._guard.is_inside_workspace
-        line.arm._guard.is_inside_workspace = lambda pose: float(pose.z) > 160.0 and inside(pose)
+        # The box judges a base-frame Pose since P0e E3 (the UR driver converts at its own boundary).
+        line.arm._guard.is_inside_workspace = lambda pose: float(pose.position_mm[2]) > 160.0 and inside(pose)
         by_the_controller, _, asked = line.judged("controller")
         here, _, asked_here = line.judged("local")
         assert by_the_controller is not None and here is not None
@@ -290,7 +293,7 @@ def _random_configurations(count: int, seed: int) -> "list[np.ndarray]":
 
 class TheControllersChainIsSolvedNearestTheSeedTests(unittest.TestCase):
     def test_the_nominal_chain_is_the_table_the_guards_place_the_arm_with(self) -> None:
-        for model in UR_DH_TABLES_M:
+        for model in available_arms():
             chain = URDhChain.nominal(model)
             assert chain is not None
             for q in _random_configurations(50, 7):
@@ -319,7 +322,8 @@ class TheControllersChainIsSolvedNearestTheSeedTests(unittest.TestCase):
     def test_a_chain_holding_frames_metres_along_parallel_axes_is_solved_as_its_flange_is(self) -> None:
         """A calibration may hold the frames of the shoulder, the elbow and wrist 1, whose axes are nearly parallel, far
         along them: a ``d`` of metres the next row cancels. Here 40 m out and back, the same flange."""
-        table = UR_DH_TABLES_M["ur10"]
+        table = ur_dh_rows("ur10")
+        assert table is not None
         far = URDhChain(theta_rad=(0.0,) * 6, a_m=tuple(row.a_m for row in table),
                         d_m=(table[0].d_m, 40.0, -40.0, table[3].d_m, table[4].d_m, table[5].d_m),
                         alpha_rad=tuple(row.alpha_rad for row in table))

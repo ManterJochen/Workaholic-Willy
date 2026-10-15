@@ -17,7 +17,7 @@ from typing import Any
 from tests._console_task_fakes import ConsoleArm, ConsoleCase, Scripted, ScriptedCell
 
 #: Every way a UR driver or its SDK clears a protective stop.
-_CLEARS = ("recover_from_protective_stop", "unlock_protective_stop", "unlockProtectiveStop")
+_CLEARS = ("acknowledge_fault", "unlock_protective_stop", "unlockProtectiveStop")
 
 
 class _RecordingConnection:
@@ -45,8 +45,8 @@ class _RecordingArm(ConsoleArm):
         self.asked.append("unlock_protective_stop")
         raise AssertionError("the console cleared a protective stop")
 
-    def recover_from_protective_stop(self) -> bool:  # pragma: no cover - never called, by design
-        self.asked.append("recover_from_protective_stop")
+    def acknowledge_fault(self, fault: object) -> bool:  # pragma: no cover - never called, by design
+        self.asked.append("acknowledge_fault")
         raise AssertionError("the console cleared a protective stop")
 
 
@@ -85,6 +85,12 @@ class TheWayBackNeverClearsAStopTests(ConsoleCase):
         self.finished(home.json()["id"])
         self.assertEqual([], arm.asked, "a route asked the arm to clear a protective stop")
         self.assertEqual([], [call for call in arm.calls if call in _CLEARS])
+        # Asserted by name and by capability, because a name alone goes hollow: after the verb was renamed (2026-10-13),
+        # its old name was absent from a call list nothing could have put it in.
+        from src.robot.core import SupportsRobotStatus
+
+        self.assertIsInstance(arm, SupportsRobotStatus, "the double lost the capability it fences")
+        self.assertTrue(hasattr(arm, "acknowledge_fault"), "the verb this test fences was renamed")
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -15,7 +15,7 @@ holds presets that resolve to exactly those arguments, and ``--list`` prints eac
 A hand bundle is a hand and nothing else. This writes ``{hand}_hand_meshes.npz``, which the guard composes onto
 whichever arm the cell has at load, and records its row in ``bundles.json`` beside it. A freshly baked hand carries no
 list of arms: a planner starts on an arm and hand only with a committed evidence file for the combination
-(``scripts/curobo/matrix_gate.py``), and an ik cell runs no planner, so there the exact mesh guard alone decides.
+(``scripts/arms/gate.py``), and an ik cell runs no planner, so there the exact mesh guard alone decides.
 
 No Isaac and no GPU, because opening a stage needs neither. ``pxr`` comes from ``pip install usd-core`` (pinned in
 ``requirements.txt``) or from Isaac's own interpreter.
@@ -135,8 +135,9 @@ CATALOGUE: tuple[GripperAsset, ...] = (
 _BY_KEY = {a.key: a for a in CATALOGUE}
 
 #: Isaac's asset root. The one path this repository cannot relocate, so it is read from the environment first and
-#: only then guessed, as `scripts/curobo/build_ur_config.py` does.
-_ASSET_HINTS = (
+#: only then guessed, as `scripts/arms/descriptor.py` does. The guesses are drive letters, so they are tried on
+#: Windows only (P0h h8); elsewhere `WILLY_ISAAC_ASSETS` says where.
+_WINDOWS_ASSET_GUESSES = (
     "D:/isaacsim_assets/Assets/Isaac/5.1/Isaac/Robots",
     "C:/isaacsim_assets/Assets/Isaac/5.1/Isaac/Robots",
 )
@@ -144,10 +145,11 @@ _ASSET_HINTS = (
 
 def _asset_root() -> Path:
     import os
+    import sys
 
     override = os.environ.get("WILLY_ISAAC_ASSETS")
     candidates = [Path(override)] if override else []
-    candidates += [Path(h) for h in _ASSET_HINTS]
+    candidates += [Path(h) for h in (_WINDOWS_ASSET_GUESSES if sys.platform == "win32" else ())]
     for path in candidates:
         if path.is_dir():
             return path
@@ -401,7 +403,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  no {INDEX_NAME} beside {out.name}, so no row was recorded")
     print("\nnext, in the project venv:")
     print(f"  python scripts/grippers/measure_jaw_from_bundle.py {asset.key}")
-    print(f"  python scripts/curobo/fit_cover_spheres.py --hand {asset.key} --write")
+    print(f"  python scripts/arms/fit.py --hand {asset.key} --write")
     return 0
 
 

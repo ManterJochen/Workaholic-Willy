@@ -12,7 +12,7 @@ from __future__ import annotations
 import unittest
 
 from src.config import reload_config
-from src.willy_sim.config import load_sim_config, require_robot, sim_profile_chain
+from src.willy_sim.config import load_sim_config, require_robot, sim_driver_config, sim_profile_chain
 from src.willy_sim.harness.coverage import audit_camera_coverage
 from src.willy_sim.harness.reach import audit_reach
 from src.willy_sim.scene.cameras import camera_elevation_deg
@@ -21,6 +21,15 @@ from src.willy_sim.scene.cameras import camera_elevation_deg
 def _load(model=None, extra=None):
     reload_config()
     return load_sim_config(None, robot_model=model, extra_profiles=extra)
+
+
+def _reported_model(model=None) -> str:
+    """The model the Isaac arm built from that tree reports, which the self-collision guard judges (P0d D5).
+
+    Built through the runners' own converter; the arm constructs without Isaac, because nothing here connects."""
+    from src.robot.drivers.sim.arm import IsaacRobotArm
+
+    return IsaacRobotArm(sim_driver_config(_load(model))).capabilities.model
 
 
 class ProfileChainTests(unittest.TestCase):
@@ -52,7 +61,8 @@ class MeasuredValuesSurviveCompositionTests(unittest.TestCase):
         from src.willy_sim.grippers import sim_mount_for
 
         self.assertIsNone(sim_mount_for(sim.sim.robot_model, sim.gripper.model), "the ur5e asset bakes the sim hand")
-        self.assertEqual(sim.safety.self_collision.kinematics_model, "ur5e")
+        self.assertEqual(sim.arm.model, "ur5e")
+        self.assertEqual(_reported_model(), "ur5e", "the arm the guard judges")
         self.assertEqual(tuple(sim.sim.scene_setup.object.position_mm), (450.0, 0.0, 25.0))
         self.assertIsNone(sim.sim.cameras["overhead"].mount_aim_mm)  # still the nadir camera
 
@@ -63,9 +73,11 @@ class UR3eLayerTests(unittest.TestCase):
 
     def test_layer_claims_the_robot_everywhere_it_matters(self) -> None:
         """Three places must agree, or the cell drives one robot with another's numbers: the driver's
-        model (Lula/USD/cuRobo), the self-collision DH chain, and the payload cap."""
+        model (Lula/USD/cuRobo), the self-collision DH chain, and the payload cap. The chain is keyed by
+        the model the Isaac arm reports since P0d D5, so the layer claims it by naming the arm once, in
+        ``sim.robot_model``, and the arm built from the tree has to say ur3e back."""
         self.assertEqual(self.robot.sim.robot_model, "ur3e")
-        self.assertEqual(self.robot.safety.self_collision.kinematics_model, "ur3e")
+        self.assertEqual(_reported_model("ur3e"), "ur3e", "the arm the guard judges")
         self.assertEqual(self.robot.safety.payload.max_mass_kg, 3.0)  # UR3e datasheet (UR5e: 5 kg)
 
     def test_bare_ur3e_asset_gets_a_mounted_gripper(self) -> None:

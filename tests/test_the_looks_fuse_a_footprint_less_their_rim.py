@@ -85,7 +85,7 @@ def _pick(calculator_type: type) -> SimpleNamespace:
     """A wrist pick from the cube's +x and -x sides, grasped on the second look, on a world that keeps its offers."""
     arm = LookingArm({LOOK_PLUS_X: tool_for(camera_looking_at(bearing_deg=0.0)),
                       LOOK_MINUS_X: tool_for(camera_looking_at(bearing_deg=180.0))})
-    arm.live_planner_world = _World()
+    arm.set_live_planner_world(_World())
     camera = WristCamera(arm)
     camera.camera_name = "wrist"  # type: ignore[attr-defined]  # the camera the offered masks belong to
     calculator = calculator_type(camera, grasps_on=(1,))

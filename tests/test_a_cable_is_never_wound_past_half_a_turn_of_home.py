@@ -11,6 +11,11 @@ What it costs, measured here with the closed-form inverse kinematics over random
 of zero, because every UR joint is 2*pi-periodic and each angle has a twin inside any full-turn window; at the
 shipped 5 degree margin, the poses whose every configuration needs a joint within 5 degrees of the seam behind home
 (73 of 20000 random poses on a UR10, 2026-09-23), and those alone.
+
+The arms are ``PlannedArm`` over the fake transport since P0g slice 13 (``tests/_arm_kit.planned_arm``), on UR trees,
+since the goals are the UR closed-form IK's until P1; the desk reads a tree and builds no arm. One test builds the UR
+driver, because what it holds is the driver's own: which home it states when the tree names one, none, or it is handed
+one.
 """
 
 from __future__ import annotations
@@ -23,11 +28,11 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
+from src.config.arms import described_home
 from src.config.schema.robot import JointLimitSafetyConfig, RobotConfig
-from src.robot.constants import HOME_JOINTS_DEFAULT
 from src.robot.core import NO_PLAN_FAIL_SAFE_MESSAGE, JointPositions, MotionCommand, MotionStatus, RobotCapabilities
-from src.robot.drivers.ur.arm import URRobotArm
-from src.robot.drivers.ur.curobo_motion import PLANNER_JOINT_ENVELOPE_RAD
+from src.robot.drivers.planned.arm import PlannedArm
+from src.robot.drivers.planned.curobo_motion import planner_envelope_rad
 from src.robot.safety import JointLimitGuard, SafetyContext, SafetyPreflight, SafetyReason
 from src.robot.safety._fcl_self_collision import mesh_backend_status
 from src.robot.safety._ur_ik import nearest_goals, ur_flange_ik
@@ -40,6 +45,8 @@ from src.robot.safety.joint_limits import (
     half_turn_axes,
     stated_home_rad,
 )
+from tests._arm_kit import LOGGER_NAME, planned_arm
+from tests._fake_transport import fake_transport
 from tests._plan_end import OPEN_WORKSPACE, pose_where_it_ends
 from tests._route_planner import RoutePlanner as _Planner
 
@@ -53,9 +60,9 @@ class _Arm:
 
     def __init__(self, home: Any = None, *, model: str = "ur10", vendor: str = "ur") -> None:
         self.capabilities = RobotCapabilities(
-            vendor=vendor, model=model, dof=6, supports_joint_move=True, supports_linear_move=True,
-            supports_async_move=False, has_native_fk=False, has_native_ik=False, has_force_control=False,
-            is_simulated=False,
+            vendor=vendor, model=model, dof=6,
+            has_native_fk=False,
+            is_simulated=False, controller=None, owns_a_controller=vendor not in ("sim", "dummy"),
         )
         if home is not None:
             self.home_joint_positions = home
@@ -67,27 +74,30 @@ def _judged(guard: JointLimitGuard, joints_deg: "list[float]", arm: Any) -> Any:
     return guard.evaluate(ctx)
 
 
-def _ur(*, home: "tuple[float, ...] | None" = _HOME, safety: "dict[str, Any] | None" = None,
-        model: str = "ur10") -> URRobotArm:
-    return URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": model, "motion_planner": "curobo"},
+def _tree(*, home: "tuple[float, ...] | None" = _HOME, safety: "dict[str, Any] | None" = None,
+          model: str = "ur10") -> RobotConfig:
+    return RobotConfig.model_validate({
+        "vendor": "ur", "ur": {"model": model}, "motion": {"planner": "curobo"},
         "safety": {"payload": {"enforce": False}, **(safety if safety is not None else _WINDOW)},
         "gripper": {"model": "robotiq_2f85"}, "workspace_limits": OPEN_WORKSPACE,
         **({"home_joint_positions": home} if home is not None else {}),
-    }))
+    })
 
 
-def _driven(planner: _Planner, *, judged: bool = True, **kwargs: Any) -> URRobotArm:
-    """A cuRobo UR on a planner double; ``judged=False`` stubs the end and path gates, for a test of the goal asked."""
-    arm = _ur(**kwargs)
-    arm._conn = MagicMock()
-    arm._conn.is_connected = True
-    arm._conn.get_joint_positions.return_value = list(planner.here)
-    arm._curobo_ur = planner  # type: ignore[assignment]
+def _ur(*, joints: "list[float] | None" = None, **kwargs: Any) -> Any:
+    """A cuRobo arm on ``_tree(**kwargs)`` over the fake, standing at ``joints`` (the fake's home unless given)."""
+    transport = fake_transport() if joints is None else fake_transport(joints=joints)
+    return planned_arm(_tree(**kwargs), transport=transport)
+
+
+def _driven(planner: _Planner, *, judged: bool = True, **kwargs: Any) -> PlannedArm:
+    """A cuRobo arm on a planner double; ``judged=False`` stubs the end and path gates, for a test of the goal asked."""
+    arm = _ur(joints=list(planner.here), **kwargs)
+    arm._curobo = planner
     if not judged:
-        arm._preflight.gate_planned_path = lambda waypoints, *, arm=None, command=None: None  # type: ignore
-        arm._gate_planned_config = lambda pose, joints: None  # type: ignore[method-assign]
-    return arm
+        arm._preflight.gate_planned_path = lambda waypoints, *, arm=None, command=None: None
+        arm._gate_planned_config = lambda pose, joints: None
+    return arm  # type: ignore[no-any-return]
 
 
 def _asked(planner: _Planner) -> "list[tuple[float, ...]]":
@@ -130,12 +140,17 @@ class TheWindowTests(unittest.TestCase):
     def test_a_ur_elbow_is_left_as_its_table_has_it(self) -> None:
         """Universal Robots plans the elbow within +-180 deg: narrowed about a home with the elbow at -90, it refused the
         elbow bent the other way, which has no twin to fall back on (measured on the real sidecar: example 10's radial
-        ring, none of six stations ran)."""
+        ring, none of six stations ran).
+
+        A UR is any arm reporting a model the arm registry describes, whatever its vendor (P0d D5): the Isaac arm
+        reports the UR it drives and keeps its elbow too. An arm nobody describes has no elbow to leave alone."""
         self.assertEqual(2, UR_ELBOW_AXIS)
-        self.assertEqual((True, True, False, True, True, True), half_turn_axes([-360.0] * 6, [360.0] * 6, vendor="ur"))
-        self.assertEqual((True,) * 6, half_turn_axes([-360.0] * 6, [360.0] * 6, vendor="sim"))
+        self.assertEqual((True, True, False, True, True, True), half_turn_axes([-360.0] * 6, [360.0] * 6, model="ur10"))
+        self.assertEqual((True, True, False, True, True, True), half_turn_axes([-360.0] * 6, [360.0] * 6, model="ur5e"))
+        self.assertEqual((True,) * 6, half_turn_axes([-360.0] * 6, [360.0] * 6, model="dummy-6dof"))
+        self.assertEqual((True,) * 6, half_turn_axes([-360.0] * 6, [360.0] * 6))
         lower, upper = half_turn_about_home_deg([-360.0] * 6, [360.0] * 6, np.radians([0, -90, -90, -90, 90, 0]),
-                                                vendor="ur")
+                                                model="ur10")
         self.assertEqual((-360.0, 360.0), (lower[2], upper[2]))
         self.assertEqual((-270.0, 90.0), (lower[3], upper[3]))
 
@@ -175,11 +190,14 @@ class TheGuardTests(unittest.TestCase):
     def test_a_ur_elbow_bent_the_other_way_from_home_is_admitted(self) -> None:
         elbow_down = _Arm((0.0, -math.pi / 2, -math.pi / 2, -math.pi / 2, math.pi / 2, 0.0))
         self.assertTrue(_judged(self.guard, [0.0, -90.0, 120.0, -90.0, 90.0, 0.0], elbow_down).accepted)
-        # The control: an arm of another vendor with the same table has its axis 2 narrowed like any other.
+        # The control: an arm nobody describes, with the same table, has its axis 2 narrowed like any other. The
+        # vendor does not decide (P0d D5): the Isaac arm reports the UR it drives and keeps its elbow too.
         other = JointLimitGuard(JointLimitSafetyConfig(
             within_half_turn_of_home=True, min_deg=[-360.0] * 6, max_deg=[360.0] * 6))
+        nobody = _Arm(elbow_down.home_joint_positions, model="dummy-6dof", vendor="dummy")
+        self.assertIs(SafetyReason.JOINT_LIMIT, _judged(other, [0.0, -90.0, 120.0, -90.0, 90.0, 0.0], nobody).reason)
         sim = _Arm(elbow_down.home_joint_positions, vendor="sim")
-        self.assertIs(SafetyReason.JOINT_LIMIT, _judged(other, [0.0, -90.0, 120.0, -90.0, 90.0, 0.0], sim).reason)
+        self.assertTrue(_judged(other, [0.0, -90.0, 120.0, -90.0, 90.0, 0.0], sim).accepted)
 
     def test_an_angle_at_the_seam_has_no_twin_inside_and_is_told_so(self) -> None:
         refused = _judged(self.guard, [0.0, -90.0, 0.0, -90.0, 0.0, 178.0], self.home)
@@ -198,7 +216,7 @@ class TheGuardTests(unittest.TestCase):
                 self.assertIs(SafetyReason.UNAVAILABLE, decision.reason)
         decision = _judged(self.guard, [0.0] * 6, _Arm())
         self.assertIn("home_joint_positions", decision.message)
-        self.assertIsNone(self.guard.limits_for(vendor="ur", model="ur10"))
+        self.assertIsNone(self.guard.limits_for(model="ur10"))
         self.assertIsNone(self.guard.limits_for_arm(_Arm()))
         self.assertIsNone(stated_home_rad(_Arm(MagicMock())), "a mock's attribute read as a home")
 
@@ -232,11 +250,16 @@ class TheBuildTests(unittest.TestCase):
         assert_joint_limit_table_available(self._arm(_HOME))
 
     def test_the_ur_driver_states_the_home_it_drives_to(self) -> None:
-        self.assertEqual(_HOME, _ur().home_joint_positions)
-        self.assertEqual(HOME_JOINTS_DEFAULT, _ur(home=None).home_joint_positions)
-        explicit = URRobotArm(_ur().config, home_joints=[0.5] * 6)
-        self.assertEqual((0.5,) * 6, explicit.home_joint_positions)
-        assert_joint_limit_table_available(_ur())
+        """The UR driver's own: the tree's home, the description's where the tree names none, or the one handed in."""
+        from src.robot.drivers.ur.arm import URRobotArm
+
+        def driver(home_joints: "list[float] | None" = None, **kwargs: Any) -> URRobotArm:
+            return URRobotArm(_tree(**kwargs), home_joints=home_joints)
+
+        self.assertEqual(_HOME, driver().home_joint_positions)
+        self.assertEqual(described_home("ur10"), driver(home=None).home_joint_positions)
+        self.assertEqual((0.5,) * 6, driver([0.5] * 6).home_joint_positions)
+        assert_joint_limit_table_available(driver())
 
 
 # ------------------------------------------------------------------------------------------------------------------
@@ -246,12 +269,13 @@ class TheBuildTests(unittest.TestCase):
 
 class TheDriverTests(unittest.TestCase):
     def test_the_goal_window_is_the_half_turn_about_home_less_the_margin(self) -> None:
-        lower, upper = _ur()._goal_joint_window()
+        lower, upper = _ur().goal_joint_window()
+        planner_lower, planner_upper = planner_envelope_rad("ur10")
         for axis, home in enumerate(_HOME):
             with self.subTest(axis=axis):
                 reach = math.radians(355.0 if axis == UR_ELBOW_AXIS else 175.0)
-                self.assertAlmostEqual(max(PLANNER_JOINT_ENVELOPE_RAD[0][axis], home - reach), lower[axis])
-                self.assertAlmostEqual(min(PLANNER_JOINT_ENVELOPE_RAD[1][axis], home + reach), upper[axis])
+                self.assertAlmostEqual(max(planner_lower[axis], home - reach), lower[axis])
+                self.assertAlmostEqual(min(planner_upper[axis], home + reach), upper[axis])
 
     def test_a_wrist_near_the_seam_is_turned_back_rather_than_across_it(self) -> None:
         """Wrist 3 at 170 deg, home at 0.1 rad; the goal's -170 deg is 20 deg away across the seam, at 190."""
@@ -266,7 +290,7 @@ class TheDriverTests(unittest.TestCase):
         within = _Planner(here=here)
         with without_camera_world_of(_driven(within, judged=False)) as arm:
             result = arm.move(pose_where_it_ends(arm, end))
-            lower, upper = arm._goal_joint_window()
+            lower, upper = arm.goal_joint_window()
         self.assertTrue(result.ok, result.message)
         for goal in _asked(within):
             for axis, value in enumerate(goal):
@@ -275,7 +299,7 @@ class TheDriverTests(unittest.TestCase):
 
     def test_no_goal_outside_the_window_is_ever_asked_for(self) -> None:
         rng = np.random.default_rng(7)
-        lower, upper = _ur()._goal_joint_window()
+        lower, upper = _ur().goal_joint_window()
         for trial in range(12):
             here = [rng.uniform(low + 0.2, high - 0.2) for low, high in zip(lower, upper)]
             end = [q + rng.normal(0.0, 1.0) for q in here]
@@ -306,11 +330,10 @@ class TheDriverTests(unittest.TestCase):
         station = [*_HOME[:5], _HOME[5] + math.radians(190.0)]
         planner = _Planner(here=here)
         arm = _driven(planner, judged=False)
-        arm._conn.moveJ.return_value = True
-        with without_camera_world_of(arm), self.assertLogs("URRobotArm", level="INFO") as logs:
+        with without_camera_world_of(arm), self.assertLogs(LOGGER_NAME, level="INFO") as logs:
             result = arm.move_to_joints(JointPositions(station))
         self.assertTrue(result.ok, result.message)
-        ((sent, *_), _) = arm._conn.moveJ.call_args
+        sent = arm._transport.calls("run_trajectory")[-1].args[0][-1]
         self.assertAlmostEqual(_HOME[5] - math.radians(170.0), sent[5], places=9)
         np.testing.assert_allclose(sent[:5], _HOME[:5], atol=0.0)
         self.assertIn("twin wrap wrist_3_joint", "\n".join(logs.output))
@@ -343,11 +366,11 @@ def test_a_plan_that_passes_outside_is_refused_by_the_path_gate() -> None:
 class without_camera_world_of:  # noqa: N801 (a context manager read as a phrase)
     """The arm, inside its own ``without_camera_world``, for a planner double that holds no world."""
 
-    def __init__(self, arm: URRobotArm) -> None:
+    def __init__(self, arm: PlannedArm) -> None:
         self.arm = arm
         self._inner: Any = None
 
-    def __enter__(self) -> URRobotArm:
+    def __enter__(self) -> PlannedArm:
         self._inner = self.arm.without_camera_world(_DECLINED)
         self._inner.__enter__()
         return self.arm
@@ -361,8 +384,8 @@ class without_camera_world_of:  # noqa: N801 (a context manager read as a phrase
 # ------------------------------------------------------------------------------------------------------------------
 
 
-def _reachable(arm: URRobotArm, solutions: Any) -> bool:
-    lower, upper = arm._goal_joint_window()
+def _reachable(arm: PlannedArm, solutions: Any) -> bool:
+    lower, upper = arm.goal_joint_window()
     return bool(nearest_goals(solutions, current=list(arm.home_joint_positions), lower=lower, upper=upper,
                               velocity=1.0))
 
@@ -381,7 +404,7 @@ def test_the_window_makes_no_reachable_pose_unreachable(model: str) -> None:
     rng = np.random.default_rng(2026)
     before = _ur(safety={"joint_limits": {"margin_deg": 0.0}}, model=model)
     within = _ur(safety={"joint_limits": {"margin_deg": 0.0, "within_half_turn_of_home": True}}, model=model)
-    low, high = PLANNER_JOINT_ENVELOPE_RAD
+    low, high = planner_envelope_rad(model)
     checked = 0
     for _ in range(1500):
         home = tuple(rng.uniform(-math.radians(174.0), math.radians(174.0)) for _ in range(6))
@@ -407,7 +430,7 @@ def test_what_the_margin_costs_is_the_band_at_the_seam_behind_home() -> None:
     guard = next(g for g in shipped._preflight.guards if g.name == "joint_limit")
     self_margin = math.radians(guard.margin_deg)  # type: ignore[attr-defined]
     assert self_margin == pytest.approx(math.radians(5.0))
-    low, high = PLANNER_JOINT_ENVELOPE_RAD
+    low, high = planner_envelope_rad("ur10")
     lost = checked = 0
     for _ in range(4000):
         home = tuple(rng.uniform(-math.radians(174.0), math.radians(174.0)) for _ in range(6))
@@ -450,7 +473,7 @@ class TheDeskTests(unittest.TestCase):
         from src.robot.execution.real_cell.preflight import CheckStatus
 
         home_deg = (90.0, -90.0, 90.0, -90.0, -90.0, 0.0)
-        row = _desk_row(_ur(home=tuple(math.radians(v) for v in home_deg)).config)
+        row = _desk_row(_tree(home=tuple(math.radians(v) for v in home_deg)))
         self.assertIs(CheckStatus.BENCH, row.status, row.detail)
         self.assertIn("PolyScope Installation > Safety > Joint Limits > Position Range", row.detail)
         for name, centre in zip(("Base", "Shoulder", "Elbow", "Wrist 1", "Wrist 2", "Wrist 3"), home_deg):
@@ -463,7 +486,7 @@ class TheDeskTests(unittest.TestCase):
     def test_an_unset_home_warns_that_the_seam_follows_the_default(self) -> None:
         from src.robot.execution.real_cell.preflight import CheckStatus
 
-        row = _desk_row(_ur(home=None).config)
+        row = _desk_row(_tree(home=None))
         self.assertIs(CheckStatus.WARN, row.status)
         self.assertIn("Base -180.0 to 180.0", row.detail)
         self.assertIn("robot.home_joint_positions", row.fix)
@@ -471,12 +494,12 @@ class TheDeskTests(unittest.TestCase):
     def test_a_home_in_degrees_blocks(self) -> None:
         from src.robot.execution.real_cell.preflight import CheckStatus
 
-        row = _desk_row(_ur(home=(0.0, -90.0, 90.0, -90.0, -90.0, 0.0)).config)
+        row = _desk_row(_tree(home=(0.0, -90.0, 90.0, -90.0, -90.0, 0.0)))
         self.assertIs(CheckStatus.BLOCK, row.status)
         self.assertIn("radians", row.fix)
 
     def test_no_window_no_row(self) -> None:
-        self.assertIsNone(_desk_row(_ur(safety={}).config))
+        self.assertIsNone(_desk_row(_tree(safety={})))
 
 
 if __name__ == "__main__":

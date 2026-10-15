@@ -43,6 +43,36 @@ class PreflightCheckOut(BaseModel):
     fix: str = ""
 
 
+#: What the desk says of one operator function. Mirrors ``AbilityStatus``, pinned as a literal for the reason ``Status``
+#: is.
+AbilityStatusOut: TypeAlias = Literal["available", "refused", "bench"]
+
+
+class AbilityRowOut(BaseModel):
+    """One operator function and what the desk says of it, exactly as ``CellAbilities`` produced it (P0i i4)."""
+
+    ability: str
+    status: AbilityStatusOut
+    #: The function's own refusal, verbatim, for ``refused``; what the answer rests on otherwise.
+    reason: str
+    fix: str = ""
+
+
+class AbilitiesOut(BaseModel):
+    """Every operator function of the console's cell, asked of the arm its tree builds, never connected.
+
+    Beside the checklist, never a verdict of its own: a refused function blocks nothing (owner, 2026-09-26, decision 3).
+    """
+
+    abilities: list[AbilityRowOut]
+    n_available: int
+    n_refused: int
+    n_bench: int
+    #: The profile chain these were read under, for the reason ``PreflightOut`` carries it.
+    profile: str | None = None
+    vendor: str
+
+
 class PreflightOut(BaseModel):
     """The whole checklist plus the one-line verdict the operator acts on."""
 
@@ -297,6 +327,11 @@ class VendorReadinessOut(BaseModel):
     registered: bool
     ready: bool
     note: str
+    #: The systems this driver runs on, by ``sys.platform`` name. Empty means no claim, not "runs
+    #: nowhere": the backend declares a platform only where it measured one that refuses the driver.
+    #: A console that hides a Linux-only vendor behind "SDK not installed" sends the operator to
+    #: install a wheel that does not exist for their machine.
+    platforms: list[str] = Field(default_factory=list)
     sdks: list[SdkOut] = Field(default_factory=list)
 
 
@@ -430,6 +465,12 @@ class TelemetryOut(BaseModel):
     protective_stopped: bool | None = None
     emergency_stopped: bool | None = None
     controller_message: str | None = None
+    #: The fault the controller state describes, what a person does about it, and the command a person at the cell
+    #: runs to acknowledge it where software can (``None`` where it cannot: an emergency button, a controller powered
+    #: off). The console shows them and clears nothing (owner, 2026-09-19 and 2026-09-26).
+    fault: str | None = None
+    fault_what_to_do: str | None = None
+    fault_clear_with: str | None = None
 
     #: Three-valued and never False: True = provably a simulator, None = this console cannot tell.
     #: `simulated` above is about the driver and is correctly False for URSim, which is real UR

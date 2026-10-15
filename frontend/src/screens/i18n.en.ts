@@ -131,6 +131,10 @@ const en: Record<keyof typeof de, string> = {
   'cl.tel.k.protective': 'protective stop',
   'cl.tel.k.emergency': 'emergency stop',
   'cl.tel.k.says': 'controller says',
+  'cl.tel.k.fault': 'fault',
+  'cl.tel.k.whatToDo': 'what to do',
+  'cl.tel.k.clearWith': 'clear it at the cell',
+  'cl.tel.notFromSoftware': 'not from software: see what to do',
   'cl.tel.stopped': 'stopped',
   'cl.tel.no': 'no',
   'cl.tel.notAsked':
@@ -188,7 +192,7 @@ const en: Record<keyof typeof de, string> = {
   'cf.key.cog.hint': 'Measured from the flange, in the same session as the mass. [0, 0, 0] would put the whole tool at the flange as a point.',
   'cf.key.tfSource.label': 'Tool frame: who owns it',
   'cf.key.tfSource.hint':
-    '“willy” if the controller runs a bare flange and the driver adds the offset; “polyscope” if the TCP is set on the pendant. Connect checks either.',
+    '“willy” if the controller runs a bare flange and the driver adds the offset; “controller” if the TCP is set on the pendant. Connect checks either.',
   'cf.key.tfOffset.label': 'Tool frame: flange → grasp centre offset',
   'cf.key.tfOffset.hint': 'Where the grasp centre sits from the flange face, measured on the real coupling.',
   'cf.key.tfRotation.label': 'Tool frame: flange → grasp centre rotation',

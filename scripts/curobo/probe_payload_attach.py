@@ -58,7 +58,7 @@ sys.path.insert(0, str(_ROOT))
 
 from src.config.schema.robot import RobotConfig  # noqa: E402
 from src.contracts import chosen  # noqa: E402
-from src.robot.drivers.sim.robot_models import curobo_arm_descriptor  # noqa: E402
+from src.config.arms import curobo_descriptor_name  # noqa: E402
 from src.robot.safety._ur_kinematics import ur_link_transforms_mm  # noqa: E402
 from src.robot.safety.planning import CuroboPlanClient, CuroboUnavailableError  # noqa: E402
 from src.robot.safety.planning.body_link import HandLink, coupling_bodies  # noqa: E402
@@ -86,12 +86,12 @@ _DOWN_Q = (0.0, -1.5708, 1.5708, -1.5708, -1.5708, 0.0)
 
 
 def _cell() -> RobotConfig:
-    """The combination the committed ``ur5e_robotiq_2f85_c0mm_+Z+X_m4mm_a0`` file names, declared as matrix_gate does."""
+    """The combination the committed ``ur5e_robotiq_2f85_c0mm_+Z+X_m4mm_a0`` file names, declared as scripts/arms/gate.py does."""
     return RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": _ARM, "motion_planner": "curobo"},
+        "ur": {"model": _ARM}, "motion": {"planner": "curobo"},
         "safety": {"payload": {"enforce": False},
-                   "self_collision": {"backend": "fcl", "kinematics_model": _ARM, "planner_margin_mm": _MARGIN_MM}},
+                   "self_collision": {"backend": "fcl", "planner_margin_mm": _MARGIN_MM}},
         "gripper": {"model": "robotiq_2f85", "coupling_plates": [], "tool_frame": {
             "source": "willy", "offset_mm": [0.0, 0.0, 1.0], "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
     })
@@ -168,7 +168,7 @@ def main(argv: "list[str] | None" = None) -> int:
     if not chosen(hand) or not chosen(hand.placement):
         print("the cell places no hand on the flange, so there is no carried part to hang from it", file=sys.stderr)
         return 2
-    link = HandLink.from_hand(hand)
+    link = HandLink.from_hand(hand, arm=_ARM)
     spheres = hand_spheres(hand, _ARM)
     assert spheres is not None
     approach_tool0 = np.asarray(hand.placement.approach_in_tool0, dtype=np.float64)
@@ -192,8 +192,8 @@ def main(argv: "list[str] | None" = None) -> int:
 
     default_q = read_retract(_ARM, hand.model, float(hand.coupling_mm), _MARGIN_MM,
                              placement=f"{link.placement.approach}{link.placement.closing}")
-    client = CuroboPlanClient(robot_config=curobo_arm_descriptor(_ARM), self_collision_margin_mm=_MARGIN_MM,
-                              body_links=[link.to_dict(), *coupling_bodies(hand)], default_q=default_q)
+    client = CuroboPlanClient(robot_config=curobo_descriptor_name(_ARM), self_collision_margin_mm=_MARGIN_MM,
+                              body_links=[link.to_dict(), *coupling_bodies(hand, arm=_ARM)], default_q=default_q)
     client.reserve_attach_spheres(_SLOTS)
     try:
         client.start()

@@ -93,14 +93,15 @@ def main(argv: list[str] | None = None) -> int:
         # The hand comes from the one name the guard takes it from, robot.gripper.model, so the
         # doctor and the guard cannot be asked about different grippers.
         from src.contracts import chosen
-        from src.robot.drivers.sim.robot_models import NO_DESCRIPTOR, curobo_arm_descriptor
+        from src.config import ConfigError
+        from src.config.arms import NO_DESCRIPTOR, curobo_descriptor_name
 
         gripper = stack.hand if chosen(stack.hand) else None
         descriptor = NO_DESCRIPTOR
         if gripper:
             try:
-                descriptor = curobo_arm_descriptor(model)
-            except ValueError as exc:
+                descriptor = curobo_descriptor_name(model)
+            except ConfigError as exc:
                 descriptor = f"<none: {exc}>"
         report = run_doctor(model=model, robot_config=descriptor, gripper=gripper, cell=stack.cell, data_dir=args.data)
         if args.json:

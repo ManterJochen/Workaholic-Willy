@@ -22,7 +22,6 @@ _provenance:
     fresh_reach_max_mm: 29.844
     fresh_samples: 20000
     sample_spacing_mm: 5.07
-    seconds: 33.7
   - body: upper_arm
     frame: 2
     why: NVIDIA's chain of seven along the arm's axis; nine at 30 mm reach
@@ -41,7 +40,6 @@ _provenance:
     fresh_reach_max_mm: 29.747
     fresh_samples: 20000
     sample_spacing_mm: 8.498
-    seconds: 34.7
   - body: forearm
     frame: 3
     why: NVIDIA's chain of seven; the forearm meets a bin wall, so 25 mm reach
@@ -60,7 +58,6 @@ _provenance:
     fresh_reach_max_mm: 24.86
     fresh_samples: 20000
     sample_spacing_mm: 6.176
-    seconds: 33.8
   - body: wrist_1
     frame: 4
     why: NVIDIA's one sphere on the joint
@@ -73,7 +70,6 @@ _provenance:
     fresh_reach_max_mm: 24.792
     fresh_samples: 20000
     sample_spacing_mm: 3.32
-    seconds: 30.6
   - body: wrist_2
     frame: 5
     why: NVIDIA's one sphere on the joint
@@ -86,7 +82,6 @@ _provenance:
     fresh_reach_max_mm: 24.82
     fresh_samples: 20000
     sample_spacing_mm: 3.186
-    seconds: 36.5
   - body: wrist_3
     frame: 6
     why: NVIDIA's flange sphere; the hand and the camera are bodies of their own
@@ -99,7 +94,6 @@ _provenance:
     fresh_reach_max_mm: 29.813
     fresh_samples: 20000
     sample_spacing_mm: 2.217
-    seconds: 7.5
   dh_m:
   - - 0.0
     - 0.1807

@@ -42,6 +42,7 @@ from src.robot.grasping.loop.target_selector import (
     OrderingReason,
     TargetOrderingConfig,
 )
+from src.robot.core.motion_result import MotionCommand, MotionResult
 
 
 # ---------------------------------------------------------------------------
@@ -62,10 +63,11 @@ class _FakeArm:
     def get_tcp_pose(self) -> Pose:
         return self._tcp
 
-    def move_to(self, pose: Pose, **_: object) -> None:
+    def move(self, pose: Pose, **_: object) -> MotionResult:
         self.move_to_calls.append(pose)
         if pose.frame == Frame.BASE:
             self._tcp = pose
+        return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
 
 
 class _FakePerception:

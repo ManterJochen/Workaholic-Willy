@@ -120,7 +120,7 @@ def _score_booted_cell(
     # the real object-top geometry, which discriminates flat from curved, at the correct Z.
     _park = getattr(sim, "park_joint_positions", None)
     park_q = np.asarray(_park if _park is not None else sim.home_joint_positions, dtype=np.float64)
-    arm.move_joint(JointPositions(park_q))
+    arm.move_to_joints(JointPositions(park_q)).raise_unless_executed()
     arm.session.step_n(15)
     try:
         handles.camera.set_clipping_range(0.05, 1.0e6)
@@ -182,7 +182,7 @@ def _score_booted_cell(
         quat = _quaternion_from_axes(closing, approach)
         for label, gap in (("standoff", standoff_mm), ("near-contact", near_gap_mm)):
             target = pos - approach * float(gap)  # back off along the approach (above a top face)
-            arm.move_joint(JointPositions(home_q))
+            arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
             arm.session.step_n(10)
             res = arm.move(Pose(position_mm=target, quaternion_xyzw=quat, frame=Frame.BASE,
                                 label=f"suction-{label}"))
@@ -259,7 +259,7 @@ def _h74_booted_cell(
     # Perceive the true top-surface geometry (park + near-clip, as the score/pick paths).
     _park = getattr(sim, "park_joint_positions", None)
     park_q = np.asarray(_park if _park is not None else sim.home_joint_positions, dtype=np.float64)
-    arm.move_joint(JointPositions(park_q))
+    arm.move_to_joints(JointPositions(park_q)).raise_unless_executed()
     arm.session.step_n(15)
     try:
         handles.camera.set_clipping_range(0.05, 1.0e6)
@@ -325,7 +325,7 @@ def _h74_booted_cell(
 
     obj = SingleRigidPrim(handles.object_prim_path)
     z_before = float(np.asarray(obj.get_world_pose()[0])[2])
-    arm.move_joint(JointPositions(home_q))
+    arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
     arm.session.step_n(10)
     reached = False
     for label, gap in (("standoff", 60.0), ("contact", 25.0)):
@@ -428,7 +428,7 @@ def _pick_booted_cell(
     # Perceive the true object-top geometry (park + near-clip; see _score_booted_cell for the why).
     _park = getattr(sim, "park_joint_positions", None)
     park_q = np.asarray(_park if _park is not None else sim.home_joint_positions, dtype=np.float64)
-    arm.move_joint(JointPositions(park_q))
+    arm.move_to_joints(JointPositions(park_q)).raise_unless_executed()
     arm.session.step_n(15)
     try:
         handles.camera.set_clipping_range(0.05, 1.0e6)
@@ -490,7 +490,7 @@ def _pick_booted_cell(
     z_before = float(np.asarray(obj.get_world_pose()[0])[2])
 
     # Approach: home, then standoff, then contact, descending the approach to just above the sealable top.
-    arm.move_joint(JointPositions(home_q))
+    arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
     arm.session.step_n(10)
     contact_reached = False
     for label, gap in (("standoff", standoff_mm), ("contact", contact_gap_mm)):
@@ -604,7 +604,7 @@ def run_probe(*, headless: bool = True, data_dir: str | None = None,
                f"gpath={gpath_holder['path']}")
 
     def reach(label: str, x: float, y: float, z: float) -> bool:
-        arm.move_joint(JointPositions(home_q))
+        arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
         arm.session.step_n(10)
         seed = np.round(np.asarray(arm.get_joint_positions().values, dtype=np.float64), 3).tolist()
         res = arm.move(Pose(position_mm=np.array([x, y, z]), quaternion_xyzw=q_down,
@@ -808,7 +808,7 @@ def _klt_probe_booted_cell(
     # (1) Perceive the off-center object at the bottom of the deep cavity: park first, then set the near-clip.
     _park = getattr(sim, "park_joint_positions", None)
     park_q = np.asarray(_park if _park is not None else sim.home_joint_positions, dtype=np.float64)
-    arm.move_joint(JointPositions(park_q))
+    arm.move_to_joints(JointPositions(park_q)).raise_unless_executed()
     arm.session.step_n(15)
     try:
         handles.camera.set_clipping_range(0.05, 1.0e6)
@@ -861,7 +861,7 @@ def _klt_probe_booted_cell(
     # (3) Reach a standoff above the rim on the approach line, so the baked 2F-85 never touches the walls,
     #     then read the measured arm-link world poses. That answer is independent of the end effector.
     standoff = np.array([pos[0], pos[1], float(wall_height_mm) + float(rim_margin_mm)], dtype=np.float64)
-    arm.move_joint(JointPositions(home_q))
+    arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
     arm.session.step_n(10)
     res = arm.move(Pose(position_mm=standoff, quaternion_xyzw=quat, frame=Frame.BASE, label="klt-standoff-above-rim"))
     reach_ok = getattr(getattr(res, "status", None), "value", None) == "executed"

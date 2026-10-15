@@ -65,11 +65,11 @@ from tests.test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards import 
 from tests.test_a_stopped_controller_moves_no_jaws import _PROTECTIVE, _pulses, _toggle
 
 _RUNNING = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.NORMAL, protective_stopped=False,
-                       emergency_stopped=False)
+                       emergency_stopped=False, program_running=True)
 _CAPS = RobotCapabilities(
-    vendor="ur", model="ur10", dof=6, supports_joint_move=True, supports_linear_move=True,
-    supports_async_move=False, has_native_fk=True, has_native_ik=True, has_force_control=False,
-    is_simulated=False,
+    vendor="ur", model="ur10", dof=6,
+    has_native_fk=True,
+    is_simulated=False, controller=None, owns_a_controller=True,
 )
 #: What the arm says of a lift it would refuse with the part in its jaws: the planner's world, a part carried.
 _HELD = MotionResult.failed(
@@ -107,7 +107,7 @@ class _LineArm:
         self.events.append("status")
         return _RUNNING
 
-    def recover_from_protective_stop(self) -> bool:  # pragma: no cover - never called, by design
+    def acknowledge_fault(self, fault: object) -> bool:  # pragma: no cover - never called, by design
         raise AssertionError("nothing on the pick path may clear a stop")
 
     def wait_until_steady(self, timeout_s: float = 5.0, poll_interval_s: float = 0.02) -> bool:
@@ -136,6 +136,14 @@ class _LineArm:
     def attach_payload(self, width_mm: float) -> bool:
         self.events.append(("attach", round(float(width_mm), 2)))
         return True
+
+    # The whole payload capability (CarriesPayload), because an arm carries one or does not: the policy asks by
+    # isinstance, and an arm with half of it carries none.
+    def payload_declined_reason(self) -> "str | None":
+        return None
+
+    def payload_model(self) -> PayloadModel:
+        return PayloadModel.PLANNER_AND_FILTER
 
 
 class _JudgingArm(_LineArm):
@@ -207,9 +215,8 @@ _LIFT = (-130.0, -600.0, 180.0)
 
 
 def _policy(arm: Any, jaws: Any, **kwargs: Any) -> GraspExecutionPolicy:
-    """The service's policy on the owner's cell: the steady gate on, a pre-open the toggle skips."""
-    return GraspExecutionPolicy(arm=arm, gripper=jaws, pre_open_width_mm=49.99, require_steady_before_motion=True,
-                                **kwargs)
+    """The service's policy on the owner's cell: a pre-open the toggle skips; the steady gate is the arm's own."""
+    return GraspExecutionPolicy(arm=arm, gripper=jaws, pre_open_width_mm=49.99, **kwargs)
 
 
 def _moves(events: "list[Any]") -> "list[tuple[Any, ...]]":
@@ -707,14 +714,13 @@ def _modelled_cell() -> "tuple[Any, _CarryingPlanner]":
 
     arm: Any = URRobotArm(RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": "ur10", "motion_planner": "curobo"},
+        "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
         "workspace_limits": OPEN_WORKSPACE,
         "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}],
                     "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 155.75],
                                    "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
         "safety": {"payload": {"enforce": False},
-                   "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "kinematics_model": "ur10",
-                                      "planner_margin_mm": 4.0},
+                   "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "planner_margin_mm": 4.0},
                    "planning_world": {"payload": {"length_mm": 120.0}}},
     }))
     arm._conn = MagicMock()
@@ -725,7 +731,7 @@ def _modelled_cell() -> "tuple[Any, _CarryingPlanner]":
     arm._preflight.set_perceived_obstacles(boxes)
     planner = _CarryingPlanner(arm, (_BENCH, *boxes))
     planner.here = list(Q)
-    arm._curobo_ur = planner
+    arm._curobo = planner
     arm.set_hand(KNOWN_OPEN)
     return arm, planner
 
@@ -929,14 +935,13 @@ def _ik_arm() -> Any:
 
     arm: Any = URRobotArm(RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": "ur10", "motion_planner": "ik"},
+        "ur": {"model": "ur10"}, "motion": {"planner": "ik"},
         "workspace_limits": {**OPEN_WORKSPACE, "z_max": 1000.0},
         "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}],
                     "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 155.75],
                                    "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
         "safety": {"payload": {"enforce": False}, "ik_quality": {"enforce": False},
-                   "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "kinematics_model": "ur10",
-                                      "planner_margin_mm": 4.0}},
+                   "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "planner_margin_mm": 4.0}},
     }))
     arm._conn = MagicMock()
     arm._conn.is_connected = True

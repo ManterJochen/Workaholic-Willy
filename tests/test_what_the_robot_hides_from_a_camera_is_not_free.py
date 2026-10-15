@@ -129,7 +129,7 @@ def _first_colliding_sample(start_deg: "tuple[float, ...]", end_deg: "tuple[floa
     """The joint path from ``start_deg`` to ``end_deg`` sampled as the gate samples it, and the first sample, 1-based, at
     which the arm meets ``solid`` (0 where it never does): the truth, ``solid`` as an exact fixture."""
     truth = SelfCollisionGuard(SelfCollisionSafetyConfig(
-        kinematics_model="ur10", min_distance_mm=0.001,
+        min_distance_mm=0.001,
         fixtures=[FixtureBoxConfig(name="truth", center_mm=solid.centre, half_extents_mm=solid.half)]), **guard)
     samples = joint_path_samples(tuple(math.radians(v) for v in start_deg), tuple(math.radians(v) for v in end_deg),
                                  reach_mm=SafetyPreflight([truth]).joint_radii_mm(_ARM), max_step_mm=10.0)
@@ -211,7 +211,7 @@ def _hande() -> Any:
 
 
 def _hand_guard(**config: Any) -> SelfCollisionGuard:
-    return SelfCollisionGuard(SelfCollisionSafetyConfig(kinematics_model="ur10", **config), hand=_hande())
+    return SelfCollisionGuard(SelfCollisionSafetyConfig(**config), hand=_hande())
 
 
 class TheHandHidesNothingItStandsBesideTests(unittest.TestCase):

@@ -30,8 +30,9 @@ import unittest
 
 import numpy as np
 
-from src.robot.drivers.ur.tool_frame import compare_tool_frames, derive_active_tool_frame
-from src.robot.safety._ur_kinematics import UR_DH_TABLES_M, ur_link_transforms_mm, ur_series_twin
+from src.geometry.matrix import compare_tool_frames
+from src.robot.drivers.planned.tool_frame import derive_active_tool_frame
+from src.robot.safety._ur_kinematics import ur_dh_rows, ur_link_transforms_mm, ur_series_twin
 
 #: The driver margin, mirrored so this file states what it is testing against.
 _TWIN_MARGIN_MM = 1.0
@@ -60,7 +61,7 @@ class TheTwinRelationTests(unittest.TestCase):
         """⭐ THE CONTROL. Without it, a twin function returning a plausible string for everything
         would pass the test above. ur16e has no bundled UR16 row, so it must return None rather than
         a name nothing can look up."""
-        self.assertNotIn("ur16", UR_DH_TABLES_M, "this control needs ur16 to stay unbundled")
+        self.assertIsNone(ur_dh_rows("ur16"), "this control needs ur16 to stay undescribed")
         self.assertIsNone(ur_series_twin("ur16e"))
         self.assertIsNone(ur_series_twin("definitely-not-a-robot"))
         self.assertIsNone(ur_series_twin(None))
@@ -71,7 +72,7 @@ class TheTwinRelationTests(unittest.TestCase):
         this is worth asserting rather than assuming."""
         for a, b in _TWINS:
             with self.subTest(pair=(a, b)):
-                self.assertNotEqual(UR_DH_TABLES_M[a], UR_DH_TABLES_M[b])
+                self.assertNotEqual(ur_dh_rows(a), ur_dh_rows(b))
 
 
 class TheTwinsHideInsideTheToleranceTests(unittest.TestCase):

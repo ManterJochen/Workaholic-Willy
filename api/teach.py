@@ -23,7 +23,7 @@ where both clear it or it lies in the planner's band. This module is the browser
   beacon), a halt (the run's flag, or the arm's own latch however it was set), a stop request and a Disconnect hold at
   once (the view's ``finish``). A Disconnect holds the arm before it takes it down: the session asks every open teach
   to hold first (``CellSession.teaches``), whichever way the Disconnect came;
-* the RTDE watchdog of the freedrive session still stops a server that died (``src/robot/drivers/ur/freedrive.py``);
+* the RTDE watchdog of the freedrive session still stops a server that died (``src/robot/drivers/planned/freedrive.py``);
 * the console's microphone is the browser's to switch off during a teach (Q15); a sentence typed meanwhile is refused,
   because ``POST /v1/commands/parse`` refuses during any run.
 
@@ -595,10 +595,13 @@ def poses(console: "Console") -> PosesOut:
     (``config``). ``why_not`` is the teach's own refusal, asked without freeing anything, or the chain's (no layer of
     the cell's own).
     """
-    from src.robot.constants import HOME_JOINTS_DEFAULT  # noqa: PLC0415
+    from src.config.arms import described_home  # noqa: PLC0415
 
     app, robot = console.resolved()
-    home = robot.home_joint_positions or HOME_JOINTS_DEFAULT
+    # The cell's own home, else the one its arm's description states (P0e E4). An arm nobody describes, the desk
+    # dummy's, has no home of its own to show unless the cell declares one: it stands where it was built.
+    selected = robot.arm
+    home = robot.home_joint_positions or described_home(selected.model) or ()
     named = [
         PoseOut(name=name, label=pose.label, joints_deg=[float(v) for v in pose.joints_deg],
                 source="taught" if pose.taught_at else "config", screen=pose.screen, note=pose.note,

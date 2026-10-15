@@ -2,9 +2,9 @@
 
 ``GraspMotion`` is what a caller may choose about the approach, the close and the lift. It carries no arm, no hand and
 no guard. The pick service builds the one :class:`GraspExecutionPolicy` it drives from it, with the arm and hand it
-resolved, the base frame guard where a frame resolver is wired, the dwell gate the tree asks for, and the jaws opened
-to the hand's width before every approach (a hand that toggles with no sensor is asked where its jaws stand instead,
-and never switched before the arm moves). A policy built by hand drives whatever arm it holds and carries only the
+resolved, the base frame guard where a frame resolver is wired, and the jaws opened to the hand's width before every
+approach (a hand that toggles with no sensor is asked where its jaws stand instead, and never switched before the arm
+moves); the steady gate is the arm's own since P0e E9. A policy built by hand drives whatever arm it holds and carries only the
 guards its builder set, so while ``policy=`` is still accepted the service refuses one whose arm or hand is not its own.
 
     from src.robot.grasping.motion.grasp_motion import GraspMotion
@@ -149,13 +149,12 @@ def build_execution_policy(
     standoff_mm: float,
     retreat_mm: float,
     base_frame_required: bool,
-    dwell: Any = None,
 ) -> GraspExecutionPolicy:
     """The one policy a pick service drives: the caller's motion, the service's arm and hand, and every guard.
 
     ``base_frame_required`` is whether a frame resolver is wired, so a camera frame grasp is refused before any
-    motion. ``dwell`` is the tree's ``safety.dwell`` block, read by name: its steady gate holds every move until the
-    arm stands still. The jaws open to ``motion.pre_open_width_mm``, else the hand's widest, before every approach,
+    motion. The steady gate (``safety.dwell``) is the arm's own since P0e, inside every motion verb. The jaws open to
+    ``motion.pre_open_width_mm``, else the hand's widest, before every approach,
     except on a hand that toggles with no sensor, which takes no width and is never switched before the arm moves: its
     pre-open is dropped and no width is checked. Refused (``ValueError``): a pre-open wider than the hand opens, and a
     pre-open on a service that drives no hand.
@@ -192,9 +191,6 @@ def build_execution_policy(
         require_base_frame_grasp=bool(base_frame_required),
         **chosen_fields,
     )
-    if dwell is not None:
-        policy.require_steady_before_motion = bool(getattr(dwell, "require_steady_before_motion", False))
-        policy.steady_timeout_s = float(getattr(dwell, "steady_timeout_s", 5.0))
     return policy
 
 

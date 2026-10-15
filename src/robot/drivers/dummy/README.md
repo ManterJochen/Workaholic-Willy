@@ -35,7 +35,7 @@ cell builds the arm with these defaults: the `robot.dummy` block carries no fiel
 |---|---|---|
 | `INVALID_TARGET` from `move` | a pose not in `Frame.BASE` | Tag the pose with the base frame |
 | `CONNECTION_ERROR` from `move` | a move before `connect()` | Connect first |
-| a typed error from `move_to`, `move_linear` and the reads | the same two faults; these check the connection before the frame | The same |
+| a typed error from `move_linear` and the reads | the same two faults; these check the connection before the frame | The same |
 | `TypeError` | `model=` passed to the constructor | The model follows from `dof` |
 
 A joint vector whose length is not the arm's `dof` is refused too. `register` is accepted for Protocol

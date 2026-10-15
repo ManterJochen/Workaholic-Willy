@@ -179,7 +179,16 @@ def test_documented_run_module_commands_name_real_modules(doc: Path) -> None:
 #: The dead `python -m examples.*` commands were repointed at example and check scripts, which are
 #: run by PATH rather than by module name. Guarding only the `-m` form would have moved the rot
 #: rather than caught it.
-_RUN_SCRIPT = re.compile(r"python(?:\.bat)?\s+((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.py)\b")
+#:
+#: Isaac's launcher is `python.bat` on Windows and `python.sh` elsewhere, and a Linux command often says `python3`
+#: (P0h h9: the pattern saw `python.bat` alone, so the other two forms named files nothing checked).
+_RUN_SCRIPT = re.compile(r"python(?:3|\.bat|\.sh)?\s+((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.py)\b")
+
+
+def test_every_launcher_spelling_is_read() -> None:
+    """The control: each way a document starts a script is one this scan reads."""
+    text = "python scripts/a/b.py, python.bat scripts/c/d.py, python.sh scripts/e/f.py, python3 scripts/g/h.py"
+    assert _RUN_SCRIPT.findall(text) == ["scripts/a/b.py", "scripts/c/d.py", "scripts/e/f.py", "scripts/g/h.py"]
 
 
 @pytest.mark.parametrize("doc", _docs(), ids=lambda f: str(f.relative_to(_ROOT)).replace("\\", "/"))

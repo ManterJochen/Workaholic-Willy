@@ -157,8 +157,9 @@ def decomposition_refusal() -> "str | None":
     except OSError as exc:
         return (f"CoACD IS installed, and its native library could not be LOADED ({exc}). This is "
                 f"NOT a missing package and reinstalling will not help. On Windows this is usually "
-                f"Smart App Control refusing an unsigned build whose reputation it re-evaluated; "
-                f"read the CodeIntegrity event log before changing anything.")
+                f"Smart App Control refusing an unsigned build whose reputation it re-evaluated: "
+                f"read the CodeIntegrity event log before changing anything. Elsewhere it is a missing "
+                f"system library or an ABI mismatch.")
     return None
 
 

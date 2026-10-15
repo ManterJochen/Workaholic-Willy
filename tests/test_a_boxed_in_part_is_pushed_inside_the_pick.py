@@ -85,6 +85,7 @@ from src.robot.grasping.recovery.push_gate import PushCampaign, PushCell
 from src.robot.grasping.recovery.push_planner import AxisBox, PushHand
 from src.robot.grasping.types.feedback import GraspFailureReason, GraspResult
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
+from tests._helpers import PlansItsMotions
 from tests._wrist_views import CUBE, Box, LookingArm, WristCamera, camera_to_tool, joints_key
 from tests.test_a_toggle_asks_where_its_jaws_stand import Person, _changes, _toggle
 from tests.test_a_wrist_pick_looks_until_its_grasp_is_safe import (
@@ -116,9 +117,9 @@ LOOKS = (LOOK_PLUS_X, LOOK_MINUS_X, LOOK_PLUS_Y)
 PUSH_LABELS = ["push_p0", "push_down", "push_push", "push_back", "push_up"]
 
 _RUNNING = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.NORMAL, protective_stopped=False,
-                       emergency_stopped=False)
+                       emergency_stopped=False, program_running=True)
 _PROTECTIVE = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.PROTECTIVE_STOP,
-                          protective_stopped=True, emergency_stopped=False, message="Safetystatus: PROTECTIVE_STOP")
+                          protective_stopped=True, emergency_stopped=False, message="Safetystatus: PROTECTIVE_STOP", program_running=True)
 
 
 def _refused(status: MotionStatus, message: str = "refused") -> MotionResult:
@@ -154,7 +155,7 @@ class _Bench(WristCamera):
         return not any(box.label == "part" and box.low[:2] == CUBE.low[:2] for box in self.boxes)
 
 
-class _PushingArm(LookingArm):
+class _PushingArm(PlansItsMotions, LookingArm):
     """A cuRobo UR as the pick meets it: it judges every line (``LineMotion.CHECKED``, ``plans_paths``), reports its
     controller, holds the frames of a pick in its live world (``_World``) and writes every motion down.
 
@@ -170,7 +171,7 @@ class _PushingArm(LookingArm):
     def __init__(self, test: unittest.TestCase, *, answers: dict[str, Any] | None = None) -> None:
         super().__init__(_poses())
         self.test = test
-        self.live_planner_world = _World()
+        self.set_live_planner_world(_World())
         self.camera: _Bench | None = None
         self.pushes: list[tuple[str, tuple[float, ...], dict[str, Any]]] = []
         self.answers = dict(answers or {})
@@ -188,7 +189,7 @@ class _PushingArm(LookingArm):
             raise self.status
         return self.status
 
-    def recover_from_protective_stop(self) -> bool:
+    def acknowledge_fault(self, fault: object) -> bool:
         self.test.fail("nothing clears a protective stop but a person")
         return False
 
@@ -377,7 +378,7 @@ class _PushCell:
     def logged_world(self) -> "_LoggingWorld":
         """Swap the arm's live world for one that writes its offers and forgets onto the arm's motion log."""
         world = _LoggingWorld(self.arm.motions)
-        self.arm.live_planner_world = world
+        self.arm.set_live_planner_world(world)
         return world
 
 

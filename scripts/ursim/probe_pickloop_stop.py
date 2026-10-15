@@ -47,7 +47,7 @@ import numpy as np  # noqa: E402
 from probe_protective_stop import SINGULAR_Z_MM  # noqa: E402
 
 from src.config.loader import active_profile, load_robot_config  # noqa: E402
-from src.robot.core import RobotVendor  # noqa: E402
+from src.robot.core import ArmFault, RobotVendor  # noqa: E402
 from src.robot.drivers import create_arm  # noqa: E402
 from src.robot.drivers.ur.arm import URRobotArm  # noqa: E402
 from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator, PickOutcome  # noqa: E402
@@ -109,7 +109,7 @@ def _provoke(arm: URRobotArm, model: str) -> None:
     """
     z_m = SINGULAR_Z_MM.get(model, SINGULAR_Z_MM["ur5e"]) / 1000.0
     try:
-        arm.connection.moveL([0.0, 0.0, z_m, 0.0, 3.14, 0.0], 0.9, 1.2)
+        arm._conn.moveL([0.0, 0.0, z_m, 0.0, 3.14, 0.0], 0.9, 1.2)
     except Exception as exc:  # noqa: BLE001
         print(f"   raw moveL: {str(exc)[:60]}")
     time.sleep(3.0)
@@ -162,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"   outcome={rep.outcome.value}  reasons={[str(r) for r in reasons]}")
 
         print("\n=== B. provoke a real protective stop ===")
-        _provoke(arm, cfg.ur.model)
+        _provoke(arm, cfg.arm.model)
         st = arm.get_robot_status()
         print(f"   controller now: safety={st.safety_mode.value} "
               f"protective={st.protective_stopped} operational={st.is_operational}")
@@ -183,6 +183,16 @@ def main(argv: list[str] | None = None) -> int:
         ok = (rep.outcome == PickOutcome.CONTROLLER_NOT_OPERATIONAL
               and GraspFailureReason.CONTROLLER_NOT_OPERATIONAL in reasons)
         print(f"\n   {'PASS' if ok else 'FAIL'}: the loop reports the cell, not a failed grasp")
+
+        print("\n=== D. leave the cell as we found it ===")
+        # The probe provoked this stop itself, and a URSim run has a person at the pendant (Remote Control is
+        # switched by hand), so the probe acknowledges it the one way the stack offers.
+        fault = ArmFault.from_status(arm.get_robot_status())
+        if fault is not None:
+            print(f"   acknowledge_fault({fault.kind.value}) -> {arm.acknowledge_fault(fault)}")
+            time.sleep(2.0)
+            after = arm.get_robot_status()
+            print(f"   controller now: safety={after.safety_mode.value} operational={after.is_operational}")
         return _OK if ok else _FAILED
     finally:
         try:

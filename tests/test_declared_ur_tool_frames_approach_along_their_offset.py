@@ -20,7 +20,7 @@ import numpy as np
 
 from src.config import load_robot_config
 from src.config.loader import available_profiles
-from src.robot.drivers.ur.tool_frame import tool_frame_matrix
+from src.geometry.matrix import position_quaternion_to_matrix
 
 #: How far a declared approach axis may lean away from the tool offset before it is two conventions.
 _MAX_ANGLE_DEG = 1.0
@@ -35,7 +35,7 @@ class EveryDeclaredUrToolFrameApproachesAlongItsOffsetTests(unittest.TestCase):
             if robot.vendor != "ur" or frame.source == "undeclared":
                 continue
             offset = np.asarray(frame.offset_mm, dtype=np.float64)
-            approach = tool_frame_matrix(frame.offset_mm, frame.rotation_quat_xyzw)[:3, 2]
+            approach = position_quaternion_to_matrix(frame.offset_mm, frame.rotation_quat_xyzw)[:3, 2]
             cosine = float(np.dot(approach, offset / np.linalg.norm(offset)))
             angle = math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
             checked.append(layer)

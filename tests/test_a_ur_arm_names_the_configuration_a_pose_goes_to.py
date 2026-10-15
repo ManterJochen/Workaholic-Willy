@@ -45,10 +45,9 @@ from src.robot.core import (
 )
 from src.robot.core.arm_capabilities import ChoosesConfigurations
 from src.robot.drivers.dummy.arm import DummyRobotArm
-from src.robot.drivers.kuka.arm import KukaRobotArm
 from src.robot.drivers.sim.arm import IsaacRobotArm
 from src.robot.drivers.ur.arm import URRobotArm
-from src.robot.drivers.ur.curobo_motion import PLANNER_JOINT_ENVELOPE_RAD
+from src.robot.drivers.planned.curobo_motion import planner_envelope_rad
 from src.robot.safety._ur_ik import NearestGoal, nearest_goals, ur_branch, ur_flange_ik
 from src.robot.safety._ur_kinematics import ur_link_transforms_mm
 from tests._plan_end import OPEN_WORKSPACE, pose_where_it_ends
@@ -86,7 +85,7 @@ def _arm(planner: RoutePlanner, *, safety: "dict[str, Any] | None" = None,
          workspace: "dict[str, float] | None" = None, gripper: "dict[str, Any] | None" = None,
          **more: Any) -> URRobotArm:
     arm = URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": "ur10", "motion_planner": "curobo"},
+        "vendor": "ur", "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
         "safety": safety if safety is not None else _SAFETY,
         "gripper": gripper if gripper is not None else {"model": "robotiq_2f85"},
         "workspace_limits": workspace if workspace is not None else OPEN_WORKSPACE,
@@ -95,7 +94,7 @@ def _arm(planner: RoutePlanner, *, safety: "dict[str, Any] | None" = None,
     arm._conn = MagicMock()
     arm._conn.is_connected = True
     arm._conn.get_joint_positions.return_value = list(planner.here)
-    arm._curobo_ur = planner  # type: ignore[assignment]
+    arm._curobo = planner  # type: ignore[assignment]
     return arm
 
 
@@ -125,7 +124,7 @@ def _goals(arm: URRobotArm, end: "list[float]", here: "list[float]", *,
     assert frames is not None
     solutions = ur_flange_ik("ur10", frames[-1], q6_if_singular=here[-1])
     assert solutions
-    lower, upper = window if window is not None else arm._goal_joint_window()
+    lower, upper = window if window is not None else arm.goal_joint_window()
     return list(nearest_goals(solutions, current=here, lower=lower, upper=upper, velocity=1.0))
 
 
@@ -155,7 +154,7 @@ class TheConfigurationNamedTests(unittest.TestCase):
 
         self.assertIsInstance(named, JointPositions)
         np.testing.assert_allclose(named.tolist(), _THERE, atol=1e-6)
-        lower, upper = arm._goal_joint_window()
+        lower, upper = arm.goal_joint_window()
         for axis, value in enumerate(named.tolist()):
             self.assertTrue(lower[axis] <= value <= upper[axis], f"axis {axis} named at {math.degrees(value):.1f}")
         self.assertTrue(_on_the_arms_branch(named.tolist(), _HERE))
@@ -164,7 +163,7 @@ class TheConfigurationNamedTests(unittest.TestCase):
         # window the nearest turn on this one is wrist 3 at 200 deg, past the seam behind home.
         quickest = _goals(arm, _THERE, _HERE)[0]
         self.assertFalse(_on_the_arms_branch(quickest.joints, _HERE))
-        unwound = _goals(arm, _THERE, _HERE, window=PLANNER_JOINT_ENVELOPE_RAD)[0]
+        unwound = _goals(arm, _THERE, _HERE, window=planner_envelope_rad("ur10"))[0]
         self.assertTrue(_on_the_arms_branch(unwound.joints, _HERE))
         self.assertAlmostEqual(200.0, math.degrees(unwound.joints[5]), places=6)
 
@@ -265,7 +264,7 @@ class WhatIsRefusedTests(unittest.TestCase):
         arm = _arm(planner, safety=safety)
         asked = _gate_spy(arm)
         end = [*_THERE[:5], 2.0]
-        self.assertTrue(_goals(arm, end, list(_HOME), window=PLANNER_JOINT_ENVELOPE_RAD),
+        self.assertTrue(_goals(arm, end, list(_HOME), window=planner_envelope_rad("ur10")),
                         "the pose has to be reachable without the window, or this reads the inverse kinematics")
         with self.assertRaises(RobotKinematicsError) as caught:
             arm.nearest_configuration(pose_where_it_ends(arm, end))
@@ -423,10 +422,10 @@ class TheRouteTests(unittest.TestCase):
 
 class WhichArmsNameAConfigurationTests(unittest.TestCase):
     def test_only_the_ur_arm_names_a_configuration(self) -> None:
-        """The dummy's IK is a stand-in that must never place a camera; the KUKA and Isaac arms do not say yet."""
+        """The dummy's IK is a stand-in that must never place a camera; the Isaac arm does not say yet."""
         self.assertIsInstance(_arm(RoutePlanner(here=_HERE)), ChoosesConfigurations)
         self.assertNotIsInstance(DummyRobotArm(), ChoosesConfigurations)
-        for driver in (KukaRobotArm, IsaacRobotArm, DummyRobotArm):
+        for driver in (IsaacRobotArm, DummyRobotArm):
             with self.subTest(driver=driver.__name__):
                 self.assertFalse(hasattr(driver, "nearest_configuration"))
         self.assertFalse(hasattr(RobotArm, "nearest_configuration"),

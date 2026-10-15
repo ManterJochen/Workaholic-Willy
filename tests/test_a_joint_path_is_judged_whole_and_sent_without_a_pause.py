@@ -75,7 +75,7 @@ def _arm(planner: RoutePlanner, *, motion_planner: str = "curobo", world: "dict[
     if world is not None:
         safety["planning_world"] = world
     arm = URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": motion_planner},
+        "vendor": "ur", "ur": {"model": "ur5e"}, "motion": {"planner": motion_planner},
         "safety": safety, "gripper": {"model": "robotiq_2f85"},
         "workspace_limits": OPEN_WORKSPACE,
     }))
@@ -84,8 +84,8 @@ def _arm(planner: RoutePlanner, *, motion_planner: str = "curobo", world: "dict[
     arm._conn.get_joint_positions.return_value = list(planner.here)
     arm._conn.moveJ.return_value = True
     arm._conn.fk.return_value = [0.4, 0.0, 0.3, 0.0, 3.14159, 0.0]
-    arm._curobo_ur = planner  # type: ignore[assignment]
-    # The local path gate has its own tests (tests/test_ur_checked_joint_verbs.py); the destination guards stay real.
+    arm._curobo = planner  # type: ignore[assignment]
+    # The local path gate has its own tests (tests/test_a_joint_move_is_judged_as_a_path.py); the destination guards stay real.
     arm._preflight.gate_planned_path = lambda waypoints, *, arm=None, command=None: None  # type: ignore[method-assign]
     return arm
 

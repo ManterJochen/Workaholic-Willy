@@ -39,6 +39,7 @@ standard machine sets no environment variable ([ext_deps/README.md](../../../../
 | `CuroboPlanClient` | the driver, sized by the cell's reservation | `plan(goal)`, `check_joints(configs)` | joint waypoints; a verdict per sample |
 | `LivePlannerWorld` | the driver, from the cell's cameras and declared world | `world_for(...)` | a `PlannerWorldSnapshot` with its verdict |
 | `PlannerHand` | `planner_hand(robot, data_dir=...)` | read | the hand the planner and the guard model |
+| `MountedTool` | `MountedTool.from_config(robot)`, by the vendor driver at build | `render()`, `to_dict()`; `PlannedArm.mount_tool(tool)` | the hand, the tool frame and the payload on a planned arm's flange as one value; `ToolChangeRefused` on an arm that is connected |
 | `ExactPairs` | the exact guard, `SelfCollisionGuard.exact_pairs(arm)` | `decides(link_a, link_b)`, `distance_mm(joints, link_a, link_b)`; `first_low(configs, below_mm)`, `first_near_base(configs, within_mm)` | the guard's pair rule and distances in the planner's link names; the first configuration of a path that may come under a plane or near the robot's base, asked of the whole path at once where `self_collision.whole_path_judge` is on, else every one in turn |
 | `PathJudgement` | `CuroboPlanClient.judge_joints(configs, clearance_mm=, name_pairs=)` | read `refused` | one `RefusedSample` per refused configuration: its three terms apart and every pair of links it found |
 | `PoseScreen` | `URRobotArm.screen_configuration(joints)` | `line(label)` | `clear`, `band`, `seen_boxes`, `guard_refused`, `planner_refused` or `unscreened`, with a pose nearby both clear where one exists |
@@ -49,14 +50,14 @@ standard machine sets no environment variable ([ext_deps/README.md](../../../../
 | Refusal | When | What to do |
 | --- | --- | --- |
 | exit `1`, no hand | the tree names no `robot.gripper.model` | name the hand, or pass `--hand` |
-| a move fails `CONTROLLER_REJECTED` | the planner is unavailable on a UR with `robot.ur.motion_planner: curobo`, the default | run `--doctor`; the arm never moved |
+| a move fails `CONTROLLER_REJECTED` | the planner is unavailable on a UR with `robot.motion.planner: curobo`, the default | run `--doctor`; the arm never moved |
 | a move fails `TIMEOUT` | the planner found no collision-free plan | move the goal, or clear the cell |
 | `CuroboUnavailableError` from `check_joints` | no reply, a sidecar that exited, or a reply that is not a verdict for every sample | restart the sidecar from this tree |
 | `ValueError` from `check_joints` | no configuration, a value that is not finite, or a wrong joint count | send whole configurations |
 | `CameraWorldUnavailable` from a verb | a camera stays silent, blind or stale after `perceived.fresh_frame_attempts` more readings; blind is a frame with no depth (a wrist frame inside a pick that holds its earlier frames and is asked about a goal excepted: deep in a bin it is judged on those), a fixed camera's frame less than half of whose pixels hold one, or a wrist camera's asked about no goal | fix the camera, or move it further from what it sees; a pick stops |
 | a move fails `CONTROLLER_REJECTED`, world `unseen` | cameras look at the motion's goal and none holds a depth on half the 200 mm about it | look from further away, or use a depth mode with a shorter minimum range |
 | a planner that does not start | no committed evidence file for this arm, hand, coupling, placement and margin | measure one, see [`robot/evidence/`](robot/evidence/README.md) |
-| a planner that does not start, `..._a16.json` | a declared carried part (`planning_world.payload.length_mm`) reserves 16 attach slots, and nobody measured the combination with them | the refusal's `matrix_gate.py ... --attach 16` command, about a minute on the cell's GPU; the UR10 files are committed |
+| a planner that does not start, `..._a16.json` | a declared carried part (`planning_world.payload.length_mm`) reserves 16 attach slots, and nobody measured the combination with them | the refusal's `scripts/arms/gate.py ... --attach 16` command, about a minute on the cell's GPU; the UR10 files are committed |
 | a move refused naming `safety.planning_world.perceived.max_boxes` | the camera world still does not fit its slots once every object is one box | give the planner more slots (`max_boxes`, then restart it), or clear the cell |
 | `CuroboUnavailableError` from `judge_joints` | a sidecar older than the report, rows out of order, a verdict and a report that disagree, or pair names nobody asked for | restart the sidecar from this tree; the refusal the report was asked about stands |
 | `CuroboUnavailableError` from `judge_joints(..., ignore_perceived=)` | a reply that does not say it set aside exactly the camera boxes named (an older sidecar), or a sidecar that refused: a name it does not hold, a camera box not named, a part it may carry | the refusal the second judgement was asked about stands; restart an older sidecar from this tree |
@@ -266,7 +267,7 @@ further, so a tilted look can be a pose the padded spheres refuse while the mesh
   (`band.world_admission_refusal`), no part is carried (any attach since the last detach, modelled or not), the
   hand reads empty and open (a toggle's count open, a gripper measured fully open: the owner, 2026-10-01), the
   glue's last confirmed refresh handed the planner exactly the boxes the exact guard holds
-  (`CuroboUrPlanner.perceived_in_world`), and the exact guard accepts every refused sample with them. The
+  (`CuroboPlanner.perceived_in_world`), and the exact guard accepts every refused sample with them. The
   bench, the declared fixtures and meshes and a distance field are never set aside, and cuRobo still plans in
   its whole world: a planned move into or out of such a pose is refused, and so is any move while the hand
   carries a part or cannot say it stands open. A grasp there judges its lift as if the jaws held the part
@@ -430,7 +431,8 @@ gap. Planner collision awareness is not a certified functional-safety stop.
 | [`band.py`](band.py) | the planner's cushion band: which refusals the exact guard decides, the escape and approach legs' neighbours, the pose screen |
 | [`depth_source.py`](depth_source.py) | a camera rig asked for depth alone |
 | [`reservation.py`](reservation.py), [`margin.py`](margin.py) | the slots the sidecar allocates, and the clearance the planner keeps |
-| [`hand.py`](hand.py), `_hand_placement.py`, `_hand_bundle.py` | the hand from `robot.gripper.model`, where it sits, and its bundle checked |
+| [`hand.py`](hand.py), `_hand_placement.py`, `_hand_bundle.py` | the hand from `robot.gripper.model`, where it sits, and its bundle checked; `guard_hand_refusal`, the exact guard's two hand refusals (a hand not named, a frame that places none), asked at the build and at a mount |
+| [`mounted_tool.py`](mounted_tool.py) | `MountedTool`, the tool on a planned arm's flange as one value, and `ToolChangeRefused` |
 | [`body_link.py`](body_link.py) | a wrist camera as one body for the planner, the guard and the self filter |
 | [`self_envelope.py`](self_envelope.py) | the robot's own body, filtered out of the camera view |
 | [`evidence.py`](evidence.py), [`bundle_index.py`](bundle_index.py) | the measured combination files, and the index of committed bundles |
@@ -446,7 +448,7 @@ gap. Planner collision awareness is not a certified functional-safety stop.
 - [`../../grasping/collision/`](../../grasping/collision/README.md): another user of the exact mesh engine
 - [Robot and safety guide](../../../../docs/guide/04-robot-and-safety.md), section 6; [safety-math.md](../../../../docs/safety-math.md)
 - New hand: `scripts/grippers/write_hand_from_mesh.py`, then [your_own_gripper.md](../../../../docs/runbooks/your_own_gripper.md)
-- Descriptors: `scripts/curobo/build_ur_config.py` builds `willy_{arm}.yml` inside `ext_deps/`
+- Descriptors: `scripts/arms/descriptor.py` builds `willy_{arm}.yml` inside `ext_deps/`
 - Tests: `tests/test_motion_stack.py`, `tests/test_planning_doctor.py`, `tests/test_curobo_batch_check.py`,
   `tests/test_the_exact_guard_decides_the_planners_self_pairs.py`,
   `tests/test_a_pose_only_the_planners_spheres_refuse_is_the_exact_guards.py`,

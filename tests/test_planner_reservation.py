@@ -52,7 +52,7 @@ def _cell(
     refuses to start a planner, and every case here is about the reservation rather than about the margin."""
     return RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"motion_planner": planner},
+        "motion": {"planner": planner},
         "gripper": {"model": "robotiq_2f85"},
         "workspace_limits": {"x_min": -500.0, "x_max": 500.0, "y_min": -500.0, "y_max": 500.0,
                              "z_min": 0.0, "z_max": 600.0},
@@ -186,23 +186,23 @@ class TheCarriedPartReservesOnlyWhatItDeclaresTests(_NoPlannerEnvironment):
 
 
 class TheClientsCarryTheReservationTests(_NoPlannerEnvironment):
-    def test_the_ur_default_factory_carries_the_reservation(self) -> None:
-        from src.robot.drivers.ur.arm import URRobotArm
+    def test_the_planned_arms_default_factory_carries_the_reservation(self) -> None:
+        from tests._arm_kit import planned_arm
 
-        # Declares its planner margin, as every UR cuRobo cell must since B1 S17: the factory refuses without it.
-        client = URRobotArm(_cell(fixtures=15, meshes=1, voxel_mm=30.0, planner_margin_mm=4.0))._default_curobo_client_factory()()
+        # Declares its planner margin, as every cuRobo cell must since B1 S17: the factory refuses without it.
+        client = planned_arm(_cell(fixtures=15, meshes=1, voxel_mm=30.0, planner_margin_mm=4.0))._default_curobo_client_factory()()
 
         self.assertEqual((client._scene, client._mesh_cache, client._voxel_grid), ("24", 1, _GRID))  # noqa: SLF001
 
     def test_a_shipped_base_profile_client_is_unchanged(self) -> None:
         """The control, green before and after: no planning world, the sidecar it always started."""
-        from src.robot.drivers.ur.arm import URRobotArm
+        from tests._arm_kit import planned_arm
 
         config = RobotConfig.model_validate({"vendor": "ur",
                                             "safety": {"payload": {"enforce": False},
                                                        "self_collision": {"planner_margin_mm": 4.0}},
                                             "gripper": {"model": "robotiq_2f85"}})
-        client = URRobotArm(config)._default_curobo_client_factory()()
+        client = planned_arm(config)._default_curobo_client_factory()()
 
         self.assertEqual((client._scene, client._mesh_cache, client._voxel_grid), ("16", 0, ""))  # noqa: SLF001
 

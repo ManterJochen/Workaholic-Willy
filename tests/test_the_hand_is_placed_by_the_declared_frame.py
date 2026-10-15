@@ -172,7 +172,7 @@ class TheResolvedHandCarriesItsPlacementTests(unittest.TestCase):
     in S04 and was narrowed in S23 to the placements this derivation refuses (tests/test_the_declared_frame_agrees_
     with_the_hand.py)."""
 
-    _UR_FRAME = {"source": "polyscope", "offset_mm": [0.0, 0.0, 155.75], "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}
+    _UR_FRAME = {"source": "controller", "offset_mm": [0.0, 0.0, 155.75], "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}
 
     def _hand(self, model: str, frame: dict) -> object:
         from src.config.schema.robot import RobotConfig

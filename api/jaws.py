@@ -50,6 +50,7 @@ from api.codes import REFUSAL_STATUS, JawsChoice, RefusalCode
 from api.constants import API_LOG_DIR
 from api.events import CELL_STREAM, EventHub, Severity
 from api.schemas import HandOut, JawQuestionOut, JawsOut
+from src.robot.core.arm_capabilities import CarriesPayload
 from src.utility.log_cfg import create_logger
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -951,11 +952,11 @@ def _asks_a_person(gripper: Any) -> bool:
 def _ended_open(console: "Console", *, opened: bool) -> bool:
     """Stamp a question that ended with the jaws open, then tell the planner the hand is empty; whether it was told."""
     console.stamp_jaws_open(opened=opened)
-    detach = getattr(console.session.arm, "detach_payload", None)
-    if not callable(detach):
+    arm = console.session.arm
+    if not isinstance(arm, CarriesPayload):
         return False
     try:
-        return bool(detach())
+        return bool(arm.detach_payload())
     except Exception as exc:  # noqa: BLE001 (the jaws stand open whatever the planner answered; said, not raised)
         logger.error("Telling the planner the hand is empty failed (%s: %s); the next pick attaches anew.",
                      type(exc).__name__, exc)

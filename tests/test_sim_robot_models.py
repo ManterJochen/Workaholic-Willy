@@ -2,8 +2,11 @@
 
 The registry (``src/robot/drivers/sim/robot_models.py``) de-locks the historically UR5e-hardcoded sim
 driver: ``robot_model`` selects the Lula solver config, the Isaac USD and the cuRobo ``{key}.yml``. It shipped
-without tests; these cover the contract plus the two config validators that make a typo'd / half-migrated cell
-fail at config-load instead of ~60 s into an Isaac boot (or, worse, silently against the wrong DH chain).
+without tests; these cover the contract plus the field validators on ``sim.robot_model`` and ``ur.model`` that
+make a typo'd model fail at config-load instead of ~60 s into an Isaac boot or at the first motion.
+
+Two validators once also held ``safety.self_collision.kinematics_model`` equal to those two fields. Both went
+with the key in P0d D5, because the arm now reports its own model (tests/test_the_arm_says_what_it_is.py).
 """
 
 from __future__ import annotations
@@ -12,10 +15,9 @@ import unittest
 
 from pydantic import ValidationError
 
-from src.config.schema.robot.sim_schema import UR_MODEL_KEYS, SimConfig
+from src.config.schema.robot.sim_schema import SimConfig
 from src.robot.drivers.sim.robot_models import (
     URModelSpec,
-    curobo_arm_descriptor,
     ur_model_spec,
 )
 
@@ -38,29 +40,25 @@ class URModelRegistryTests(unittest.TestCase):
 
     def test_unknown_model_raises_with_known_keys(self) -> None:
         with self.assertRaises(ValueError) as ctx:
-            # A real UR model with a bundled DH row that UR_MODEL_KEYS deliberately does not
-            # admit, so this stays a negative control. It said "ur3" until 2026-09-09, when
+            # A real UR model, described in the arm registry with committed geometry, `admitted: false`
+            # and no sim block, so this stays a negative control. It said "ur3" until 2026-09-09, when
             # the CB-series arms were added and it silently became a supported model.
             ur_model_spec("ur16e")
         self.assertIn("ur16e", str(ctx.exception))
         self.assertIn("ur5e", str(ctx.exception))  # the message lists what IS supported
 
-    def test_curobo_arm_descriptor_round_trip(self) -> None:
-        """One descriptor per arm from UM lane S11; the hand is a body link the planner adds when it starts."""
-        self.assertEqual(curobo_arm_descriptor("ur3e"), "willy_ur3e.yml")
-        self.assertEqual(curobo_arm_descriptor("UR5e"), "willy_ur5e.yml")
-        with self.assertRaises(ValueError):
-            curobo_arm_descriptor("nope")
+    def test_curobo_descriptor_name_round_trip(self) -> None:
+        """One descriptor per arm from UM lane S11; the hand is a body link the planner adds when it starts.
 
-    def test_registry_and_schema_key_sets_match(self) -> None:
-        """Drift guard: the config layer cannot import the driver package (it is the bottom of the dependency
-        stack), so the allowed-model tuple is duplicated in ``sim_schema``. Keep the two in lockstep."""
-        from src.robot.drivers.sim.robot_models import _UR_MODELS
+        Named by the arm registry since P0d D3a, which refuses an arm nobody describes with a ConfigError.
+        """
+        from src.config import ConfigError
+        from src.config.arms import curobo_descriptor_name
 
-        self.assertEqual(
-            set(_UR_MODELS), set(UR_MODEL_KEYS),
-            "sim_schema.UR_MODEL_KEYS drifted from robot_models._UR_MODELS -- update both.",
-        )
+        self.assertEqual(curobo_descriptor_name("ur3e"), "willy_ur3e.yml")
+        self.assertEqual(curobo_descriptor_name("UR5e"), "willy_ur5e.yml")
+        with self.assertRaises(ConfigError):
+            curobo_descriptor_name("nope")
 
 
 class RobotModelConfigValidatorTests(unittest.TestCase):
@@ -77,38 +75,20 @@ class RobotModelConfigValidatorTests(unittest.TestCase):
                 SimConfig(robot_model=bad)
 
 
-class SelfCollisionModelCouplingTests(unittest.TestCase):
-    """safety.self_collision.kinematics_model must match sim.robot_model on an ENABLED sim cell."""
+class URConfigModelAdmissionTests(unittest.TestCase):
+    """``ur.model`` admits only an arm the registry admits, and its default is the historical robot."""
 
-    def _robot_config(self, *, robot_model: str, kinematics_model: str, sim_enabled: bool = True):
-        from src.config.schema.robot.robot_schema import RobotConfig
+    def test_an_unknown_ur_model_is_rejected_at_load(self) -> None:
+        from src.config.schema.robot.ur_schema import URConfig
 
-        # vendor="sim" is load-bearing here, not decoration: the REAL-UR twin of this validator
-        # couples kinematics_model to ur.model, and a fixture that leaves vendor at its default would be
-        # judged as a UR cell instead of the sim cell these tests are about.
-        return RobotConfig.model_validate({
-            "vendor": "sim",
-            "sim": {"enabled": sim_enabled, "robot_model": robot_model},
-            "safety": {"self_collision": {"kinematics_model": kinematics_model}},
-        })
-
-    def test_matching_pair_is_accepted(self) -> None:
-        cfg = self._robot_config(robot_model="ur3e", kinematics_model="ur3e")
-        self.assertEqual(cfg.sim.robot_model, "ur3e")
-        self.assertEqual(cfg.safety.self_collision.kinematics_model, "ur3e")
-
-    def test_mismatch_raises_naming_both_keys(self) -> None:
         with self.assertRaises(ValidationError) as ctx:
-            self._robot_config(robot_model="ur3e", kinematics_model="ur5e")
-        msg = str(ctx.exception)
-        self.assertIn("kinematics_model", msg)
-        self.assertIn("robot_model", msg)
+            URConfig.model_validate({"model": "ur16e"})
+        self.assertIn("unknown UR model", str(ctx.exception))
 
-    def test_mismatch_inert_when_sim_disabled(self) -> None:
-        """A real-robot config leaves the sim block inert -- the coupling must not fire there."""
-        cfg = self._robot_config(robot_model="ur5e", kinematics_model="ur3e", sim_enabled=False)
-        self.assertEqual(cfg.safety.self_collision.kinematics_model, "ur3e")
+    def test_the_default_keeps_existing_configs_unchanged(self) -> None:
+        from src.config.schema.robot.ur_schema import URConfig
 
+        self.assertEqual(URConfig().model, "ur5e")
 
 
 class BakedGripperVariantTests(unittest.TestCase):
@@ -161,62 +141,3 @@ class MountedGripperRegistryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class RealUrSelfCollisionModelCouplingTests(unittest.TestCase):
-    """The same coupling for a REAL UR cell -- with a physical arm on the other end.
-
-    ``ur.model`` and ``safety.self_collision.kinematics_model`` are independent hand-edited keys, and the
-    guard feeds the latter into the UR DH table. A half-migrated cell would evaluate every real motion
-    against another robot's link lengths (ur5e a2/a3 -425/-392.2 mm vs ur3e -243.55/-213.2) and return
-    wrong self-collision verdicts.
-    """
-
-    @staticmethod
-    def _ur_config(*, model: str, kinematics_model: str, vendor: str = "ur"):
-        from src.config.schema.robot.robot_schema import RobotConfig
-
-        return RobotConfig.model_validate({
-            "vendor": vendor,
-            "ur": {"model": model},
-            "safety": {"self_collision": {"kinematics_model": kinematics_model}},
-        })
-
-    def test_matching_pair_is_accepted(self) -> None:
-        cfg = self._ur_config(model="ur3e", kinematics_model="ur3e")
-        self.assertEqual(cfg.ur.model, "ur3e")
-
-    def test_mismatch_raises_naming_both_keys(self) -> None:
-        with self.assertRaises(ValidationError) as ctx:
-            self._ur_config(model="ur3e", kinematics_model="ur5e")
-        msg = str(ctx.exception)
-        self.assertIn("kinematics_model", msg)
-        self.assertIn("ur.model", msg)
-
-    def test_the_ur_block_is_inert_boilerplate_on_a_non_ur_cell(self) -> None:
-        """A sim or dummy cell's ``ur`` block is not a claim about its arm, so this rule must not fire on
-        it -- holding an inert block to the arm's model would reject perfectly valid configs."""
-        cfg = self._ur_config(model="ur5e", kinematics_model=None, vendor="dummy")
-        self.assertEqual(cfg.ur.model, "ur5e")
-
-    def test_a_ur_dh_table_is_still_rejected_on_that_cell(self) -> None:
-        """SUPERSEDED PREMISE, recorded rather than deleted: this case used to be ACCEPTED, because the
-        only rules coupled kinematics_model to sim.robot_model and to ur.model and neither fires on a
-        dummy cell. A third, vendor-agnostic arm now catches it -- `kinematics_model` selects a UR DH
-        table, and there is no correct value for a non-UR arm. The gap was reachable in practice:
-        WILLY_PROFILE=sim,web composed vendor='kuka' with kinematics_model='ur5e' and loaded cleanly."""
-        with self.assertRaises(ValidationError) as ctx:
-            self._ur_config(model="ur5e", kinematics_model="ur3e", vendor="dummy")
-        self.assertIn("Universal Robots DH table", str(ctx.exception))
-
-    def test_an_unknown_ur_model_is_rejected_at_load(self) -> None:
-        from src.config.schema.robot.ur_schema import URConfig
-
-        with self.assertRaises(ValidationError) as ctx:
-            URConfig.model_validate({"model": "ur16e"})
-        self.assertIn("unknown UR model", str(ctx.exception))
-
-    def test_the_default_keeps_existing_configs_unchanged(self) -> None:
-        from src.config.schema.robot.ur_schema import URConfig
-
-        self.assertEqual(URConfig().model, "ur5e")

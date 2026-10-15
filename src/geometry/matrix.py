@@ -5,12 +5,18 @@ calibration and OpenCV, and for tight inner loops where one matrix multiply is
 cheaper than allocating a new :class:`Transform`. See also
 :mod:`src.geometry.conversions`.
 
+It also holds the flange-to-TCP comparison (:func:`compare_tool_frames`), which
+a planned arm's tool-frame check and the rig calibration share; it moved here
+from ``drivers/ur/tool_frame.py`` in P0e because nothing in it is UR.
+
 Everywhere else use :class:`~src.geometry.transform.Transform`, which carries
 explicit frames and is type-checked at every step. Nothing here carries a
 frame, so frame agreement is the caller's obligation.
 """
 
 from __future__ import annotations
+
+import math
 
 import numpy as np
 
@@ -27,6 +33,7 @@ from .validation import (
 
 __all__ = [
     "IDENTITY_MATRIX",
+    "compare_tool_frames",
     "compose_homogeneous",
     "invert_homogeneous",
     "make_homogeneous",
@@ -90,3 +97,17 @@ def compose_homogeneous(A: np.ndarray, B: np.ndarray) -> np.ndarray:
     a = validate_homogeneous_matrix(A, name="A")
     b = validate_homogeneous_matrix(B, name="B")
     return a @ b
+
+
+def compare_tool_frames(observed: np.ndarray, declared: np.ndarray) -> tuple[float, float]:
+    """``(translation_mm, rotation_deg)`` between two flange-to-TCP transforms.
+
+    Both numbers are reported because they fail differently: a wrong translation is a
+    crash on the first run, and a wrong rotation is a cell that logs successes while
+    closing along the wrong object axis.
+    """
+    d_t = float(np.linalg.norm(np.asarray(observed)[:3, 3] - np.asarray(declared)[:3, 3]))
+    r = np.asarray(observed)[:3, :3] @ np.asarray(declared)[:3, :3].T
+    cos = (float(np.trace(r)) - 1.0) / 2.0
+    d_r = math.degrees(math.acos(max(-1.0, min(1.0, cos))))
+    return d_t, d_r

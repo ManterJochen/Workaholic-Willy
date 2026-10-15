@@ -95,11 +95,12 @@ class TheWrapperDeclaresNoCompetingDefaultsTests(unittest.TestCase):
     def test_no_verb_redeclares_a_default_the_callee_owns(self) -> None:
         from datagen.build import build_dataset                               # noqa: PLC0415
         from datagen.corpus.clouds import build_cloud_corpus                  # noqa: PLC0415
+        from datagen.cost import estimate_for_config                          # noqa: PLC0415
         from datagen.grasps.labels import label_dataset                       # noqa: PLC0415
 
         competing: list[str] = []
         for verb, wrapped in (("render", build_dataset), ("label", label_dataset),
-                              ("clouds", build_cloud_corpus)):
+                              ("clouds", build_cloud_corpus), ("cost", estimate_for_config)):
             theirs = inspect.signature(wrapped).parameters
             for name, mine in inspect.signature(getattr(DatasetBuild, verb)).parameters.items():
                 if name == "self" or mine.default is inspect.Parameter.empty:
@@ -376,6 +377,13 @@ class TheTwoVerbsThatReadRatherThanWriteTests(unittest.TestCase):
                                             out_root=tmp).verify()
             self.assertFalse(report.ok)
             self.assertEqual(str(report), report.summary())
+
+    def test_an_unchosen_cost_argument_never_reaches_the_callee(self) -> None:
+        """The same rule as `render`: the verb forwards what the caller chose and restates nothing."""
+        with mock.patch("datagen.cost.estimate_for_config") as priced:
+            DatasetBuild.from_file(name="priced", scenes=64, engine="none").cost(jobs=4)
+        _, kwargs = priced.call_args
+        self.assertEqual({"jobs": 4}, kwargs)
 
 
 if __name__ == "__main__":

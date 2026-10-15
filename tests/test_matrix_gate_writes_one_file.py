@@ -5,7 +5,7 @@ everything that can be wrong without one: which poses were judged, how the two m
 second run over an unchanged tree writes the same bytes.
 
 ⭐ **ONE POSE SET, SHARED.** The exact judge, the fidelity probe, the hand link equivalence probe and this gate all
-call `scripts/curobo/_matrix_gate.pose_set`. A gate that generated its own would compare two measurements of
+call `scripts/arms/_matrix_gate.pose_set`. A gate that generated its own would compare two measurements of
 different things, and the difference would read as a finding.
 
 ⚠ **A COUNT IS NOT A MEASUREMENT WITHOUT ITS POSES.** Two runs at different seeds judge different space, so the
@@ -23,12 +23,12 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 _ROOT = Path(__file__).resolve().parents[1]
-_CUROBO = _ROOT / "scripts" / "curobo"
+_ARMS = _ROOT / "scripts" / "arms"
 
 
 def _pure():
     """`_matrix_gate.py` by path: it lives beside the cuRobo scripts and must load without the repository."""
-    path = _CUROBO / "_matrix_gate.py"
+    path = _ARMS / "_matrix_gate.py"
     spec = importlib.util.spec_from_file_location("_matrix_gate_under_test", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -46,29 +46,29 @@ class ThePoseSetIsOneRuleAndSaysWhichPoses(unittest.TestCase):
 
     def test_the_retract_is_the_first_pose(self) -> None:
         """The pose a sidecar starts from is judged first, because a cell that cannot start judges nothing else."""
-        poses, kinds = self.gate.pose_set(self.retract)
+        poses, kinds = self.gate.pose_set(self.retract, arm="ur5e")
         self.assertEqual(poses[0], self.retract)
         self.assertEqual(kinds[0], "retract")
 
     def test_the_count_is_one_plus_the_draws_plus_the_sweep(self) -> None:
-        poses, _ = self.gate.pose_set(self.retract)
+        poses, _ = self.gate.pose_set(self.retract, arm="ur5e")
         self.assertEqual(len(poses), 1 + self.gate.RANDOM_POSES + 481)
 
     def test_two_calls_are_the_same_set(self) -> None:
-        self.assertEqual(self.gate.poses_sha256(self.gate.pose_set(self.retract)[0]),
-                         self.gate.poses_sha256(self.gate.pose_set(self.retract)[0]))
+        self.assertEqual(self.gate.poses_sha256(self.gate.pose_set(self.retract, arm="ur5e")[0]),
+                         self.gate.poses_sha256(self.gate.pose_set(self.retract, arm="ur5e")[0]))
 
     def test_another_seed_is_another_set_and_the_hash_says_so(self) -> None:
         """⭐ The control that makes the hash worth carrying: the count is identical and the hash is not."""
-        first, _ = self.gate.pose_set(self.retract)
-        second, _ = self.gate.pose_set(self.retract, seed=self.gate.SEED + 1)
+        first, _ = self.gate.pose_set(self.retract, arm="ur5e")
+        second, _ = self.gate.pose_set(self.retract, arm="ur5e", seed=self.gate.SEED + 1)
         self.assertEqual(len(first), len(second))
         self.assertNotEqual(self.gate.poses_sha256(first), self.gate.poses_sha256(second))
 
     def test_another_retract_is_another_set(self) -> None:
         other = [0.1, -1.57, 1.57, 0.0, 0.0, 0.0]
-        self.assertNotEqual(self.gate.poses_sha256(self.gate.pose_set(self.retract)[0]),
-                            self.gate.poses_sha256(self.gate.pose_set(other)[0]))
+        self.assertNotEqual(self.gate.poses_sha256(self.gate.pose_set(self.retract, arm="ur5e")[0]),
+                            self.gate.poses_sha256(self.gate.pose_set(other, arm="ur5e")[0]))
 
 
 class HowTheTwoModelsAreCompared(unittest.TestCase):
@@ -115,7 +115,7 @@ class WhatTheGateWrites(unittest.TestCase):
         from src.robot.safety.planning.evidence import CombinationEvidence, Measured
 
         gate = _pure()
-        poses, _ = gate.pose_set([0.0, -1.57, 1.57, 0.0, 0.0, 0.0])
+        poses, _ = gate.pose_set([0.0, -1.57, 1.57, 0.0, 0.0, 0.0], arm="ur5e")
         measured = Measured(poses=len(poses), poses_sha256=gate.poses_sha256(poses), retract_clear=True,
                             refused=12, false_clears=34, attribution_disagreements=0, control_mm=0.0)
         fields: dict[str, object] = {
@@ -160,11 +160,11 @@ class EverythingTheGateDoesBeforeItNeedsAGpu(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        spec = importlib.util.spec_from_file_location("_gate_cli_under_test", _CUROBO / "matrix_gate.py")
+        spec = importlib.util.spec_from_file_location("_gate_cli_under_test", _ARMS / "gate.py")
         assert spec is not None and spec.loader is not None
         cls.cli = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = cls.cli
-        sys.path.insert(0, str(_CUROBO))
+        sys.path.insert(0, str(_ARMS))
         spec.loader.exec_module(cls.cli)
 
     def _resolved(self, arm: str, hand: str, plate: float):
@@ -232,7 +232,7 @@ class EverythingTheGateDoesBeforeItNeedsAGpu(unittest.TestCase):
     def test_the_shipped_cells_send_no_coupling_body_and_that_is_the_measured_answer(self) -> None:
         from src.robot.safety.planning.body_link import coupling_bodies
 
-        self.assertEqual(coupling_bodies(self._resolved("ur3e", "robotiq_hande", 20.0)), [])
+        self.assertEqual(coupling_bodies(self._resolved("ur3e", "robotiq_hande", 20.0), arm="ur3e"), [])
 
 
 class TheGateItselfLoadsAndSaysWhatItNeeds(unittest.TestCase):
@@ -240,7 +240,7 @@ class TheGateItselfLoadsAndSaysWhatItNeeds(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.source = (_CUROBO / "matrix_gate.py").read_text(encoding="utf-8")
+        cls.source = (_ARMS / "gate.py").read_text(encoding="utf-8")
 
     def test_it_measures_rather_than_plans(self) -> None:
         """⭐ A sidecar that refuses its own start pose must stay UP, or a refused combination cannot be measured."""

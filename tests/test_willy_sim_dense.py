@@ -141,6 +141,8 @@ class _LimitArm:
 
     @property
     def capabilities(self):  # noqa: ANN201
+        # Not the Isaac arm's report, which names its UR since P0d D5: a model no arm registry describes, so the
+        # limits come from the static table alone and test_unresolvable_limits_yield_none has nothing to fall back on.
         return SimpleNamespace(vendor="sim", model="isaac-sim", dof=len(self._joints))
 
     def ik(self, pose):  # noqa: ANN001
@@ -276,7 +278,7 @@ class S3JointMarginTests(unittest.TestCase):
     def test_unresolvable_limits_yield_none(self) -> None:
         from src.config.schema.robot import JointLimitSafetyConfig
 
-        jl = JointLimitSafetyConfig()  # no static table + vendor 'sim' is not in the UR table -> None
+        jl = JointLimitSafetyConfig()  # no static table + a model the arm registry does not describe -> None
         res = self._query(np.zeros(6), jl)
         self.assertIsNone(res.quality.joint_margin_deg)
 

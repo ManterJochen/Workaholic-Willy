@@ -55,7 +55,9 @@ from typing import Any
 
 import numpy as np
 
-from ._ur_kinematics import UR_DH_TABLES_M
+from src.config.arms import load_arm
+
+from ._ur_kinematics import ur_dh_rows
 from .planning._declared_body import Box
 from .planning._hand_bundle import HAND_PARTS, hand_bundle_refusal
 from .planning._hand_placement import HandPlacement
@@ -76,7 +78,7 @@ _LOGGER = logging.getLogger(__name__)
 _CAPSULE_FALLBACK_RADIUS_HINT_MM = 60.0
 
 _STATUS_HINTS = {
-    "unknown_model": "No bundled DH chain for this model; add it to safety/_ur_kinematics.UR_DH_TABLES_M.",
+    "unknown_model": "No arm description for this model; describe it in config/arms/<model>.yaml.",
     "no_bundle": (
         "Bake the per-link collision meshes into safety/data/{model}_collision_meshes.npz "
         "(same DH-frame recipe as the ur5e bundle; the 2F-85 tool0 meshes are model-independent and can be "
@@ -996,7 +998,7 @@ def mesh_backend_status(
     which is expected, from a cell configured for a robot with no collision geometry
     here, which is a misconfiguration that quietly weakens the guard.
     """
-    if model.lower() not in UR_DH_TABLES_M:
+    if ur_dh_rows(model) is None:
         return "unknown_model"
     folder = Path(mesh_dir) if mesh_dir else COLLISION_MESH_DIR
     if not (folder / f"{model.lower()}_collision_meshes.npz").exists():
@@ -1143,28 +1145,28 @@ def composed_parts(
             "robot.gripper.tool_frame.offset_mm from it.",
             f"{mesh_name}_hand_meshes.npz", origin,
         )
+    # A hand part hangs from the flange, which is frame dof of THIS arm (P0f F9). Its bundle is the same on every arm and
+    # stores the frame the bundle rule holds (``HAND_FRAME``), so the arm, not the bundle, says which frame that is.
+    flange = load_arm(model.lower()).dof
     meshes: dict[str, tuple[np.ndarray, np.ndarray, int]] = {}
     for n in names:
         verts = place_hand_vertices(n, data[f"{n}__v"], origin=origin, coupling_mm=coupling_mm, placement=placement)
-        meshes[n] = (verts, data[f"{n}__f"], int(data[f"{n}__frame"][0]))
+        meshes[n] = (verts, data[f"{n}__f"], flange if n in _HAND_PARTS else int(data[f"{n}__frame"][0]))
     # The plates a cell measured across, as bodies. They sit between the flange and the hand's
     # mounting face, nearer the wrist than the hand is. A plate that declared only a thickness is
     # not here: it still places the hand, and the cell names it instead.
-    for part, arrays in _coupling_parts(coupling_boxes, placement).items():
+    for part, arrays in _coupling_parts(coupling_boxes, placement, frame=flange).items():
         meshes[part] = arrays
     return meshes
 
 
-#: The frame a coupling body sits in: tool0, which is DH frame 6 and the hand's own. A plate is
-#: bolted to the flange, so the guard's pair rule skips it against wrist_3 and wrist_2 exactly as it
-#: skips the hand.
-_COUPLING_FRAME = 6
-
-
 def _coupling_parts(
-    boxes: "tuple[Box, ...] | list[Box]", placement: HandPlacement | None,
+    boxes: "tuple[Box, ...] | list[Box]", placement: HandPlacement | None, *, frame: int,
 ) -> dict[str, tuple[np.ndarray, np.ndarray, int]]:
-    """The declared plates as guard parts, turned by the placement like the hand they carry.
+    """The declared plates as guard parts on ``frame``, the flange, turned by the placement like the hand they carry.
+
+    A plate is bolted to the flange, so it sits in the hand's own frame, and the guard's pair rule skips it against the
+    two wrist links it skips the hand against.
 
     The boxes are written in the hand model's own axes, where the stack grows along the approach, so
     a declared tool frame turns them with everything else. There is no plate shift: the boxes already
@@ -1174,7 +1176,7 @@ def _coupling_parts(
         return {}
     from .planning._declared_body import boxes_to_parts
 
-    arrays = boxes_to_parts(list(boxes), frame=_COUPLING_FRAME)
+    arrays = boxes_to_parts(list(boxes), frame=frame)
     turn = placement is not None and not placement.is_identity
     parts: dict[str, tuple[np.ndarray, np.ndarray, int]] = {}
     for key in [k for k in arrays if k.endswith("__v")]:
@@ -1183,7 +1185,7 @@ def _coupling_parts(
         if turn:
             assert placement is not None  # narrowing only
             vertices = vertices @ np.asarray(placement.rotation, dtype=np.float64).T
-        parts[name] = (vertices, np.asarray(arrays[f"{name}__f"]), _COUPLING_FRAME)
+        parts[name] = (vertices, np.asarray(arrays[f"{name}__f"]), frame)
     return parts
 
 
@@ -1196,7 +1198,7 @@ def place_hand_vertices(
     the mounting face, and is then turned by the placement. The plate goes on in model axes
     and the rotation after it, because the plate stacks along the hand's approach wherever
     the declared frame points that approach. An arm part comes back untouched, decided by
-    name and not by frame, because ``wrist_3`` shares frame 6 with the hand. A part that
+    name and not by frame, because the arm's last link shares the flange frame with the hand. A part that
     needs neither a plate nor a turn comes back as the very array it was given, so a cell
     that runs today keeps its bytes.
     """

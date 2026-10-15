@@ -147,7 +147,7 @@ def run_suction_gate(
     for i in range(runs):
         try:
             state["carry"] = False
-            arm.move_joint(JointPositions(park_q))  # park clear so the overhead sees the object
+            arm.move_to_joints(JointPositions(park_q)).raise_unless_executed()  # park clear so the overhead sees the object
             obj.set_world_pose(position=np.asarray(home_pose[0]), orientation=np.asarray(home_pose[1]))
             try:
                 obj.set_linear_velocity(np.zeros(3))
@@ -208,7 +208,7 @@ def run_suction_gate(
             binormal = binormal / (float(np.linalg.norm(binormal)) or 1.0)
             quat = from_rotation_matrix(_orthonormalize(np.column_stack([closing, binormal, approach])))
 
-            arm.move_joint(JointPositions(home_q))
+            arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
             session.step_n(8)
             for _label, gap in (("standoff", 60.0), ("contact", 22.0)):
                 arm.move(Pose(position_mm=pos - approach * gap, quaternion_xyzw=quat, frame=Frame.BASE,

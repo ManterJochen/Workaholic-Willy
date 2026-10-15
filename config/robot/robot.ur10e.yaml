@@ -47,7 +47,5 @@ robot:
     z: 521.1
 
   safety:
-    self_collision:
-      kinematics_model: "ur10e"
     payload:
       max_mass_kg: 12.5      # UR10E datasheet

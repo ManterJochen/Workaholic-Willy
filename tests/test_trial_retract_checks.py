@@ -14,7 +14,7 @@ from pathlib import Path
 import yaml
 
 _REPO = Path(__file__).resolve().parents[1]
-_TABLE = _REPO / "src" / "robot" / "safety" / "planning" / "robot" / "ur_retract.yaml"
+_TABLE = _REPO / "src" / "robot" / "safety" / "planning" / "robot" / "retract.yaml"
 _PLUS_Z = (0.0, 0.0, 0.0, 1.0)
 
 

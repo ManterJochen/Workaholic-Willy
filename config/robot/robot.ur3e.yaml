@@ -33,14 +33,12 @@
 # The geometry is derived from the datasheet reach and is not confirmed on a physical arm.
 # ============================================================================
 robot:
-  # Names the UR a real cell drives, and two things break on a wrong value. This key
-  # contradicting `safety.self_collision.kinematics_model` below makes a cross-field validator
-  # in robot_schema.py refuse `WILLY_PROFILE=ur3e` at load. A cell that sets no
-  # `kinematics_model` at all has the self-collision guard fall back to the arm's
-  # `capabilities.model`, which is derived from this key, and then check a UR3e against UR5e
-  # link lengths. The real-cell preflight warns about that fallback; the guard itself is silent.
-  # Inert under `WILLY_PROFILE=sim` (vendor: sim); merges with the ip and motion_planner from
-  # base robot.yaml.
+  # Names the UR a real cell drives. It is the one name the self-collision guard, the driver and
+  # the planner take the arm from (P0d D5 removed the second one). Without it, ur.model stays at its
+  # "ur5e" default and a UR3e is judged against UR5e link lengths (a2/a3 = -425/-392.2 against
+  # -243.55/-213.2 mm); the UR driver refuses, at connect(), a controller that reports another size.
+  # Inert under `WILLY_PROFILE=sim` (vendor: sim); merges with the ip from base robot.yaml, and the
+  # cell's robot.motion.planner applies as it is set there.
   ur:
     model: "ur3e"
   sim:
@@ -143,13 +141,10 @@ robot:
     isotropic_radial_closing: true
 
   safety:
-    # Selects the DH chain the self-collision guard evaluates this arm against. It has to match
-    # `sim.robot_model` on a sim cell and `ur.model` on a real one, and a cross-field validator
-    # in robot_schema.py refuses a mismatch at load rather than letting it run. The UR3e's links
-    # are much shorter than the UR5e's (a2/a3 = -243.55/-213.2 mm against -425/-392.2), so the
-    # wrong chain places every link somewhere it is not and returns wrong verdicts silently.
+    # The UR3e's links are much shorter than the UR5e's (a2/a3 = -243.55/-213.2 mm against -425/-392.2).
+    # The guard takes them from ur.model above, and in the simulator from sim.robot_model, so there is
+    # no second name here that could disagree with either.
     self_collision:
-      kinematics_model: "ur3e"
       # Clearance handed to the trajectory planner so it stops proposing configurations the
       # exact-mesh guard then rejects. Per-robot and explicit, never derived from
       # `min_distance_mm`: how much margin a planner can absorb depends on how tightly its

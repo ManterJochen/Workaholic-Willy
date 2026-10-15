@@ -288,7 +288,7 @@ class _Cell:
         self.scene = _Scene((CUBE, POST))
         self.arm = LookingArm(_poses())
         self.world = _HeldWorld()
-        self.arm.live_planner_world = self.world  # type: ignore[attr-defined]
+        self.arm.set_live_planner_world(self.world)
         self.camera = _SceneCamera(self.arm, self.scene)
         self.calculator = _Boxed(self.camera, self.scene, graspable=graspable, stuck=stuck, named=named)
         self.offers_at_close: list[list[str]] = []

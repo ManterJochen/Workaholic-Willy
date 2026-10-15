@@ -27,8 +27,8 @@ _INDEX = _DATA / "bundles.json"
 #: rebuild. The last three are the ways a CUSTOMER hand gets a body (customer chain lane C1a): from its registry numbers,
 #: from one standalone hand USD, or from a vendor mesh.
 _SOURCES = {
-    "isaac_usd": "the composed Isaac articulation, read by scripts/isaac/bake_ur_collision_meshes.py",
-    "isaac_importer_visual_hull": "convex hulls of the visual meshes in Isaac's URDF importer assets",
+    "isaac_usd": "a composed Isaac articulation with the hand mounted, read by a baker retired in P0f F5; rows with this "
+                 "source are held by arrays_sha256 and are not rebuilt here",
     "ur_description_stl": "Universal Robots' own collision STL files, through the rendered description",
     "registry_dimensions": "an envelope from a hand's registry numbers, written by scripts/grippers/write_hand_from_dimensions.py",
     "standalone_usd": "one standalone hand USD, baked by scripts/grippers/bake_gripper_variant.py",
@@ -48,8 +48,10 @@ def _keys_a_note_names_that_a_bundle_lacks(note: str, bundle: Path) -> list[str]
 def arrays_sha256(path: Path) -> str:
     """One hash over a bundle's arrays, in name order: the bytes the guard actually loads.
 
-    Not a hash of the file. A ``.npz`` is a zip, and a zip carries timestamps and a compression level, so the same
-    arrays written twice give two different files and neither is wrong.
+    Not a hash of the file. The file also holds the order the arrays were written in and whether each was laid out in
+    C or Fortran order, and neither changes what the guard loads. ⚠ It is NOT the timestamp this used to name: MEASURED
+    2026-09-23 with numpy 2.4.4, every zip member is dated 1980-01-01 and a rewrite of the same arrays in the same order
+    is byte-identical for 10 of 10 bundles; a rewrite in name order differs for 10 of 10.
     """
     digest = hashlib.sha256()
     with np.load(path, allow_pickle=True) as bundle:
@@ -97,15 +99,23 @@ class TheBundlesSayWhereTheyCameFromTests(unittest.TestCase):
             self.assertNotEqual(arrays_sha256(original), arrays_sha256(moved))
 
     def test_the_hash_is_over_the_arrays_and_not_the_file(self) -> None:
-        """⭐ THE CONTROL. A zip carries a timestamp, so a file hash would change on every rewrite of the same arms."""
+        """⭐ THE CONTROL: the same arrays written in another order are another file and the same arrays.
+
+        ⛔ The control this replaces rewrote the arrays in their own order and asserted the hash held. MEASURED
+        2026-09-23: that rewrite is byte-identical to the committed file for 10 of 10 bundles, so a plain file hash
+        passed it too and it could not fail. Name order changes the file for 10 of 10.
+        """
         import tempfile
 
         original = _DATA / "ur3e_collision_meshes.npz"
         with np.load(original, allow_pickle=True) as bundle:
             arrays = {name: np.array(bundle[name]) for name in bundle.files}
+        self.assertNotEqual(list(arrays), sorted(arrays), "the committed order is already name order")
         with tempfile.TemporaryDirectory() as folder:
             rewritten = Path(folder) / original.name
-            np.savez_compressed(rewritten, **arrays)
+            np.savez_compressed(rewritten, **{name: arrays[name] for name in sorted(arrays)})
+            self.assertNotEqual(hashlib.sha256(original.read_bytes()).hexdigest(),
+                                hashlib.sha256(rewritten.read_bytes()).hexdigest())
             self.assertEqual(arrays_sha256(original), arrays_sha256(rewritten))
 
     def test_every_source_is_one_this_repository_can_name_a_script_for(self) -> None:
@@ -150,6 +160,27 @@ class TheBundlesSayWhereTheyCameFromTests(unittest.TestCase):
                 else:
                     self.assertEqual(entry["model"], name.split("_collision_meshes")[0])
                     self.assertNotIn("hand", entry)
+
+    def test_every_arm_row_names_the_upstream_its_description_pins(self) -> None:
+        """The ``<repo>@<commit>`` the arm's meshes were read from, as the description's upstream block pins it (P0f F10)."""
+        from src.config.arms import load_arm
+
+        for name, entry in sorted(self.index["bundles"].items()):
+            if "model" not in entry:
+                continue
+            upstream = load_arm(entry["model"]).upstream
+            with self.subTest(bundle=name):
+                self.assertEqual(f"{upstream.repo}@{upstream.commit}", entry.get("upstream"))
+
+    def test_every_script_a_source_names_is_in_the_tree(self) -> None:
+        """A source that names a script moved or retired is a provenance nobody can run (P0f F4 and F5 moved them)."""
+        import re
+
+        root = _DATA.parents[3]
+        for source, text in sorted(self.index["sources"].items()):
+            for path in re.findall(r"scripts/[\w/]+\.py", text):
+                with self.subTest(source=source, path=path):
+                    self.assertTrue((root / path).is_file(), f"{source} names {path}, which is not in the tree")
 
     def test_the_index_names_the_rule_it_was_written_under(self) -> None:
         """A provenance file that does not say what it is for reads as a cache."""

@@ -14,9 +14,10 @@ it needs another interpreter.
 | [`checks/`](checks/) | holds this cell against its own configuration, and exits non-zero when the two disagree | [the checks](#the-checks) below |
 | [`model_weights/`](model_weights/) | fetches the detector, segmenter, VLM and speech weights into `assets/models/hf` in the repository | `python scripts/model_weights/fetch.py --list` |
 | [`ext_deps/`](ext_deps/) | installs Coal and cuRobo, builds a planner descriptor for every UR arm the stack models, and runs the doctor | [`ext_deps/README.md`](../ext_deps/README.md) |
-| [`curobo/`](curobo/) | builds the planner's arm descriptors, fits its collision spheres, chooses retract poses, and measures an arm with a hand | `build_ur_config.py <model>` |
+| [`arms/`](arms/) | builds an arm for the planner, one stage per script: fetches UR's pinned meshes, bakes the collision bundle, fits the collision spheres, builds the descriptor, chooses the retract, checks that it plans, and measures an arm with a hand; UR's vendored description and both pins sit beside them | `build_arm.py <model>`, [`add_an_arm_model.md`](../docs/runbooks/add_an_arm_model.md) |
+| [`curobo/`](curobo/) | the planner's probes and the fit of its lean planning model | `fit_planning_spheres.py` |
 | [`grippers/`](grippers/) | writes a hand's collision bundle from its numbers, its vendor meshes or a USD, and measures its jaw | [`your_own_gripper.md`](../docs/runbooks/your_own_gripper.md) |
-| [`isaac/`](isaac/) | bakes an arm's collision meshes into `src/robot/safety/data/`, from UR's own description or from Isaac's USD | `bake_ur_meshes_from_urdf.py` |
+| [`isaac/`](isaac/) | the pick and place probe on the Isaac cell | `probe_robot_pick_place.py` |
 | [`ursim/`](ursim/) | real UR controller software in Docker: the SDK, the driver, both I/O grippers, a protective stop, "halt now" and the operator console's task driven against it | [`ursim/README.md`](ursim/README.md) |
 | [`console/`](console/) | captures the operator console's event logs, the ones the frontend's run model replays, byte for byte the same on every run | `python scripts/console/capture_event_log.py` |
 | [`cell/`](cell/) | reads a cell's logs back: every pick split into its stages, best, median and worst, and two log folders set A against B | [`cell/README.md`](cell/README.md) |
@@ -53,15 +54,14 @@ profile whose tree names a hand, such as your own cell's.
 
 ## Which interpreter
 
-- The project environment runs `checks/`, `model_weights/`, `grippers/`, `trial/`, and in `curobo/` the
-  sphere fit, the retract choice and the matrix gate, which spawns the cuRobo environment itself, and the
+- The project environment runs `checks/`, `model_weights/`, `grippers/`, `trial/`, in `arms/` the bake, the
+  sphere fit, the retract choice and the gate, which spawns the cuRobo environment itself, and in `curobo/` the
   planning model's fit and its A/B (`fit_planning_spheres.py`, `ab_planning_spheres.py`).
-- The cuRobo environment's interpreter, `ext_deps/curobo_env/python.exe`, runs
-  `curobo/build_ur_config.py` and the probes of cuRobo's own storage and kinematics
-  (`probe_world_in_place.py`, `probe_planning_model.py`); `curobo/build_compiled_backend.bat` builds the kernel
-  backend on Windows.
-- `isaac/bake_ur_collision_meshes.py` and the Isaac probes need an Isaac install;
-  `isaac/bake_ur_meshes_from_urdf.py` needs no Isaac and no GPU.
+- The cuRobo environment's interpreter, `ext_deps/curobo_env/python.exe`, runs `arms/fetch.py`,
+  `arms/descriptor.py`, `arms/check.py` and the probes of cuRobo's own storage and kinematics
+  (`curobo/probe_world_in_place.py`, `curobo/probe_planning_model.py`); `curobo/build_compiled_backend.bat` builds
+  the kernel backend on Windows.
+- `isaac/probe_robot_pick_place.py` needs an Isaac install; `arms/bake.py` needs no Isaac and no GPU.
 
 ## The object meshes are fetched by the generator
 

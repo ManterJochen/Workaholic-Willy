@@ -1,10 +1,10 @@
 _provenance:
   what: schunk_egu50 hand bodies
   source: schunk_egu50_hand_meshes.npz
-  generated_by: scripts/curobo/fit_cover_spheres.py
+  generated_by: scripts/arms/fit.py
   recipe: 'cover fit: every surface sample inside a sphere, no sphere reaching further
     past the body than the reach it was fitted at'
-  asked_for: scripts/curobo/fit_cover_spheres.py ARM_PLAN / HAND_PLAN, per body
+  asked_for: scripts/arms/fit.py ARM_PLAN / HAND_PLAN, per body
   overrides: null
   seed: 0
   bodies:
@@ -23,7 +23,6 @@ _provenance:
     fresh_reach_max_mm: 11.983669735535015
     fresh_samples: 60000
     sample_spacing_mm: 2.177
-    seconds: 51.7
   - body: lfinger
     frame: 6
     why: one jaw
@@ -39,7 +38,6 @@ _provenance:
     fresh_reach_max_mm: 11.949834914451007
     fresh_samples: 60000
     sample_spacing_mm: 1.009
-    seconds: 16.8
   - body: rfinger
     frame: 6
     why: the other jaw
@@ -55,7 +53,6 @@ _provenance:
     fresh_reach_max_mm: 11.962533143310175
     fresh_samples: 60000
     sample_spacing_mm: 1.009
-    seconds: 16.8
   gripper: Schunk EGU-50
   origin: flange
   frame: tool0 (Y=approach, X=closing, Z=depth), metres

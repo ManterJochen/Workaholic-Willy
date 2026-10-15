@@ -28,7 +28,7 @@ What is pinned (the synthesis' "Tests that must pin it" 1 to 3):
 * the toggle across the push: ``commands_sent`` unchanged, DO0 never written, nobody asked;
 * after something moved: a refusal or a failure on leg N, for every N, and nothing is called after it; a
   protective stop mid-push, or as the last leg ends, ends as ``controller_not_operational`` and nothing calls
-  ``recover_from_protective_stop``; an arm not at rest before a contact leg stops there; a P0 refused before
+  ``acknowledge_fault``; an arm not at rest before a contact leg stops there; a P0 refused before
   anything was sent is still a refusal the loop falls through on, and a P0 that may have been commanded is a stop;
   the down leg refused before it was sent, the arm in the air at P0, is a refusal the loop falls through on too
   (``refused_down_not_sent``, the lead's ruling of 2026-09-29, pending the owner), and one that may have been sent is
@@ -86,6 +86,7 @@ from src.robot.grasping.recovery.push_motion import (
 )
 from src.robot.grasping.recovery.push_planner import AxisBox, PushHand, PushPlan, PushRefusal, plan_push
 from src.robot.grippers.jaw_io import JawIOGripper
+from tests._helpers import HoldsAWorld
 
 # --- the scene: a 30 mm block on a level table, a post 15 mm off its +Y face, set back along -X -----------------
 
@@ -132,9 +133,9 @@ OFFER = SegmentationOffer(captured_at_s=1.0, target_points_base_mm=PART, target_
 MOTION_VERBS = ("move", "move_to", "move_linear", "move_joint", "move_to_joints", "move_home", "move_to_home", "stop")
 
 _RUNNING = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.NORMAL, protective_stopped=False,
-                       emergency_stopped=False)
+                       emergency_stopped=False, program_running=True)
 _PROTECTIVE = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.PROTECTIVE_STOP,
-                          protective_stopped=True, emergency_stopped=False, message="Safetystatus: PROTECTIVE_STOP")
+                          protective_stopped=True, emergency_stopped=False, message="Safetystatus: PROTECTIVE_STOP", program_running=True)
 
 
 class _Log:
@@ -208,7 +209,7 @@ class _World:
         self.log.write("forget")
 
 
-class _Arm:
+class _Arm(HoldsAWorld):
     """A cuRobo UR as the push sees it: it judges lines, has a live world, and logs every call to every motion verb.
 
     ``answers`` maps a ``move`` call's index to what that call does instead of arriving: a :class:`MotionResult`, an
@@ -221,7 +222,7 @@ class _Arm:
         self.log = log
         self.answers = dict(answers or {})
         self.stop_after = stop_after
-        self.live_planner_world = _World(log) if world else None
+        self.set_live_planner_world(_World(log) if world else None)
         self._lines = lines
         self.status = _RUNNING
         self.moves = 0
@@ -294,7 +295,7 @@ class _UR(_Arm):
             raise RobotError("the dashboard did not answer")
         return self.status
 
-    def recover_from_protective_stop(self) -> bool:
+    def acknowledge_fault(self, fault: object) -> bool:
         self.log.write("recover")
         raise AssertionError("nothing on a push may clear a stop: a person does")
 
@@ -695,7 +696,7 @@ class NothingMovesWithoutEveryGuard(unittest.TestCase):
     def test_the_live_world_refuses_the_offer(self) -> None:
         # The real LivePlannerWorld raises for masks of a camera it does not know: nothing was held, nothing moves.
         cell = self._cell()
-        cell.arm.live_planner_world = _RefusingWorld(cell.log)
+        cell.arm.set_live_planner_world(_RefusingWorld(cell.log))
         outcome = cell.push()
         cell.assert_nothing_moved(outcome)
         self.assertIs(outcome.code, C.REFUSED_KEEP_OUT_NOT_TAKEN)

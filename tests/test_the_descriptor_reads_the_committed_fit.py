@@ -24,19 +24,25 @@ from pathlib import Path
 import numpy as np
 import yaml
 
+from src.config.arms import load_arm
+
 _ROOT = Path(__file__).resolve().parents[1]
 _MAPS = _ROOT / "src" / "robot" / "safety" / "planning" / "robot"
 _BUNDLES = _ROOT / "src" / "robot" / "safety" / "data"
 
 
 def _arm_spheres():
-    path = _ROOT / "scripts" / "curobo" / "_arm_spheres.py"
+    path = _ROOT / "scripts" / "arms" / "_arm_spheres.py"
     spec = importlib.util.spec_from_file_location("_arm_spheres_under_test", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+#: UR's part-to-link names, as every UR description states them.
+_LINKS = {part: link for part, link, _frame in load_arm("ur5e").collision_links}
 
 
 def _a_map(uncovered_mm: float = -1.5) -> dict:
@@ -59,7 +65,7 @@ class TheReaderTranslatesAndRefuses(unittest.TestCase):
 
     def test_a_body_name_becomes_the_link_name_a_descriptor_uses(self) -> None:
         """The bundle says `wrist_1` because that is what it measured; cuRobo says `wrist_1_link`."""
-        read = self.module.link_spheres(_a_map(), source="test.yml")
+        read = self.module.link_spheres(_a_map(), source="test.yml", links=_LINKS)
 
         self.assertEqual(sorted(read), ["wrist_1_link"])
         self.assertEqual(read["wrist_1_link"], [{"center": [0.0, 0.0, 0.01], "radius": 0.03}])
@@ -67,7 +73,7 @@ class TheReaderTranslatesAndRefuses(unittest.TestCase):
     def test_a_map_recording_a_hole_is_refused_by_name(self) -> None:
         """⭐ THE ONE THAT MATTERS. A hole is a false clear, and a false clear is the arm somewhere the model is empty."""
         with self.assertRaises(self.module.CoverMapError) as raised:
-            self.module.link_spheres(_a_map(uncovered_mm=3.2), source="ur5e_arm_spheres.yml")
+            self.module.link_spheres(_a_map(uncovered_mm=3.2), source="ur5e_arm_spheres.yml", links=_LINKS)
 
         said = str(raised.exception)
         self.assertIn("hole", said)
@@ -81,13 +87,13 @@ class TheReaderTranslatesAndRefuses(unittest.TestCase):
         document["collision_spheres"]["wrist_1"]["spheres"] = []
 
         with self.assertRaises(self.module.CoverMapError) as raised:
-            self.module.link_spheres(document, source="test.yml")
+            self.module.link_spheres(document, source="test.yml", links=_LINKS)
 
         self.assertIn("wrist_1", str(raised.exception))
 
     def test_a_document_with_no_spheres_at_all_is_refused(self) -> None:
         with self.assertRaises(self.module.CoverMapError):
-            self.module.link_spheres({"_provenance": {}}, source="test.yml")
+            self.module.link_spheres({"_provenance": {}}, source="test.yml", links=_LINKS)
 
     def test_the_label_says_what_the_map_is_and_what_it_cost(self) -> None:
         label = self.module.cover_spheres_label(source="ur5e_arm_spheres.yml", reach_mm=30.0, spheres=339)
@@ -112,7 +118,7 @@ class EveryArmWithGeometryHasOne(unittest.TestCase):
                 self.assertTrue(
                     (_MAPS / f"{arm}_arm_spheres.yml").is_file(),
                     f"{arm} has exact geometry and no committed sphere map, so its descriptor would fall back to "
-                    f"Isaac's. Fit one: scripts/curobo/fit_cover_spheres.py --arm {arm} --write")
+                    f"Isaac's. Fit one: scripts/arms/fit.py --arm {arm} --write")
 
     def test_every_committed_map_covers_every_link_the_template_guards(self) -> None:
         """cuRobo raises KeyError on a collision link with no spheres, at the first load and not before."""
@@ -122,7 +128,8 @@ class EveryArmWithGeometryHasOne(unittest.TestCase):
         module = _arm_spheres()
         for path in maps:
             with self.subTest(arm=path.stem):
-                read = module.link_spheres(yaml.safe_load(path.read_text(encoding="utf-8")), source=path.name)
+                read = module.link_spheres(yaml.safe_load(path.read_text(encoding="utf-8")), source=path.name,
+                                           links=_LINKS)
                 self.assertEqual(guarded, set(read), f"{path.name} does not describe the links the template guards")
 
     def test_every_committed_map_records_no_hole_and_the_reach_it_asked_for(self) -> None:
@@ -172,7 +179,7 @@ class TheSpheresLandWhereTheArmIs(unittest.TestCase):
     def _placement(self, model: str):
         import sys as _sys
 
-        path = _ROOT / "scripts" / "curobo"
+        path = _ROOT / "scripts" / "arms"
         _sys.path.insert(0, str(path))
         try:
             import _ur_description  # type: ignore[import-not-found]
@@ -181,7 +188,14 @@ class TheSpheresLandWhereTheArmIs(unittest.TestCase):
             rows = _ur_description.dh_rows(model)
         finally:
             _sys.path.remove(str(path))
-        return self.module.link_frames(urdf, rows), urdf
+        return self.module.link_frames(urdf, rows, chain_yaw_deg=load_arm(model).base.chain_yaw_deg), urdf
+
+    def test_a_turn_other_than_none_or_a_half_is_refused(self) -> None:
+        """The arm description's ``base.chain_yaw_deg`` is 0 or 180, and each maps to an exact matrix here."""
+        _place, urdf = self._placement("ur5e")
+        rows = [(joint.a_m, joint.d_m, joint.alpha_rad) for joint in load_arm("ur5e").joints]
+        with self.assertRaises(ValueError):
+            self.module.link_frames(urdf, rows, chain_yaw_deg=90)
 
     def test_the_two_frames_are_not_the_same_frame(self) -> None:
         """And they differ in a different way per link, which is why there is no shortcut here.
@@ -242,18 +256,19 @@ class TheBuilderPrefersTheFit(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.source = (_ROOT / "scripts" / "curobo" / "build_ur_config.py").read_text(encoding="utf-8")
+        cls.source = (_ROOT / "scripts" / "arms" / "descriptor.py").read_text(encoding="utf-8")
 
-    def test_the_committed_fit_is_read_before_isaac_is_asked_for_anything(self) -> None:
-        fit = self.source.index("_FITTED_MAP = ")
-        lula = self.source.index('_lula_src = _isaac_model_dir()')
+    def test_an_arm_with_no_committed_fit_is_refused_and_told_to_fit_one(self) -> None:
+        """P0f F5: the Lula fallback is gone, so the fit is the only map, and its absence stops the build."""
+        refusal = self.source.index("if not _FITTED_MAP.is_file():")
+        self.assertIn("raise SystemExit(", self.source[refusal:refusal + 200])
+        self.assertIn("scripts/arms/fit.py --arm {MODEL} --write", self.source[refusal:refusal + 400])
 
-        self.assertLess(fit, lula, "Isaac is consulted before the committed map, so the fit would never be used")
-
-    def test_the_surface_augmentation_does_not_run_over_a_fitted_map(self) -> None:
-        """It exists to repair the vendor's map. Over a cover fit it would add spheres, reach and plan time."""
-        self.assertIn("if _fitted_doc is not None:\n    print(\"arm-link surface augmentation skipped", self.source)
-        self.assertIn("elif _ARM_NPZ.is_file():", self.source)
+    def test_nothing_of_isaac_or_lula_is_read_any_more(self) -> None:
+        """The control for the refusal above: the branches it replaced are gone, not merely skipped."""
+        for retired in ("_isaac_model_dir", 'lula["collision_spheres"]', "rmpflow/", "_ARM_NPZ", "sphere_fit"):
+            with self.subTest(retired=retired):
+                self.assertNotIn(retired, self.source)
 
 
 if __name__ == "__main__":

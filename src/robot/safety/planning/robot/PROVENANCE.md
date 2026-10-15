@@ -2,16 +2,32 @@
 
 This folder is the version-controlled home and label for the robot the cuRobo motion planner in
 `src/robot/safety/planning/` plans for. Both the simulator driver and the real UR execution path in
-`src/robot/drivers/ur/curobo_motion.py` use it. It answers the question of where the geometry a
+`src/robot/drivers/planned/curobo_motion.py` use it. It answers the question of where the geometry a
 planner trusts actually came from.
+
+## What writes each file, and what holds it
+
+Each file here is written by a script, and the sphere maps and the retract table name theirs inside themselves.
+None of them is edited by hand except where the table says so. The procedure that runs them is
+[`docs/runbooks/add_an_arm_model.md`](../../../../../docs/runbooks/add_an_arm_model.md).
+
+| file | written by | what holds it |
+|---|---|---|
+| `{arm}_arm_spheres.yml`, `{hand}_gripper_spheres.yml` | `scripts/arms/fit.py --arm <arm>` or `--hand <hand>`, with `--write` (its `generated_by`) | the maps carry no wall clock since P0f F10, so a refit of the same bundle writes the same file byte for byte |
+| `{arm}_arm_lean_spheres.yml`, `{hand}_gripper_lean_spheres.yml` | `scripts/curobo/fit_planning_spheres.py` (its `generated_by`), seeded, and without a wall clock since P0f F10 | `tests/test_the_planner_plans_on_a_lean_model_and_judges_on_the_evidence.py` |
+| `retract.yaml` (`ur_retract.yaml` until P0f F10) | `scripts/arms/retract.py` (its header) | `scripts/arms/retract.py --check` exits 1 when the table is not what this box measures |
+| `evidence/*.json` | `scripts/arms/gate.py`, `scripts/arms/sweep.py` | `tests/test_the_committed_evidence_recomputes.py` recomputes every hash from the committed files and the descriptor installed on the box |
+| `../../data/{arm}_collision_meshes.npz` | `scripts/arms/bake.py <arm> --write` | `tests/test_arm_bundles_reproduce_from_pinned_stl.py` bakes each again from the pinned meshes |
+| `../../data/{hand}_hand_meshes.npz` | for a new hand, the writers in `scripts/grippers/`. The Hand-E came from `scripts/grippers/bake_gripper_variant.py`; the 2F-85 and the EGU-50 from a simulator baker retired in P0f F5, so their rows are held by `arrays_sha256` and not rebuilt | `tests/test_the_committed_bundles_hold_their_arrays.py` |
+| `../../data/bundles.json` | the hand writers record their own rows; an arm's row is written by hand | `tests/test_bundle_provenance.py`; each arm row names its `upstream` as `<repo>@<commit>` since P0f F10 |
 
 ## Robot: Universal Robots UR5e
 
 Kinematics come from the canonical UR5e URDF in Universal Robots' `ur_description`, licensed
 BSD-3-Clause upstream. It is rendered from UR's own config, vendored and pinned to one upstream
-commit under `scripts/curobo/ur_ros2_description`, by
-[`scripts/curobo/build_ur_config.py`](../../../../../scripts/curobo/build_ur_config.py) with
-`--urdf-from ur`, the default, with the mesh paths rewritten relative and written into the ignored
+commit under `scripts/arms/ur_ros2_description`, by
+[`scripts/arms/descriptor.py`](../../../../../scripts/arms/descriptor.py) with
+`--urdf-from ur`, the only source since P0f F5, with the mesh paths relative as rendered and written into the ignored
 planner content directory as `ur5e.urdf`. Rendering from the vendor config is what lets a box without
 a simulator build a descriptor at all; where a simulator is present the two descriptions agree for
 this arm, and the ready gate over all 18 arm and hand pairs reads identically either way. The UR5e
@@ -25,12 +41,13 @@ alpha = [pi/2, 0, 0, pi/2, -pi/2, 0]
 
 Joint order on the `tool0` chain is `shoulder_pan`, `shoulder_lift`, `elbow`, `wrist_1`, `wrist_2`,
 `wrist_3`, from base outward, with `tool0` as the end-effector frame. That is the order the UR
-interface reports and expects, and the order `drivers/ur/curobo_motion.py` remaps against.
+interface reports and expects, and the order `drivers/planned/curobo_motion.py` remaps against.
 
 ## Robot: Universal Robots UR3e
 
-Same standard UR DH family. The UR3e row lives in
-[`../../_ur_kinematics.py`](../../_ur_kinematics.py):
+Same standard UR DH family. The UR3e rows are its description,
+[`config/arms/ur3e.yaml`](../../../../../config/arms/ur3e.yaml), which
+[`../../_ur_kinematics.py`](../../_ur_kinematics.py) reads:
 
 ```
 a = [0, -0.24355, -0.2132, 0, 0, 0]              m
@@ -41,7 +58,7 @@ Its planner descriptor, `willy_ur3e.yml`, is assembled on the box by the same sc
 
 Its collision geometry is [`../../data/ur3e_collision_meshes.npz`](../../data/ur3e_collision_meshes.npz),
 baked from Universal Robots' own collision STL files by
-[`scripts/isaac/bake_ur_meshes_from_urdf.py`](../../../../../scripts/isaac/bake_ur_meshes_from_urdf.py),
+[`scripts/arms/bake.py`](../../../../../scripts/arms/bake.py),
 through the URDF rendered from UR's pinned config. It uses the same DH-frame recipe as every other
 bundle:
 
@@ -69,8 +86,9 @@ Four things about that generator are load-bearing:
 
 ## Robot: Universal Robots UR10e
 
-Same standard UR DH family, and the longest arm with committed geometry here. The row lives in
-[`../../_ur_kinematics.py`](../../_ur_kinematics.py):
+Same standard UR DH family, and the longest arm with committed geometry here. Its rows are its
+description, [`config/arms/ur10e.yaml`](../../../../../config/arms/ur10e.yaml), which
+[`../../_ur_kinematics.py`](../../_ur_kinematics.py) reads:
 
 ```
 a = [0, -0.6127, -0.57155, 0, 0, 0]                  m
@@ -105,7 +123,7 @@ the planner's collision-sphere fit. The keys `gripper__v`, `lfinger__v` and `rfi
 
 The committed sphere map is [`robotiq_2f85_gripper_spheres.yml`](robotiq_2f85_gripper_spheres.yml),
 the 2F-85 `tool0` collision spheres cover-fit from that bundle by
-[`scripts/curobo/fit_cover_spheres.py`](../../../../../scripts/curobo/fit_cover_spheres.py). That
+[`scripts/arms/fit.py`](../../../../../scripts/arms/fit.py). That
 generator needs no simulator and no GPU: it reads the committed bundle and writes the map beside
 itself, so the gripper exists as a labelled, regenerable file in this repository. The spheres are
 frame-correct and directly usable by the planner. The map is named after the hand's registry name, as
@@ -121,7 +139,7 @@ surface sample ends up inside a sphere or there is no map at all, and what the c
 against reach.
 
 Measured with one ruler
-([`scripts/curobo/_mesh_body.py`](../../../../../scripts/curobo/_mesh_body.py)) against the same
+([`scripts/arms/_mesh_body.py`](../../../../../scripts/arms/_mesh_body.py)) against the same
 meshes, before and after:
 
 | hand | before (grid fit) | after (cover fit) |
@@ -143,7 +161,7 @@ A sphere map describes an end effector, and the arm bundles are named after arms
 sits in every committed arm bundle, so one map covers all of them; a different hand needs its own.
 [`schunk_egu50_gripper_spheres.yml`](schunk_egu50_gripper_spheres.yml) is the second one.
 
-This mattered more than it looks. `scripts/curobo/build_ur_config.py` carried its own copy of the fit
+This mattered more than it looks. `scripts/arms/descriptor.py` carried its own copy of the fit
 and always used the Robotiq bundle, under a comment calling it model independent. It is independent
 of the arm and not of the hand, so a cell running the Schunk had a safety guard that read the right
 bundle through its variant key and a planner that modelled a Robotiq. The on-box script builds the
@@ -151,7 +169,7 @@ arm alone, and the planner's sidecar adds the map of the hand the cell names (`r
 as a body link when it starts, so no build can name the wrong hand:
 
 ```
-ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur5e
+ext_deps/curobo_env/python.exe scripts/arms/descriptor.py ur5e
 ```
 
 A gripper nobody has baked a bundle for gets its body first and its map from that body, the path
@@ -159,11 +177,12 @@ A gripper nobody has baked a bundle for gets its body first and its map from tha
 body from its registry numbers (`scripts/grippers/write_hand_from_dimensions.py`), from vendor STL or
 OBJ files (`scripts/grippers/write_hand_from_mesh.py`) or from a USD
 (`scripts/grippers/bake_gripper_variant.py`), then the map from
-`scripts/curobo/fit_cover_spheres.py --hand <name> --write`. A planner reads cover fits only: a cell
-whose map is not a cover fit of its hand's own bundle is refused, and the grid fit in
-`gripper_spheres.py` stays for measuring and comparing, with a command line that writes no map.
+`scripts/arms/fit.py --hand <name> --write`. A planner reads cover fits only: a cell
+whose map is not a cover fit of its hand's own bundle is refused. The grid fit in
+[`gripper_spheres.py`](gripper_spheres.py) stays a library for measuring and comparing; its command
+line, `build_gripper_spheres.py`, wrote no map and was deleted in P0f F1.
 
-The grid fit's `--cell-mm` and `--rmax-mm` have no default, and that is deliberate. The pairing of
+The grid fit's `cell_mm` and `rmax_mm` have no default, and that is deliberate. The pairing of
 34.0 with 24.0 is this repository's 2F-85 finger cell size against its palm radius cap: a combination
 describing no part of any gripper, including the one both halves were measured from. A default that
 looks calibrated is worse than one that looks arbitrary. The grid fit used 44 mm cells capped at 24 mm
@@ -191,8 +210,9 @@ centre, grasp centre 135.75 mm from the gripper's own mounting face.
 ### One bundle per hand, composed onto the arm
 
 A hand bundle is `{hand}_hand_meshes.npz` and holds the hand alone, and nothing composes one that
-holds more or less (`planning/_hand_bundle.py`): the `gripper`, `lfinger` and `rfinger` meshes at DH
-frame 6 and the origin its numbers start from. `environment.compose_collision_meshes(model, hand)`
+holds more or less (`planning/_hand_bundle.py`): the `gripper`, `lfinger` and `rfinger` meshes at
+frame 6, which a hand bundle stores to mean the flange since P0f F9 (the hand hangs from the arm's last
+frame, whatever the arm's `dof`), and the origin its numbers start from. `environment.compose_collision_meshes(model, hand)`
 takes the arm's own bundle, drops its 2F-85 and puts the hand in, so every arm link is the arm's
 committed bytes whatever hand it carries.
 
@@ -202,7 +222,7 @@ only a ur5e file was ever baked for it. A hand bundle records no arms: which arm
 composed onto is measured, one evidence file per combination under
 [`evidence/`](evidence/), and the matrix measured the Schunk at rung b1 on the ur3, ur3e, ur5e, ur10
 and ur10e at both placements, and on the ur5 at +Z. A freshly baked hand is admitted to an arm by
-running `scripts/curobo/matrix_gate.py`, never by being written.
+running `scripts/arms/gate.py`, never by being written.
 
 ### The coupling, and why a map says where it starts
 
@@ -248,14 +268,17 @@ sidecar of the planner adds when it starts, placed from `robot.gripper.model`,
 Measured over all 18 arm and hand pairs: the composed robot and the per-hand descriptor it replaced
 agree on every sphere position to 1.19e-7 m and on the `check_js` verdict of all 1,482 poses.
 
-`default_q` is chosen, not inherited. It is the retract from [`ur_retract.yaml`](ur_retract.yaml)
-beside this file, the first pose outwards from the simulator's own pose that clears every registry
-hand by the guard margin plus 3 mm on the exact meshes and stands 10 mm above the table.
-`elbow_joint` is clamped to UR's own 180 degree planning limit in the description, and
-`position_limit_clip` is written rather than inherited, so the envelope of the planner stays inside
-the guard's.
+`default_q` is chosen, not inherited. It is a row of [`retract.yaml`](retract.yaml) beside this
+file. The table holds one row per arm, hand, plate, placement and planner margin, each the first pose
+outwards from the arm's anchor (the simulator's own pose, `retract_anchor_rad` in the arm's
+description) that clears that hand by the guard margin plus 3 mm on the exact meshes and stands 10 mm
+above the table. The descriptor takes the 2F-85's row at a bare flange at the rule's placement, and a
+cell's driver reads the row of its own combination. Every joint is held to its `planner_limit_deg` in
+the description, UR's own `joint_limits.yaml`, which narrows only the elbow, to 180 degrees either way;
+the descriptor records whether that clamped the URDF (`limits_clamped`), and `position_limit_clip` is
+written rather than inherited, so the envelope of the planner stays inside the guard's.
 
-The exact cuRobo schema is produced on the target box by `scripts/curobo/build_ur_config.py` and
+The exact cuRobo schema is produced on the target box by `scripts/arms/descriptor.py` and
 written into the ignored content directory under `ext_deps/`. That is where the descriptor physically
 lives at runtime; this folder is its committed geometry authority and label. The descriptor records
 its arm and the fact that it carries no hand under `_provenance`, and a planner refuses one built for
@@ -284,13 +307,15 @@ owner's cell is the desk A/B's to say (`scripts/curobo/ab_planning_spheres.py`).
 
 A re-run reproduces the URDF half byte for byte, and it reproduces the YAML half as well, because
 every sphere in it comes from a committed file: the arm map in this folder and the hand map the
-sidecar adds as a body link. With a committed arm fit present, the surface augmentation that samples
-the mesh is skipped outright, so nothing in the build draws from a generator.
+sidecar adds as a body link. Nothing in the build draws from a generator: an arm with no committed
+fit is refused, since P0f F5 retired the simulator's own sphere map it used to fall back to and the
+surface augmentation that sampled the mesh with it. Measured: all seven arms built again wrote the same
+descriptors byte for byte (P0f F4), and in P0f F10 every evidence file's `composed_sha256` and
+`urdf_sha256` moved to the value computed beforehand from the rebuilt files.
 
-The augmentation is what used to make a descriptor unreproducible, and it still runs for an arm with
-no committed fit, which is the fallback to the simulator's own sphere map. On that path two runs of
-the same recipe differ in sphere centres and the sphere count wobbles by a sphere or two on one link,
-a different link each time. An arm in that state is one whose map has not been fitted here yet.
+The augmentation is what used to make a descriptor unreproducible. Two runs of the same recipe
+differed in sphere centres, and the sphere count wobbled by a sphere or two on one link, a different
+link each time, so a descriptor built that way was one draw from a stochastic fit.
 
 ## Honesty
 
@@ -312,8 +337,8 @@ nobody measured is refused rather than guessed at.
   Universal Robots, from their ROS 2 description at commit
   `89bbe795f38a7ab00fb66fe8831dfff79dc99edf`, the source cuRobo's own `ur_description/LICENSE` names.
   cuRobo ships the ur5e and ur10e meshes; the others are fetched into the ignored cuRobo asset root
-  by [`scripts/curobo/fetch_ur_meshes.py`](../../../../../scripts/curobo/fetch_ur_meshes.py) and held
-  to [`scripts/curobo/ur_meshes.sha256`](../../../../../scripts/curobo/ur_meshes.sha256), as the
+  by [`scripts/arms/fetch.py`](../../../../../scripts/arms/fetch.py) and held
+  to [`scripts/arms/ur_meshes.sha256`](../../../../../scripts/arms/ur_meshes.sha256), as the
   commit holds them. `install.ps1` runs it before the descriptors. Every arm's collision meshes are
   pinned; the visual meshes are pinned for the arms cuRobo does not ship, because its own ur5e and
   ur10e visuals are another revision.

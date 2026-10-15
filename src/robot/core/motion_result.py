@@ -1,10 +1,9 @@
 """Typed execution results for the vendor-neutral motion contract.
 
 :meth:`RobotArm.move` returns the canonical typed result defined here. The
-bool-returning high-level methods (``move_to``, ``move_home``,
-``wait_until_steady``) remain as compatibility shims, and a bool collapses every
-non-success outcome into ``False``, so a workspace rejection cannot be told from an
-IK failure or a controller fault.
+bool-returning methods (``move_home``, ``wait_until_steady``, and until 2026-09-19
+``move_to``) collapse every non-success outcome into ``False``, so a workspace
+rejection cannot be told from an IK failure or a controller fault.
 
 Contract
 --------
@@ -46,6 +45,7 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
 __all__ = [
     "MotionCommand",
     "MotionResult",
+    "MotionSent",
     "MotionStatus",
 ]
 
@@ -149,6 +149,23 @@ def _fault_text(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+class MotionSent(StrEnum):
+    """Whether any command of a motion had reached the controller when it failed (P0g R2).
+
+    The status says why a motion failed and not how far it got: ``CONTROLLER_REJECTED`` is emitted both before a
+    command is sent (a planner that is unavailable, a plan that ends off its goal) and after (a ``moveJ`` that
+    answered ``False``), and the calibration sweep had to read the driver's wording to tell them apart. A driver
+    that knows says it here; a result built without saying, the sim's and the dummy's today, is ``UNSTATED``.
+    """
+
+    #: The driver did not say.
+    UNSTATED = "unstated"
+    #: Nothing was sent: the arm stands where it stood.
+    NOTHING = "nothing"
+    #: A command was sent, so the arm may have moved part of the way.
+    SENT = "sent"
+
+
 class MotionCommand(StrEnum):
     """High-level command kind that produced a :class:`MotionResult`."""
 
@@ -199,8 +216,13 @@ class MotionResult:
     message: str = ""
     exception: BaseException | None = field(default=None, repr=False, compare=False)
     camera_world: CameraWorldStamp = field(default=_UNSTATED, repr=False)
+    #: Whether a command had reached the controller when this failed (:class:`MotionSent`). It takes part in
+    #: equality, as the stamp does: a motion that moved the arm part of the way did not do what one that did not did.
+    sent: MotionSent = field(default=MotionSent.UNSTATED, repr=False)
 
     def __post_init__(self) -> None:
+        if not isinstance(self.sent, MotionSent):
+            raise TypeError(f"sent is a MotionSent, not {self.sent!r}")
         # The repr below reads the stamp's use, so anything else in its place would make every log
         # line that prints this result raise instead of print.
         if not isinstance(self.camera_world, CameraWorldStamp):
@@ -219,6 +241,8 @@ class MotionResult:
         parts = [f"{item.name}={getattr(self, item.name)!r}" for item in fields(self) if item.repr]
         if self.camera_world.use is not CameraWorldUse.UNSTATED:
             parts.append(f"camera_world={self.camera_world!r}")
+        if self.sent is not MotionSent.UNSTATED:
+            parts.append(f"sent={self.sent!r}")
         return f"{type(self).__qualname__}({', '.join(parts)})"
 
     # ------------------------------------------------------------------
@@ -233,6 +257,26 @@ class MotionResult:
     def __bool__(self) -> bool:  # pragma: no cover (trivial)
         """Let ``if result:`` test success directly."""
         return self.ok
+
+    def raise_unless_executed(self) -> "MotionResult":
+        """This result where it executed; else raise what the removed raising verbs raised.
+
+        Returns:
+            MotionResult: This result, executed.
+
+        Raises:
+            RobotConnectionError: For a ``CONNECTION_ERROR``.
+            RobotMotionRejected: For every other refusal, carrying this result; each chained from the result's
+                exception. Code that reads "no exception means it moved" keeps that meaning in one call, where a
+                bare typed call would let a refusal pass unnoticed.
+        """
+        if self.ok:
+            return self
+        from .errors import RobotConnectionError, RobotMotionRejected  # noqa: PLC0415
+
+        if self.status is MotionStatus.CONNECTION_ERROR:
+            raise RobotConnectionError(self.render()) from self.exception
+        raise RobotMotionRejected(self.render(), result=self) from self.exception
 
     # ------------------------------------------------------------------
     # The two report halves
@@ -262,6 +306,10 @@ class MotionResult:
             lines.append(f"  target joints  [{joints}] rad")
         if self.exception is not None:
             lines.append(f"  fault  {_ascii(_fault_text(self.exception))}")
+        if self.sent is MotionSent.SENT:
+            lines.append("  sent  the command reached the controller, so the arm may have moved part of the way")
+        elif self.sent is MotionSent.NOTHING:
+            lines.append("  sent  nothing: the arm stands where it stood")
         lines.append(f"  {self.camera_world.render()}")
         return "\n".join(lines)
 
@@ -285,6 +333,7 @@ class MotionResult:
             "message": self.message,
             "exception": None if self.exception is None else _fault_text(self.exception),
             "camera_world": self.camera_world.to_dict(),
+            "sent": self.sent.value,
         }
 
     # ------------------------------------------------------------------
@@ -322,8 +371,9 @@ class MotionResult:
         message: str = "",
         exception: BaseException | None = None,
         camera_world: CameraWorldStamp = _UNSTATED,
+        sent: MotionSent = MotionSent.UNSTATED,
     ) -> "MotionResult":
-        """Build a failure result with an explicit ``status``."""
+        """Build a failure result with an explicit ``status``, and whether anything was sent where the driver knows."""
         if status is MotionStatus.EXECUTED:
             raise ValueError(
                 "MotionResult.failed requires a non-EXECUTED status; "
@@ -337,6 +387,7 @@ class MotionResult:
             message=message,
             exception=exception,
             camera_world=camera_world,
+            sent=sent,
         )
 
     @classmethod

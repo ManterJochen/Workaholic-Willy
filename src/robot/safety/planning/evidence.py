@@ -15,7 +15,7 @@ from the bundles amounts to: it answers for pairings nobody measured, and four o
 pairs cuRobo refuses to plan from at all.
 
 Both drivers call :func:`planner_evidence_refusal` where a planner starts, and the real cell checklist and the doctor
-read the file half through :func:`desk_evidence_refusal` before anything starts. ``scripts/curobo/matrix_gate.py``
+read the file half through :func:`desk_evidence_refusal` before anything starts. ``scripts/arms/gate.py``
 writes the files into ``robot/evidence``.
 """
 
@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Final
 
 from src.contracts import UNSET, Maybe, chosen
+from src.utility.interpreters import Interpreter, interpreter_command
 
 __all__ = [
     "CombinationEvidence",
@@ -47,7 +48,7 @@ __all__ = [
 EVIDENCE_DIR: Final = Path(__file__).resolve().parent / "robot" / "evidence"
 
 #: What writes a file that is missing, quoted in the refusal so an operator has the next command rather than a fact.
-_WRITER: Final = "scripts/curobo/matrix_gate.py"
+_WRITER: Final = "scripts/arms/gate.py"
 
 
 class Criterion(IntEnum):
@@ -83,7 +84,7 @@ class Measured:
     #: How many configurations were judged, the retract first (``_matrix_gate.pose_set``).
     poses: int
     #: Which ones. Two runs at different seeds judged different robots' worth of space, and a count alone cannot
-    #: tell them apart: a file recording 1,483 poses says nothing about whether they were these 1,483.
+    #: tell them apart: a file recording 1,482 poses says nothing about whether they were these 1,482.
     poses_sha256: str
     #: Whether the planner accepts the pose its own sidecar would start from. Without this it never becomes ready.
     retract_clear: bool
@@ -280,7 +281,7 @@ def gate_command(
     attach_spheres: int,
     plates: "Maybe[tuple]" = UNSET,
 ) -> str:
-    """The whole ``matrix_gate.py`` command that measures exactly this combination.
+    """The whole ``scripts/arms/gate.py`` command that measures exactly this combination.
 
     The rotation is the declared tool frame that places the hand ``approach`` + ``closing``; ``plates``, where given,
     are spelled one ``--plate`` each with their cross sections, and otherwise the coupling is ``--coupling-mm``.
@@ -288,7 +289,7 @@ def gate_command(
     """
     from ._hand_placement import placement_quaternion_xyzw
 
-    parts = [".venv/Scripts/python.exe", _WRITER, "--arm", arm, "--hand", hand]
+    parts = [interpreter_command(Interpreter.MAIN), _WRITER, "--arm", arm, "--hand", hand]
     if chosen(plates) and plates:
         for name, thickness, section in plates:
             spec = f"{name}:{float(thickness):g}"
@@ -449,7 +450,7 @@ def _geometry(hand: Any, *, arm: str, mesh_dir: "str | None") -> "tuple[dict[str
         return None, (f"{hand.model} has no evidence to look up, because its declared tool frame places it nowhere: "
                       f"{hand.placement_refusal}")
     try:
-        link = HandLink.from_hand(hand)
+        link = HandLink.from_hand(hand, arm=arm)
     except BodyLinkError as exc:
         return None, str(exc)
     parts = composed_parts(arm, mesh_dir, hand.guard_variant, float(hand.coupling_mm),
@@ -518,7 +519,8 @@ def desk_evidence_refusal(
     from .reservation import PlannerReservation
 
     self_collision = robot_cfg.safety.self_collision
-    arm = str(getattr(self_collision, "kinematics_model", None) or robot_cfg.ur.model)
+    selected = robot_cfg.arm
+    arm = str(selected.model)
     declared = declared_planner_margin(self_collision)
     if not chosen(declared):
         return ("safety.self_collision.planner_margin_mm is undeclared, so there is no combination to look up: the "

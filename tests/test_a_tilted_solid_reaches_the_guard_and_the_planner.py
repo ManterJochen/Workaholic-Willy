@@ -49,7 +49,7 @@ def _solid(rotation: np.ndarray, centre: "tuple[float, float, float]" = (-150.0,
 
 
 def _backend(test: unittest.TestCase) -> Any:
-    guard = SelfCollisionGuard(SelfCollisionSafetyConfig(kinematics_model="ur10"))
+    guard = SelfCollisionGuard(SelfCollisionSafetyConfig())
     backend = guard._exact_mesh_backend("ur10")  # noqa: SLF001
     if backend is None:
         test.skipTest("no exact mesh engine or UR10 bundle on this box")

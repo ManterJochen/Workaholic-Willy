@@ -9,7 +9,7 @@ The graph planner goes straight from the start to the goal. cuRobo's shipped gra
 (``graph_planner/exact_graph_planner.yml``) sets ``use_default_position_heuristic``, which links the start and the goal
 through the descriptor's retract configuration in every roadmap it seeds: every graph-seeded plan, which is every
 attempt from the second on, is offered the route start, retract, goal. The committed retract of a UR10 with a Hand-E
-(``robot/ur_retract.yaml``) is [-1.57, -1.57, -1.57, -1.57, 1.57, 0.5], a quarter turn of the base from most of the
+(``robot/retract.yaml``) is [-1.57, -1.57, -1.57, -1.57, 1.57, 0.5], a quarter turn of the base from most of the
 bench, so a plan between two stations a few centimetres apart could be seeded through it. :func:`graph_planner_without_retract` switches that link
 off and changes nothing else.
 

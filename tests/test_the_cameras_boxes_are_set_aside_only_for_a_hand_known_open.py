@@ -373,7 +373,7 @@ class ACellComingUpHandsTheArmItsHandTests(unittest.TestCase):
         with robot.connected():
             self.assertIs(arm._hand, jaws)
             arm._conn.moveJ.reset_mock()
-            _from(arm, arm._curobo_ur, OFF)
+            _from(arm, arm._curobo, OFF)
             self.assertTrue(_line(arm, OFF_ON).ok, "the hand known open sets the boxes aside")
 
 

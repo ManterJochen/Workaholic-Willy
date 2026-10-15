@@ -109,7 +109,7 @@ class TheArmJudgesInTheOrderThePickRunsTests(unittest.TestCase):
     nothing replaces, and a held world opened on it is recorded as ``("held", reason)``."""
 
     def _arm(self, *, route: Any = None, line: Any = None, lift: Any = None, planner: str = "curobo") -> Any:
-        from src.robot.drivers.ur.arm import _Route
+        from src.robot.drivers.planned.arm import _Route
 
         asked: list[tuple[str, Any]] = []
         kept: list[Any] = []
@@ -147,9 +147,9 @@ class TheArmJudgesInTheOrderThePickRunsTests(unittest.TestCase):
         self.asked = asked
         self.kept = kept
         return SimpleNamespace(
-            _motion_planner=planner, _preflight=object(), _conn=SimpleNamespace(is_connected=True),
+            _motion_planner=planner, _preflight=object(), _transport=SimpleNamespace(is_connected=True),
             config=SimpleNamespace(motion_limits=SimpleNamespace(max_velocity=0.5)),
-            _curobo_ur_planner=lambda: "planner", _pose_to_flange=lambda pose: pose,
+            _curobo_planner=lambda: "planner", _pose_to_flange=lambda pose: pose,
             _route_to_the_nearest_goal=route_to, _judge_linear_move=judge_line, ik=ik, carried_line_refusal=carried,
             nearest_configuration=nearest, _planner_refresh=lambda: world, held_world=held_world,
             _keep_the_route_ahead=keep,
@@ -159,7 +159,7 @@ class TheArmJudgesInTheOrderThePickRunsTests(unittest.TestCase):
 
     @staticmethod
     def _route(end: "list[float]") -> Any:
-        from src.robot.drivers.ur.arm import _Route
+        from src.robot.drivers.planned.arm import _Route
 
         return _Route(waypoints=[[0.0] * 6, list(end)], dense=2, how="direct line", planned=False)
 

@@ -1,9 +1,10 @@
-"""Signature-level conformance of every registered RobotArm driver to the
-RobotArm Protocol's return-type contract.
+"""Every registered arm driver meets the ``RobotArm`` Protocol member for member, return type for return type.
 
-``@runtime_checkable`` only validates member *presence*, so a driver could drift a
-return type undetected. This locks the return types of all four drivers — the same
-guard the Gripper Protocol got in Iteration 2 (tests/test_gripper_protocol_conformance.py).
+``@runtime_checkable`` validates member *presence* only, so a driver could drift a return type undetected; this
+locks them, as ``tests/test_gripper_protocol_conformance.py`` does for grippers. Since P0g slice 10 it is driven by
+the registry and by the Protocol itself: the drivers are every vendor ``available_vendors()`` lists, built through
+``tests/_registered_arms.py``, and the members are what ``RobotArm`` declares, introspected. The hand-kept driver
+list it had would have missed a fifth vendor, and the hand-kept member list had to be edited for every new verb.
 """
 
 from __future__ import annotations
@@ -13,31 +14,11 @@ import typing
 import unittest
 
 from src.robot.core.robot_arm import RobotArm
-from src.robot.drivers.dummy.arm import DummyRobotArm
-from src.robot.drivers.kuka.arm import KukaRobotArm
-from src.robot.drivers.sim.arm import IsaacRobotArm
-from src.robot.drivers.ur.arm import URRobotArm
+from tests import _registered_arms
 
-_DRIVERS = (URRobotArm, KukaRobotArm, IsaacRobotArm, DummyRobotArm)
 
-_PROTOCOL_MEMBERS = (
-    "capabilities",
-    "is_connected",
-    "connect",
-    "disconnect",
-    "get_tcp_pose",
-    "get_joint_positions",
-    "move_joint",
-    "move_linear",
-    "stop",
-    "fk",
-    "ik",
-    "is_inside_workspace",
-    "move_to",
-    "move_home",
-    "wait_until_steady",
-    "move",
-)
+def _members() -> tuple[str, ...]:
+    return tuple(sorted(typing._get_protocol_attrs(RobotArm)))  # type: ignore[attr-defined]
 
 
 def _return_hint(cls: type, name: str) -> object:
@@ -46,31 +27,48 @@ def _return_hint(cls: type, name: str) -> object:
     return typing.get_type_hints(func).get("return")
 
 
-class RobotArmReturnTypeConformanceTests(unittest.TestCase):
-    def test_every_driver_matches_protocol_return_types(self) -> None:
-        for name in _PROTOCOL_MEMBERS:
-            expected = _return_hint(RobotArm, name)
-            self.assertIsNotNone(
-                expected, f"RobotArm Protocol member {name} has no return hint"
-            )
-            for driver in _DRIVERS:
-                with self.subTest(member=name, driver=driver.__name__):
-                    self.assertEqual(
-                        _return_hint(driver, name),
-                        expected,
-                        f"{driver.__name__}.{name} return type drifted from the "
-                        f"RobotArm Protocol",
-                    )
+def _missing(registered: list[str], table: tuple[str, ...]) -> list[str]:
+    """Registered vendors the table cannot build."""
+    return sorted(set(registered) - set(table))
 
-    def test_every_driver_has_all_protocol_members(self) -> None:
-        # The presence check @runtime_checkable performs, made explicit per driver.
-        for driver in _DRIVERS:
-            for name in _PROTOCOL_MEMBERS:
-                with self.subTest(driver=driver.__name__, member=name):
-                    self.assertTrue(
-                        hasattr(driver, name),
-                        f"{driver.__name__} is missing RobotArm member {name}",
-                    )
+
+class TheTableIsTheRegistryTests(unittest.TestCase):
+    def test_the_table_is_the_registry(self) -> None:
+        from src.robot.drivers import available_vendors
+
+        registered = available_vendors()
+        self.assertEqual([], _missing(registered, _registered_arms.vendors()),
+                         "a registered vendor tests cannot build: add its row to tests/_registered_arms.py")
+        self.assertEqual([], sorted(set(_registered_arms.vendors()) - set(registered)), "a row for no vendor")
+
+    def test_a_vendor_the_table_does_not_know_is_found(self) -> None:
+        """⭐ THE POSITIVE CONTROL: a fifth vendor registered without a row is named."""
+        self.assertEqual(["franka"], _missing(["dummy", "franka", "sim", "ur"], _registered_arms.vendors()))
+
+    def test_the_members_are_the_protocols(self) -> None:
+        """⭐ The introspection sees what the Protocol declares: a blind one would pass every driver."""
+        members = _members()
+        for name in ("move", "move_to_joints", "connect", "capabilities"):
+            self.assertIn(name, members)
+
+
+class RobotArmReturnTypeConformanceTests(unittest.TestCase):
+    def test_every_registered_arm_matches_the_protocols_return_types(self) -> None:
+        for vendor in _registered_arms.vendors():
+            driver = type(_registered_arms.build(vendor))
+            for name in _members():
+                expected = _return_hint(RobotArm, name)
+                with self.subTest(vendor=vendor, member=name):
+                    self.assertIsNotNone(expected, f"RobotArm Protocol member {name} has no return hint")
+                    self.assertEqual(_return_hint(driver, name), expected,
+                                     f"{driver.__name__}.{name} return type drifted from the RobotArm Protocol")
+
+    def test_every_registered_arm_has_every_protocol_member(self) -> None:
+        for vendor in _registered_arms.vendors():
+            driver = type(_registered_arms.build(vendor))
+            for name in _members():
+                with self.subTest(vendor=vendor, member=name):
+                    self.assertTrue(hasattr(driver, name), f"{driver.__name__} is missing RobotArm member {name}")
 
 
 if __name__ == "__main__":

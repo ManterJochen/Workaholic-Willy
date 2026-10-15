@@ -25,21 +25,21 @@ class TheBedLayersComposeTests(unittest.TestCase):
     def test_ursim_alone_still_plans_nothing(self) -> None:
         """The control. Without it the two below could be describing the base tree."""
         robot = _robot("ursim")
-        self.assertEqual("ik", robot.ur.motion_planner)
+        self.assertEqual("ik", robot.motion.planner)
         self.assertEqual("ur5e", robot.ur.model)
 
     def test_the_ur5e_bed_turns_the_planner_on(self) -> None:
         robot = _robot("ursim,ursim_curobo")
         self.assertEqual("ur", robot.vendor)
         self.assertEqual("127.0.0.1", robot.ur.ip)
-        self.assertEqual("curobo", robot.ur.motion_planner)
+        self.assertEqual("curobo", robot.motion.planner)
         # 4.0 family-wide since B6: at 10 the refitted sphere map leaves a UR5 no pose at all.
         self.assertEqual(4.0, robot.safety.self_collision.planner_margin_mm)
 
     def test_the_ur3e_bed_is_the_same_bed_on_the_smaller_arm(self) -> None:
         robot = _robot("ursim,ursim_curobo,ursim_ur3")
         self.assertEqual("ur3e", robot.ur.model)
-        self.assertEqual("curobo", robot.ur.motion_planner)
+        self.assertEqual("curobo", robot.motion.planner)
         self.assertEqual(
             4.0, robot.safety.self_collision.planner_margin_mm,
             "a UR3e finds no plan at the UR5e margin, so the layer order has to end here",
@@ -49,7 +49,7 @@ class TheBedLayersComposeTests(unittest.TestCase):
         """Its margin is inert without the planner, and that is why it can sit in both chains."""
         robot = _robot("ursim,ursim_ur3")
         self.assertEqual("ur3e", robot.ur.model)
-        self.assertEqual("ik", robot.ur.motion_planner)
+        self.assertEqual("ik", robot.motion.planner)
 
 
 if __name__ == "__main__":

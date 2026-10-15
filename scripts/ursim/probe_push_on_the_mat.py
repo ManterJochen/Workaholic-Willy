@@ -186,7 +186,7 @@ def refusal_of(copied: "str | Path", chain: str) -> Optional[str]:
     vendor = str(getattr(robot.vendor, "value", robot.vendor))
     if vendor != "ur":
         return f"the copied tree under {chain!r} describes a {vendor!r} cell; this probe drives a UR controller only"
-    address = str(robot.ur.ip)
+    address = str(robot.arm.controller)
     if address != URSIM_ADDRESS:
         return (f"under {chain!r} the controller address resolves to {address}, not {URSIM_ADDRESS}: a layer after "
                 f"{URSIM_LAYER!r} names a controller again, and this probe drives URSim on this box only")
@@ -216,9 +216,9 @@ def _nominal_tcp(robot: Any, joints_deg: Sequence[float]) -> np.ndarray:
     from src.geometry.quaternion import to_rotation_matrix  # noqa: PLC0415
     from src.robot.safety._ur_kinematics import ur_link_transforms_mm  # noqa: PLC0415
 
-    chain = ur_link_transforms_mm(str(robot.ur.model), np.radians(np.asarray(joints_deg, dtype=np.float64)))
+    chain = ur_link_transforms_mm(str(robot.arm.model), np.radians(np.asarray(joints_deg, dtype=np.float64)))
     if chain is None:
-        raise ValueError(f"no bundled DH chain for {robot.ur.model!r}, so no camera can be placed at a look")
+        raise ValueError(f"no bundled DH chain for {robot.arm.model!r}, so no camera can be placed at a look")
     flange = np.asarray(chain[-1], dtype=np.float64)
     tool = np.eye(4)
     tool[:3, :3] = to_rotation_matrix(np.asarray(robot.gripper.tool_frame.rotation_quat_xyzw, dtype=np.float64))
@@ -362,7 +362,7 @@ def offline_step(tree: Any, crop: Path, *, push_mm: Optional[float], gaps: Seque
         place[:3, 3] = (low + high) / 2.0
         keep_out = (KeepOutBox.from_matrix("part_0", place, (high - low) / 2.0 + float(world.tuning.margin_mm)),)
         model = find_supports(views, limits=world.limits, tuning=world.tuning,
-                              base=ROBOT_BASES.get(str(robot.ur.model).lower()), keep_out=keep_out)
+                              base=ROBOT_BASES.get(str(robot.arm.model).lower()), keep_out=keep_out)
         surface = model.surface_under(target[:, :2])
         row: dict[str, Any] = {**placed, "target_points": int(target.shape[0]),
                                "neighbour_points": int(others.shape[0]),
@@ -877,7 +877,7 @@ def run_on_ursim(tree: Any, copied: Path, work: Path, crop: Path, *, scenarios: 
         with cell.connected():
             service = cell.service
             arm = cell.arm
-            conn = arm.connection
+            conn = arm._conn
             for verb in ("moveJ", "moveL", "stop", "set_digital_out"):
                 setattr(conn, verb, command_spy(getattr(conn, verb), rec.commands, rec.on_command, verb))
             for verb in ("move", "move_to_joints", "move_to_joints_on_the_line", "move_linear", "move_joint"):

@@ -207,7 +207,7 @@ def main(argv: "list[str] | None" = None) -> int:
     print("next:")
     print(f"  measure the jaw into config/grippers/{args.hand}.yaml: "
           f"python scripts/grippers/measure_jaw_from_bundle.py {args.hand}")
-    print(f"  fit its spheres for the planner: python scripts/curobo/fit_cover_spheres.py --hand {args.hand} --write")
+    print(f"  fit its spheres for the planner: python scripts/arms/fit.py --hand {args.hand} --write")
     return 0
 
 

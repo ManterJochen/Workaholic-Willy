@@ -341,11 +341,12 @@ def _write_mp4(frames: "list[np.ndarray]", out: str, fps: int, keyframes: int = 
 def _require_curobo() -> None:
     """Exit if the cuRobo env is absent: this demo must not film a blind-IK (flickering) run."""
     from src.robot.safety.planning import curobo_env_available
+    from src.utility.interpreters import installer_command
 
     if not curobo_env_available():
         raise SystemExit(
             "cuRobo env NOT FOUND -> the arm would degrade to BLIND IK (the flicker bug). Install it with "
-            "scripts/ext_deps/install.ps1, or set WILLY_CUROBO_PYTHON if it lives outside ext_deps/. "
+            f"{installer_command()}, or set WILLY_CUROBO_PYTHON if it lives outside ext_deps/. "
             "`python -m src.robot.safety.planning --doctor` says which it is.")
 
 

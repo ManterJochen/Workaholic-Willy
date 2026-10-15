@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING, Any, Final
 import numpy as np
 import yaml
 
+from src.config.arms import load_arm
 from src.contracts import chosen
 
 from .._ur_kinematics import arm_link_transforms_mm
@@ -92,13 +93,8 @@ ROBOT_BASES: Final[Mapping[str, BaseShape]] = MappingProxyType({
     ),
 })
 
-#: The bundle's arm links and the DH frame each is baked in, as
-#: scripts/isaac/bake_ur_collision_meshes.py writes them.
-_ARM_LINKS: Final = (
-    ("shoulder", 1), ("upper_arm", 2), ("forearm", 3), ("wrist_1", 4), ("wrist_2", 5), ("wrist_3", 6),
-)
-#: The flange frame, where the hand and a carried part hang.
-_FLANGE_FRAME: Final = 6
+# The arm's links, the DH frame each is baked in, and the flange frame the hand, a camera and a carried part hang from
+# (its dof) are the arm description's since P0f F9: scripts/arms/bake.py bakes from the same rows.
 #: Added to a fitted radius so a vertex exactly on the surface is not lost to rounding, millimetres.
 _ROUNDING_MM: Final = 1e-6
 #: How far any point of an arm link's surface lies at most from the nearest point laid over it,
@@ -220,16 +216,19 @@ def base_capsule(model: str) -> LinkCapsule | None:
 def arm_capsules(model: str) -> tuple[LinkCapsule, ...] | None:
     """One capsule per arm link of ``model``, in each link's DH frame, or ``None`` without a committed bundle.
 
-    Each carries its link's surface (:func:`_link_surface`) where the bundle holds the link's triangles.
+    Each carries its link's surface (:func:`_link_surface`) where the bundle holds the link's triangles. The links
+    are the description's, so a link it names and the bundle does not carry is ``None`` too: a body with a link
+    missing is not the arm.
     """
     bundle = collision_mesh_bundle(model)
     if not bundle.is_file():
         return None
+    links = [(part, frame) for part, _link, frame in load_arm(model.lower()).collision_links]
     with np.load(bundle) as data:
-        if any(f"{name}__v" not in data.files for name, _ in _ARM_LINKS):
+        if any(f"{name}__v" not in data.files for name, _ in links):
             return None
         capsules: list[LinkCapsule] = []
-        for name, frame in _ARM_LINKS:
+        for name, frame in links:
             vertices = np.asarray(data[f"{name}__v"], dtype=np.float64)
             capsule = _fit_link(vertices, frame)
             if f"{name}__f" in data.files:
@@ -298,8 +297,8 @@ def hand_spheres(hand: PlannerHand, model: str) -> tuple[LinkCapsule, ...] | Non
     """The hand on the flange frame as its map's spheres, placed and grown to hold its mesh, or ``None``.
 
     ``None`` comes back without the hand's bundle, and where the declared tool frame places no hand: a
-    body nobody can place is not filtered. ``model`` is the arm the hand hangs from, and the hand's own
-    bundle is the same on every arm.
+    body nobody can place is not filtered. ``model`` is the arm the hand hangs from, whose flange frame is
+    its dof, and the hand's own bundle is the same on every arm.
     """
     if not chosen(hand.placement):
         return None
@@ -308,8 +307,9 @@ def hand_spheres(hand: PlannerHand, model: str) -> tuple[LinkCapsule, ...] | Non
     )
     if held is None:
         return None
+    flange = load_arm(model.lower()).dof
     return tuple(
-        LinkCapsule(frame=_FLANGE_FRAME, start_mm=centre, end_mm=centre, radius_mm=radius) for centre, radius in held
+        LinkCapsule(frame=flange, start_mm=centre, end_mm=centre, radius_mm=radius) for centre, radius in held
     )
 
 
@@ -322,11 +322,14 @@ def _tip_mm(spheres: tuple[LinkCapsule, ...], approach: tuple[float, float, floa
 def payload_capsule(
     hand: PlannerHand, spheres: tuple[LinkCapsule, ...], *, length_mm: float, lateral_margin_mm: float,
 ) -> LinkCapsule:
-    """A carried part: from the tip of ``spheres`` along the hand's approach, as wide as the jaws open plus the margin."""
+    """A carried part: from the tip of ``spheres`` along the hand's approach, as wide as the jaws open plus the margin.
+
+    It hangs from the frame the hand's spheres hang from, the flange of the arm they were placed for.
+    """
     approach = np.asarray(_approach(hand), dtype=np.float64)
     tip = _tip_mm(spheres, _approach(hand))
     return LinkCapsule(
-        frame=_FLANGE_FRAME,
+        frame=spheres[0].frame,
         start_mm=_point(approach * tip),
         end_mm=_point(approach * (tip + float(length_mm))),
         radius_mm=(float(hand.jaw.aperture_mm) + float(lateral_margin_mm)) / 2.0,
@@ -393,7 +396,7 @@ def self_envelope(
     # A wrist camera's housing and bracket, the fill the planner carries, so a fixed camera does not
     # register the housing as an obstacle beside the arm.
     body = body + tuple(
-        LinkCapsule(frame=_FLANGE_FRAME, start_mm=centre, end_mm=centre, radius_mm=radius)
+        LinkCapsule(frame=spheres[0].frame, start_mm=centre, end_mm=centre, radius_mm=radius)
         for wrist in preflight.wrist_bodies(arm) for centre, radius in wrist.envelope_spheres_mm()  # type: ignore[attr-defined]
     )
     if payload is not None:

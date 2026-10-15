@@ -5,6 +5,7 @@ import logging
 import numpy as np
 
 from src.config.schema.camera import SingleDeviceRigConfig
+from src.camera.setup.capture_backend import refuse_a_backend_this_platform_lacks
 from src.camera.setup.image_taking.frames import StereoFrame
 from src.camera.setup.quality import configure_camera_for_quality
 
@@ -19,6 +20,7 @@ class SingleDeviceStreamer:
     """
 
     def __init__(self, config: SingleDeviceRigConfig):
+        refuse_a_backend_this_platform_lacks(config)
         self.cfg = config
         self.logger = logging.getLogger(f"{__name__}.{config.rig_id}")
 

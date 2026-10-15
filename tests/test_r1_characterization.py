@@ -38,6 +38,7 @@ import numpy as np
 from src.geometry import Frame, Transform
 from src.robot.grasping import GraspCalculator
 from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator, PerceptionFrame
+from src.robot.core.motion_result import MotionCommand, MotionResult
 
 _GOLDEN = Path(__file__).parent / "data" / "r1_characterization" / "grasping_core_golden.json"
 
@@ -145,9 +146,9 @@ class _FakeArm:
     def __init__(self) -> None:
         self.moved: list = []
 
-    def move_to(self, pose: object) -> bool:  # noqa: ANN001
+    def move(self, pose: object, **_: object) -> MotionResult:  # noqa: ANN001
         self.moved.append(pose)
-        return True
+        return MotionResult.executed(MotionCommand.MOVE_TO)
 
 
 class _FakePerception:

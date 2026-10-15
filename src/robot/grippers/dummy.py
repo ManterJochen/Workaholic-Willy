@@ -7,6 +7,8 @@ It has no SDK dependency. It tracks an internal width and clamps every command i
 
 from __future__ import annotations
 
+from typing import Any
+
 from src.robot.core import Gripper
 
 __all__ = ["DummyGripper"]
@@ -91,3 +93,26 @@ class DummyGripper:
 assert isinstance(DummyGripper(), Gripper), (
     "DummyGripper does not satisfy the Gripper Protocol"
 )
+
+
+# ---- the driver as the stack reads it (P0g slice 8, grippers/spec.py) -----------------------------------------------
+def _build_dummy(robot_cfg: Any, arm: Any, facts: Any) -> Gripper:
+    from src.robot.core import GripperVendor
+
+    from .registry import create_gripper
+
+    gripper_cfg = robot_cfg.gripper
+    return create_gripper(GripperVendor.DUMMY, min_width_mm=gripper_cfg.min_width_mm,
+                          max_width_mm=gripper_cfg.max_width_mm)
+
+
+def _driver() -> Any:
+    from src.robot.core import GripperVendor
+
+    from .spec import GripperDriver
+
+    return GripperDriver(vendor=GripperVendor.DUMMY, refuse=lambda _cfg, _facts: None, build=_build_dummy,
+                         actuates_nothing="a stand-in that actuates nothing")
+
+
+DRIVER = _driver()

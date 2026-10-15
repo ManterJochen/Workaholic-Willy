@@ -89,7 +89,7 @@ class SimRobotConfig:
     backend: Literal["isaac"] = "isaac"
     enabled: bool = False
     # Which UR model this sim cell drives. The key selects the Lula solver config, the
-    # Isaac USD, the cuRobo willy_{key}.yml, and the safety kinematics_model, which
+    # Isaac USD, the cuRobo willy_{key}.yml, and the model the arm reports to the guards, which
     # src.robot.drivers.sim.robot_models sets out. The default "ur5e" leaves an existing
     # cell unchanged.
     robot_model: str = "ur5e"
@@ -115,7 +115,7 @@ class SimRobotConfig:
     tool_rotation_quat_xyzw: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0)
     # The approach-phase motion planner, one of three.
     #
-    # "ik" is the precise pure-IK path with an interpolated move_joint, which is a blind
+    # "ik" is the precise pure-IK path with an interpolated joint move, which is a blind
     # straight line in joint space. "rmpflow" drives the Lula RMPflow reactive policy
     # toward the pose first, collision-aware once scene obstacles are registered through
     # IsaacRobotArm.register_planner_obstacles, and then snaps to the exact IK solution.
@@ -127,7 +127,7 @@ class SimRobotConfig:
     #
     # The default is "curobo", so every sim cell plans real collision-aware trajectories,
     # gated by the Coal-mesh self-collision preflight that the sim profile configures as
-    # backend=fcl with kinematics_model=ur5e. A host without the cuRobo environment stays
+    # backend=fcl on the arm this block names. A host without the cuRobo environment stays
     # green because the driver falls back to "ik" both at build time, through
     # curobo_env_available() in the dense build_service, and at move time, through the
     # _resolve_motion_planner probe, and mock_mode short-circuits before curobo is

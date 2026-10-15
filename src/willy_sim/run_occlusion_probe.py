@@ -168,7 +168,7 @@ def run_probe(
                   f"visible={int(m['visible'])} per_obj={m['per_obj_px']}", flush=True)
 
     # Park: arm clear of the bin. The eye-to-hand baseline and the object-stacking occlusion.
-    arm.move_joint(park_q)
+    arm.move_to_joints(park_q).raise_unless_executed()
     _settle_render(session)
     _measure_all("park", ["overhead", "oblique_L", "oblique_R"])
 

@@ -29,19 +29,19 @@ from src.robot.core import (
     RobotStatus,
     SafetyMode,
 )
-from src.robot.core.arm_capabilities import DigitalIOPort
+from src.robot.core.arm_capabilities import DigitalIOPort, PayloadModel
 from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy, PolicyOutcome
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 from src.robot.grippers.jaw_io import JawIOGripper
 
 _RUNNING = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.NORMAL, protective_stopped=False,
-                       emergency_stopped=False)
+                       emergency_stopped=False, program_running=True)
 _PROTECTIVE = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.PROTECTIVE_STOP,
-                          protective_stopped=True, emergency_stopped=False, message="Safetystatus: PROTECTIVE_STOP")
+                          protective_stopped=True, emergency_stopped=False, message="Safetystatus: PROTECTIVE_STOP", program_running=True)
 _CAPS = RobotCapabilities(
-    vendor="ur", model="ur10", dof=6, supports_joint_move=True, supports_linear_move=True,
-    supports_async_move=False, has_native_fk=True, has_native_ik=True, has_force_control=False,
-    is_simulated=False,
+    vendor="ur", model="ur10", dof=6,
+    has_native_fk=True,
+    is_simulated=False, controller=None, owns_a_controller=True,
 )
 
 
@@ -144,7 +144,7 @@ class _Arm:
         self.events.append("status")
         return self._statuses.pop(0) if len(self._statuses) > 1 else self._statuses[0]
 
-    def recover_from_protective_stop(self) -> bool:  # pragma: no cover - never called, by design
+    def acknowledge_fault(self, fault: object) -> bool:  # pragma: no cover - never called, by design
         raise AssertionError("nothing on the pick path may clear a stop")
 
     def wait_until_steady(self, timeout_s: float = 5.0, poll_interval_s: float = 0.02) -> bool:
@@ -162,6 +162,8 @@ class _Arm:
         self._tcp = pose
         return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
 
+    # The whole payload capability, because an arm carries one or does not: the verbs ask with
+    # ``isinstance(arm, CarriesPayload)``, and a double answering half of it is a shape no driver has.
     def detach_payload(self) -> bool:
         self.events.append("detach")
         return True
@@ -169,6 +171,12 @@ class _Arm:
     def attach_payload(self, width_mm: float) -> bool:
         self.events.append(("attach", round(float(width_mm), 2)))
         return True
+
+    def payload_declined_reason(self) -> "str | None":
+        return None
+
+    def payload_model(self) -> PayloadModel:
+        return PayloadModel.PLANNER_AND_FILTER
 
 
 def _grasp() -> GraspPoint:
@@ -179,8 +187,8 @@ def _grasp() -> GraspPoint:
 
 
 def _policy(arm: Any, jaws: Any) -> GraspExecutionPolicy:
-    """The service's policy on a real cell: jaws opened before every approach, the steady gate on."""
-    return GraspExecutionPolicy(arm=arm, gripper=jaws, pre_open_width_mm=49.99, require_steady_before_motion=True)
+    """The service's policy on a real cell: jaws opened before every approach; the steady gate is the arm's own."""
+    return GraspExecutionPolicy(arm=arm, gripper=jaws, pre_open_width_mm=49.99)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -566,7 +574,7 @@ def _stopped_robot(events: list[Any], *, statuses: tuple[RobotStatus, ...], clos
             self.log.entries.append(("status",))
             return self._statuses.pop(0) if len(self._statuses) > 1 else self._statuses[0]
 
-        def recover_from_protective_stop(self) -> bool:  # pragma: no cover - never called, by design
+        def acknowledge_fault(self, fault: object) -> bool:  # pragma: no cover - never called, by design
             raise AssertionError("a hand verb may not clear a stop")
 
     arm = _StatusArm()

@@ -50,8 +50,6 @@ robot:
     z: 489.0
 
   safety:
-    self_collision:
-      kinematics_model: "ur10"
     payload:
       max_mass_kg: 10.0      # UR10 datasheet
     # Every joint that turns a full turn stays within half a turn of home_joint_positions (the default if unset),

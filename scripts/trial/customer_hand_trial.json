@@ -2,7 +2,7 @@
  "about": "The customer chain trial: docs/runbooks/your_own_gripper.md run in a copy of the tree with two hands whose answers are known. Read with scripts/trial/README.md.",
  "env": {
   "set": {
-   "WILLY_CUROBO_PYTHON": "$ORIG/ext_deps/curobo_env/python.exe",
+   "WILLY_CUROBO_PYTHON": "$CUROBO_PY",
    "WILLY_COAL_PREFIX": "$ORIG/ext_deps/coal_env",
    "WILLY_CUROBO_STDERR": "$LOGS/sidecar_stderr.log"
   },
@@ -20,6 +20,7 @@
   "ORIG": "D:/dev/Workaholic-Willy",
   "PY": "D:/dev/Workaholic-Willy/.venv/Scripts/python.exe",
   "CONTENT": "D:/dev/Workaholic-Willy/ext_deps/curobo/curobo/content",
+  "CUROBO_PY": "$ORIG/ext_deps/curobo_env/python.exe",
   "ARM": "ur10e",
   "ROT": "0 0 0 1",
   "MASS_KG": "1.2",
@@ -98,7 +99,7 @@
     {
      "id": "p1-control-gate",
      "timeout_s": 1800,
-     "run": "$PY scripts/curobo/matrix_gate.py --arm ur10e --hand robotiq_hande --coupling-mm 0 --planner-margin-mm 4 --tool-rotation-xyzw $ROT --evidence-dir $LOGS/control --write",
+     "run": "$PY scripts/arms/gate.py --arm ur10e --hand robotiq_hande --coupling-mm 0 --planner-margin-mm 4 --tool-rotation-xyzw $ROT --evidence-dir $LOGS/control --write",
      "expect": {
       "exit": 0,
       "stdout_has": [
@@ -119,17 +120,17 @@
     {
      "id": "p1-retract-check",
      "timeout_s": 3600,
-     "run": "$PY scripts/curobo/choose_ur_retract.py ur10e --tool-rotation-xyzw $ROT --check",
+     "run": "$PY scripts/arms/retract.py ur10e --tool-rotation-xyzw $ROT --check",
      "expect": {
       "exit": 0,
       "stdout_has": [
-       "ur_retract.yaml is what this box measures"
+       "retract.yaml is what this box measures"
       ]
      }
     },
     {
      "id": "p1-table-before",
-     "run": "$PY -c \"import shutil, sys; shutil.copyfile(sys.argv[1], sys.argv[2]); print('kept')\" src/robot/safety/planning/robot/ur_retract.yaml $LOGS/table_before.yaml",
+     "run": "$PY -c \"import shutil, sys; shutil.copyfile(sys.argv[1], sys.argv[2]); print('kept')\" src/robot/safety/planning/robot/retract.yaml $LOGS/table_before.yaml",
      "expect": {
       "exit": 0,
       "stdout_has": [
@@ -252,18 +253,18 @@
     {
      "id": "p2-chooser-before-the-map",
      "timeout_s": 600,
-     "run": "$PY scripts/curobo/choose_ur_retract.py $ARM --hand $HAND --tool-rotation-xyzw $ROT",
+     "run": "$PY scripts/arms/retract.py $ARM --hand $HAND --tool-rotation-xyzw $ROT",
      "expect": {
       "exit": 2,
       "stderr_has": [
-       "fit_cover_spheres.py --hand acme_dims --write",
+       "scripts/arms/fit.py --hand acme_dims --write",
        "nothing judged, nothing written"
       ]
      }
     },
     {
      "id": "p2-table-unmoved-by-the-refusal",
-     "run": "$PY scripts/trial/retract_checks.py table-diff --before $LOGS/table_before.yaml --after src/robot/safety/planning/robot/ur_retract.yaml",
+     "run": "$PY scripts/trial/retract_checks.py table-diff --before $LOGS/table_before.yaml --after src/robot/safety/planning/robot/retract.yaml",
      "expect": {
       "exit": 0,
       "stdout_has": [
@@ -314,7 +315,7 @@
     },
     {
      "id": "p2-table-diff",
-     "run": "$PY scripts/trial/retract_checks.py table-diff --before $LOGS/table_before.yaml --after src/robot/safety/planning/robot/ur_retract.yaml --added ur10e/acme_dims@0",
+     "run": "$PY scripts/trial/retract_checks.py table-diff --before $LOGS/table_before.yaml --after src/robot/safety/planning/robot/retract.yaml --added ur10e/acme_dims@0",
      "expect": {
       "exit": 0,
       "stdout_has": [
@@ -328,7 +329,7 @@
      "expect": {
       "exit": 0,
       "stdout_has": [
-       "ur_retract.yaml is what this box measures"
+       "retract.yaml is what this box measures"
       ]
      }
     },
@@ -466,7 +467,7 @@
     },
     {
      "id": "p2-table-after",
-     "run": "$PY -c \"import shutil, sys; shutil.copyfile(sys.argv[1], sys.argv[2]); print('kept')\" src/robot/safety/planning/robot/ur_retract.yaml $LOGS/table_after_acme_dims.yaml",
+     "run": "$PY -c \"import shutil, sys; shutil.copyfile(sys.argv[1], sys.argv[2]); print('kept')\" src/robot/safety/planning/robot/retract.yaml $LOGS/table_after_acme_dims.yaml",
      "expect": {
       "exit": 0,
       "stdout_has": [
@@ -592,7 +593,7 @@
     },
     {
      "id": "p3-table-diff",
-     "run": "$PY scripts/trial/retract_checks.py table-diff --before $LOGS/table_after_acme_dims.yaml --after src/robot/safety/planning/robot/ur_retract.yaml --added ur10e/acme_mesh@0,ur10e/acme_mesh@20",
+     "run": "$PY scripts/trial/retract_checks.py table-diff --before $LOGS/table_after_acme_dims.yaml --after src/robot/safety/planning/robot/retract.yaml --added ur10e/acme_mesh@0,ur10e/acme_mesh@20",
      "expect": {
       "exit": 0,
       "stdout_has": [
@@ -606,7 +607,7 @@
      "expect": {
       "exit": 0,
       "stdout_has": [
-       "ur_retract.yaml is what this box measures"
+       "retract.yaml is what this box measures"
       ]
      }
     },

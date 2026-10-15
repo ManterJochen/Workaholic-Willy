@@ -6,14 +6,14 @@ validated before it reaches the controller.
 
 from __future__ import annotations
 
-import asyncio
 from typing import TYPE_CHECKING, cast
 
 from src.geometry import Frame, Pose
-from src.robot.constants import HOME_JOINTS_DEFAULT, UR_MOTION_LOG_FILE, create_robot_logger
+from src.robot.constants import UR_MOTION_LOG_FILE, create_robot_logger
 from src.robot.core import JointPositions, MotionStatus
+from src.robot.core.arm_capabilities import HALT_ENDS
+from src.robot.core.motion_limits import clamp_to_motion_limits
 from src.robot.drivers.ur import URConnection
-from src.robot.drivers.ur.connection import HALT_ENDS
 from src.robot.drivers.ur.pose import URPose
 from src.robot.drivers.ur.pose_adapter import urpose_to_pose
 from src.robot.safety.singularity import (
@@ -233,19 +233,8 @@ class MotionController:
 
     def _clamp(self, vel: float | None, acc: float | None) -> tuple[float | None, float | None]:
         """Clamp a caller-supplied velocity and acceleration to the configured hard limits."""
-        if vel is not None and self.max_velocity is not None and vel > self.max_velocity:
-            self.logger.warning(
-                "Requested velocity %.3f exceeds limit %.3f, clamping.",
-                vel, self.max_velocity,
-            )
-            vel = self.max_velocity
-        if acc is not None and self.max_acceleration is not None and acc > self.max_acceleration:
-            self.logger.warning(
-                "Requested acceleration %.3f exceeds limit %.3f, clamping.",
-                acc, self.max_acceleration,
-            )
-            acc = self.max_acceleration
-        return vel, acc
+        return clamp_to_motion_limits(vel, acc, max_velocity=self.max_velocity,
+                                      max_acceleration=self.max_acceleration, logger=self.logger)
 
     def get_current_pose(self) -> URPose:
         """Read the current TCP pose from the robot."""
@@ -297,7 +286,9 @@ class MotionController:
         # refuse to lift on every pick, and the symptom reads as a gripper, planner or
         # calibration fault rather than a sampling rule.
         boxed = pose if workspace_pose is None else workspace_pose
-        if not self.guard.is_inside_workspace(boxed):
+        # The box speaks Pose only since P0e; this is the conversion the guard made itself until then.
+        boxed_pose = urpose_to_pose(boxed, frame=Frame.BASE, label=boxed.label or None)
+        if not self.guard.is_inside_workspace(boxed_pose):
             self.logger.warning("Pose '%s' rejected by workspace guard.", pose.label)
             self.last_reject_status = MotionStatus.WORKSPACE_REJECTED
             return False
@@ -345,77 +336,21 @@ class MotionController:
                 ok = self.conn.moveL(tcp, vel=vel, acc=acc)
             else:
                 ok = self.conn.moveJ(joints, vel=vel, acc=acc)
+        except ValueError as exc:
+            # ur_rtde refuses a value outside its range (a speed, an acceleration) before it sends anything (P0g R3).
+            self.logger.error("Move to '%s' refused before it was sent: %s", pose.label, exc)
+            self.last_reject_status = MotionStatus.INVALID_TARGET
+            return False
         except (RuntimeError, OSError) as exc:
             self.logger.exception("Move to '%s' failed: %s", pose.label, exc)
             self.last_reject_status = MotionStatus.CONTROLLER_REJECTED
             return False
 
         if ok and register:
-            self.guard.accept(boxed)
+            self.guard.accept(boxed_pose)
 
         if not ok:
             # A move the halt refused or braked is CANCELLED, not a refusal of the controller's.
             self.last_reject_status = (MotionStatus.CANCELLED if _ended_by_the_halt(self.conn)
                                        else MotionStatus.CONTROLLER_REJECTED)
         return bool(ok)
-
-    def move_home(self, home_joints=None) -> bool:
-        """Move to a known safe home position in joint space."""
-        if not self.conn.is_connected:
-            self.logger.error("Cannot move home: robot is not connected.")
-            return False
-        if _refused_by_the_halt(self.conn, "moveJ"):
-            self.logger.error("Not moving home: the arm is halted.")
-            return False
-
-        if home_joints is None:
-            home_joints = list(HOME_JOINTS_DEFAULT)
-
-        try:
-            tcp = self.conn.fk(home_joints)
-            home_pose = URPose.from_ur_list(tcp, label="home")
-            if not self.guard.is_inside_workspace(home_pose):
-                self.logger.warning(
-                    "Home pose (%.1f, %.1f, %.1f) lies outside workspace; "
-                    "proceeding anyway.",
-                    home_pose.x, home_pose.y, home_pose.z,
-                )
-        except (RuntimeError, OSError, ValueError) as exc:
-            self.logger.debug("FK for home check failed: %s", exc)
-
-        self.logger.info("Moving to home position ...")
-        try:
-            return bool(self.conn.moveJ(home_joints))
-        except (RuntimeError, OSError) as exc:
-            self.logger.exception("Move home failed: %s", exc)
-            return False
-
-    async def amove_to(
-        self,
-        pose: URPose,
-        *,
-        linear: bool = False,
-        vel: float | None = None,
-        acc: float | None = None,
-        register: bool = True,
-        workspace_pose: URPose | None = None,
-    ) -> bool:
-        """Async variant of :meth:`move_to` using ``asyncio.to_thread``."""
-        return await asyncio.to_thread(
-            self.move_to, pose,
-            linear=linear, vel=vel, acc=acc, register=register, workspace_pose=workspace_pose,
-        )
-
-    async def amove_home(self, home_joints=None) -> bool:
-        """Async variant of :meth:`move_home`."""
-        return await asyncio.to_thread(self.move_home, home_joints)
-
-    async def await_steady(
-        self,
-        timeout_s: float = 5.0,
-        poll_interval_s: float = 0.02,
-    ) -> bool:
-        """Async variant of :meth:`URConnection.wait_until_steady`."""
-        return await asyncio.to_thread(
-            self.conn.wait_until_steady, timeout_s, poll_interval_s,
-        )

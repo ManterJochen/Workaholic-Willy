@@ -191,15 +191,17 @@ class DriverMessageContractTests(unittest.TestCase):
     """Both drivers must emit the constant, or the discriminator silently stops discriminating."""
 
     def test_sim_and_ur_use_the_shared_constant(self) -> None:
-        # A source check on purpose: importing either driver pulls vendor SDKs, and the failure
-        # this guards against is precisely someone re-typing the string in one of them.
+        # A source check on purpose: the failure this guards against is precisely someone re-typing the string in
+        # one of them. The UR side is read from every file URRobotArm's classes live in, so the check follows the
+        # planning half when P0e moves it into a base class (tests/_driver_sources.py).
         from pathlib import Path
 
+        from tests._driver_sources import ur_arm_source
+
         root = Path(__file__).resolve().parents[1]
-        for rel in ("src/robot/drivers/sim/arm.py",
-                    "src/robot/drivers/ur/arm.py"):
-            with self.subTest(driver=rel):
-                text = (root / rel).read_text(encoding="utf-8")
+        for driver, text in (("sim", (root / "src/robot/drivers/sim/arm.py").read_text(encoding="utf-8")),
+                             ("ur", ur_arm_source())):
+            with self.subTest(driver=driver):
                 self.assertIn("NO_PLAN_FAIL_SAFE_MESSAGE", text)
                 self.assertNotIn(f'message="{NO_PLAN_FAIL_SAFE_MESSAGE}"', text)
 

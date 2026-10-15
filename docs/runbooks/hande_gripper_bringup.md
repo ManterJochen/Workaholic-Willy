@@ -106,7 +106,7 @@ The guard reads config, and so does the planner's hand. **The descriptor is the 
 once per arm, on the box, with the cuRobo environment's interpreter:
 
 ```bash
-ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py ur3e
+ext_deps/curobo_env/python.exe scripts/arms/descriptor.py ur3e
 ```
 
 It refuses `--gripper` and `--coupling-mm` by name: the hand is not in the descriptor. When the planner
@@ -118,7 +118,7 @@ to build rather than modelling the hand one plate too close to the flange.
 Check that it plans with the hand added:
 
 ```bash
-ext_deps/curobo_env/python.exe scripts/curobo/check_ur_descriptors.py willy_ur3e --hand robotiq_hande --coupling-mm <the plate from step 1>
+ext_deps/curobo_env/python.exe scripts/arms/check.py willy_ur3e --hand robotiq_hande --coupling-mm <the plate from step 1>
 ```
 
 ### 4. Declare the payload
@@ -155,7 +155,7 @@ every lift, transit and place is planned with an empty hand, and the checklist's
 blocks a real cuRobo UR tree, naming the key. A cell that carries nothing says so with
 `enabled: false`, and the row turns into a warning. A declared length also reserves sixteen attach
 spheres, and the planner then starts only on an evidence file measured with them
-(`scripts/curobo/matrix_gate.py --attach 16`); every committed evidence file is measured with none.
+(`scripts/arms/gate.py --attach 16`); every committed evidence file is measured with none.
 
 What carrying costs, measured on the planner with `scripts/curobo/probe_payload_attach.py`: the
 part's box is fitted with spheres anew on every attach, and the fit reaches past the box. A lift that

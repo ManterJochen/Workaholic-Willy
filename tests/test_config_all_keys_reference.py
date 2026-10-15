@@ -108,8 +108,8 @@ class AllKeysReferenceTests(unittest.TestCase):
         )
 
     def test_the_gripper_model_is_written_under_the_gripper_block(self) -> None:
-        # `model` is declared under robot.ur, robot.kuka and robot.gripper, so the name check above
-        # passes for robot.gripper.model as long as any one of the three is written. The gripper entry
+        # `model` is declared under robot.ur and robot.gripper, so the name check above
+        # passes for robot.gripper.model as long as either is written. The gripper entry
         # is checked in the block it belongs to.
         import yaml
 

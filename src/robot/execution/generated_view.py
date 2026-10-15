@@ -18,7 +18,7 @@ a turn, because the face behind a 45 degree look is 135 degrees round, and so it
   skips that turn, and nothing plans around it: no cuRobo at any angle, no retract, no detour, no fallback;
 * and it runs only where that world is there to judge it: the arm's live planner world holds the frames of the pick
   (``holding``, what ``keep_out.holding_views`` yielded), no ``without_camera_world`` decline is in scope for the arm,
-  and the arm's own reading of the camera world a motion would carry (``ReadsCameraWorld``) is not DECLINED, MISSING or
+  and the arm's own reading of the camera world a motion would carry (``PlansMotions``) is not DECLINED, MISSING or
   UNPLANNED. An arm with no live world, or one that cannot hold the pick's frames, generates nothing.
 
 The move back to the look that saw the part is held to the same line, the same world and the same travel cap from where
@@ -51,7 +51,7 @@ from src.contracts import UNSET
 from src.robot.constants import create_robot_logger
 from src.robot.core import NO_PLAN_FAIL_SAFE_MESSAGE, JointPositions, MotionStatus
 from src.robot.core.arm_capabilities import ChoosesConfigurations, DrivesJointLines
-from src.robot.core.camera_world import CameraWorldUse, ReadsCameraWorld, active_decline
+from src.robot.core.camera_world import CameraWorldUse, PlansMotions, active_decline
 from src.robot.core.errors import CameraWorldUnavailable, RobotKinematicsError
 from src.robot.execution.looks import look_label
 from src.robot.execution.motion import MotionOutcome, MotionReport, move_joints_on_the_line
@@ -220,7 +220,7 @@ def _degrees(joints: Any) -> list[float]:
 def _not_judged(arm: Any, *, holding: bool) -> str:
     """Why a motion ``arm`` made now would not be judged against the camera world holding every frame of the pick, or
     ``""`` when it would: the frames held (``holding``), no decline in scope for the arm, and, where the arm says what a
-    motion would carry (``ReadsCameraWorld``), a camera world that is not DECLINED, MISSING or UNPLANNED."""
+    motion would carry (``PlansMotions``), a camera world that is not DECLINED, MISSING or UNPLANNED."""
     if not holding:
         return ("the arm's planner world does not hold the frames of this pick (keep_out.holding_views: no live world, "
                 "or none with a camera on the wrist), so the motion would not be judged against every frame the pick "
@@ -229,7 +229,7 @@ def _not_judged(arm: Any, *, holding: bool) -> str:
     if decline is not None:
         return (f"the camera world is declined for this arm ({decline.reason}), and a motion the pick made up runs "
                 "judged against the camera world holding every frame of the pick or not at all")
-    if isinstance(arm, ReadsCameraWorld):
+    if isinstance(arm, PlansMotions):
         stamp = arm.camera_world_for_move(UNSET)
         if stamp.use in _UNJUDGED:
             return f"no camera world would judge the motion ({stamp.render()})"

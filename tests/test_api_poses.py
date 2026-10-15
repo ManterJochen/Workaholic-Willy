@@ -167,7 +167,10 @@ class ThePosesAreReadTests(LayerCell):
         body = answered.json()
         home = body["home"]
         self.assertEqual(("home", "config"), (home["name"], home["source"]))
-        self.assertEqual([0.0, -90.0, 0.0, -90.0, 0.0, 0.0], [round(v, 6) for v in home["joints_deg"]])
+        # The scratch cell is a desk dummy that declares no home. Until P0e E4 the console showed the UR5e pose the
+        # deleted HOME_JOINTS_DEFAULT held, which the dummy never drives to; an arm nobody describes shows none now
+        # (a UR cell shows its description's home, tests/test_the_arm_says_who_it_is.py).
+        self.assertEqual([], home["joints_deg"])
         drop, park = body["poses"]
         self.assertEqual(("drop_left", "Ablage links", "taught", "clear", "2026-10-01T10:00:00+02:00"),
                          (drop["name"], drop["label"], drop["source"], drop["screen"], drop["taught_at"]))

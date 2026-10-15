@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 
-_UR_FRAME = {"source": "polyscope", "offset_mm": [0.0, 0.0, 155.75], "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}
+_UR_FRAME = {"source": "controller", "offset_mm": [0.0, 0.0, 155.75], "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}
 _SIM_FRAME = {"source": "willy", "offset_mm": [0.0, 155.75, 0.0], "rotation_quat_xyzw": [-0.70710678, 0.0, 0.0, 0.70710678]}
 
 

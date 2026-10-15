@@ -164,6 +164,17 @@ class WhatTheJudgedFrameShowedTests(unittest.TestCase):
             src()
         self.assertIsNone(src.last_observation)
 
+    def test_the_judged_frame_is_kept_as_a_copy_the_device_cannot_overwrite(self) -> None:
+        """The routine writes it beside the dataset for a sample that counted (85f082b)."""
+        bgr = _marker_bgr()
+        src = RGBDArucoMarkerSource(streamer=_FakeStreamer(bgr), warmup_grabs=0)
+        self.assertIsNone(src.last_frame)
+        src()
+        assert src.last_frame is not None
+        np.testing.assert_array_equal(src.last_frame, bgr)
+        bgr[:] = 0  # the device reuses its buffer for the next grab
+        self.assertGreater(int(src.last_frame.max()), 0)
+
 
 class LoadIntrinsicsTests(unittest.TestCase):
     def _write(self, tmp: str, payload: dict) -> Path:

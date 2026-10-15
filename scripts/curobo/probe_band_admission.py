@@ -145,15 +145,14 @@ def _owner_like_config() -> Any:
 
     return RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": "ur10", "motion_planner": "curobo"},
+        "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
         "workspace_limits": {"x_min": -1500.0, "x_max": 1500.0, "y_min": -1500.0, "y_max": 1500.0,
                              "z_min": -500.0, "z_max": 1500.0},
         "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}],
                     "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 155.75],
                                    "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
         "safety": {"payload": {"enforce": False},
-                   "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "kinematics_model": "ur10",
-                                      "planner_margin_mm": 4.0}},
+                   "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "planner_margin_mm": 4.0}},
     })
 
 
@@ -218,8 +217,8 @@ class CpuReplicaClient:
         descriptor = self._root / "configs" / "robot" / "willy_ur10.yml"
         raw = yaml.safe_load(descriptor.read_text(encoding="utf-8"))
         hand = self._arm.safety_preflight.planner_hand(self._arm)
-        link = HandLink.from_hand(hand)
-        bodies = [link.to_dict(), *coupling_bodies(hand)]
+        link = HandLink.from_hand(hand, arm="ur10")
+        bodies = [link.to_dict(), *coupling_bodies(hand, arm="ur10")]
         default_q = read_retract("ur10", hand.model, float(hand.coupling_mm), 4.0,
                                  placement=f"{link.placement.approach}{link.placement.closing}")
         loaded, evidence, _, _, _ = compose_for_cell(raw, bodies=bodies, margin_mm=4.0, attach_spheres=self._attach,
@@ -338,10 +337,10 @@ class CpuReplicaClient:
     def _terms(self, q: "list[float]", clearance_m: float) -> "tuple[bool, bool, bool, Any]":
         import numpy as np
 
-        from src.robot.drivers.ur.curobo_motion import PLANNER_JOINT_ENVELOPE_RAD
+        from src.robot.drivers.planned.curobo_motion import planner_envelope_rad
 
         spheres = self._spheres(q)
-        bound_ok = all(low <= v <= high for v, low, high in zip(q, *PLANNER_JOINT_ENVELOPE_RAD))
+        bound_ok = all(low <= v <= high for v, low, high in zip(q, *planner_envelope_rad("ur10")))
         self_ok = not self._kernel_self_hit(spheres)
         world_ok = True
         for box in self._boxes:
@@ -550,7 +549,7 @@ def run(args: argparse.Namespace) -> int:
         out["composed_sha256"] = identity.composed_sha256
         say(f"planner started in {out['start_s']} s, composed_sha256 {identity.composed_sha256} (the start refuses "
             f"any other than the committed evidence's), exact engine {out['engine']}")
-        probe.planner = arm._curobo_ur
+        probe.planner = arm._curobo
         # A world far from every case, so no case reads the world the sidecar booted with.
         probe.planner.set_world([FAR_BOX])
         say("cases:")

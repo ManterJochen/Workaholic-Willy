@@ -34,7 +34,7 @@ from src.willy_sim.harness.instrumentation import (
     write_run_result,
 )
 from src.willy_sim.harness.modes import mode_service_kwargs, resolve_demo_mode
-from src.robot.core.camera_world import CameraWorldDecline
+from src.robot.core.camera_world import CameraWorldDecline, live_planner_world_of
 from src.willy_sim.harness.camera_world import SimCameraWorld
 from src.contracts import UNSET, Maybe
 
@@ -70,7 +70,6 @@ def build_service(
     cell = bootstrap_sim_cell(data_dir, headless=headless, **(cell_kwargs or {}),
                               camera_world=camera_world)
     arm, gripper, handles, cfg, sim = cell.arm, cell.gripper, cell.handles, cell.cfg, cell.sim
-    _dwell = cell.dwell  # the steady-state dwell gate
     from src.willy_sim.run_dense_pick import wire_safety_guards  # opt-in guards, default-off
     wire_safety_guards(arm, natural_aim=natural_aim, continuous_guard=continuous_guard,
                        continuous_guard_margin_mm=continuous_guard_margin_mm, fixtures=())
@@ -126,9 +125,6 @@ def build_service(
         arm=arm, gripper=gripper, standoff_mm=standoff_mm, retreat_mm=retreat_mm,
         pre_open_width_mm=pre_open_width_mm, close_width_mm=close_width_mm,
         require_base_frame_grasp=True,
-        # Gate every commanded move on the dwell steady-state config (the sim arm settles fast).
-        require_steady_before_motion=(_dwell.require_steady_before_motion if _dwell else False),
-        steady_timeout_s=(_dwell.steady_timeout_s if _dwell else 5.0),
     )
     # One mode knob via willy_sim/harness/modes.py.
     grasp_mode = resolve_demo_mode(mode)
@@ -308,7 +304,7 @@ def run_gate(runs: int = 10, *, prompt: str = "a red cube", headless: bool = Tru
             # somewhere the arm is not.
             obj.set_world_pose(position=np.asarray(home_pos) + np.array(_OUT_OF_CELL_M), orientation=home_quat)
             arm.session.step_n(_RELEASE_SETTLE_STEPS)
-            world = getattr(arm, "live_planner_world", None)
+            world = live_planner_world_of(arm)
             if world is not None:
                 world.drop_cached_frames()
             again = arm.move_to_joints(JointPositions(park_q))

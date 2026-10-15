@@ -34,9 +34,9 @@ from src.robot.grasping.uncertainty import UncertaintySnapshot
 
 _SIM_CAPS = RobotCapabilities(
     vendor="dummy", model="sim", dof=6,
-    supports_joint_move=True, supports_linear_move=True,
-    supports_async_move=False, has_native_fk=False,
-    has_native_ik=False, has_force_control=False, is_simulated=True,
+    has_native_fk=False,
+    is_simulated=True,
+                                                  controller=None, owns_a_controller=False,
 )
 
 

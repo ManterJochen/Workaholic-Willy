@@ -11,9 +11,6 @@ What each vendor actually does
 * UR: the driver pushes ``mass_kg`` and ``cog_mm`` to the controller through
   :meth:`URConnection.set_payload` on connect, so after a successful connect the
   configured payload and the running controller cannot disagree.
-* KUKA: EKI exposes no runtime payload write. The shipped ``robot.web.yaml`` keeps the
-  same validation, but only the operator setting the controller-side ``$LOAD`` makes
-  it real. The guard surface is unchanged and the YAML comment records the gap.
 * Sim: there is no real payload, and the guard still validates the envelope so an
   operator gets the same diagnostics on the simulator as on hardware.
 """
@@ -43,6 +40,16 @@ class PayloadGuard:
     name = "payload"
 
     def __init__(self, config: "PayloadSafetyConfig") -> None:
+        self._config = config
+
+    @property
+    def payload(self) -> "PayloadSafetyConfig":
+        """The payload this guard judges: the tree's, or the one mounted after the build (P0i i5)."""
+        return self._config
+
+    def mount(self, config: "PayloadSafetyConfig") -> None:
+        """Judge ``config`` from now on: what ``SafetyPreflight.mount_tool`` hands on, after it refused what the schema
+        would not declare and a change of ``enforce`` (P0i i5 review)."""
         self._config = config
 
     def evaluate(self, ctx: SafetyContext) -> SafetyDecision:

@@ -25,8 +25,9 @@ import unittest
 from typing import Any
 
 from src.robot.core import (
+    ArmFault,
+    ArmFaultClass,
     HaltState,
-    RobotEmergencyStop,
     RobotMode,
     RobotMotionRejected,
     RobotStatus,
@@ -35,16 +36,16 @@ from src.robot.core import (
     SupportsRobotStatus,
 )
 from src.robot.drivers.dummy.arm import DummyRobotArm
-from src.robot.drivers.ur.freedrive import raise_unless_operational
+from src.robot.drivers.planned.freedrive import raise_unless_operational
 from src.robot.execution.handling import _controller_refusal
 from src.robot.grasping.motion.execution_policy import _controller_refusal as policy_refusal
 from tests._halt_fakes import RecordingRtde, ur_arm_on
 
 _REASON = "the operator pressed halt now"
 _RUNNING = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.NORMAL, protective_stopped=False,
-                       emergency_stopped=False)
+                       emergency_stopped=False, program_running=True)
 _PROTECTIVE = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.PROTECTIVE_STOP,
-                          protective_stopped=True, emergency_stopped=False, message="Safetystatus: PROTECTIVE_STOP")
+                          protective_stopped=True, emergency_stopped=False, message="Safetystatus: PROTECTIVE_STOP", program_running=True)
 
 
 class _Arm:
@@ -58,9 +59,9 @@ class _Arm:
     def get_robot_status(self) -> RobotStatus:
         reason = self._halt.reason if self._halt is not None else ""
         return RobotStatus(self._status.robot_mode, self._status.safety_mode, self._status.protective_stopped,
-                           self._status.emergency_stopped, self._status.message, halted=reason)
+                           self._status.emergency_stopped, self._status.message, halted=reason, program_running=True)
 
-    def recover_from_protective_stop(self) -> bool:  # pragma: no cover - never called, by design
+    def acknowledge_fault(self, fault: object) -> bool:  # pragma: no cover - never called, by design
         self.recovered += 1
         raise AssertionError("a halt is never cleared by clearing a protective stop")
 
@@ -78,7 +79,7 @@ class _Arm:
 class TheStatusTests(unittest.TestCase):
     def test_a_halted_status_keeps_its_controller_operational_and_is_not_operational(self) -> None:
         """Red before: RobotStatus had no halt in it, so a latch could not reach the six gates."""
-        halted = RobotStatus(RobotMode.RUNNING, SafetyMode.NORMAL, False, False, halted=_REASON)
+        halted = RobotStatus(RobotMode.RUNNING, SafetyMode.NORMAL, False, False, halted=_REASON, program_running=True)
         self.assertTrue(halted.controller_operational)
         self.assertFalse(halted.is_operational)
         self.assertFalse(halted.is_stopped, "a halt is no controller stop")
@@ -87,7 +88,7 @@ class TheStatusTests(unittest.TestCase):
         self.assertFalse(_PROTECTIVE.controller_operational)
 
     def test_the_positional_constructor_of_before_still_builds_the_same_status(self) -> None:
-        status = RobotStatus(RobotMode.RUNNING, SafetyMode.REDUCED, False, False, "Reduced")
+        status = RobotStatus(RobotMode.RUNNING, SafetyMode.REDUCED, False, False, "Reduced", program_running=True)
         self.assertEqual(("Reduced", ""), (status.message, status.halted))
         self.assertFalse(status.is_operational)
 
@@ -101,8 +102,9 @@ class TheUrArmReportsTheHaltBesideItsControllerTests(unittest.TestCase):
         self.assertEqual(_REASON, status.halted)
         self.assertTrue(status.controller_operational)
         self.assertFalse(status.is_operational)
-        self.assertEqual(["getRobotMode", "getSafetyMode", "isProtectiveStopped", "isEmergencyStopped", "safetystatus"],
-                         [call[1] for call in rtde.calls])
+        # Whether the control program runs is read last since P0e E13 (a stopped one is a fault of the cell).
+        self.assertEqual(["getRobotMode", "getSafetyMode", "isProtectiveStopped", "isEmergencyStopped", "safetystatus",
+                          "isProgramRunning"], [call[1] for call in rtde.calls])
 
     def test_quick_robot_status_reads_the_receive_stream_and_never_the_dashboard(self) -> None:
         """Red before: there was no such read, and get_robot_status costs a dashboard round trip per call."""
@@ -112,9 +114,10 @@ class TheUrArmReportsTheHaltBesideItsControllerTests(unittest.TestCase):
         self.assertEqual((RobotMode.RUNNING, SafetyMode.NORMAL, False, False, "", ""),
                          (quick.robot_mode, quick.safety_mode, quick.protective_stopped, quick.emergency_stopped,
                           quick.message, quick.halted))
-        self.assertEqual(["getRobotMode", "getSafetyMode", "isProtectiveStopped", "isEmergencyStopped"],
-                         [call[1] for call in rtde.calls])
-        self.assertEqual({"recv"}, {call[0] for call in rtde.calls})
+        self.assertEqual(["getRobotMode", "getSafetyMode", "isProtectiveStopped", "isEmergencyStopped",
+                          "isProgramRunning"], [call[1] for call in rtde.calls])
+        # The program's state is the control interface's cached runtime state (P0e E13): no round trip, no dashboard.
+        self.assertEqual({"recv", "ctrl"}, {call[0] for call in rtde.calls})
         arm.halt(_REASON)
         self.assertEqual(_REASON, arm.quick_robot_status().halted)
 
@@ -211,7 +214,7 @@ class TheHandsAreRefusedWithTheHaltsSentenceTests(unittest.TestCase):
                                        safety_mode=SafetyMode.PROTECTIVE_STOP, protective_stopped=True,
                                        emergency_stopped=False, message="")
 
-            def recover_from_protective_stop(self) -> bool:  # pragma: no cover - never called, by design
+            def acknowledge_fault(self, fault: object) -> bool:  # pragma: no cover - never called, by design
                 raise AssertionError("never asked")
 
         self.assertIsInstance(_Before(True), SupportsRobotStatus)
@@ -306,7 +309,7 @@ class TheGatesThatAskTheControllerRefuseAHaltedArmTests(unittest.TestCase):
     def test_freedrive_refuses_a_halted_controller_status(self) -> None:
         with self.assertRaises(RobotMotionRejected) as raised:
             raise_unless_operational(self._halted().get_robot_status(), "freeing the arm")
-        self.assertNotIsInstance(raised.exception, RobotEmergencyStop, "a halt is no emergency stop")
+        self.assertNotIsInstance(raised.exception, ArmFault, "a halt is no emergency stop")
 
     def test_the_pick_loops_diagnosis_reads_a_halted_arm_as_unable_to_move(self) -> None:
         from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator
@@ -385,9 +388,9 @@ class EveryGateSaysTheHaltsOwnWordsTests(unittest.TestCase):
     def test_a_controller_status_that_says_halted_is_read_where_the_arm_answers_no_latch(self) -> None:
         class _StatusOnly:
             def get_robot_status(self) -> RobotStatus:
-                return RobotStatus(RobotMode.RUNNING, SafetyMode.NORMAL, False, False, halted=_REASON)
+                return RobotStatus(RobotMode.RUNNING, SafetyMode.NORMAL, False, False, halted=_REASON, program_running=True)
 
-            def recover_from_protective_stop(self) -> bool:  # pragma: no cover - never called, by design
+            def acknowledge_fault(self, fault: object) -> bool:  # pragma: no cover - never called, by design
                 raise AssertionError("a halt is never cleared by clearing a protective stop")
 
         for name, gate in self._gates().items():
@@ -412,17 +415,17 @@ class EveryGateSaysTheHaltsOwnWordsTests(unittest.TestCase):
     def test_freedrive_refuses_a_halted_controller_in_the_halts_words(self) -> None:
         """Freedrive's own check, asked again inside an open session before the arm is freed (``free()``). Red before:
         it refused, in the controller's words ("the controller reports robot mode running and safety mode normal")."""
-        halted = RobotStatus(RobotMode.RUNNING, SafetyMode.NORMAL, False, False, halted=_REASON)
+        halted = RobotStatus(RobotMode.RUNNING, SafetyMode.NORMAL, False, False, halted=_REASON, program_running=True)
         with self.assertRaises(RobotMotionRejected) as raised:
             raise_unless_operational(halted, "freeing the arm")
-        self.assertNotIsInstance(raised.exception, RobotEmergencyStop, "a halt is no emergency stop")
+        self.assertNotIsInstance(raised.exception, ArmFault, "a halt is no emergency stop")
         self._in_the_halts_words(str(raised.exception))
         self.assertIn("freeing the arm", str(raised.exception))
 
     def test_freedrive_says_both_where_a_halted_arm_stands_at_a_protective_stop(self) -> None:
         both = RobotStatus(RobotMode.RUNNING, SafetyMode.PROTECTIVE_STOP, True, False,
-                           "Safetystatus: PROTECTIVE_STOP", halted=_REASON)
-        with self.assertRaises(RobotEmergencyStop) as raised:
+                           "Safetystatus: PROTECTIVE_STOP", halted=_REASON, program_running=True)
+        with self.assertRaises(ArmFault) as raised:
             raise_unless_operational(both, "freeing the arm")
         said = str(raised.exception)
         self.assertIn(f"halted ({_REASON})", said)
@@ -430,12 +433,15 @@ class EveryGateSaysTheHaltsOwnWordsTests(unittest.TestCase):
         self.assertIn("Clear the stop at the pendant", said)
 
     def test_freedrive_still_says_a_stopped_controller_as_before(self) -> None:
-        with self.assertRaises(RobotEmergencyStop) as raised:
+        """The freedrive's own sentence, as before, now the message of the fault it is (2026-10-13)."""
+        with self.assertRaises(ArmFault) as raised:
             raise_unless_operational(_PROTECTIVE, "freeing the arm")
-        self.assertTrue(str(raised.exception).startswith(
+        fault = raised.exception
+        self.assertIs(ArmFaultClass.PROTECTIVE_STOP, fault.kind)
+        self.assertTrue(fault.message.startswith(
             "freeing the arm is refused: the controller reports robot mode running and safety mode protective_stop"),
-            str(raised.exception))
-        self.assertNotIn("halted", str(raised.exception))
+            fault.message)
+        self.assertNotIn("halted", str(fault))
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -14,7 +14,8 @@ import re
 import unittest
 
 from scripts.ursim.probe_console_task import _LAYER, outside_the_window
-from src.robot.safety.joint_limits import UR_JOINT_LIMITS_DEG, half_turn_about_home_deg
+from src.config.arms import load_arm
+from src.robot.safety.joint_limits import half_turn_about_home_deg
 
 #: The home ``_LAYER`` gives the probe's UR10, in degrees.
 _HOME_DEG = (-90.0, -90.0, -100.0, -80.0, 90.0, 0.0)
@@ -23,9 +24,11 @@ _MARGIN_DEG = 5.0
 
 
 def _window() -> tuple[list[float], list[float]]:
-    """The guard's window about the probe's home: the UR table, narrowed to half a turn about home but the elbow."""
-    lower, upper = UR_JOINT_LIMITS_DEG["ur10"]
-    return half_turn_about_home_deg(lower, upper, [math.radians(v) for v in _HOME_DEG], vendor="ur")
+    """The guard's window about the probe's home: the UR10's envelope from its arm description, narrowed to half a
+    turn about home but the elbow."""
+    joints = load_arm("ur10").joints
+    lower, upper = [joint.limit_deg[0] for joint in joints], [joint.limit_deg[1] for joint in joints]
+    return half_turn_about_home_deg(lower, upper, [math.radians(v) for v in _HOME_DEG], model="ur10")
 
 
 def _rad(deg: list[float] | tuple[float, ...]) -> list[float]:

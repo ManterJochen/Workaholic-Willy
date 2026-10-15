@@ -30,7 +30,7 @@ def _config(hand: str = "robotiq_hande", planner: str = "curobo", **gripper: Any
     block: dict[str, Any] = {"model": hand, **gripper}
     if hand == "robotiq_hande" and "coupling_plates" not in gripper:
         block["coupling_plates"] = [{"name": "plate", "thickness_mm": 20.0}]
-    return RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": planner}, "gripper": block})
+    return RobotConfig.model_validate({"vendor": "ur", "motion": {"planner": planner}, "gripper": block})
 
 
 def _flags(script: Path) -> set[str]:
@@ -70,30 +70,14 @@ class TheSentencesNameRealToolsTests(unittest.TestCase):
 
     def test_the_scan_sees_a_flag_a_script_lacks(self) -> None:
         """⭐ THE CONTROL."""
-        self.assertEqual(_named_commands_are_real("run scripts/curobo/fit_cover_spheres.py --no-such-flag"),
-                         ["scripts/curobo/fit_cover_spheres.py has no --no-such-flag"])
+        self.assertEqual(_named_commands_are_real("run scripts/arms/fit.py --no-such-flag"),
+                         ["scripts/arms/fit.py has no --no-such-flag"])
 
     def test_the_guard_hint_names_every_hand_writer(self) -> None:
         from src.robot.safety._fcl_self_collision import _STATUS_HINTS
 
         for writer in ("write_hand_from_dimensions.py", "write_hand_from_mesh.py", "bake_gripper_variant.py --usd"):
             self.assertIn(writer, _STATUS_HINTS["no_hand_bundle"])
-
-    def test_build_gripper_spheres_writes_no_map(self) -> None:
-        import contextlib
-        import io
-
-        from src.robot.safety.planning.robot import build_gripper_spheres
-
-        folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        for argv in (["--variant", "schunk_egu50", "--out", str(folder / "x.yml")],
-                     ["--mesh", str(folder / "any.stl"), "--gripper", "g", "--cell-mm", "34", "--rmax-mm", "17",
-                      "--origin", "flange", "--out", str(folder / "y.yml")]):
-            with self.subTest(argv=argv[0]), contextlib.redirect_stderr(io.StringIO()) as err, \
-                    contextlib.redirect_stdout(io.StringIO()):
-                self.assertEqual(build_gripper_spheres.main(argv), 2)
-            self.assertIn("fit_cover_spheres.py", err.getvalue())
-        self.assertEqual(list(folder.iterdir()), [])
 
 
 class TheMapRefusalSaysWhyAndWhatTests(unittest.TestCase):
@@ -104,7 +88,7 @@ class TheMapRefusalSaysWhyAndWhatTests(unittest.TestCase):
         empty = Path(self.enterContext(tempfile.TemporaryDirectory()))
         with mock.patch.object(hand_module, "_MAPS", empty), self.assertRaises(ConfigError) as caught:
             hand_module.planner_hand(_config())
-        self.assertIn("scripts/curobo/fit_cover_spheres.py --hand robotiq_hande --write", str(caught.exception))
+        self.assertIn("scripts/arms/fit.py --hand robotiq_hande --write", str(caught.exception))
         self.assertNotIn("build_gripper_spheres", str(caught.exception))
 
     def test_the_missing_map_refusal_on_an_ik_cell_names_what_reads_it(self) -> None:
@@ -117,7 +101,7 @@ class TheMapRefusalSaysWhyAndWhatTests(unittest.TestCase):
         said = str(caught.exception)
         self.assertIn("no planner starts on this cell", said)
         self.assertIn("coupling_plates", said)
-        self.assertIn("fit_cover_spheres.py --hand schunk_egu50 --write", said)
+        self.assertIn("scripts/arms/fit.py --hand schunk_egu50 --write", said)
 
     def test_a_cuRobo_cell_is_told_its_planner_reads_the_map(self) -> None:
         """⭐ THE CONTROL: the reason follows the planner, it is not one sentence for every cell."""
@@ -152,7 +136,7 @@ class OnlyACoverFitOfThisHandIsReadTests(unittest.TestCase):
             provenance.pop("bodies", None)
 
         said = self._refused_with(grid)
-        self.assertIn("fit_cover_spheres.py", said)
+        self.assertIn("scripts/arms/fit.py", said)
         self.assertIn("hole", said)
 
     def test_a_map_fitted_from_another_hand_is_refused(self) -> None:
@@ -195,7 +179,7 @@ class TheDoctorAndTheDeskFollowTheTokenTests(unittest.TestCase):
         with mock.patch.object(hand_module, "_MAPS", empty):
             probes = doctor._probe_gripper("ur5e", "robotiq_hande")
         (missing,) = [probe for probe in probes if probe.name.startswith("gripper sphere map")]
-        self.assertIn("fit_cover_spheres.py --hand robotiq_hande --write", missing.remedy)
+        self.assertIn("scripts/arms/fit.py --hand robotiq_hande --write", missing.remedy)
         self.assertNotIn("build_gripper_spheres", missing.remedy)
 
     def test_the_desk_fix_follows_the_token(self) -> None:
@@ -205,14 +189,28 @@ class TheDoctorAndTheDeskFollowTheTokenTests(unittest.TestCase):
         folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
         shutil.copy(_DATA / "ur5e_collision_meshes.npz", folder / "ur5e_collision_meshes.npz")
         config = RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
+            "vendor": "ur", "ur": {"model": "ur5e"}, "motion": {"planner": "curobo"},
             "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "plate", "thickness_mm": 20.0}]},
             "safety": {"self_collision": {"backend": "fcl", "mesh_dir": str(folder)}},
         })
         row = _exact_mesh_engine_row(config, "coal")
         self.assertIn("no_hand_bundle", row.fix)
         self.assertIn("write_hand_from_dimensions.py", row.fix)
-        self.assertNotIn("bake_ur_collision_meshes.py", row.fix)
+        self.assertNotIn("bake.py", row.fix)
+
+    def test_the_arm_bundle_fix_names_a_baker_that_exists(self) -> None:
+        """The desk's sentence for a cell with no exact mesh engine names the arm baker to run. P0f F5 retired the
+        Isaac baker it used to name; this is the edge that turns the sentence red when the script it names is gone."""
+        from src.config.schema.robot import RobotConfig
+        from src.robot.execution.real_cell.preflight import _exact_mesh_engine_row
+
+        config = RobotConfig.model_validate({
+            "vendor": "ur", "ur": {"model": "ur5e"}, "motion": {"planner": "curobo"},
+            "gripper": {"model": "robotiq_2f85"}, "safety": {"self_collision": {"backend": "capsule"}},
+        })
+        row = _exact_mesh_engine_row(config, "coal")
+        self.assertIn("scripts/arms/bake.py", row.fix)
+        self.assertEqual([], _named_commands_are_real(row.fix))
 
 
 if __name__ == "__main__":  # pragma: no cover

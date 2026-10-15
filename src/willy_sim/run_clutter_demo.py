@@ -95,7 +95,7 @@ def record_clutter_demo(*, out_path: str = DEFAULT_OUT, headless: bool = True, f
             fn()
         except Exception:  # noqa: BLE001
             pass
-    arm.move_joint(JointPositions(park_q))
+    arm.move_to_joints(JointPositions(park_q)).raise_unless_executed()
     for _ in range(max(40, sim.scene_setup.render_warmup_steps)):
         session.step(render=True)
         if app is not None:
@@ -138,7 +138,7 @@ def record_clutter_demo(*, out_path: str = DEFAULT_OUT, headless: bool = True, f
     gripper.open()
     for p, (hp, hq) in zip(prims, homes):
         p.set_world_pose(position=hp, orientation=hq)
-    arm.move_joint(JointPositions(park_q))
+    arm.move_to_joints(JointPositions(park_q)).raise_unless_executed()
     session.step_n(20)
 
     state["on"] = True
@@ -146,7 +146,7 @@ def record_clutter_demo(*, out_path: str = DEFAULT_OUT, headless: bool = True, f
     coarse_c = coarse_centroid_base(overhead.acquire(), t_overhead_true)
     if coarse_c is None:
         raise SystemExit("overhead found no chosen object")
-    arm.move_joint(JointPositions(home_q))              # via home (reachable approach)
+    arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()              # via home (reachable approach)
     arm.move(topdown_view_pose(coarse_c, p_cam_tool, view_height_mm))  # wrist over the chosen cube
     _hold(hold_steps // 2)
     report = service.pick()                             # grasp the chosen cube (AutonomousGraspService)

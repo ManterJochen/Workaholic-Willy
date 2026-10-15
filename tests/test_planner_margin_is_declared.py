@@ -1,4 +1,4 @@
-"""A UR cell that plans with cuRobo declares its planner margin, or it does not plan (B1, S17).
+"""A cell that plans with cuRobo declares its planner margin, or it does not plan (B1, S17).
 
 The planner margin is the clearance the sidecar plans WITH so that it stops proposing configurations the exact mesh
 guard then refuses. It is not derived from the guard's own ``min_distance_mm``, and it cannot be: how much margin a
@@ -8,7 +8,8 @@ finds no plan at all at 10 mm and is fine at 4 to 6 mm, and deriving one from th
 
 So the schema's old default of ``0.0`` was an implied answer to a safety question nobody asked: a real UR cell that
 says nothing got a planner with NO margin, planned to 9.44 mm against a 10 mm guard, and lost picks to what read like
-bad grasping. ``None`` now means undeclared, and a UR cuRobo cell refuses to start a planner while it is.
+bad grasping. ``None`` now means undeclared, and a cuRobo cell refuses to start a planner while it is (the planning
+half every planned arm shares, P0g slice 13).
 
 Every case imports the module inside the test, so the schema case and the driver case are each seen failing for their
 own reason rather than both dying on one missing import.
@@ -91,7 +92,7 @@ class TheRefusalNamesTheKeyTests(unittest.TestCase):
     def test_nothing_else_is_refused(self) -> None:
         from src.robot.safety.planning.margin import planner_margin_refusal
 
-        self.assertIsNone(planner_margin_refusal(self._cfg(ur={"motion_planner": "ik"})),
+        self.assertIsNone(planner_margin_refusal(self._cfg(motion={"planner": "ik"})),
                           "an ik cell starts no planner, so it has no planner margin to declare")
         self.assertIsNone(planner_margin_refusal(self._cfg(vendor="sim")),
                           "the sim declares 10 mm in its own layer, and is not a UR cell")
@@ -115,12 +116,12 @@ class TheRefusalNamesTheKeyTests(unittest.TestCase):
 class TheDriverRefusesToStartAPlannerTests(unittest.TestCase):
     def _arm(self, margin: "float | None"):
         from src.config.schema.robot import RobotConfig
-        from src.robot.drivers.ur.arm import URRobotArm
+        from tests._arm_kit import planned_arm
 
         payload: dict = {"vendor": "ur", "gripper": {"model": "robotiq_2f85"}}
         if margin is not None:
             payload["safety"] = {"self_collision": {"planner_margin_mm": margin}}
-        return URRobotArm(RobotConfig.model_validate(payload))
+        return planned_arm(RobotConfig.model_validate(payload))
 
     def test_a_planner_is_never_started_for_a_cell_that_declared_no_margin(self) -> None:
         from src.robot.safety.planning import CuroboUnavailableError

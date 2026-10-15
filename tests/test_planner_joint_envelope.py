@@ -24,7 +24,14 @@ from pathlib import Path
 import yaml
 
 from src.config.schema.robot.safety_schema import JointLimitSafetyConfig
-from src.robot.safety.joint_limits import UR_JOINT_LIMITS_DEG
+from src.config.arms import available_arms, load_arm
+
+
+def _guard_envelopes() -> dict[str, tuple[tuple[float, ...], tuple[float, ...]]]:
+    """Every described arm's guard envelope, low then high, as the arm registry states it."""
+    return {model: (tuple(j.limit_deg[0] for j in load_arm(model).joints),
+                    tuple(j.limit_deg[1] for j in load_arm(model).joints))
+            for model in available_arms()}
 
 _ROOT = Path(__file__).resolve().parents[1]
 _CONTENT = _ROOT / "ext_deps" / "curobo" / "curobo" / "content" / "assets" / "robot" / "ur_description"
@@ -61,13 +68,30 @@ _NO_ELBOW = _UR10_STYLE.replace('name="elbow_joint"', 'name="forearm_joint"')
 
 
 def _limits():
-    path = _ROOT / "scripts" / "curobo" / "_planner_limits.py"
+    path = _ROOT / "scripts" / "arms" / "_planner_limits.py"
     spec = importlib.util.spec_from_file_location("_planner_limits_under_test", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def _arm_file():
+    path = _ROOT / "scripts" / "arms" / "_arm_file.py"
+    spec = importlib.util.spec_from_file_location("_arm_file_for_the_envelope", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _envelope(limits, model: str, clip: "float | None" = None):  # noqa: ANN001, ANN202
+    """``model``'s planner envelope in radians, after the description's own clip unless ``clip`` says otherwise."""
+    arm = _arm_file()
+    return limits.planner_envelope_rad(arm.planner_limits_deg(model),
+                                       arm.position_limit_clip_rad(model) if clip is None else clip)
 
 
 def _degrees(envelope: "tuple[tuple[float, ...], tuple[float, ...]]") -> "tuple[tuple[float, ...], tuple[float, ...]]":
@@ -98,32 +122,32 @@ class ThePlannerStaysInsideTheGuardTests(unittest.TestCase):
         self.margin = JointLimitSafetyConfig().margin_deg
 
     def test_every_bundled_arm_and_the_sim_cell(self) -> None:
-        envelope = _degrees(self.limits.planner_envelope_rad(self.limits.POSITION_LIMIT_CLIP_RAD))
-        cells = {model: (lo, hi) for model, (lo, hi) in UR_JOINT_LIMITS_DEG.items()}
+        cells = {model: (model, lo, hi) for model, (lo, hi) in _guard_envelopes().items()}
         sim = yaml.safe_load((_ROOT / "config/robot/robot.sim.yaml").read_text(encoding="utf-8"))
         joint_limits = sim["robot"]["safety"]["joint_limits"]
-        cells["robot.sim.yaml"] = (tuple(joint_limits["min_deg"]), tuple(joint_limits["max_deg"]))
-        for cell, (lo, hi) in cells.items():
+        cells["robot.sim.yaml"] = ("ur5e", tuple(joint_limits["min_deg"]), tuple(joint_limits["max_deg"]))
+        for cell, (model, lo, hi) in cells.items():
             with self.subTest(cell=cell):
+                envelope = _degrees(_envelope(self.limits, model))
                 self.assertEqual(self.limits.violations(envelope, lo, hi, self.margin), ())
 
     def test_the_elbow_is_urs_own_limit_and_the_guard_keeps_the_factory_envelope(self) -> None:
-        lo, hi = self.limits.planner_envelope_rad(0.0)
+        lo, hi = _envelope(self.limits, "ur5e", clip=0.0)
         self.assertEqual((lo[_ELBOW], hi[_ELBOW]), (-math.pi, math.pi))
         self.assertEqual((lo[0], hi[0]), (-2.0 * math.pi, 2.0 * math.pi))
-        for model, (guard_lo, guard_hi) in UR_JOINT_LIMITS_DEG.items():
+        for model, (guard_lo, guard_hi) in _guard_envelopes().items():
             with self.subTest(model=model):
                 self.assertEqual((guard_lo[_ELBOW], guard_hi[_ELBOW]), (-360.0, 360.0))
 
     def test_the_comparison_can_fail(self) -> None:
         """⭐ THE CONTROL, twice. Without cuRobo's clip the planner is exactly at the factory envelope and the guard's
         margin refuses it; and a cell whose margin exceeds the clip is outside it too."""
-        unclipped = _degrees(self.limits.planner_envelope_rad(0.0))
-        lo, hi = UR_JOINT_LIMITS_DEG["ur5e"]
+        unclipped = _degrees(_envelope(self.limits, "ur5e", clip=0.0))
+        lo, hi = _guard_envelopes()["ur5e"]
         first = self.limits.violations(unclipped, lo, hi, self.margin)
         self.assertTrue(first)
         self.assertIn("0", " ".join(first))
-        clipped = _degrees(self.limits.planner_envelope_rad(self.limits.POSITION_LIMIT_CLIP_RAD))
+        clipped = _degrees(_envelope(self.limits, "ur5e"))
         self.assertTrue(self.limits.violations(clipped, lo, hi, 6.0),
                         "a cell with a margin wider than the clip must be reported")
 
@@ -132,8 +156,12 @@ class TheElbowIsClampedInTheDescriptionTests(unittest.TestCase):
     def setUp(self) -> None:
         self.limits = _limits()
 
+    def _clamp(self, text: str):  # noqa: ANN202
+        """What the builder does with a UR description: the elbow held to the +-pi every UR description states."""
+        return self.limits.clamp_to_planner_limits(text, {"elbow_joint": (-math.pi, math.pi)})
+
     def test_a_full_turn_elbow_is_narrowed_and_nothing_else_moves(self) -> None:
-        text, changed = self.limits.clamp_elbow_limit(_UR10_STYLE)
+        text, changed = self._clamp(_UR10_STYLE)
         self.assertTrue(changed)
         (elbow,) = _elbow_limit_blocks(text)
         self.assertIn(f'upper="{math.pi:.8f}"', elbow)
@@ -150,19 +178,19 @@ class TheElbowIsClampedInTheDescriptionTests(unittest.TestCase):
         description already inside UR's limit, which is what a correct run reports on a correct file."""
         first = _UR10_STYLE.index('name="elbow_joint"')
         self.assertNotIn("<limit", _UR10_STYLE[first:first + 200], "the fixture lost the trap it exists for")
-        _, changed = self.limits.clamp_elbow_limit(_UR10_STYLE)
+        _, changed = self._clamp(_UR10_STYLE)
         self.assertTrue(changed)
 
     def test_an_elbow_already_at_pi_comes_back_byte_for_byte(self) -> None:
         """⭐ THE CONTROL. Six of the seven URDFs already carry it, and an implementation that re-serialises the XML
         would rewrite every one of them."""
-        text, changed = self.limits.clamp_elbow_limit(_UR5E_STYLE)
+        text, changed = self._clamp(_UR5E_STYLE)
         self.assertFalse(changed)
         self.assertEqual(text, _UR5E_STYLE)
 
     def test_a_description_without_an_elbow_is_refused(self) -> None:
         with self.assertRaises(ValueError):
-            self.limits.clamp_elbow_limit(_NO_ELBOW)
+            self._clamp(_NO_ELBOW)
 
 
 class TheBuiltDescriptionsCarryItTests(unittest.TestCase):
@@ -181,6 +209,26 @@ class TheBuiltDescriptionsCarryItTests(unittest.TestCase):
                 self.assertTrue(values, f"{path.name} has no elbow bounds")
                 self.assertLessEqual(max(values), math.pi + 1e-9,
                                      f"{path.name} lets the planner turn the elbow past UR's own limit")
+
+
+class EveryDescriptionNarrowsTheElbowAloneTests(unittest.TestCase):
+    """What a descriptor clamps its URDF to and records as ``planner_joint_limits``, from each arm's description."""
+
+    def test_every_description_narrows_the_elbow_to_exactly_pi(self) -> None:
+        limits, arm = _limits(), _arm_file()
+        for model in available_arms():
+            with self.subTest(model=model):
+                narrowed = limits.narrowed_rad(arm.joint_names(model), arm.planner_limits_deg(model),
+                                               arm.limits_deg(model))
+                self.assertEqual({"elbow_joint": [-math.pi, math.pi]}, narrowed)
+                self.assertEqual(0.1, arm.position_limit_clip_rad(model))
+
+    def test_a_narrower_joint_is_seen(self) -> None:
+        """⭐ THE CONTROL: a second narrowed joint is named, and the elbow's radians are exact."""
+        narrowed = _limits().narrowed_rad(["elbow_joint", "wrist_1_joint"], [(-180.0, 180.0), (-179.0, 179.0)],
+                                          [(-360.0, 360.0), (-360.0, 360.0)])
+        self.assertEqual(["elbow_joint", "wrist_1_joint"], list(narrowed))
+        self.assertEqual([-math.pi, math.pi], narrowed["elbow_joint"])
 
 
 if __name__ == "__main__":

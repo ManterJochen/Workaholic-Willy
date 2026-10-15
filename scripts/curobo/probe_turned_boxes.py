@@ -33,7 +33,7 @@ planner_margin_mm 4.0, the bench declared at z 0, max_boxes 64, a home configura
   2. a camera 1100 mm over the bench looking straight down at a 300 x 200 mm open bin (40 mm rim) turned 30 deg beside
      the shoulder housing, 60.8 mm from the arm's meshes at the check joints, and 48 small parts turned at random beside
      it, more than the 25 mm cluster distance away so the bin stays an object of its own (four walls turned 30 deg), and
-     enough of them to fill the slots; the driver's own refresh (``CuroboUrPlanner.refresh_world``): the boxes merge to
+     enough of them to fill the slots; the driver's own refresh (``CuroboPlanner.refresh_world``): the boxes merge to
      fit the 64 slots, the planner confirms all 65 it is sent, and the guard is handed the same boxes, turned;
   3. at the investigation's joints (0, -60, 80, -110, -90, 0) deg, the screen, then the driver's own decision (the
      plain check, the planner's report and ``URRobotArm._exact_guard_decides``) with the turned boxes held by both:
@@ -162,7 +162,7 @@ def _config(payload_length_mm: "float | None" = None) -> Any:
         world["payload"] = {"enabled": True, "length_mm": float(payload_length_mm)}
     return RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": "ur10", "motion_planner": "curobo"},
+        "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
         "home_joint_positions_deg": list(HOME_DEG),
         "workspace_limits": {"x_min": -1500.0, "x_max": 1500.0, "y_min": -1500.0, "y_max": 1500.0,
                              "z_min": -50.0, "z_max": 1500.0},
@@ -170,8 +170,7 @@ def _config(payload_length_mm: "float | None" = None) -> Any:
                     "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 155.75],
                                    "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
         "safety": {"payload": {"enforce": False},
-                   "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "kinematics_model": "ur10",
-                                      "planner_margin_mm": 4.0},
+                   "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "planner_margin_mm": 4.0},
                    "planning_world": world},
     })
 
@@ -795,7 +794,7 @@ def modelled_part(probe: Probe, replica: bool, stderr_log: str = "") -> dict:
         out["composed_sha256"] = identity.composed_sha256
         say(f"  planner started in {out['start_s']} s, composed_sha256 {identity.composed_sha256} (with the attach "
             "spheres; the start refuses any other than the committed evidence's)")
-        planner = arm._curobo_ur
+        planner = arm._curobo
         assert planner is not None  # noqa: S101 (the start built it)
         attach, detach = planner.attach_payload, planner.detach_payload
 
@@ -941,7 +940,7 @@ def run(args: argparse.Namespace) -> int:
         out["composed_sha256"] = identity.composed_sha256
         say(f"planner started in {out['start_s']} s, composed_sha256 {identity.composed_sha256} (the start refuses "
             f"any other than the committed evidence's), exact engine {out['engine']}")
-        probe.planner = arm._curobo_ur
+        probe.planner = arm._curobo
 
         say(f"the camera world, the bin {SHIFTS_MM[BIN_SHIFT_MM]:g} mm from the arm's meshes, through the driver's own "
             "refresh:")

@@ -66,6 +66,7 @@ import numpy as np
 from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Frame, Pose
 from src.robot.constants import create_robot_logger
+from src.robot.core.camera_world import live_planner_world_of
 from src.robot.core.keep_out import KeepOutBox, SegmentationOffer
 from src.robot.core.shutter_motion import camera_to_base_at_shutter
 from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps
@@ -794,7 +795,8 @@ def _support_model(frame: _Frame, robot_config: Any, target_points: np.ndarray) 
         margin_mm=float(perceived.margin_mm), max_boxes=int(perceived.max_boxes),
         floor_to_plane=bool(perceived.floor_to_plane), support_surfaces=True,
         support_allowance_mm=float(perceived.support_allowance_mm))
-    model_name = str(getattr(getattr(robot_config, "ur", None), "model", "") or "").lower()
+    selected = getattr(robot_config, "arm", None)
+    model_name = (selected.model if selected is not None else "").lower()
     keep_out: tuple[KeepOutBox, ...] = ()
     points = np.asarray(target_points, dtype=np.float64).reshape(-1, 3)
     points = points[np.isfinite(points).all(axis=1)]
@@ -1592,7 +1594,7 @@ def _hold_the_looks(arm: Any) -> bool:
     (``LivePlannerWorld.hold_pick_views``; ``keep_out.holding_views`` is the same hold as a ``with`` block). Starting
     again drops what an earlier look around held. ``Robot.pick`` lets them go when it ends. Whether the world has a
     wrist frame to hold; ``False`` for an arm with no live world."""
-    world = getattr(arm, "live_planner_world", None)
+    world = live_planner_world_of(arm)
     hold = getattr(world, "hold_pick_views", None)
     return bool(hold()) if callable(hold) else False
 
@@ -1601,7 +1603,7 @@ def _let_go_of_earlier_looks(arm: Any) -> None:
     """Let go of the frames ``arm``'s live planner world holds for an earlier look around, where it says it holds any
     (``LivePlannerWorld.holds_pick_views``): the motion to this look around's first look is judged without them, and
     the frame it is planned on, where the arm stands now, is not held."""
-    world = getattr(arm, "live_planner_world", None)
+    world = live_planner_world_of(arm)
     if bool(getattr(world, "holds_pick_views", False)):
         from src.robot.execution.lifecycle import let_go_of_held_views  # noqa: PLC0415
 

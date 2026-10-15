@@ -17,7 +17,7 @@ _ROW = "  - arm: ur5\n    hand: {hand}\n    plate_mm: {plate}\n    planner_margi
 
 
 def _table(folder: Path, rows: list) -> Path:
-    path = folder / "ur_retract.yaml"
+    path = folder / "retract.yaml"
     path.write_text("rule:\n  placement: +Y+X\n  planner_margin_mm: 4.0\nretracts:\n" + "".join(rows), encoding="utf-8")
     return path
 
@@ -45,7 +45,7 @@ class TheFallbackIsChosenByRuleTests(unittest.TestCase):
         path = _table(folder, [_ROW.format(hand="robotiq_hande", plate=20.0, v=2.0)])
         with self.assertRaises(RetractMissing) as caught:
             read_arm_retract(path, "ur5")
-        self.assertIn("choose_ur_retract.py ur5 --hand robotiq_2f85", str(caught.exception))
+        self.assertIn("scripts/arms/retract.py ur5 --hand robotiq_2f85", str(caught.exception))
 
     def test_every_committed_arm_keeps_the_fallback_its_descriptor_was_built_with(self) -> None:
         """⭐ THE CONTROL: on the committed table the rule picks exactly the row the first-row reading picked, so no

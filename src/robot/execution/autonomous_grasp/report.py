@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, Mapping, Optional
 
+from src.robot.core.errors import ArmFault
 from src.robot.execution.runtime_pick import PickSessionReport
 from src.robot.grasping.decision import DecisionReport
 from src.robot.grasping.loop.pick_loop import PickOutcome
@@ -274,11 +275,13 @@ class AutonomousGraspReport:
         The pick loop names it ``CONTROLLER_NOT_OPERATIONAL`` after a motion failed, and the service reports it as
         :attr:`AutonomousGraspOutcome.CANCELLED`, with the pick loop's outcome kept in ``pick_report`` and in
         ``telemetry['low_level_outcome']`` (a pick the controller refused before it began, and a look the arm did not
-        reach, write only the telemetry). Read from both. It is not a
-        :attr:`fault`, because the pick ended through its own path, and a campaign stops on it all the same: after a
-        protective stop mid-pick the next attempt would otherwise perceive and plan against an arm a person has to
-        walk up to (owner-cell audit, 2026-09-23).
+        reach, write only the telemetry). Read from both, and from a :attr:`fault` that is an
+        :class:`~src.robot.core.errors.ArmFault`, which a motion raised and the service reported CANCELLED. A campaign
+        stops on it: after a protective stop mid-pick the next attempt would otherwise perceive and plan against an arm
+        a person has to walk up to (owner-cell audit, 2026-09-23).
         """
+        if isinstance(self.fault, ArmFault):
+            return True
         stopped = PickOutcome.CONTROLLER_NOT_OPERATIONAL
         if getattr(self.pick_report, "outcome", None) is stopped:
             return True

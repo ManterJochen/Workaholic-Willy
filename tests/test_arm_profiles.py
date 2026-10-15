@@ -6,7 +6,7 @@ shoulder on an arm that reaches 500. Nothing refuses that: the poses fail IK lat
 with nothing naming the cause. The profile is what stops the inheritance.
 
 ⚠ **AND WHY IT NEEDS A TEST.** A profile is four numbers copied next to a name, which is the exact
-shape that goes quietly wrong. ``robot.ur10.yaml`` with a ``ur10e`` kinematics_model would load, plan
+shape that goes quietly wrong. ``robot.ur10.yaml`` with a ``ur10e`` in ``ur.model`` would load, plan
 and pick, against link lengths 53 mm off in the shoulder.
 
 DERIVED FROM THE DIRECTORY. The profiles are discovered by globbing, so a new arm is covered by the
@@ -20,17 +20,16 @@ import pathlib
 import unittest
 
 from src.config.loader import load_config
-from src.config.schema.robot._ur_models import UR_MODEL_KEYS
-from src.robot.drivers.sim.robot_models import _UR_MODELS
-from src.robot.safety._ur_kinematics import UR_DH_TABLES_M
+from src.config.arms import admitted_arms, load_arm
 
 _DATA = pathlib.Path(__file__).resolve().parents[1] / "config" / "robot"
 
 
 def _arm_profiles() -> list[str]:
     """Every ``robot.<model>.yaml`` whose model is a UR this stack supports."""
+    admitted = set(admitted_arms())
     return sorted(p.stem.split(".", 1)[1] for p in _DATA.glob("robot.*.yaml")
-                  if p.stem.split(".", 1)[1] in UR_MODEL_KEYS)
+                  if p.stem.split(".", 1)[1] in admitted)
 
 
 class EveryArmProfileDescribesItsOwnArmTests(unittest.TestCase):
@@ -38,17 +37,17 @@ class EveryArmProfileDescribesItsOwnArmTests(unittest.TestCase):
         """The control. Globbing that matched nothing would make this whole file pass in silence."""
         self.assertGreaterEqual(len(_arm_profiles()), 4, f"found {_arm_profiles()}")
 
-    def test_the_three_model_fields_agree_with_the_filename(self) -> None:
-        """⭐ THE ONE THAT MATTERS. ``ur.model`` keys the driver, ``kinematics_model`` keys the safety
-        DH chain and the collision bundle, ``sim.robot_model`` keys the asset. A profile that spells
-        one of them differently is a cell planning against another robot, and the only visible sign
-        is that it works."""
+    def test_the_arm_and_its_model_fields_agree_with_the_filename(self) -> None:
+        """The one that matters. ``ur.model`` keys the driver, ``sim.robot_model`` keys the asset,
+        and ``robot.arm.model`` is the model the tree selects from the block its vendor names, which is
+        the model the arm reports and so the one the safety DH chain and the collision bundle are keyed
+        by since P0d D5. A profile that spells one of them differently is a cell planning against
+        another robot, and the only visible sign is that it works."""
         for model in _arm_profiles():
             with self.subTest(model=model):
                 robot = load_config(profile=model).robot
                 self.assertEqual(robot.ur.model, model, "ur.model")
-                self.assertEqual(robot.safety.self_collision.kinematics_model, model,
-                                 "safety.self_collision.kinematics_model")
+                self.assertEqual(robot.arm.model, model, "robot.arm.model, the arm the guard judges")
                 self.assertEqual(robot.sim.robot_model, model, "sim.robot_model")
 
     def test_the_payload_cap_is_this_arm_datasheet_figure(self) -> None:
@@ -56,11 +55,11 @@ class EveryArmProfileDescribesItsOwnArmTests(unittest.TestCase):
             with self.subTest(model=model):
                 robot = load_config(profile=model).robot
                 self.assertEqual(robot.safety.payload.max_mass_kg,
-                                 _UR_MODELS[model].max_payload_kg)
+                                 load_arm(model).payload_kg)
 
     @staticmethod
     def _shoulder_distance(model: str, x: float, y: float, z: float) -> float:
-        return math.sqrt(x * x + y * y + (z - UR_DH_TABLES_M[model][0].d_m * 1000.0) ** 2)
+        return math.sqrt(x * x + y * y + (z - load_arm(model).joints[0].d_m * 1000.0) ** 2)
 
     def test_the_middle_of_the_box_is_reachable(self) -> None:
         """⭐ THE INHERITED-BOX DEFECT. A cell that names a smaller arm and keeps the previous box
@@ -80,7 +79,7 @@ class EveryArmProfileDescribesItsOwnArmTests(unittest.TestCase):
                 centre = self._shoulder_distance(
                     model, (w.x_min + w.x_max) / 2.0, (w.y_min + w.y_max) / 2.0,
                     (w.z_min + w.z_max) / 2.0)
-                reach = _UR_MODELS[model].max_reach_mm
+                reach = load_arm(model).reach_mm
                 self.assertLessEqual(
                     centre, reach,
                     f"{model}: the CENTRE of the declared workspace is {centre:.1f} mm from the "
@@ -105,7 +104,7 @@ class EveryArmProfileDescribesItsOwnArmTests(unittest.TestCase):
                 corner = max(self._shoulder_distance(model, x, y, z)
                              for x in (w.x_min, w.x_max) for y in (w.y_min, w.y_max)
                              for z in (w.z_min, w.z_max))
-                reach = _UR_MODELS[model].max_reach_mm
+                reach = load_arm(model).reach_mm
                 self.assertLessEqual(
                     corner, reach,
                     f"{model} says it is a reach bound and its corner is {corner:.1f} mm from the "
@@ -116,14 +115,14 @@ class EveryArmProfileDescribesItsOwnArmTests(unittest.TestCase):
         """⚠ The direction nothing else catches. A box too LARGE fails the check above; one too small
         wastes the arm and passes everything, which is what the ur10e workspace did until it was
         given its own numbers."""
-        by_reach = sorted(_arm_profiles(), key=lambda m: _UR_MODELS[m].max_reach_mm)
+        by_reach = sorted(_arm_profiles(), key=lambda m: float(load_arm(m).reach_mm or 0.0))
         volumes = []
         for model in by_reach:
             w = load_config(profile=model).robot.workspace_limits
             volumes.append((w.x_max - w.x_min) * (w.y_max - w.y_min) * (w.z_max - w.z_min))
         # Ties are fine (a UR5 and a UR5e reach the same); a REVERSAL is not.
         for (a, va), (b, vb) in zip(zip(by_reach, volumes), list(zip(by_reach, volumes))[1:]):
-            if _UR_MODELS[a].max_reach_mm < _UR_MODELS[b].max_reach_mm:
+            if float(load_arm(a).reach_mm or 0.0) < float(load_arm(b).reach_mm or 0.0):
                 self.assertLessEqual(va, vb, f"{a} reaches less than {b} and has a bigger box")
 
 
@@ -141,7 +140,7 @@ class TheMeasuredCellsAreTighterThanTheDerivedBoundsTests(unittest.TestCase):
             self.skipTest("no derived ur3 profile to compare against")
         measured = load_config(profile="ur3e").robot.workspace_limits
         derived = load_config(profile="ur3").robot.workspace_limits
-        shoulder = UR_DH_TABLES_M["ur3e"][0].d_m * 1000.0
+        shoulder = load_arm("ur3e").joints[0].d_m * 1000.0
         far = max(math.sqrt(x * x + y * y + (z - shoulder) ** 2)
                   for x in (measured.x_min, measured.x_max)
                   for y in (measured.y_min, measured.y_max)

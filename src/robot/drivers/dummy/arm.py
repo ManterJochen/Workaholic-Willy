@@ -4,7 +4,7 @@ It exists to exercise a pipeline or a planner without real hardware, to develop 
 offline, and to drive the vendor-neutral surface itself.
 
 The driver keeps an in-memory ``(joints, tcp_pose)`` state and has no kinematic model:
-``move_joint`` records the new joint vector, ``move_linear`` records the new pose,
+``move_to_joints`` records the new joint vector, ``move_linear`` records the new pose,
 ``fk`` returns the last recorded pose and ``ik`` returns the last recorded joints. That
 is deliberate, and a pipeline that needs real kinematics runs against the UR driver or
 the Isaac-backed ``sim`` driver instead.
@@ -49,12 +49,9 @@ DUMMY_CAPABILITIES = RobotCapabilities(
     vendor="dummy",
     model="dummy-6dof",
     dof=6,
-    supports_joint_move=True,
-    supports_linear_move=True,
-    supports_async_move=False,
+    controller=None,
+    owns_a_controller=False,
     has_native_fk=False,
-    has_native_ik=False,
-    has_force_control=False,
     is_simulated=True,
 )
 
@@ -85,12 +82,9 @@ class DummyRobotArm(RobotArm):
             DUMMY_CAPABILITIES
             if dof == DUMMY_CAPABILITIES.dof
             else RobotCapabilities(
-                vendor="dummy", model=f"dummy-{dof}dof", dof=dof,
+                vendor="dummy", model=f"dummy-{dof}dof", dof=dof, controller=None, owns_a_controller=False,
                 is_simulated=True,
-                supports_joint_move=True, supports_linear_move=True,
-                supports_async_move=False,
-                has_native_fk=False, has_native_ik=False,
-                has_force_control=False,
+                has_native_fk=False,
             )
         )
         self._connected = False
@@ -241,27 +235,17 @@ class DummyRobotArm(RobotArm):
         velocity: float | None = None,
         acceleration: float | None = None,
     ) -> MotionResult:
-        """The body of :meth:`move_to_joints`. It stamps nothing; the public verb does."""
-        self.move_joint(joints, velocity=velocity, acceleration=acceleration)
-        return MotionResult.executed(
-            MotionCommand.MOVE_JOINTS, target_joints=joints, message="move_to_joints",
-        )
-
-    def move_joint(
-        self,
-        joints: JointPositions,
-        *,
-        velocity: float | None = None,
-        acceleration: float | None = None,
-    ) -> None:
+        """The body of :meth:`move_to_joints`, the halt already asked. It stamps nothing; the public verb does."""
         if not self._connected:
             raise RobotConnectionError("DummyRobotArm is not connected.")
-        self._raise_if_halted(MotionCommand.MOVE_JOINTS, target_joints=joints)
         if joints.dof != self._capabilities.dof:
             raise RobotMotionRejected(
                 f"DummyRobotArm expected {self._capabilities.dof} DoF, got {joints.dof}."
             )
         self._joints = joints
+        return MotionResult.executed(
+            MotionCommand.MOVE_JOINTS, target_joints=joints, message="move_to_joints",
+        )
 
     def move_linear(
         self,
@@ -316,31 +300,6 @@ class DummyRobotArm(RobotArm):
             )
         return True
 
-    def move_to(
-        self,
-        pose: Pose,
-        *,
-        linear: bool = False,
-        vel: float | None = None,
-        acc: float | None = None,
-        register: bool = True,
-    ) -> bool:
-        """Record ``pose`` as the new TCP pose. It succeeds unless the arm is halted, which answers ``False``.
-
-        ``register`` is accepted for Protocol compatibility and ignored, because this
-        driver keeps no diversity history.
-        """
-        if not self._connected:
-            raise RobotConnectionError("DummyRobotArm is not connected.")
-        if self._halt is not None:
-            return False
-        if pose.frame is not Frame.BASE:
-            raise FrameMismatchError(
-                f"DummyRobotArm.move_to requires Frame.BASE; got {pose.frame!r}."
-            )
-        self._tcp = pose
-        return True
-
     def move_home(self) -> bool:
         """Reset to the configured home TCP pose. It succeeds unless the arm is halted, which answers ``False``."""
         if not self._connected:
@@ -373,7 +332,7 @@ class DummyRobotArm(RobotArm):
         register: bool = True,
         camera_world: Maybe[CameraWorldDecline] = UNSET,
     ) -> MotionResult:
-        """The typed counterpart of :meth:`move_to`.
+        """The typed Cartesian move.
 
         This driver has no workspace box and no real controller, so a successful move
         always returns :attr:`MotionStatus.EXECUTED`. A connection or frame fault is

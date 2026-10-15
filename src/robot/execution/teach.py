@@ -16,7 +16,7 @@
 
 A program declares the joints it looks from, and any joint pose it goes to, as ``JointPositions.deg(...)`` lines
 (``PickRun.from_cell(cell, look=[...])``). Those numbers used to be copied off the pendant or off
-``python -m src.robot.drivers.ur --where``; here a person stands the arm there by hand, and the line is printed, one
+``python -m src.robot.execution.io_bench --where``; here a person stands the arm there by hand, and the line is printed, one
 per pose, to paste as it is. What happens, in order:
 
 1. The arm has to offer hand guiding (:class:`~src.robot.core.freedrive.SupportsFreedrive`; the UR teach mode is
@@ -128,9 +128,9 @@ import numpy as np
 from src.config.schema.robot.robot_schema import pose_label_refusal, pose_name_refusal, pose_words
 from src.geometry import Frame, Pose
 from src.geometry.quaternion import from_axis_angle
-from src.robot.core import JointPositions, RobotCapabilities
+from src.robot.core import JointPositions
 from src.robot.core.freedrive import FreedriveSample, SupportsFreedrive
-from src.robot.drivers.ur.bench import where_lines
+from src.robot.execution.io_bench.bench import where_lines
 from src.robot.execution.hand_guiding import (
     CAPTURE,
     EOF,
@@ -286,7 +286,7 @@ class TaughtPose:
         """The line to paste: ``LOOK_1 = JointPositions.deg(-45.0, -100.2, -110.0, -60.0, 90.0, 0.0)  # rig 'wrist',
         eye in hand``.
 
-        One decimal of a degree per joint and never ``-0.0``: the line ``python -m src.robot.drivers.ur --where``
+        One decimal of a degree per joint and never ``-0.0``: the line ``python -m src.robot.execution.io_bench --where``
         prints (``where_lines``), with the name in front and the camera the pose belongs to in a comment after it
         (:meth:`taught_for`), so a pasted look says which camera it is a look of.
         """
@@ -418,7 +418,7 @@ def teach_poses(
     arm = _guidable(robot)
     path = Path(store)
     kept = _kept(path)
-    watched = _workspace_box(robot, arm, box)
+    watched = _workspace_box(robot, tree, box)
     guide = guide if guide is not None else HandGuide()
     emit = out if out is not None else _print
     window = None if camera is None else _camera_window(camera, rig, guide.console)
@@ -972,6 +972,8 @@ def _guidable_for_one(robot: Any) -> SupportsFreedrive:
 
 def _screened_here_or_refused(robot: Any, arm: Any, tree: Any) -> None:
     """Refuse an arm on which no pose could be screened honestly: no pose taught there could ever be written."""
+    from src.robot.execution.abilities import _named  # noqa: PLC0415 (the arm's name, as the teach row says it)
+
     if not _screens(arm):
         raise TeachRefused("screen_unavailable", (
             f"{_named(arm)} screens no pose (it offers no screen_configuration), so no pose taught on it could be "
@@ -999,7 +1001,7 @@ def _planner_ready_or_refused(arm: Any) -> None:
         return
     if state == "not_used":
         raise TeachRefused("screen_unavailable", (
-            "this arm plans with no planner (robot.ur.motion_planner is not curobo), so no pose taught on it could be "
+            "this arm plans with no planner (robot.motion.planner is not curobo), so no pose taught on it could be "
             "screened, and an unscreened pose is never written. Nothing was freed"))
     raise TeachRefused("planner_not_ready", (
         f"the planner is {state!r}, not ready: every pose is screened the moment it is held, and a screen would start "
@@ -1300,14 +1302,15 @@ def _camera_window(camera: Any, rig: str, console: OperatorConsole) -> "LiveView
 def _guidable(robot: Any) -> SupportsFreedrive:
     """The arm of ``robot`` (a ``Robot``, or an arm) as one a person can guide and that is connected.
 
-    Refused before anything is asked: an arm that offers no hand guiding, naming its vendor, and one not connected.
+    Refused before anything is asked: an arm that offers no hand guiding, with its ability row's own sentence, which
+    names its vendor (P0i i3: the desk's ``teach`` row and this refusal are one sentence), and one not connected.
     """
+    from src.robot.execution.abilities import Ability, row_of
+
     arm = getattr(robot, "arm", robot)
-    if not isinstance(arm, SupportsFreedrive):
-        raise HandGuidingRefused(
-            f"{_named(arm)} offers no hand guiding (SupportsFreedrive; the UR teach mode is one), so no pose can be "
-            "taught by hand on it: read its joints off its own pendant instead. Nothing was asked and nothing was "
-            "freed")
+    row = row_of(Ability.TEACH, arm=arm)
+    if not row.available:
+        raise HandGuidingRefused(row.reason)
     if not bool(getattr(arm, "is_connected", True)):
         raise HandGuidingRefused(
             f"{type(arm).__name__} is not connected, so it cannot be freed: teach inside `with robot.connected():`, "
@@ -1329,10 +1332,16 @@ def _kept(path: Path) -> int:
     return kept
 
 
-def _workspace_box(robot: Any, arm: Any, box: Any) -> Any:
-    """``box``, or the workspace box of the robot section the robot or its arm keeps; refused where none is known."""
+def _workspace_box(robot: Any, tree: Any, box: Any) -> Any:
+    """``box``, or the workspace box of the robot section the robot keeps or the tree holds; refused where none is known.
+
+    The robot section is the robot's ``robot_config``, else the ``robot`` of the tree (``tree``, else the one the robot
+    kept), never a member read off the arm: an arm's ``config`` is a member no protocol declares, which the arm
+    contract refuses (``tests/test_robot_boundaries.py``).
+    """
     if box is None:
-        for section in (getattr(robot, "robot_config", None), getattr(arm, "config", None)):
+        loaded = tree if tree is not None else getattr(robot, "tree", None)
+        for section in (getattr(robot, "robot_config", None), getattr(loaded, "robot", None)):
             box = getattr(section, "workspace_limits", None)
             if box is not None:
                 break
@@ -1416,14 +1425,6 @@ def _summary(taught: int, path: Path, rig: str) -> str:
     if taught == 1:
         return f"1 pose taught for rig {rig!r}, added to {path}. The arm holds where it stands."
     return f"{taught} poses taught for rig {rig!r}, each added to {path}. The arm holds where it stands."
-
-
-def _named(arm: Any) -> str:
-    """The arm's class and the vendor it reports, as a refusal names them."""
-    capabilities = getattr(arm, "capabilities", None)
-    if isinstance(capabilities, RobotCapabilities):
-        return f"{type(arm).__name__} (vendor {capabilities.vendor!r})"
-    return f"{type(arm).__name__} (which reports no vendor)"
 
 
 def _print(line: str) -> None:

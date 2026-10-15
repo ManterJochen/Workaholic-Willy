@@ -226,7 +226,7 @@ def _arm(*looks: _Look, start: "Pose | None" = None, arm: "type[LookingArm]" = L
     table = {look.joints: look.tool for look in looks}
     built = arm(table, start=start if start is not None else tool_for(camera_looking_at(
         (600.0, 0.0, 0.0), bearing_deg=0.0)), **keywords)
-    built.live_planner_world = _World()
+    built.set_live_planner_world(_World())
     return built
 
 
@@ -550,9 +550,9 @@ class _StoppedArm(LookingArm):
 
     def get_robot_status(self) -> RobotStatus:
         return RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.PROTECTIVE_STOP,
-                           protective_stopped=True, emergency_stopped=False, message="PROTECTIVE_STOP")
+                           protective_stopped=True, emergency_stopped=False, message="PROTECTIVE_STOP", program_running=True)
 
-    def recover_from_protective_stop(self) -> bool:  # pragma: no cover - never called
+    def acknowledge_fault(self, fault: object) -> bool:  # pragma: no cover - never called
         raise AssertionError("nothing on the looks may clear a stop")
 
 
@@ -810,7 +810,7 @@ class _OrbitingArm(LookingArm):
     def __init__(self, test: unittest.TestCase, *looks: _Look, **keywords: Any) -> None:
         super().__init__({look.joints: look.tool for look in looks},
                          start=tool_for(camera_looking_at((600.0, 0.0, 0.0), bearing_deg=0.0)), **keywords)
-        self.live_planner_world = _World()
+        self.set_live_planner_world(_World())
         self.test = test
         self.declared = set(self.table)
         self.asked: "set[tuple[float, ...]]" = set()
@@ -1006,7 +1006,7 @@ class TheGeneratedViewAndTheMoveBackTests(unittest.TestCase):
                 return False
 
         arm = _OrbitingArm(self, EAST)
-        arm.live_planner_world = _HoldsNothing()
+        arm.set_live_planner_world(_HoldsNothing())
         with self.assertLogs("src.robot.execution.generated_view", level=logging.INFO) as said:
             located = _locator(_Wrist(arm)).look_around("a part", [EAST.joints], robot=_robot(arm), both_faces=True)
 
@@ -1017,7 +1017,7 @@ class TheGeneratedViewAndTheMoveBackTests(unittest.TestCase):
                             for line in said.output), said.output)
 
         arm = _OrbitingArm(self, EAST, WEST, self.ELSEWHERE)
-        arm.live_planner_world = _HoldsNothing()
+        arm.set_live_planner_world(_HoldsNothing())
         with self.assertLogs(_LOGGER, level=logging.WARNING) as said:
             located, elsewhere = self._moved_back(arm)
 

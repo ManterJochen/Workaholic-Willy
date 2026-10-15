@@ -61,6 +61,17 @@ ext_deps\micromamba\Library\bin\micromamba.exe env export --explicit -p ext_deps
 python -m src.robot.safety.planning --doctor      # must exit 0
 ```
 
+Linux has no such policy, but its lock follows a Windows re-pin, so both platforms keep running one version
+(`tests/test_both_platforms_lock_the_same_versions.py` holds the pair). The same recipe with the platform's names;
+the shell redirect writes no byte-order mark, and none belongs there:
+
+```bash
+ext_deps/micromamba/bin/micromamba install -p ext_deps/curobo_env -c conda-forge "<package>=<version>=<build>"
+ext_deps/micromamba/bin/micromamba env export --explicit -p ext_deps/curobo_env \
+    > ext_deps/locks/curobo_env.linux-64.lock
+python -m src.robot.safety.planning --doctor      # must exit 0
+```
+
 **Keep two independent backends where one exists.** cuRobo can run its CUDA kernels through a
 just-in-time backend (`cuda.core`) or through compiled ones (`pybind`), and the install script builds
 both on purpose. With a single backend installed, one policy verdict takes the planner down, and a

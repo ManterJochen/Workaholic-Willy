@@ -251,10 +251,10 @@ and returns. Section 7 says what turns them on.
 Three things about this chain are easy to get wrong.
 
 **Safety is not in the pick loop.** `SafetyPreflight` is built inside each arm driver and called from that
-driver's `move()`. The UR, KUKA and simulator drivers build one; the dummy driver carries none and simply
+driver's `move()`. The UR and simulator drivers build one; the dummy driver carries none and simply
 drives. A run on a dummy arm proves the perceive, generate, rank and dispatch chain, and nothing about the
-guards. A test double that implements only `move_to` and not `move` bypasses safety entirely, because
-`_drive_to` falls back to the bool surface. If you write a fake arm, implement `move()`.
+guards. The pick loop and the execution policy call `move()` on every arm, with no fallback: a fake arm
+implements it.
 
 **A fixed close width bites at the grasp point.** `close_width_mm` is a policy value unless
 `_resolve_close_width` derives one, and a fixed narrow close will not lift a wide part. The failure looks
@@ -1563,8 +1563,8 @@ hardware. The console's task of 5.4 and the wrist looks of 5.1 ran on that cell 
 parts into a bin the camera found (two of its logs are in `tests/data/cell_logs/`); the switches of 5.5 have not
 run there yet. The generated view of 5.1 and the push of 6.4 have not run on a physical arm yet, and the deep grasp
 network was never trained. `--rehearse` drives
-the whole path on a dummy arm, the KUKA driver never touched hardware, and Franka and ROS 2 are empty
-registry slots that raise on `create_arm`. In order:
+the whole path on a dummy arm, and KUKA, Franka and ROS 2 are empty registry slots that raise on
+`create_arm`. In order:
 
 1. **Run the desk checklist and clear the blocking items.** `real_cell --check` reports each with its fix,
    and every one would otherwise surface at the bench as a different-looking failure. Details:

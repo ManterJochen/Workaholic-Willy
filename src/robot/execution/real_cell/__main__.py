@@ -76,7 +76,7 @@ def _load_cell_config(profile: str | None, data_dir: str | None) -> "tuple[AppCo
 
     Saving, setting and restoring ``os.environ["WILLY_PROFILE"]`` around the load is not the way to
     do this: process-global state for the duration of one call leaks to any other thread and
-    survives an exception. `drivers/ur/__main__.py` and `real_cell/calibrate.py` translate the same
+    survives an exception. `execution/io_bench/__main__.py` and `real_cell/calibrate.py` translate the same
     way.
     """
     from src.config.loader import ConfigError, load_config
@@ -145,9 +145,9 @@ def main(argv: "list[str] | None" = None) -> int:
     # file's: preflight before build, attestation before motion, and the lock before the connect.
     # The banners stay here, because narration belongs to whoever is being narrated to, and this
     # one is a bench.
-    # `app_cfg` goes only to the real branch: a rehearsal opens no camera, so the camera half of the
-    # tree is not consulted at all there and passing it would suggest otherwise.
-    cell = (Cell.rehearsal(robot_cfg, data_dir=args.data_dir) if args.rehearse
+    # `app_cfg` goes to both branches. A rehearsal opens no camera, but a cell that fuses two cameras reads
+    # their calibrations at the build, and without the camera half `--rehearse --profile eth2` was refused there.
+    cell = (Cell.rehearsal(robot_cfg, data_dir=args.data_dir, app_config=app_cfg) if args.rehearse
             else Cell.from_robot_config(robot_cfg, prompt=args.prompt, app_config=app_cfg,
                                         data_dir=args.data_dir))
     if args.start_planner:
@@ -165,6 +165,15 @@ def main(argv: "list[str] | None" = None) -> int:
 
     report = cell.preflight()
     print(report.render(), flush=True)
+    # The abilities, after the checklist (P0i i4, owner decision 3): which operator functions this cell can
+    # perform, asked of the arm its tree builds, never connected, each refused with the function's own sentence.
+    # They change no exit code, here or below: a UR cell that cannot teach is not a cell that cannot pick, and
+    # the checklist's BLOCK rows stay the verdict.
+    print("\n=== ABILITIES === each operator function, asked of the arm this tree builds, never connected", flush=True)
+    try:
+        print(cell.abilities().render(), flush=True)
+    except Exception as exc:  # noqa: BLE001 - a report that cannot be read is said, and the checklist stays the verdict
+        print(f"  the abilities could not be read: {type(exc).__name__}: {exc}", flush=True)
     # Two rules, and only one of them is a verdict. The first is a policy this runner applies: a
     # rehearsal continues past a blocking checklist, because it exists to exercise the path at a
     # desk where blocking items are the expected state. The second is the report's verdict, which
@@ -172,9 +181,11 @@ def main(argv: "list[str] | None" = None) -> int:
     #
     # The two read alike and are not the same rule. On this tree `--rehearse --check` exits 0 and
     # `--check` exits 1, because a rehearsal preflights the dummy config, which blocks on nothing.
-    # They can only disagree for a config whose rehearsal still blocks.
+    # They can only disagree for a config whose rehearsal still blocks. Until P0d D5 it held on the base
+    # tree only: on the arm profiles `kinematics_model` survived the vendor swap into the dummy config and
+    # made the hand row block. With the key gone it holds on every profile.
     if not report.ok and not args.rehearse:
-        print("\nrefusing to continue: fix the blocking items above.", flush=True)
+        print("\nrefusing to continue: fix the BLOCK rows of the checklist above; no ability row blocks.", flush=True)
         return _EXIT_CONFIG
     if args.check:
         return report.exit_code

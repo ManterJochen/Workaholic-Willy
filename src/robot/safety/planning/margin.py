@@ -36,14 +36,15 @@ def declared_planner_margin(self_collision: Any) -> Maybe[float]:
 
 
 def planner_margin_refusal(robot_cfg: "RobotConfig") -> "tuple[str, str] | None":
-    """What is wrong with a UR cuRobo cell that declares no planner margin, and the fix, or ``None``.
+    """What is wrong with a cuRobo cell that declares no planner margin, and the fix, or ``None``.
 
-    Only UR cells that plan with cuRobo: an ``ik`` cell starts no sidecar, and the sim declares its own margin in its
-    own layer. The sentence names the key, this guard's own margin and why the two are separate numbers.
+    Every cell whose selected arm drives a controller of its own and plans with cuRobo, whatever its vendor: an ``ik``
+    cell starts no sidecar, and the sim, which drives no controller, declares its own margin in its own layer. Until
+    P0e this asked ``vendor != "ur"`` first, which would have switched the refusal off for every vendor after the UR.
+    The sentence names the key, this guard's own margin and why the two are separate numbers.
     """
-    if str(getattr(robot_cfg, "vendor", "")) != "ur":
-        return None
-    if str(getattr(getattr(robot_cfg, "ur", None), "motion_planner", "")) != "curobo":
+    selected = robot_cfg.arm
+    if not selected.owns_a_controller or selected.planner != "curobo":
         return None
     self_collision = getattr(getattr(robot_cfg, "safety", None), "self_collision", None)
     if chosen(declared_planner_margin(self_collision)):
@@ -57,7 +58,7 @@ def planner_margin_refusal(robot_cfg: "RobotConfig") -> "tuple[str, str] | None"
     fix = (
         "Declare it in the cell profile: robot.safety.self_collision.planner_margin_mm. It is not this guard's "
         f"{guard_mm:g} mm and is not derived from it: on the refitted sphere maps no UR arm has a retract at 8 or 10, "
-        "and every one plans at 4, the family's value. Measure the pair with scripts/curobo/matrix_gate.py and "
+        "and every one plans at 4, the family's value. Measure the pair with scripts/arms/gate.py and "
         "declare what it measured."
     )
     return what, fix

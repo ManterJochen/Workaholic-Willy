@@ -51,9 +51,6 @@ def _declared_body() -> Any:
 
 __all__ = ["DimensionsRefused", "boxes_for_hand", "refusal_for", "write_bundle"]
 
-#: The DH frame a hand's bodies sit in: the flange, which is frame 6 of every UR arm.
-HAND_FRAME = 6
-
 
 class DimensionsRefused(ValueError):
     """These numbers do not describe a hand well enough to plan against, said by name rather than worked around."""
@@ -166,8 +163,10 @@ def write_bundle(hand: str, path: "Path | str", *, inflation_mm: float, origin: 
             f"numbers do. Delete it on purpose if the scan is the thing that is wrong."
         )
 
-    arrays = body.boxes_to_parts(boxes_for_hand(jaw, inflation_mm=inflation_mm), frame=HAND_FRAME)
     mesh = _hand_from_mesh()
+    # The frame every hand bundle stores, the bundle rule's; the bundle below writes it again from the same rule.
+    rules = mesh.hand_bundle_rules()
+    arrays = body.boxes_to_parts(boxes_for_hand(jaw, inflation_mm=inflation_mm), frame=rules.HAND_FRAME)
     bundle = mesh.HandBundle.from_parts(
         parts={part: (arrays[f"{part}__v"], arrays[f"{part}__f"]) for part in ("gripper", "lfinger", "rfinger")},
         axes=mesh.VendorAxes.from_words(closing="+X", approach="+Y", binormal="+Z"),

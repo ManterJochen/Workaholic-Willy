@@ -12,6 +12,9 @@ refuses a plan whose last configuration is not on its goal before the first wayp
 hands the planner a pose at all: it chooses the goal configuration and asks for a joint plan, whose numbers are the
 same in either base, so a goal can no longer be mirrored on the way in; the turn still stands for the world, the
 live scene and a pose anything else hands the turned client.
+
+The glue and the arm stand on the fake transport since P0g slice 13 (``tests/_arm_kit.planned_arm``): the turn is the
+UR description's ``controller_yaw_deg`` of 180, which the planning half reads whatever transport is below it.
 """
 
 from __future__ import annotations
@@ -24,16 +27,23 @@ import pytest
 
 from src.geometry import Frame, Pose
 from src.robot.core import MotionStatus
-from src.robot.drivers.ur.curobo_motion import UR_ARM_JOINT_NAMES, CuroboUrPlanner
-from src.robot.drivers.ur.planner_frame import PlannerFrameClient, planner_pose
+from src.robot.drivers.planned.curobo_motion import CuroboPlanner
+from src.robot.drivers.planned.planner_frame import PlannerFrameClient, planner_pose
 from src.robot.safety.planning import JointCheckVerdict
+
+from src.config.arms import load_arm
+from tests._arm_kit import kit_tree, planned_arm
+from tests._fake_transport import fake_transport
+
+#: The controller's joint order as the ur5e description states it; the planner is handed it since P0e.
+_UR_JOINT_NAMES = tuple(joint.name for joint in load_arm("ur5e").joints)
 
 
 class _RecordingClient:
     """A planner client that records every pose it is handed, in whatever frame it arrives."""
 
     def __init__(self, traj: "list[list[float]] | None" = None) -> None:
-        self.joint_names = list(UR_ARM_JOINT_NAMES)
+        self.joint_names = list(_UR_JOINT_NAMES)
         self.dt = 0.0
         self._traj = traj if traj is not None else [[0.0] * 6]
         self.goal: "tuple[list[float], list[float]] | None" = None
@@ -77,21 +87,6 @@ class _RecordingClient:
         return JointCheckVerdict(valid=True, first_invalid=None, checked=len(configs), reason="the fake accepts")
 
 
-class _Conn:
-    is_connected = True
-
-    def __init__(self, joints: "list[float] | None" = None) -> None:
-        self._joints = joints or [0.0] * 6
-        self.moves: list[list[float]] = []
-
-    def get_joint_positions(self) -> list[float]:
-        return list(self._joints)
-
-    def moveJ(self, joints: Any, vel: Any = None, acc: Any = None) -> bool:  # noqa: N802 - ur_rtde's name
-        self.moves.append([float(v) for v in joints])
-        return True
-
-
 # -- the turn ------------------------------------------------------------------------------------------------------
 
 
@@ -131,7 +126,8 @@ def _goal(x: float = 500.0, y: float = 100.0, z: float = 300.0) -> Pose:
 
 
 def _ur_planner(client, **kwargs):  # noqa: ANN001, ANN003, ANN202 - a stand-in client, typed as the real one's glue
-    return CuroboUrPlanner(_Conn(), client_factory=lambda: client, **kwargs)
+    return CuroboPlanner(fake_transport(joints=[0.0] * 6), client_factory=lambda: client, **kwargs,
+                         joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180)
 
 
 def test_a_pose_handed_to_the_turned_client_reaches_the_planner_turned() -> None:
@@ -255,16 +251,9 @@ class _Planner:
 
 
 def _ur_arm(planner: _Planner) -> Any:
-    from src.config.schema.robot import RobotConfig
-    from src.robot.drivers.ur.arm import URRobotArm
-
-    arm = URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
-        "gripper": {"model": "robotiq_2f85"},
-        "safety": {"payload": {"enforce": False}, "self_collision": {"planner_margin_mm": 4.0}},
-    }))
-    arm._conn = _Conn(_DOWN)  # type: ignore[assignment]
-    arm._curobo_ur = planner  # type: ignore[assignment]
+    config = kit_tree("curobo", safety={"payload": {"enforce": False}, "self_collision": {"planner_margin_mm": 4.0}})
+    arm: Any = planned_arm(config, transport=fake_transport(joints=_DOWN))
+    arm._curobo = planner
     return arm
 
 
@@ -289,6 +278,30 @@ def test_a_plan_that_ends_off_its_goal_is_refused_before_anything_moves() -> Non
 
     assert result is not None and result.status is MotionStatus.CONTROLLER_REJECTED
     assert "from its goal" in (result.message or "")
+
+
+def test_a_plan_whose_end_the_controller_reads_elsewhere_is_refused_through_the_arm() -> None:
+    """Through the arm, where the check is wired: a goal set that answers the mirrored configuration (a base turned half
+    a turn, which a planner in another frame would hand back) is planned to and ends on it, and the end check refuses it
+    on the controller's own kinematics before anything moves."""
+    from unittest import mock
+
+    from src.robot.drivers.planned.goal_set import GoalSet
+
+    goal = _flange_pose([0.0, -1.4, 1.6, -1.7, -1.5708, 0.0])
+    mirrored = [math.pi, -1.4, 1.6, -1.7, -1.5708, 0.0]
+    planner = _Planner([_DOWN, mirrored])
+    # The goal set's answer is turned onto the full turn nearest the arm; the plan ends on what it was asked for.
+    planner.plan_joint = lambda goal, **_: [list(_DOWN), [float(v) for v in goal]]  # type: ignore[method-assign]
+    arm = _ur_arm(planner)
+    arm._gate_planned_config = lambda pose, joints: None  # the shipped box is not what this reads
+    wrong = GoalSet(family="a closed form in the wrong frame", solve=lambda flange, last: (tuple(mirrored),),
+                    branch=lambda joints: None)
+    with mock.patch("src.robot.drivers.planned.goal_set.goal_set_for", return_value=wrong):
+        result = arm._drive_curobo(goal)
+    assert result.status is MotionStatus.CONTROLLER_REJECTED, result.message
+    assert "from its goal" in (result.message or "")
+    assert not planner.executed, "a plan whose end is a metre from its goal was driven"
 
 
 def test_a_plan_that_ends_off_the_configuration_asked_for_is_never_driven() -> None:

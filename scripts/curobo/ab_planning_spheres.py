@@ -27,7 +27,7 @@ The problems, the same for every variant:
   the start the arm's own IK finds (``ur_flange_ik``, ``nearest_goals``).
 
 Every problem is planned, whatever the straight line would do: the arm plans only where the exact guard refuses the
-line, about one move in a hundred on the bench, too few to compare. The world is set first (``CuroboUrPlanner.
+line, about one move in a hundred on the bench, too few to compare. The world is set first (``CuroboPlanner.
 set_world``, its round trip timed; the guard is handed the same boxes), then ``plan_joint`` from the problem's start
 with the refresh off, timed on the wall clock, then a plan is judged as the arm judges one
 (``URRobotArm._judged_waypoints``: shortened to the waypoints both authorities pass, or the plan as cuRobo returned
@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import statistics
 import sys
 import time
@@ -60,10 +61,14 @@ for _path in (str(REPO), str(REPO / "scripts" / "bench"), str(REPO / "scripts" /
     if _path not in sys.path:
         sys.path.insert(0, _path)
 
-#: The owner's cell as it was handed over on 2026-10-08 (the 131 mm enclosure, the looks 0, 3, 2, 1).
-DEFAULT_TREE = Path("D:/dev/willy_handover/2026-10-08/robominds_config/config")
-#: The wrist camera's calibration the bench places the camera with (``run_bench.DEFAULT_CALIBRATION``).
-DEFAULT_CALIBRATION = Path("D:/helper_cell/calibration/real/eih_EIH_Cam.json")
+#: The owner's cell as it was handed over on 2026-10-08 (the 131 mm enclosure, the looks 0, 3, 2, 1) and the wrist
+#: camera's calibration the bench places the camera with, on the reference workstation: guessed on Windows only
+#: where neither --tree / --calibration nor WILLY_BENCH_TREE / WILLY_BENCH_CALIBRATION names them (P0h h8).
+_WINDOWS_TREE_GUESS = "D:/dev/willy_handover/2026-10-08/robominds_config/config"
+_WINDOWS_CALIBRATION_GUESS = "D:/helper_cell/calibration/real/eih_EIH_Cam.json"
+DEFAULT_TREE = os.environ.get("WILLY_BENCH_TREE") or (_WINDOWS_TREE_GUESS if sys.platform == "win32" else None)
+DEFAULT_CALIBRATION = os.environ.get("WILLY_BENCH_CALIBRATION") or (
+    _WINDOWS_CALIBRATION_GUESS if sys.platform == "win32" else None)
 #: The recorded look the bench stands its scenes on (``run_bench.DEFAULT_CROP``).
 DEFAULT_CROP = REPO / "tests" / "data" / "cell_2026_10_01" / "p1_pick-63e1b3dac29f.npz"
 #: The policy's standoff above a grasp, millimetres, as the console's pick moves.
@@ -149,13 +154,13 @@ def part_box(part: Any) -> "tuple[dict[str, Any], Any]":
 def goal_for(robot: Any, tcp_mm: np.ndarray, near: "list[float]", window: "tuple[list[float], list[float]]") \
         -> "list[float] | None":
     """The configuration nearest ``near`` that puts the TCP at ``tcp_mm``, as the arm chooses a goal, or ``None``."""
-    from src.robot.drivers.ur.tool_frame import tool_frame_matrix  # noqa: PLC0415
+    from src.geometry.matrix import position_quaternion_to_matrix  # noqa: PLC0415
     from src.robot.safety._ur_ik import nearest_goals, ur_flange_ik  # noqa: PLC0415
 
     frame = robot.gripper.tool_frame
-    tool = tool_frame_matrix(tuple(frame.offset_mm), tuple(frame.rotation_quat_xyzw))
+    tool = position_quaternion_to_matrix(np.asarray(frame.offset_mm), np.asarray(frame.rotation_quat_xyzw))
     flange = np.asarray(tcp_mm, dtype=np.float64) @ np.linalg.inv(tool)
-    solutions = ur_flange_ik(str(robot.ur.model).lower(), flange) or ()
+    solutions = ur_flange_ik(str(robot.arm.model).lower(), flange) or ()
     goals = nearest_goals(solutions, current=near, lower=window[0], upper=window[1], velocity=RANK_SPEED)
     return [float(v) for v in goals[0].joints] if goals else None
 
@@ -176,13 +181,14 @@ def _top_down(part: Any, depth_mm: float) -> np.ndarray:
 
 def problems_for(loaded: Any, *, scenes: str, parts: int, crop: Path) -> "tuple[list[Problem], list[str]]":
     """Every problem of this A/B, and a line for every move that has no goal (out of reach, no solution in the window)."""
-    from src.robot.drivers.ur.curobo_motion import PLANNER_JOINT_ENVELOPE_RAD  # noqa: PLC0415
+    from src.robot.drivers.planned.curobo_motion import planner_envelope_rad  # noqa: PLC0415
 
     robot = loaded.robot
     # Home is read in radians: the schema turns home_joint_positions_deg into home_joint_positions and clears the one.
     home = [float(v) for v in (robot.home_joint_positions or ())]
     looks = [[math.radians(float(v)) for v in row] for row in (robot.look_joint_positions_deg or ())]
-    window = (list(PLANNER_JOINT_ENVELOPE_RAD[0]), list(PLANNER_JOINT_ENVELOPE_RAD[1]))
+    envelope = planner_envelope_rad(str(robot.arm.model))
+    window = (list(envelope[0]), list(envelope[1]))
     out: list[Problem] = []
     skipped: list[str] = []
     for index, look in enumerate(looks):
@@ -244,7 +250,7 @@ def run_variant(loaded: Any, variant: Variant, problems: "list[Problem]") -> "tu
         identity = arm.start_planner()
         print(f"  started in {time.perf_counter() - began:.1f} s: plans on "
               f"{identity.plans_on or 'the evidence model'}", flush=True)
-        planner = arm._curobo_ur  # noqa: SLF001 (the glue the start kept: what a move asks)
+        planner = arm._curobo  # noqa: SLF001 (the glue the start kept: what a move asks)
         for problem in problems:
             row: dict[str, Any] = {"key": problem.key, "family": problem.family}
             try:
@@ -344,7 +350,7 @@ def dry_run(loaded: Any, models: "list[str]", problems: "list[Problem]", skipped
     with ``dump``, the robots written there for ``probe_planning_model.py`` to load into cuRobo."""
     import yaml  # noqa: PLC0415
 
-    from src.robot.drivers.sim.robot_models import curobo_arm_descriptor  # noqa: PLC0415
+    from src.config.arms import curobo_descriptor_name  # noqa: PLC0415
     from src.robot.execution.wrist_bodies import WristBodies  # noqa: PLC0415
     from src.robot.safety.planning import _curobo_planning as planning  # noqa: PLC0415
     from src.robot.safety.planning._curobo_body_links import compose_for_cell  # noqa: PLC0415
@@ -361,7 +367,7 @@ def dry_run(loaded: Any, models: "list[str]", problems: "list[Problem]", skipped
     robot = loaded.robot
     content = Path(__import__("os").environ.get("WILLY_PROBE_CUROBO_CONTENT") or
                    REPO / "ext_deps" / "curobo" / "curobo" / "content")
-    descriptor = content / "configs" / "robot" / curobo_arm_descriptor(str(robot.ur.model))
+    descriptor = content / "configs" / "robot" / curobo_descriptor_name(str(robot.arm.model))
     if not descriptor.is_file():
         print(f"[robots] no {descriptor.name} under {content}: nothing to compose here")
         return 0
@@ -370,9 +376,10 @@ def dry_run(loaded: Any, models: "list[str]", problems: "list[Problem]", skipped
     if not isinstance(hand, PlannerHand):
         print("[robots] the tree names no hand: nothing to compose here")
         return 0
-    bodies = [HandLink.from_hand(hand).to_dict(), *coupling_bodies(hand)]
-    wrist = [body.link() for body in WristBodies.from_config(robot, loaded.app_config.camera,
-                                                            data_dir=loaded.root).bodies]
+    arm = str(robot.arm.model)
+    bodies = [HandLink.from_hand(hand, arm=arm).to_dict(), *coupling_bodies(hand, arm=arm)]
+    wrist = [body.link(arm=arm) for body in WristBodies.from_config(robot, loaded.app_config.camera,
+                                                                    data_dir=loaded.root).bodies]
     margin = float(robot.safety.self_collision.planner_margin_mm or 0.0)
     today, _, _, _, _ = compose_for_cell(raw, bodies=bodies, wrist_bodies=wrist, margin_mm=margin)
     print(f"[robots] today: {sum(planning.sphere_count(today).values())} spheres, "
@@ -380,7 +387,7 @@ def dry_run(loaded: Any, models: "list[str]", problems: "list[Problem]", skipped
     urdf = content / "assets" / str(raw["robot_cfg"]["kinematics"].get("urdf_path", ""))
     written = {"today": today}
     for model in [model for model in models if model]:
-        sent = planning_payload(model, arm=str(robot.ur.model).lower(), body_links=bodies, wrist_body_links=wrist)
+        sent = planning_payload(model, arm=str(robot.arm.model).lower(), body_links=bodies, wrist_body_links=wrist)
         if isinstance(sent, str):
             print(f"[robots] {model}: not composed: {sent}")
             continue
@@ -404,9 +411,10 @@ def dry_run(loaded: Any, models: "list[str]", problems: "list[Problem]", skipped
 
 def main(argv: "list[str] | None" = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--tree", default=str(DEFAULT_TREE), help="the cell's config folder; read, never written")
+    parser.add_argument("--tree", default=DEFAULT_TREE, required=DEFAULT_TREE is None,
+                        help="the cell's config folder; read, never written (WILLY_BENCH_TREE)")
     parser.add_argument("--profile", default="", help="the tree's chain; empty for its base")
-    parser.add_argument("--calibration", default=str(DEFAULT_CALIBRATION),
+    parser.add_argument("--calibration", default=DEFAULT_CALIBRATION,
                         help="the wrist camera's calibration, written over the primary rig's in memory where it exists")
     parser.add_argument("--crop", default=str(DEFAULT_CROP), help="the recorded look the scenes stand on")
     parser.add_argument("--scenes", default="bin,clutter,tray,shapes",

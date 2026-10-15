@@ -60,7 +60,7 @@ def _guards() -> tuple[SafetyGuard, ...]:
     cfg = load_config()
     robot = cfg.robot
     assert robot is not None, "loaded config has no robot block"
-    pf = SafetyPreflight.from_safety_config(robot.safety, robot.workspace_limits)
+    pf = SafetyPreflight.from_safety_config(robot.safety, robot.workspace_limits, arm_model=None)
     return pf.guards
 
 

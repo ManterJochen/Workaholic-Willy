@@ -167,4 +167,4 @@ def tree_hand_refusal(name: str, *, data_dir: str | Path | None) -> str | None:
     return (f"{tree_dir / (name + '.yaml')} describes the hand {name} differently from the repository registry "
             f"{repository_file}: {'; '.join(differing)}. {why}: copy {repository_file} over the tree's file, or "
             f"measure again, correct {repository_file} and rewrite the hand's committed artefacts from it with the "
-            f"scripts under scripts/grippers/ and scripts/curobo/")
+            f"scripts under scripts/grippers/ and scripts/arms/")

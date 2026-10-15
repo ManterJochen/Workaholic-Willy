@@ -1,7 +1,7 @@
 """Reading the committed retract table. Stdlib plus PyYAML, beside the table it reads.
 
-The table (``ur_retract.yaml``) holds one retract per arm, hand, plate and planner margin, chosen by
-the rule in ``scripts/curobo/choose_ur_retract.py``. Three interpreters need to read it and none of
+The table (``retract.yaml``) holds one retract per arm, hand, plate and planner margin, chosen by
+the rule in ``scripts/arms/retract.py``. Three interpreters need to read it and none of
 them can import the other two: the project venv (the drivers, which hand the pose to the sidecar),
 the cuRobo environment (the descriptor builder, which writes the arm's fallback), and the measuring
 scripts. So the reader lives here, next to the file, with nothing but the standard library and
@@ -38,10 +38,31 @@ __all__ = ["FALLBACK_HAND", "RetractChange", "RetractMissing", "RetractRow", "SH
            "merge_judged", "pair_key", "placement_of", "read_arm_retract", "read_retract", "retract_changes"]
 
 #: The committed table, beside this module.
-TABLE_PATH = Path(__file__).resolve().with_name("ur_retract.yaml")
+TABLE_PATH = Path(__file__).resolve().with_name("retract.yaml")
 
-_GENERATE = ("Generate it in the project venv with Coal and a GPU: "
-             ".venv/Scripts/python.exe scripts/curobo/choose_ur_retract.py {arm}")
+def _main_interpreter() -> str:
+    """The main environment's interpreter as a command names it on this platform (P0h h2).
+
+    From ``src/utility/interpreters.py``, loaded by path: it is standard library only, as this module must be.
+    """
+    import importlib.util
+    import sys
+
+    name = "willy_interpreters_for_retract"
+    if name not in sys.modules:
+        path = Path(__file__).resolve().parents[4] / "utility" / "interpreters.py"
+        spec = importlib.util.spec_from_file_location(name, path)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    helpers = sys.modules[name]
+    return str(helpers.interpreter_command(helpers.Interpreter.MAIN))
+
+
+def _generate(arm: str) -> str:
+    """How to generate an arm's rows, as the command this platform runs it with (P0h h2)."""
+    return f"Generate it in the project venv with Coal and a GPU: {_main_interpreter()} scripts/arms/retract.py {arm}"
 
 #: The hand whose row at a bare flange, at the table's own placement, is an arm descriptor's fallback
 #: retract: the hand every committed arm bundle carries (``hand.ARM_BUNDLE_HAND``). Chosen by rule,
@@ -75,7 +96,13 @@ class RetractRow:
     anchor_source: str
     #: hand -> the plates the table judged it at, in millimetres.
     hands: dict[str, list[float]]
-    table_sha256: str
+    #: sha256 of this arm's rows as parsed, in canonical JSON and in a sorted order. It replaced a hash of the whole
+    #: file's bytes (P0f) because a descriptor carries it into ``composed_sha256``, and the whole-file hash moved with
+    #: the checkout's line endings and with any other arm's row. Measured in Willy on 2026-10-13: the 57 committed
+    #: evidence files matched the descriptors installed on this box on 2026-09-16, and none would have matched a
+    #: descriptor built since, because the table had changed. This arm's own rows are still inside it, and a row judged
+    #: for this arm re-gates its evidence.
+    rows_sha256: str
 
     def render(self) -> str:
         pairs = ", ".join(f"{hand} at {plates} mm" for hand, plates in sorted(self.hands.items()))
@@ -85,13 +112,13 @@ class RetractRow:
         return {"arm": self.arm, "retract": list(self.retract), "steps": list(self.steps),
                 "anchor": list(self.anchor), "anchor_source": self.anchor_source,
                 "hands": {hand: list(plates) for hand, plates in self.hands.items()},
-                "table_sha256": self.table_sha256}
+                "rows_sha256": self.rows_sha256}
 
 
 def _load(table_path: "Path | str", arm: str) -> "tuple[dict, bytes]":
     path = Path(table_path)
     if not path.is_file():
-        raise RetractMissing(f"no retract table at {path}. {_GENERATE.format(arm=arm)}")
+        raise RetractMissing(f"no retract table at {path}. {_generate(arm)}")
     raw = path.read_bytes()
     return yaml.safe_load(raw.decode("utf-8")) or {}, raw
 
@@ -106,7 +133,7 @@ def _pairs(table: dict) -> str:
 
 
 def retract_command(arm: str, hand: str, plate_mm: float, planner_margin_mm: "float | None", placement: str) -> str:
-    """The whole ``choose_ur_retract.py`` command that judges exactly this pair at this placement."""
+    """The whole ``scripts/arms/retract.py`` command that judges exactly this pair at this placement."""
     import importlib.util
     import sys
 
@@ -118,7 +145,7 @@ def retract_command(arm: str, hand: str, plate_mm: float, planner_margin_mm: "fl
         sys.modules[name] = module
         spec.loader.exec_module(module)
     rotation = sys.modules[name].placement_quaternion_xyzw(placement[:2], placement[2:])
-    parts = [".venv/Scripts/python.exe", "scripts/curobo/choose_ur_retract.py", arm, "--hand", hand]
+    parts = [_main_interpreter(), "scripts/arms/retract.py", arm, "--hand", hand]
     if float(plate_mm):
         parts += ["--plate-mm", f"{float(plate_mm):g}"]
     if planner_margin_mm is not None:
@@ -139,12 +166,12 @@ def read_arm_retract(table_path: "Path | str" = TABLE_PATH, arm: str = "ur5e") -
     where the rule names one, at its planner margin. It is a rule, so a hand added to the table never
     moves an arm descriptor's ``default_q``.
     """
-    table, raw = _load(table_path, arm)
+    table, _ = _load(table_path, arm)
     rows = [row for row in _rows(table) if row.get("arm") == arm]
     if not rows:
         raise RetractMissing(
             f"{Path(table_path).name} judged no retract for {arm!r}: it holds {_pairs(table)}. "
-            f"{_GENERATE.format(arm=arm)}"
+            f"{_generate(arm)}"
         )
     hands: dict[str, list[float]] = {}
     for row in rows:
@@ -160,8 +187,8 @@ def read_arm_retract(table_path: "Path | str" = TABLE_PATH, arm: str = "ur5e") -
         raise RetractMissing(
             f"{Path(table_path).name} holds no {FALLBACK_HAND} row for {arm} at a bare flange at its own "
             f"placement, and that row is an arm descriptor's fallback retract. Generate it: "
-            f".venv/Scripts/python.exe scripts/curobo/choose_ur_retract.py {arm} --hand {FALLBACK_HAND}, or build "
-            f"a seed descriptor with scripts/curobo/build_ur_config.py {arm} --retract-from-anchor"
+            f"{_main_interpreter()} scripts/arms/retract.py {arm} --hand {FALLBACK_HAND}, or build "
+            f"a seed descriptor with scripts/arms/descriptor.py {arm} --retract-from-anchor"
         )
     fallback = candidates[0]
     return RetractRow(
@@ -171,8 +198,16 @@ def read_arm_retract(table_path: "Path | str" = TABLE_PATH, arm: str = "ur5e") -
         anchor=[float(v) for v in fallback.get("anchor") or ()],
         anchor_source=str(fallback.get("anchor_source", "")),
         hands=hands,
-        table_sha256=hashlib.sha256(raw).hexdigest(),
+        rows_sha256=_rows_sha256(rows),
     )
+
+
+def _rows_sha256(rows: "list[dict]") -> str:
+    """One hash over rows as parsed, whatever their order and the file's spelling and line endings."""
+    import json
+
+    spelled = sorted(json.dumps(row, sort_keys=True, separators=(",", ":")) for row in rows)
+    return hashlib.sha256(("[" + ",".join(spelled) + "]").encode("utf-8")).hexdigest()
 
 
 def read_retract(
@@ -260,7 +295,7 @@ def merge_judged(
 ) -> dict:
     """``existing`` with one run of the rule put in, replacing exactly the pairs the run judged.
 
-    ``fresh`` is what one run of ``choose_ur_retract.py`` judged: rows and refusals naming no placement,
+    ``fresh`` is what one run of ``scripts/arms/retract.py`` judged: rows and refusals naming no placement,
     and a ``rule`` that names the run's. A pair is (arm, hand, plate, planner margin) at the run's
     placement. The run replaces an existing row or refusal only for a pair it judged: it found a
     retract, or the rule refused every candidate. A pair the planner could not be asked about

@@ -5,7 +5,7 @@ On 2026-09-15 that root held meshes for ur5e and ur10e only, so ur3, ur3e and ur
 `install.ps1` stopped at its ur3e descriptor. The meshes come from Universal Robots' ROS 2 description at one commit,
 the source cuRobo's own `ur_description` LICENSE names, and every file is held to a committed sha256.
 
-`fetch_ur_meshes.py` runs in the cuRobo environment as the build does, so it is loaded by path, and it touches the
+`fetch.py` runs in the cuRobo environment as the build does, so it is loaded by path, and it touches the
 network only when no local source is handed in. Nothing here does.
 """
 
@@ -16,6 +16,7 @@ import importlib.util
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -23,10 +24,23 @@ from pathlib import Path
 from types import ModuleType
 from unittest import mock
 
-from src.robot.safety._ur_kinematics import UR_DH_TABLES_M
+from src.config.arms import available_arms
+
+
+def _bundled_arms() -> list[str]:
+    """The arms this repository built collision geometry for: described, with a committed bundle.
+
+    The mesh and build pipeline this file checks is defined over these, not over every described arm. Since P0d D3b
+    ur20 has joints, from UR's pinned description, but its collision meshes were never fetched and no bundle was cut,
+    so it is not an arm the pipeline left out: it is one the pipeline never took up. Before D4 this set was spelled
+    `UR_DH_TABLES_M`, whose seven keys were exactly these seven.
+    """
+    from src.robot.safety.planning.environment import collision_mesh_bundle
+
+    return [arm for arm in available_arms() if collision_mesh_bundle(arm).is_file()]
 
 _REPO = Path(__file__).resolve().parents[1]
-_SCRIPTS = _REPO / "scripts" / "curobo"
+_SCRIPTS = _REPO / "scripts" / "arms"
 _LINKS = ("base", "shoulder", "upperarm", "forearm", "wrist1", "wrist2", "wrist3")
 
 
@@ -46,12 +60,12 @@ def _sha(data: bytes) -> str:
 class TheManifestPinsEveryArmTests(unittest.TestCase):
 
     def setUp(self) -> None:
-        self.fetch = _load("fetch_ur_meshes")
+        self.fetch = _load("fetch")
         self.pinned = self.fetch.read_manifest(self.fetch.MANIFEST)
 
     def test_every_arm_with_a_dh_table_has_its_seven_collision_meshes_pinned(self) -> None:
         missing = []
-        for model in UR_DH_TABLES_M:
+        for model in _bundled_arms():
             for link in _LINKS:
                 owner = self.fetch.mesh_owner(model, link)
                 path = f"meshes/{owner}/collision/{link}.stl"
@@ -75,7 +89,7 @@ class TheManifestPinsEveryArmTests(unittest.TestCase):
 class TheFetchWritesAllOrNothingTests(unittest.TestCase):
 
     def setUp(self) -> None:
-        self.fetch = _load("fetch_ur_meshes")
+        self.fetch = _load("fetch")
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.source = self.tmp / "source"
@@ -138,7 +152,7 @@ class AFetchWritesTheUpstreamBytesTests(unittest.TestCase):
     def setUp(self) -> None:
         if shutil.which("git") is None:
             self.skipTest("git is not on PATH")
-        self.fetch = _load("fetch_ur_meshes")
+        self.fetch = _load("fetch")
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp, True)
 
@@ -175,13 +189,16 @@ class TheInstallBuildsEveryArmTests(unittest.TestCase):
     """The install builds a descriptor for every arm, with every hand it can place without a bench measurement."""
 
     def setUp(self) -> None:
-        self.script = (_REPO / "scripts" / "ext_deps" / "install.ps1").read_text(encoding="utf-8")
+        """What the installer runs, from nothing, on Windows (P0h h3: install.ps1 is a shim for install.py)."""
+        installer = _REPO / "scripts" / "ext_deps" / "install.py"
+        self.script = installer.read_text(encoding="utf-8")
+        self.plan = subprocess.run([sys.executable, str(installer), "--plan", "--from-nothing", "--platform", "win-64"],
+                                   capture_output=True, text=True, check=True).stdout.splitlines()
 
-    def _list(self, name: str) -> list[str]:
-        match = re.search(rf"\${name}\s*=\s*@\(([^)]*)\)", self.script)
-        self.assertIsNotNone(match, f"install.ps1 declares no ${name} list")
-        assert match is not None
-        return re.findall(r"'([^']+)'", match.group(1))
+    def _built(self) -> list[str]:
+        """The arms the plan builds a descriptor for, in its order."""
+        return [match.group(1) for line in self.plan
+                if (match := re.search(r"scripts/arms/descriptor\.py (\S+) --urdf-from ur$", line.rstrip()))]
 
     def test_every_arm_that_can_carry_a_judged_retract_is_built(self) -> None:
         """A descriptor carries the retract the rule judged on the exact meshes, so an arm with no committed bundle
@@ -195,15 +212,15 @@ class TheInstallBuildsEveryArmTests(unittest.TestCase):
         # the condition is now the committed fit and both arms are in.
         maps = _REPO / "src" / "robot" / "safety" / "planning" / "robot"
 
-        buildable = sorted(arm for arm in UR_DH_TABLES_M
+        buildable = sorted(arm for arm in available_arms()
                            if collision_mesh_bundle(arm).is_file()
                            and (maps / f"{arm}_arm_spheres.yml").is_file())
-        self.assertEqual(sorted(self._list("UR_ARMS")), buildable)
-        for arm in sorted(arm for arm in UR_DH_TABLES_M
+        self.assertEqual(sorted(self._built()), buildable)
+        for arm in sorted(arm for arm in _bundled_arms()
                           if not collision_mesh_bundle(arm).is_file()
                           or not (maps / f"{arm}_arm_spheres.yml").is_file()):
             with self.subTest(arm=arm):
-                self.assertNotIn(f"'{arm}'", self.script)
+                self.assertNotIn(arm, self._built())
                 self.assertIn(arm, self.script, "an arm left out of the build is named with a reason")
 
     def test_an_arm_with_no_bundle_would_be_left_out(self) -> None:
@@ -222,24 +239,28 @@ class TheInstallBuildsEveryArmTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as empty, mock.patch(
             "src.robot.safety.planning.environment.COLLISION_MESH_DIR", Path(empty)
         ):
-            buildable = sorted(arm for arm in UR_DH_TABLES_M if collision_mesh_bundle(arm).is_file())
+            buildable = sorted(arm for arm in available_arms() if collision_mesh_bundle(arm).is_file())
         self.assertEqual(buildable, [], "a mesh directory with no bundles still answered with arms")
-        self.assertNotEqual(sorted(self._list("UR_ARMS")), buildable)
+        self.assertNotEqual(sorted(self._built()), buildable)
 
     def test_the_install_builds_every_arm_and_names_no_hand(self) -> None:
         """One descriptor per arm (UM lane S11): the sidecar adds the hand a cell names when it starts, so the install
         builds no hand, and a hand flag is refused by the builder."""
-        for name in ("$FLANGE_HANDS", "--gripper", "--coupling-mm"):
+        for name in ("--gripper", "--coupling-mm", "--hand"):
             with self.subTest(absent=name):
-                self.assertNotIn(name, self.script)
+                self.assertNotIn(name, "\n".join(self.plan))
         # The model, and since B5 S10 the description source, and nothing else: no hand, no plate. Since B6
-        # every arm takes UR's own description, so the flag is a literal rather than a per-model variable.
-        self.assertRegex(self.script, r"build_ur_config\.py'\)\s+\$model\s+'--urdf-from'\s+'ur'\s*\|")
+        # every arm takes UR's own description.
+        descriptors = [line.rstrip() for line in self.plan if "scripts/arms/descriptor.py" in line]
+        self.assertEqual(len(descriptors), len(self._built()))
+        for line in descriptors:
+            with self.subTest(line=line):
+                self.assertRegex(line, r"scripts/arms/descriptor\.py \S+ --urdf-from ur$")
 
     def test_the_meshes_are_fetched_before_the_first_descriptor(self) -> None:
-        fetch = self.script.find("fetch_ur_meshes.py")
-        build = self.script.find("build_ur_config.py")
-        self.assertGreater(fetch, -1, "install.ps1 never fetches the UR meshes")
+        fetch = next((i for i, line in enumerate(self.plan) if "scripts/arms/fetch.py" in line), -1)
+        build = next(i for i, line in enumerate(self.plan) if "scripts/arms/descriptor.py" in line)
+        self.assertGreater(fetch, -1, "the installer never fetches the UR meshes")
         self.assertLess(fetch, build)
 
 

@@ -2,9 +2,9 @@
 
 ``GraspMotion`` carries what a caller may choose about the approach, the close and the lift, and nothing that keeps a
 pick safe. Both service factories build the one policy from it on the arm and hand they resolved, with the base frame
-guard, the dwell gate and the jaws opened before the approach. A policy a caller built by hand drives whatever arm it
-holds and carries only the guards its builder set; while ``policy=`` is accepted, one whose arm or hand is not the
-service's is refused.
+guard and the jaws opened before the approach (the steady gate is the arm's own since P0e E9). A policy a caller
+built by hand drives whatever arm it holds and carries only the guards its builder set; while ``policy=`` is
+accepted, one whose arm or hand is not the service's is refused.
 
 The cell half: ``Cell.from_tree`` reads both halves from one load, ``Cell(motion=)`` reaches the service, and
 ``Cell.robot`` hands the built arm and hand to the robot verbs.
@@ -35,6 +35,7 @@ class _Arm:
     """An arm the factories only hold: nothing here is moved."""
 
     def __init__(self, dwell: object = None) -> None:
+        # The tree a UR arm keeps, dwell block included: since P0e E9 no builder reads it off the arm any more.
         if dwell is not None:
             self.config = SimpleNamespace(safety=SimpleNamespace(dwell=dwell))
 
@@ -117,15 +118,23 @@ class TheOneBuilderPutsEveryGuardInTests(unittest.TestCase):
         arm, hand = _Arm(), _Hand()
         policy = build_execution_policy(
             GraspMotion(), arm=arm, gripper=hand, standoff_mm=80.0, retreat_mm=100.0,  # type: ignore[arg-type]
-            base_frame_required=True, dwell=_dwell(True, 2.5))
+            base_frame_required=True)
 
         self.assertIs(arm, policy.arm)
         self.assertIs(hand, policy.gripper)
         self.assertEqual(85.0, policy.pre_open_width_mm)
         self.assertTrue(policy.require_base_frame_grasp)
-        self.assertTrue(policy.require_steady_before_motion)
-        self.assertEqual(2.5, policy.steady_timeout_s)
         self.assertEqual((80.0, 100.0), (policy.standoff_mm, policy.retreat_mm))
+
+    def test_the_policy_carries_no_steady_gate_the_arm_holds_its_own(self) -> None:
+        """P0e E9: the planned arm waits inside every motion verb, so a copy here would be a second wait per move."""
+        policy = build_execution_policy(
+            GraspMotion(), arm=_Arm(dwell=_dwell(True, 2.5)), gripper=_Hand(),  # type: ignore[arg-type]
+            standoff_mm=80.0, retreat_mm=100.0, base_frame_required=False)
+        self.assertFalse(hasattr(policy, "require_steady_before_motion"))
+        with self.assertRaises(TypeError):
+            build_execution_policy(GraspMotion(), arm=_Arm(), gripper=_Hand(), standoff_mm=80.0,  # type: ignore[arg-type,call-arg]
+                                   retreat_mm=100.0, base_frame_required=False, dwell=_dwell())
 
     def test_what_the_caller_chose_reaches_the_policy(self) -> None:
         motion = GraspMotion(standoff_mm=60.0, retreat_mm=40.0, approach_steps=6, retreat_steps=3,
@@ -163,15 +172,12 @@ class FromComponentsTests(unittest.TestCase):
         self.assertEqual((60.0, 5.0), (policy.standoff_mm, policy.close_squeeze_mm))
         self.assertEqual(85.0, policy.pre_open_width_mm)
         self.assertTrue(policy.require_base_frame_grasp)
-        self.assertTrue(policy.require_steady_before_motion)
-        self.assertEqual(3.0, policy.steady_timeout_s)
 
     def test_without_a_resolver_the_motion_keeps_the_pre_open_and_asks_for_no_base_frame(self) -> None:
         policy = _service(gripper=_Hand(), motion=GraspMotion()).runtime.orchestrator.policy
 
         self.assertEqual(85.0, policy.pre_open_width_mm)
         self.assertFalse(policy.require_base_frame_grasp)
-        self.assertFalse(policy.require_steady_before_motion)
 
     def test_a_policy_on_another_arm_or_hand_is_refused_and_names_the_motion(self) -> None:
         arm, hand = _Arm(), _Hand()
@@ -208,7 +214,6 @@ class FromRobotConfigTests(unittest.TestCase):
         service = build_rehearsal_cell(tree.robot)
         orchestrator = service.runtime.orchestrator
         policy = orchestrator.policy
-        dwell = tree.robot.safety.dwell
 
         self.assertIs(orchestrator.arm, policy.arm)
         self.assertIs(orchestrator.gripper, policy.gripper)
@@ -216,8 +221,6 @@ class FromRobotConfigTests(unittest.TestCase):
                                                     policy.retreat_steps, policy.close_squeeze_mm))
         self.assertEqual(float(orchestrator.gripper.max_width_mm), policy.pre_open_width_mm)
         self.assertEqual(orchestrator.frame_resolver is not None, policy.require_base_frame_grasp)
-        self.assertEqual(bool(dwell.require_steady_before_motion), policy.require_steady_before_motion)
-        self.assertEqual(float(dwell.steady_timeout_s), policy.steady_timeout_s)
 
     def test_a_motion_reaches_the_policy_and_the_guards_stay(self) -> None:
         tree = _console_dummy()
@@ -227,8 +230,6 @@ class FromRobotConfigTests(unittest.TestCase):
 
         self.assertEqual((60.0, 5.0), (policy.standoff_mm, policy.close_squeeze_mm))
         self.assertEqual(float(orchestrator.gripper.max_width_mm), policy.pre_open_width_mm)
-        self.assertEqual(bool(tree.robot.safety.dwell.require_steady_before_motion),
-                         policy.require_steady_before_motion)
 
     def test_a_policy_the_caller_built_around_another_arm_is_refused(self) -> None:
         tree = _console_dummy()

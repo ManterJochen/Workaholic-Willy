@@ -234,7 +234,7 @@ flowchart LR
     G["<b>Grasp calculator</b><br/>generate, score, rank"]:::grasp
     F["<b>SafetyPreflight</b><br/>six fail-closed guards"]:::safe
     M["<b>cuRobo</b><br/>collision-free plan"]:::safe
-    E["<b>Arm and gripper</b><br/>UR, KUKA, Isaac, Dummy"]:::exe
+    E["<b>Arm and gripper</b><br/>UR, Isaac, Dummy"]:::exe
     V["<b>hold check, then recover</b>"]:::exe
     L["<b>GraspAttemptRecord</b><br/>JSONL telemetry"]:::io
 
@@ -290,7 +290,7 @@ src/
     config/                 the loader, the schema and the CLI that reads the tree above
     robot/
         core/               RobotArm and Gripper Protocols, typed motion objects, vendor enums
-        drivers/            UR over RTDE, KUKA over EKI, Isaac Sim, Dummy, and two empty slots
+        drivers/            UR over RTDE, Isaac Sim, Dummy, and three reserved names
         grippers/           robotiq, onrobot, jaw_io, vacuum, the two simulated ones, dummy, null
         safety/             the ordered fail-closed preflight, and the cuRobo binding
         perception/         real-camera RGB-D into a PerceptionFrame, and the Locator
@@ -375,7 +375,6 @@ Including
 
 - [Driver registry](src/robot/drivers/README.md)
 - [Universal Robots](src/robot/drivers/ur/README.md), over RTDE
-- [KUKA](src/robot/drivers/kuka/README.md), over EthernetKRL
 - [Isaac Sim](src/robot/drivers/sim/README.md)
 - [Grippers](src/robot/grippers/README.md)
 

@@ -1,9 +1,9 @@
 """Vendor-neutral reachability filtering for grasp poses.
 
 The grasping package may not import a specific robot driver, whether
-UR with RTDE, KUKA with EKI, or ROS 2. Reachability checks therefore
+UR with RTDE or another vendor's. Reachability checks therefore
 live behind an :class:`IKService` protocol that the execution layer
-fulfils: a UR adapter, a KUKA adapter, or a pure-Python stub.
+fulfils: a UR adapter, another vendor's, or a pure-Python stub.
 
 The default ``WorkspaceBoxIKService`` keeps :class:`GraspCalculator`
 useful without any robot at all by accepting every candidate inside an
@@ -57,7 +57,7 @@ def _validate_optional_nonneg(value: float | None, name: str) -> float | None:
 class IKQualityMetrics:
     """Optional execution-feasibility signals attached to an IK result.
 
-    A real IK adapter, a UR analytical solver or a KUKA EKI bridge for
+    A real IK adapter, a UR analytical solver for
     instance, can publish per-pose quality metrics that the calculator
     uses to demote candidates with poor execution prospects. All three
     fields are :data:`None` by default, so an adapter that does not

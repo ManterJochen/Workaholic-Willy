@@ -595,19 +595,33 @@ def _literal_values(model: type, field_name: str) -> tuple[str, ...]:
     return ()
 
 
-def _block_origin(segments: Sequence[str | int], origins: Mapping[str, Any]) -> Any:
-    """Where the block ``segments`` names begins, or ``None`` where no file writes it.
+def _block_origins(segments: Sequence[str | int], origins: Mapping[str, Any]) -> tuple[Any, ...]:
+    """Where the block ``segments`` names begins, once per file that writes it; empty where no file does.
 
     A block written as a key has its own line. An item of a list does not: the index records keys, and
     ``rigs[0]`` is a position, so the item is found at the first line any of its own keys is written on.
+    A block several files write has no one place, and the index cannot tell which of them holds the value a
+    rule over the block rejected, so every file is named. Naming only the one whose name sorts first can send
+    the operator to robot.sim.yaml for a value written in robot.decision.yaml.
     """
     if not segments:
-        return None
+        return ()
     key = _bracketed(segments, origins)
     if key in origins:
-        return origins[key]
-    inside = [origin for other, origin in origins.items() if other.startswith((f"{key}.", f"{key}["))]
-    return min(inside, key=lambda origin: (str(origin.file), origin.line)) if inside else None
+        return (origins[key],)
+    first: dict[str, Any] = {}
+    for other, origin in origins.items():
+        if other.startswith((f"{key}.", f"{key}[")):
+            held = first.get(str(origin.file))
+            if held is None or origin.line < held.line:
+                first[str(origin.file)] = origin
+    return tuple(first[name] for name in sorted(first))
+
+
+def _places(blocks: Sequence[Any], root: Path) -> str:
+    """``blocks`` as one phrase: ``a``, ``a and b``, ``a, b and c``."""
+    named = [block.location(root) for block in blocks]
+    return named[0] if len(named) == 1 else f"{', '.join(named[:-1])} and {named[-1]}"
 
 
 def _written(key: str, origins: Mapping[str, Any]) -> bool:
@@ -774,14 +788,14 @@ def _describe_validation_error(
             lines.append(f"      at {_IN_MEMORY_ORIGIN}")
         elif origin is not None:
             lines.append(f"      at {origin.location(root)}")
-        elif err["type"] == "missing" and (block := _block_origin(segments[:-1], origins)) is not None:
+        elif err["type"] == "missing" and (blocks := _block_origins(segments[:-1], origins)):
             # A required key nobody wrote, inside a block somebody did: the block is where to add it.
-            lines.append(f"      (required, and the block at {block.location(root)} does not write it)")
-        elif (block := _block_origin(segments, origins)) is not None:
+            lines.append(f"      (required, and the block at {_places(blocks, root)} does not write it)")
+        elif blocks := _block_origins(segments, origins):
             # A rule over a whole block, a list item above all: a rig-level validator, or a tag no member
             # of the union takes. An item has no line of its own in the index, and saying "not written"
             # about a rig written in the operator's own layer sends them looking for a default.
-            lines.append(f"      (a rule over the block written at {block.location(root)})")
+            lines.append(f"      (a rule over the block written at {_places(blocks, root)})")
         else:
             # No origin means the key appears in no YAML: a schema default that failed a
             # cross-field rule, or a required field nobody wrote.

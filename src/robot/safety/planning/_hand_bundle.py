@@ -33,7 +33,9 @@ __all__ = [
 
 #: The parts of a hand, the only arrays of a hand bundle the guard places.
 HAND_PARTS: Final = ("gripper", "lfinger", "rfinger")
-#: The DH frame every hand part hangs from: the flange.
+#: The frame every hand bundle stores for its parts, meaning the flange: 6, the flange of the UR arms the bundles were
+#: first baked for. A bundle is the same on every arm, so the guard and the self filter hang its parts from the flange
+#: of the arm they compose it onto, that arm's dof (P0f F9), and never read this number as a frame.
 HAND_FRAME: Final = 6
 #: The approach of every hand model, in tool0 axes, which is DH frame 6's; every placement turns from it.
 MODEL_APPROACH: Final = (0.0, 1.0, 0.0)

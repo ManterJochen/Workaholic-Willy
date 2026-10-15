@@ -13,6 +13,11 @@ reaches the plan, and the lists the tests read are the plan's.
 The rule this file holds is the project's: the move that was judged is the move that runs. So the tests compare
 objects, not lengths: the list handed to ``execute`` is the list ``gate_planned_path`` judged, and the samples the
 planner judged are the samples of that list.
+
+The arms are ``PlannedArm`` over the fake transport since P0g slice 13 (``tests/_arm_kit.planned_arm``), and the planner
+glue runs over the fake too: a trajectory reaches the controller one ``run_trajectory`` of one waypoint at a time, which
+the fake records, and how the UR transport turns each into a ``moveJ`` is held by
+``tests/test_every_transport_keeps_the_transport_contract.py``.
 """
 
 from __future__ import annotations
@@ -26,14 +31,20 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
+from src.config.arms import load_arm
 from src.config.schema.robot import RobotConfig
 from src.robot.core import JointPositions, MotionCommand, MotionResult, MotionStatus
-from src.robot.drivers.ur.arm import URRobotArm
-from src.robot.drivers.ur.curobo_motion import UR_ARM_JOINT_NAMES, CuroboUrPlanner
+from src.robot.drivers.planned.arm import PlannedArm
+from src.robot.drivers.planned.curobo_motion import CuroboPlanner
 from src.robot.safety._fcl_self_collision import mesh_backend_status
 from src.robot.safety.path_samples import simplify_joint_path, waypoint_path_samples
 from src.robot.safety.planning import JointCheckVerdict, StateRefusal, StateRefusalKind, StateWhere
+from tests._arm_kit import LOGGER_NAME, kit_tree, planned_arm
+from tests._fake_transport import Raises, fake_transport
 from tests._plan_end import OPEN_WORKSPACE, pose_where_it_ends
+
+#: The controller's joint order as the ur5e description states it; the planner is handed it since P0e E4.
+_UR_JOINT_NAMES = tuple(joint.name for joint in load_arm("ur5e").joints)
 
 _DECLINED = "unit double: this file judges a planner double's path, and no camera world is wired to it"
 
@@ -196,21 +207,25 @@ def _refused(reason: str = "the double refuses") -> JointCheckVerdict:
     return JointCheckVerdict(valid=False, first_invalid=0, checked=1, reason=reason)
 
 
-def _arm(planner: _Planner) -> tuple[URRobotArm, list[Any]]:
+def _tree() -> RobotConfig:
+    """A ur5e cell on cuRobo, its workspace box open so the box never decides a test about the path."""
+    return kit_tree("curobo", safety={"payload": {"enforce": False}}, workspace_limits=OPEN_WORKSPACE)
+
+
+def _on_curobo(planner: _Planner) -> Any:
+    """A planned arm standing at ``_HERE`` over the fake transport, ``planner`` as its cuRobo."""
+    arm: Any = planned_arm(_tree(), transport=fake_transport(joints=_HERE))
+    arm._curobo = planner
+    return arm
+
+
+def _arm(planner: _Planner) -> tuple[PlannedArm, list[Any]]:
     """A ur5e on cuRobo with a planner double; the local path gate is a spy that records what it judged.
 
     The first list the spy is shown is the straight line to the goal, which it refuses without recording, so that the
     move plans; everything it records after that is the plan's.
     """
-    arm = URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
-        "safety": {"payload": {"enforce": False}}, "gripper": {"model": "robotiq_2f85"},
-        "workspace_limits": OPEN_WORKSPACE,
-    }))
-    arm._conn = MagicMock()
-    arm._conn.is_connected = True
-    arm._conn.get_joint_positions.return_value = list(_HERE)
-    arm._curobo_ur = planner  # type: ignore[assignment]
+    arm = _on_curobo(planner)
     # The endpoint gate has its own tests (tests/test_ungated_motion_surfaces.py); this file reads the legs.
     arm._gate_planned_config = lambda pose, joints: None  # type: ignore[method-assign]
     judged: list[Any] = []
@@ -225,8 +240,10 @@ def _arm(planner: _Planner) -> tuple[URRobotArm, list[Any]]:
         judged.append(waypoints)
         return verdicts.pop(0) if verdicts else None
 
+    # The spy keeps the verdicts it hands out on itself: a list written onto the arm would be a name the arm never
+    # reads (tests/_injection_guard.py).
+    gate.verdicts = verdicts  # type: ignore[attr-defined]
     arm._preflight.gate_planned_path = gate  # type: ignore[method-assign]
-    arm._local_verdicts = verdicts  # type: ignore[attr-defined]
     return arm, judged
 
 
@@ -235,7 +252,7 @@ def _local_refusal() -> MotionResult:
 
 
 class JudgedIsExecutedTests(unittest.TestCase):
-    def _move(self, arm: URRobotArm, end: "list[float]", **kwargs: Any) -> MotionResult:
+    def _move(self, arm: PlannedArm, end: "list[float]", **kwargs: Any) -> MotionResult:
         self.enterContext(arm.without_camera_world(_DECLINED))
         return arm.move(pose_where_it_ends(arm, end), **kwargs)
 
@@ -300,7 +317,7 @@ class JudgedIsExecutedTests(unittest.TestCase):
         dense = _line(_HERE, _THERE, 41)
         planner = _Planner(dense)
         arm, judged = _arm(planner)
-        arm._local_verdicts.append(_local_refusal())  # type: ignore[attr-defined]
+        arm._preflight.gate_planned_path.verdicts.append(_local_refusal())  # type: ignore[attr-defined]
         result = self._move(arm, _THERE)
         self.assertTrue(result.ok, result.message)
         (execute,) = planner.named("execute")
@@ -370,7 +387,7 @@ class JudgedIsExecutedTests(unittest.TestCase):
     def test_every_plan_says_how_many_waypoints_ran_and_how_far_the_joints_turn(self) -> None:
         planner = _Planner(_line(_HERE, _THERE, 41))
         arm, _ = _arm(planner)
-        with self.assertLogs("URRobotArm", level="INFO") as logs:
+        with self.assertLogs(LOGGER_NAME, level="INFO") as logs:
             self._move(arm, _THERE)
         said = "\n".join(logs.output)
         self.assertIn("cuRobo plan to goal 1 of", said)
@@ -384,7 +401,7 @@ class JudgedIsExecutedTests(unittest.TestCase):
         end = [*_HERE[:5], _HERE[5] + 2 * math.pi - 0.3]
         planner = _Planner(_line(_HERE, end, 41))
         arm, _ = _arm(planner)
-        with arm.without_camera_world(_DECLINED), self.assertLogs("URRobotArm", level="WARNING") as logs:
+        with arm.without_camera_world(_DECLINED), self.assertLogs(LOGGER_NAME, level="WARNING") as logs:
             result = arm.move_to_joints(JointPositions(end))
         self.assertTrue(result.ok, result.message)
         said = "\n".join(logs.output)
@@ -403,15 +420,7 @@ def test_with_the_real_local_gate_a_plan_that_shortens_back_into_the_refused_lin
     """
     dense = _line(_HERE, _THERE, 41)
     planner = _Planner(dense, refuse_lines=True)
-    arm = URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
-        "safety": {"payload": {"enforce": False}}, "gripper": {"model": "robotiq_2f85"},
-        "workspace_limits": OPEN_WORKSPACE,
-    }))
-    arm._conn = MagicMock()
-    arm._conn.is_connected = True
-    arm._conn.get_joint_positions.return_value = list(_HERE)
-    arm._curobo_ur = planner  # type: ignore[assignment]
+    arm = _on_curobo(planner)
     with arm.without_camera_world(_DECLINED):
         result = arm.move(pose_where_it_ends(arm, _THERE))
     assert result.ok, result.message
@@ -425,15 +434,7 @@ def test_with_the_real_local_gate_a_plan_that_shortens_back_into_the_refused_lin
 def test_with_the_real_local_gate_a_clear_line_runs_and_nothing_is_planned() -> None:
     """The control of the control: where both authorities pass the straight line, it runs and cuRobo plans nothing."""
     planner = _Planner(_line(_HERE, _THERE, 41))
-    arm = URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
-        "safety": {"payload": {"enforce": False}}, "gripper": {"model": "robotiq_2f85"},
-        "workspace_limits": OPEN_WORKSPACE,
-    }))
-    arm._conn = MagicMock()
-    arm._conn.is_connected = True
-    arm._conn.get_joint_positions.return_value = list(_HERE)
-    arm._curobo_ur = planner  # type: ignore[assignment]
+    arm = _on_curobo(planner)
     with arm.without_camera_world(_DECLINED):
         result = arm.move(pose_where_it_ends(arm, _THERE))
     assert result.ok, result.message
@@ -450,15 +451,7 @@ def test_with_the_real_local_gate_a_clear_line_runs_and_nothing_is_planned() -> 
 def test_a_waypoint_that_cannot_be_read_is_refused_by_the_gate_and_not_shortened_away() -> None:
     """A NaN in the middle of a plan: shortening would drop it without a word, so the plan meets the gate whole."""
     planner = _Planner([list(_HERE), [float("nan")] * 6, list(_THERE)], refuse_lines=True)
-    arm = URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
-        "safety": {"payload": {"enforce": False}}, "gripper": {"model": "robotiq_2f85"},
-        "workspace_limits": OPEN_WORKSPACE,
-    }))
-    arm._conn = MagicMock()
-    arm._conn.is_connected = True
-    arm._conn.get_joint_positions.return_value = list(_HERE)
-    arm._curobo_ur = planner  # type: ignore[assignment]
+    arm = _on_curobo(planner)
     arm._gate_planned_config = lambda pose, joints: None  # type: ignore[method-assign]
     with arm.without_camera_world(_DECLINED):
         result = arm.move(pose_where_it_ends(arm, _THERE))
@@ -473,57 +466,48 @@ def test_a_waypoint_that_cannot_be_read_is_refused_by_the_gate_and_not_shortened
 # ------------------------------------------------------------------------------------------------------------------
 
 
-class _Conn:
-    def __init__(self, *, refuse_at: "int | None" = None, error: "BaseException | None" = None,
-                 answer: bool = True) -> None:
-        self.moves: list[tuple[list[float], Any, Any]] = []
-        self._refuse_at, self._error, self._answer = refuse_at, error, answer
-        self.is_connected = True
-
-    def get_joint_positions(self) -> list[float]:
-        return list(_HERE)
-
-    def moveJ(self, joints: Any, vel: Any = None, acc: Any = None) -> bool:
-        if self._refuse_at is not None and len(self.moves) == self._refuse_at:
-            if self._error is not None:
-                raise self._error
-            return self._answer
-        self.moves.append((list(joints), vel, acc))
-        return True
+def _refusing(at: int, *, error: "BaseException | None" = None) -> Any:
+    """A fake that takes ``at`` one-waypoint trajectories and then refuses the next: raising ``error``, or answering
+    ``False`` when there is none. A ``ValueError`` means the library refused that waypoint before sending it."""
+    fake = fake_transport(joints=_HERE)
+    fake.script("run_trajectory", *([True] * at), Raises(error) if error is not None else False)
+    return fake
 
 
-def _glue(conn: _Conn, *, state: "Any" = None) -> CuroboUrPlanner:
-    return CuroboUrPlanner(conn, client_factory=MagicMock, vel=1.0, acc=0.5, controller_state=state)  # type: ignore[arg-type]
+def _glue(fake: Any, *, state: "Any" = None) -> CuroboPlanner:
+    """The planner glue over the fake: each waypoint reaches it as one ``run_trajectory`` of one waypoint."""
+    return CuroboPlanner(fake, joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180,
+                         client_factory=MagicMock, vel=1.0, acc=0.5, controller_state=state)
 
 
 class ExecuteSaysHowFarItGotTests(unittest.TestCase):
     _PLAN = [list(_HERE), [0.3, -1.4, 1.4, -1.6, -1.5708, 0.2], list(_THERE)]
 
     def test_a_range_error_from_ur_rtde_is_an_invalid_target_and_says_what_ran(self) -> None:
-        conn = _Conn(refuse_at=1, error=ValueError("The value is not within [0;3.14]"))
-        result = _glue(conn).execute(self._PLAN, MagicMock(), vel=5.0)
+        fake = _refusing(1, error=ValueError("The value is not within [0;3.14]"))
+        result = _glue(fake).execute(self._PLAN, MagicMock(), vel=5.0)
         self.assertIs(MotionStatus.INVALID_TARGET, result.status)
         self.assertIn("waypoint 2 of 3", result.message or "")
         self.assertIn("was not sent", result.message or "")
         self.assertIn("the 1 before it ran", result.message or "")
-        self.assertEqual(1, len(conn.moves))
+        self.assertEqual([self._PLAN[0]], fake.sent, "the waypoint before the refused one did not run, or it did too")
 
     def test_a_range_error_on_the_first_waypoint_says_nothing_moved(self) -> None:
-        result = _glue(_Conn(refuse_at=0, error=ValueError("range"))).execute(self._PLAN, MagicMock())
+        result = _glue(_refusing(0, error=ValueError("range"))).execute(self._PLAN, MagicMock())
         self.assertIs(MotionStatus.INVALID_TARGET, result.status)
         self.assertIn("nothing had moved", result.message or "")
 
     def test_a_refused_moveJ_carries_the_controller_state(self) -> None:
-        conn = _Conn(refuse_at=2, answer=False)
-        result = _glue(conn, state=lambda: " The controller reports a protective stop.").execute(self._PLAN, MagicMock())
+        fake = _refusing(2)
+        result = _glue(fake, state=lambda: " The controller reports a protective stop.").execute(self._PLAN, MagicMock())
         self.assertIs(MotionStatus.CONTROLLER_REJECTED, result.status)
         self.assertIn("waypoint 3 of 3", result.message or "")
         self.assertIn("moveJ was sent", result.message or "")
         self.assertIn("protective stop", result.message or "")
 
     def test_a_moveJ_that_raised_carries_the_controller_state(self) -> None:
-        conn = _Conn(refuse_at=0, error=RuntimeError("RTDE control script is not running"))
-        result = _glue(conn, state=lambda: " The controller reports robot mode idle.").execute(self._PLAN, MagicMock())
+        fake = _refusing(0, error=RuntimeError("RTDE control script is not running"))
+        result = _glue(fake, state=lambda: " The controller reports robot mode idle.").execute(self._PLAN, MagicMock())
         self.assertIs(MotionStatus.CONNECTION_ERROR, result.status)
         self.assertIn("robot mode idle", result.message or "")
 
@@ -531,37 +515,55 @@ class ExecuteSaysHowFarItGotTests(unittest.TestCase):
         def broken() -> str:
             raise RuntimeError("the dashboard is gone too")
 
-        result = _glue(_Conn(refuse_at=0, answer=False), state=broken).execute(self._PLAN, MagicMock())
+        result = _glue(_refusing(0), state=broken).execute(self._PLAN, MagicMock())
         self.assertIs(MotionStatus.CONTROLLER_REJECTED, result.status)
         self.assertNotIn("dashboard", result.message or "")
 
+    def test_each_failure_says_in_its_field_whether_anything_was_sent(self) -> None:
+        """P0g R2: a refusal at the first waypoint sent nothing; one at a later waypoint, a moveJ that raised and one
+        that answered False all sent something, whatever status they carry."""
+        from src.robot.core import MotionSent
+
+        cases = (
+            (0, ValueError("range"), MotionSent.NOTHING),
+            (1, ValueError("range"), MotionSent.SENT),
+            (0, RuntimeError("RTDE control script is not running"), MotionSent.SENT),
+            (2, None, MotionSent.SENT),
+        )
+        for at, error, expected in cases:
+            with self.subTest(expected=expected, refuse_at=at):
+                self.assertIs(expected, _glue(_refusing(at, error=error)).execute(self._PLAN, MagicMock()).sent)
+
     def test_every_waypoint_of_the_list_is_one_moveJ_in_order_at_the_speed_given(self) -> None:
-        conn = _Conn()
-        result = _glue(conn).execute(self._PLAN, MagicMock(), vel=0.4, acc=0.3)
+        fake = fake_transport(joints=_HERE)
+        result = _glue(fake).execute(self._PLAN, MagicMock(), vel=0.4, acc=0.3)
         self.assertTrue(result.ok)
-        self.assertEqual([(w, 0.4, 0.3) for w in self._PLAN], conn.moves)
+        sent = [(call.args[0], call.kwargs["vel"], call.kwargs["acc"]) for call in fake.calls("run_trajectory")]
+        self.assertEqual([([w], 0.4, 0.3) for w in self._PLAN], sent)
 
     def test_the_arm_hands_its_planner_its_own_controller_state(self) -> None:
-        arm = URRobotArm(RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
-            "safety": {"payload": {"enforce": False}}, "gripper": {"model": "robotiq_2f85"},
-        }), curobo_client_factory=MagicMock)
-        planner = arm._curobo_ur_planner()
+        arm: Any = planned_arm(kit_tree("curobo", safety={"payload": {"enforce": False}}),
+                               curobo_client_factory=MagicMock)
+        planner = arm._curobo_planner()
         self.assertEqual(arm._controller_state_text, planner._controller_state)
 
     def test_through_the_arm_a_range_error_is_a_result_and_not_a_raise(self) -> None:
-        conn = _Conn(refuse_at=0, error=ValueError("The value is not within [0;40]"))
         planner = _Planner([list(_HERE), list(_THERE)])
         arm, _ = _arm(planner)
-        glue = _glue(conn)
-        planner.execute = glue.execute  # type: ignore[method-assign]
+        fake: Any = arm._transport
+        fake.script("run_trajectory", Raises(ValueError("The value is not within [0;40]")))
+        planner.execute = _glue(fake).execute  # type: ignore[method-assign]
         with arm.without_camera_world(_DECLINED):
             result = arm.move(pose_where_it_ends(arm, _THERE))
         self.assertIs(MotionStatus.INVALID_TARGET, result.status)
+        self.assertEqual(1, len(fake.calls("run_trajectory")), "the refusal was not the controller library's")
 
 
 def test_the_joint_names_the_log_uses_are_the_ur_order() -> None:
-    assert len(UR_ARM_JOINT_NAMES) == 6 and UR_ARM_JOINT_NAMES[5] == "wrist_3_joint"
+    """The log names joints by the arm's own order, which a driver reads from its description."""
+    arm, _ = _arm(_Planner([list(_HERE), list(_THERE)]))
+    assert arm._joint_names == _UR_JOINT_NAMES
+    assert len(_UR_JOINT_NAMES) == 6 and _UR_JOINT_NAMES[5] == "wrist_3_joint"
 
 
 if __name__ == "__main__":

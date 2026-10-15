@@ -1,8 +1,8 @@
 """Camera rigs: device setup, the capture pipeline, and the frames a caller streams.
 
 ``Camera`` owns one rig's device, and a ``with`` block opens and releases it. Its refusals are
-exported beside it: ``CameraRefused`` (the section gives no usable rig: unknown, switched off, or
-without depth), ``CameraBusy`` (another owner holds the device), ``CameraNotOpen`` (a read before
+exported beside it: ``CameraRefused`` (the section gives no usable rig: unknown, switched off,
+without depth, or on a capture backend this platform lacks), ``CameraBusy`` (another owner holds the device), ``CameraNotOpen`` (a read before
 ``open``), and the two raises of ``camera.calibration()``, ``RigNotCalibrated`` and
 ``RigCalibrationError``, which live in ``src.calibration.rig_calibration``.
 """

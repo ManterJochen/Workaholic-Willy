@@ -15,7 +15,7 @@ import numpy as np
 from src.config.cameras import load_camera
 from src.config.schema.cameras import OpticalBox
 from src.calibration.serialization import FlangeToTcp
-from src.robot.safety.planning._curobo_body_links import WRIST_BODY_IGNORE, BodyLinkError
+from src.robot.safety.planning._curobo_body_links import BodyLinkError
 from src.robot.safety.planning._declared_body import Box, box_spheres, cover_refusal, inflated
 from src.robot.safety.planning.body_link import WristBody
 from tests._wrist_body import camera_to_tool, declared_frame, wrist_body
@@ -36,7 +36,7 @@ class ThePlacementTests(unittest.TestCase):
         body = _body()
         housing = load_camera("realsense_d435").housing
         by_hand = declared_frame() @ camera_to_tool().to_matrix() @ np.array([*housing.centre_mm, 1.0])
-        corners = body.guard_parts()["wrist_camera_wrist__v"][:8]
+        corners = body.guard_parts(frame=6)["wrist_camera_wrist__v"][:8]
         np.testing.assert_allclose(corners.mean(axis=0), by_hand[:3], atol=1e-9)
 
     def test_an_identity_calibration_puts_the_housing_at_the_record_times_its_offset(self) -> None:
@@ -47,7 +47,7 @@ class ThePlacementTests(unittest.TestCase):
         body = WristBody.from_parts(rig_id="wrist", spec=load_camera("realsense_d435"), bracket=None, margin_mm=1.0,
                                     camera_to_tool=identity,
                                     flange_to_tcp=FlangeToTcp.from_matrix("willy", declared_frame()))
-        centre = body.guard_parts()["wrist_camera_wrist__v"][:8].mean(axis=0)
+        centre = body.guard_parts(frame=6)["wrist_camera_wrist__v"][:8].mean(axis=0)
         expected = declared_frame() @ np.array([32.5, 0.0, -8.275, 1.0])
         np.testing.assert_allclose(centre, expected[:3], atol=1e-9)
 
@@ -58,23 +58,23 @@ class ThePlacementTests(unittest.TestCase):
 
     def test_housing_and_bracket_are_one_part_and_one_link(self) -> None:
         body = _body(bracket=_BRACKET)
-        parts = body.guard_parts()
+        parts = body.guard_parts(frame=6)
         self.assertEqual(sorted(parts), ["wrist_camera_wrist__f", "wrist_camera_wrist__frame", "wrist_camera_wrist__v"])
         self.assertEqual(parts["wrist_camera_wrist__v"].shape, (16, 3))
         self.assertEqual(int(parts["wrist_camera_wrist__frame"][0]), 6)
-        link = body.link()
+        link = body.link(arm="ur5e")
         self.assertEqual((link["link"], link["parent"]), ("wrist_camera_wrist", "tool0"))
-        self.assertEqual(link["ignore"], list(WRIST_BODY_IGNORE))
+        self.assertEqual(link["ignore"], ["tool0", "wrist_3_link", "hand", "coupling"])
         self.assertEqual(len(link["spheres"]), sum(len(spheres) for spheres in body.spheres_by_box()))
 
     def test_the_link_transform_is_the_placement_in_metres(self) -> None:
         body = _body()
         placement = body.placement()
-        np.testing.assert_allclose(body.link()["fixed_transform"][:3], placement[:3, 3] / 1000.0, atol=1e-15)
+        np.testing.assert_allclose(body.link(arm="ur5e")["fixed_transform"][:3], placement[:3, 3] / 1000.0, atol=1e-15)
 
     def test_the_self_filter_spheres_sit_where_the_guard_boxes_sit(self) -> None:
         body = _body()
-        vertices = body.guard_parts()["wrist_camera_wrist__v"]
+        vertices = body.guard_parts(frame=6)["wrist_camera_wrist__v"]
         centres = np.array([centre for centre, _ in body.envelope_spheres_mm()])
         self.assertTrue(np.all(centres.min(axis=0) >= vertices.min(axis=0) - 1e-6))
         self.assertTrue(np.all(centres.max(axis=0) <= vertices.max(axis=0) + 1e-6))

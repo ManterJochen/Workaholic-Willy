@@ -220,11 +220,13 @@ class DecisionsTests(unittest.TestCase):
 
     def test_the_production_tree_has_exactly_three_robot_decisions(self) -> None:
         """The headline measurement, now asserted. If this number moves, someone made a decision --
-        which is precisely what the view is for."""
+        which is precisely what the view is for. It was three until the KUKA block, whose model the tree
+        set away from its default, went with the EthernetKRL driver (2026-09-19), and three again since the
+        controller address lost its default (2026-10-13): the base tree names the owner's cell, a decision."""
         text = self._decisions()
         self.assertIn("3 value(s)", text)
         self.assertIn("robot.workspace_limits.z_min", text)
-        self.assertIn("robot.kuka.model", text)
+        self.assertIn("robot.ur.ip", text)
 
     def test_every_decision_carries_its_origin(self) -> None:
         self.assertIn("robot.yaml:", self._decisions())
@@ -320,48 +322,33 @@ class RobustnessTests(unittest.TestCase):
         self.assertEqual(main(["explain", "camera.cameras.primary_rig_id"]), 0)
 
 
-class VendorCouplingTests(unittest.TestCase):
-    """A safety gap the tiering review found that the plan itself had missed.
+class ComposedProfileTests(unittest.TestCase):
+    """Profiles compose, and a composed chain is the cell its robot layers name.
 
-    Two cross-field rules coupled `safety.self_collision.kinematics_model` to `sim.robot_model` and to
-    `ur.model`. Neither fires when the cell is neither -- and profiles COMPOSE, so that gap was
-    reachable: `WILLY_PROFILE=sim,web` loaded cleanly with `vendor='kuka'` and `kinematics_model='ur5e'`,
-    and the guard would then have evaluated a KUKA arm against UR5e link lengths. That is exactly the
-    failure the sibling rules exist to prevent, arriving through the one door they did not watch.
+    The tiering review found `WILLY_PROFILE=sim,web` loading with `vendor='kuka'` from the `web` layer and the sim's
+    `safety.self_collision.kinematics_model='ur5e'`, so the guard would have judged a KUKA arm against UR5e link
+    lengths. A third validator closed that. The KUKA layer went with the EthernetKRL driver (2026-09-19), and the key
+    and its three validators went in P0d D5, when the arm started naming itself.
     """
 
-    @staticmethod
-    def _cfg(*, vendor: str, kinematics_model: str | None):
-        from src.config.schema.robot.robot_schema import RobotConfig
+    def test_the_composed_profile_that_exposed_it_loads_as_a_sim_cell(self) -> None:
+        """`sim,web` loads, and it selects the same arm as `sim` alone.
 
-        return RobotConfig.model_validate({
-            "vendor": vendor,
-            "safety": {"self_collision": {"kinematics_model": kinematics_model}},
-        })
-
-    def test_a_ur_dh_table_is_rejected_on_a_non_ur_cell(self) -> None:
-        from pydantic import ValidationError
-
-        with self.assertRaises(ValidationError) as ctx:
-            self._cfg(vendor="kuka", kinematics_model="ur5e")
-        self.assertIn("Universal Robots DH table", str(ctx.exception))
-
-    def test_unset_is_always_fine(self) -> None:
-        """The honest configuration for another vendor: leave it unset and let the guard use the capsule
-        path. Accepting unset is also what keeps this change inert for every existing cell."""
-        self.assertIsNone(self._cfg(vendor="kuka", kinematics_model=None).safety.self_collision.kinematics_model)
-
-    def test_the_composed_profile_that_exposed_it_no_longer_loads(self) -> None:
-        from src.config import ConfigError, load_config, reload_config
+        The `web` layer writes no robot file now, so composing it must leave the arm the guard judges where the sim
+        layer put it. A layer that changed the vendor or the model would show here as a different selection."""
+        from src.config import load_config, reload_config
         from src.config.loader import set_active_profile
 
-        set_active_profile("sim,web")
-        reload_config()
         self.addCleanup(reload_config)
         self.addCleanup(set_active_profile, None)
-        with self.assertRaises(ConfigError) as ctx:
-            load_config(None)
-        self.assertIn("vendor='kuka'", str(ctx.exception))
+        set_active_profile("sim")
+        reload_config()
+        alone = load_config(None).robot.arm
+        set_active_profile("sim,web")
+        reload_config()
+        composed = load_config(None).robot
+        self.assertEqual(str(composed.vendor), "sim")
+        self.assertEqual(composed.arm, alone)
 
 
 class AliasedProvenanceTests(unittest.TestCase):

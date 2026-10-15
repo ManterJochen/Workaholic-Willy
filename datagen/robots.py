@@ -165,9 +165,9 @@ def _shoulder_height_mm(key: str) -> float | None:
 
     ``None`` when the model has no DH table.
     """
-    from src.robot.safety._ur_kinematics import UR_DH_TABLES_M  # noqa: PLC0415
+    from src.robot.safety._ur_kinematics import ur_dh_rows  # noqa: PLC0415
 
-    table = UR_DH_TABLES_M.get(key.lower())
+    table = ur_dh_rows(key)
     return float(table[0].d_m * 1000.0) if table else None
 
 
@@ -175,14 +175,14 @@ def _missing_facts(key: str, spec: URModelSpec, shoulder_mm: float | None) -> li
     """Every fact this robot is missing, as actionable lines. Empty means it may be placed."""
     missing: list[str] = []
     if not spec.usd_relpath:
-        missing.append("usd_relpath, the arm asset to reference (URModelSpec.usd_relpath)")
+        missing.append("usd_relpath, the arm asset to reference (the sim block of its arm description)")
     if not spec.wrist_link_name:
         missing.append("wrist_link_name, the link the tool and eye-in-hand camera hang from")
     if spec.max_reach_mm <= 0.0:
         missing.append("max_reach_mm, the datasheet reach, used to refuse unreachable workspaces")
     if shoulder_mm is None:
         missing.append(
-            f"a DH row in src.robot.safety._ur_kinematics.UR_DH_TABLES_M['{key}'], without which "
+            f"joints in the arm registry, config/arms/{key}.yaml, without which "
             f"there is no forward kinematics, so neither the posed configuration nor the "
             f"self-collision check can be computed"
         )
@@ -202,8 +202,8 @@ def resolve_robot(model: str, declared_mount: "WristCameraMount | None" = None,
     except ValueError as exc:
         raise RobotNotUsable(
             f"{exc}\n"
-            f"To add one: register a URModelSpec (USD path, wrist link, reach, reachable workspace), "
-            f"add its DH row to UR_DH_TABLES_M, build its cuRobo {model}.yml, then measure its "
+            f"To add one: give its arm description a sim block (USD path, wrist link, reach, reachable workspace), "
+            f"describe its joints in config/arms/{model}.yaml, build its cuRobo {model}.yml, then measure its "
             f"eye-in-hand mount with run_eih_calibrate. `python -m datagen verify-robot {model}` "
             f"checks all of it on-box before any dataset is built."
         ) from exc

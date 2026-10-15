@@ -51,8 +51,7 @@ def _cell(detector: _Detector) -> tuple[Any, list[Any]]:
     source = RealSenseVisionPerceptionSource(streamer=_Owner("overhead").handle(),
                                              backend=TwoStageBackend(detector, _Segmenter()), prompt="object",
                                              warmup_grabs=0)
-    policy = GraspExecutionPolicy(arm=arm, gripper=jaws, pre_open_width_mm=49.99,  # type: ignore[arg-type]
-                                  require_steady_before_motion=True)
+    policy = GraspExecutionPolicy(arm=arm, gripper=jaws, pre_open_width_mm=49.99)  # type: ignore[arg-type]
     service = AutonomousGraspService.from_components(
         arm=arm, calculator=_Calculator(), perception=source, mode=GraspMode.EASY,  # type: ignore[arg-type]
         gripper=jaws, policy=policy, max_attempts=1)

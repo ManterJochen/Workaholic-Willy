@@ -119,14 +119,14 @@ class MotionContinuityWiringTests(unittest.TestCase):
         cfg = RobotSafetyConfig.model_validate(
             {"motion_continuity": {"enforce": True}}
         )
-        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig())
+        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig(), arm_model=None)
         self.assertIn("motion_continuity", pf.guard_names)
 
     def test_enforce_false_omits_guard(self) -> None:
         cfg = RobotSafetyConfig.model_validate(
             {"motion_continuity": {"enforce": False}}
         )
-        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig())
+        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig(), arm_model=None)
         self.assertNotIn("motion_continuity", pf.guard_names)
 
 

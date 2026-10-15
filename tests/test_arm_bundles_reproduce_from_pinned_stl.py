@@ -5,7 +5,7 @@ a box with a simulator installed. Nobody could rebuild it, so nobody could check
 not fail loudly, it guards empty space and passes every pose.
 
 Now the inputs are all pinned. Universal Robots' collision STL files are held by ``ur_meshes.sha256`` at one upstream
-commit, their config is vendored under ``scripts/curobo/ur_description``, and the URDF that places them is rendered
+commit, their config is vendored under ``scripts/arms/ur_ros2_description``, and the URDF that places them is rendered
 from that config rather than shipped. So the bundle is a FUNCTION of pinned bytes, and this test evaluates it.
 
 ``np.array_equal``, not a tolerance: the same reader over the same bytes with the same arithmetic produces the same
@@ -37,11 +37,9 @@ def _load(name: str, path: Path):
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     sys.path.insert(0, str(path.parent))
-    sys.path.insert(0, str(_SCRIPTS / "curobo"))
     try:
         spec.loader.exec_module(module)
     finally:
-        sys.path.remove(str(_SCRIPTS / "curobo"))
         sys.path.remove(str(path.parent))
     return module
 
@@ -51,7 +49,7 @@ def _why_not() -> "str | None":
         import trimesh  # noqa: F401
     except Exception as exc:  # noqa: BLE001
         return f"trimesh is not importable: {exc}"
-    fetch = _load("fetch_for_reproduce", _SCRIPTS / "curobo" / "fetch_ur_meshes.py")
+    fetch = _load("fetch_for_reproduce", _SCRIPTS / "arms" / "fetch.py")
     root = fetch._default_dest()  # noqa: SLF001
     if not root.is_dir():
         return f"the pinned mesh tree is not on this box ({root})"
@@ -67,7 +65,7 @@ class TheBundlesAreAFunctionOfPinnedBytesTests(unittest.TestCase):
         reason = _why_not()
         if reason is not None:
             raise unittest.SkipTest(reason)
-        cls.bake = _load("bake_for_reproduce", _SCRIPTS / "isaac" / "bake_ur_meshes_from_urdf.py")
+        cls.bake = _load("bake_for_reproduce", _SCRIPTS / "arms" / "bake.py")
         record = json.loads((_DATA / "bundles.json").read_text(encoding="utf-8"))
         cls.index = record["bundles"]
         # Every declared source this test cannot rebuild from the pinned STLs: the Isaac bakes, and the three ways a
@@ -114,7 +112,7 @@ class TheBundlesAreAFunctionOfPinnedBytesTests(unittest.TestCase):
         change nothing: the guard is not allowed to be watching the pretty mesh.
         """
         model = "ur5e"
-        description = _load("_ur_description_for_reproduce", _SCRIPTS / "curobo" / "_ur_description.py")
+        description = _load("_ur_description_for_reproduce", _SCRIPTS / "arms" / "_ur_description.py")
         urdf = description.render_urdf(model)
         committed = self._committed(model)
 

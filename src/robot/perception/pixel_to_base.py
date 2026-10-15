@@ -363,8 +363,6 @@ def capture(camera: Any, robot: Any = None) -> CapturedFrame:
     arm: Any = getattr(robot, "arm", None)
     section: Any = getattr(robot, "robot_config", None)
     if section is None:
-        section = getattr(arm, "config", None)
-    if section is None:
         raise LocatorRefused(
             f"camera {rig_id!r} is on the wrist and this robot keeps no robot section, so the tool frame its "
             "calibration was solved against is unknown: build it with Robot.from_tree(tree, gripper=None)")
@@ -488,7 +486,7 @@ def tcp_above(point: Any, normal: Any, offset_mm: float, *, closing_axis: str = 
             it names stand ``offset_mm`` above the point, and the TCP as far behind them as they reach past it along the
             approach (the jaw's ``finger_ahead_mm`` past its grasp centre, and that centre past the TCP). Unset stands
             the TCP there: the one ``robot.move`` places and ``robot.arm.get_tcp_pose`` reads, the controller's active
-            TCP on a ``polyscope`` tool frame (default: UNSET).
+            TCP on a ``controller`` tool frame (default: UNSET).
 
     Returns:
         Pose: The proposed TCP pose, in BASE.

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import unittest
 
-from src.robot.drivers.sim.robot_models import _UR_MODELS
+from src.config.arms import admitted_arms
 from datagen.robots import (
     RobotNotUsable,
     resolve_robot,
@@ -24,7 +24,7 @@ class RegistryTests(unittest.TestCase):
         it. It has already paid for itself: the first UR3e value (330 +- 110) overshot by 18.3 mm and
         was caught here, not by a dataset of unpickable scenes.
         """
-        for key in _UR_MODELS:
+        for key in admitted_arms(simulated=True):
             with self.subTest(robot=key):
                 definition = resolve_robot(key)
                 overshoot = workspace_overshoot_mm(
@@ -66,12 +66,15 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaises(RobotNotUsable) as ctx:
             resolve_robot("franka_panda")
         message = str(ctx.exception)
-        for expected in ("URModelSpec", "UR_DH_TABLES_M", "cuRobo", "run_eih_calibrate", "verify-robot"):
+        # The DH advice names the arm registry since P0d D3b: a row added to the old table reaches nothing now, so a
+        # recipe still sending the reader there would be the one instruction that cannot work.
+        # Since P0d D3d the spec is built from the arm registry, so the recipe names a sim block, not a URModelSpec.
+        for expected in ("sim block", "config/arms", "cuRobo", "run_eih_calibrate", "verify-robot"):
             self.assertIn(expected, message, f"the refusal should tell the reader about {expected}")
 
     def test_every_registered_robot_resolves_completely(self) -> None:
         """There is no half-valid definition: resolve_robot returns a whole one or raises."""
-        for key in _UR_MODELS:
+        for key in admitted_arms(simulated=True):
             with self.subTest(robot=key):
                 definition = resolve_robot(key)
                 self.assertGreater(definition.max_reach_mm, 0.0)

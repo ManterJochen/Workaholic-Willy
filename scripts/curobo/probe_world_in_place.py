@@ -152,7 +152,7 @@ def sidecar_part(arm: str, configurations: int) -> "tuple[bool, dict[str, Any]]"
     sys.path.insert(0, str(REPO))
     import random  # noqa: PLC0415
 
-    from src.robot.drivers.sim.robot_models import curobo_arm_descriptor  # noqa: PLC0415
+    from src.config.arms import curobo_descriptor_name  # noqa: PLC0415
     from src.robot.safety.planning.curobo_client import CuroboPlanClient  # noqa: PLC0415
 
     rng = random.Random(20261009)
@@ -162,7 +162,7 @@ def sidecar_part(arm: str, configurations: int) -> "tuple[bool, dict[str, Any]]"
                for _ in range(configurations)]
     reports: dict[str, Any] = {}
     for label, in_place in (("update_world", False), ("in_place", True)):
-        client = CuroboPlanClient(robot_config=curobo_arm_descriptor(arm), scene_config=str(len(world) + 8),
+        client = CuroboPlanClient(robot_config=curobo_descriptor_name(arm), scene_config=str(len(world) + 8),
                                   world_in_place=in_place)
         began = time.perf_counter()
         client.start()

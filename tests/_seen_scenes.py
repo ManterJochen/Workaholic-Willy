@@ -72,14 +72,16 @@ def looking_at(eye_mm: "tuple[float, float, float]", target_mm: "tuple[float, fl
 
 @lru_cache(maxsize=32)
 def _robot_triangles(model: str, joints_deg: "tuple[float, ...]", hand: Any) -> np.ndarray:
+    from src.config.arms import load_arm
     from src.robot.safety.planning import self_envelope as envelope
     from src.robot.safety.planning.environment import collision_mesh_bundle, hand_mesh_bundle
 
     frames = envelope.yawed_link_transforms_mm(model, np.radians(np.asarray(joints_deg, dtype=np.float64)), 0.0)
     assert frames is not None
     placed: list[np.ndarray] = []
+    described = load_arm(model)
     with np.load(collision_mesh_bundle(model)) as bundle:
-        for name, frame in envelope._ARM_LINKS:  # noqa: SLF001 (the links the bundle bakes, in their DH frames)
+        for name, _link, frame in described.collision_links:  # the links the bundle bakes, in their DH frames
             vertices = bundle[f"{name}__v"].astype(np.float64) @ frames[frame][:3, :3].T + frames[frame][:3, 3]
             placed.append(vertices[bundle[f"{name}__f"].astype(np.int64)])
     if hand is not None:
@@ -88,7 +90,7 @@ def _robot_triangles(model: str, joints_deg: "tuple[float, ...]", hand: Any) -> 
         with np.load(str(hand_mesh_bundle(hand.model))) as bundle:
             origin = str(np.asarray(bundle[envelope._ORIGIN_KEY]).reshape(-1)[0]) if envelope._ORIGIN_KEY in bundle.files else ""  # noqa: SLF001
             shift = np.asarray(envelope._MODEL_APPROACH, dtype=np.float64) * float(hand.coupling_mm)  # noqa: SLF001
-            flange = frames[envelope._FLANGE_FRAME]  # noqa: SLF001
+            flange = frames[described.dof]
             for part in envelope._HAND_PARTS:  # noqa: SLF001
                 vertices = bundle[f"{part}__v"].astype(np.float64) + (shift if origin == envelope._MOUNTING_FACE else 0.0)  # noqa: SLF001
                 vertices = vertices @ np.asarray(hand.placement.rotation, dtype=np.float64).T

@@ -33,7 +33,7 @@ from src.robot.core import (
 )
 from src.robot.core.camera_world import CameraWorldDecline, CameraWorldStamp, CameraWorldUse
 from src.robot.drivers.dummy.arm import DummyRobotArm
-from src.robot.drivers.ur.arm import URRobotArm
+from src.robot.drivers.planned.arm import PlannedArm
 from src.robot.execution.calibration import CalibrationRoutine
 from src.robot.execution.cell_lock import CellLock, lock_path_for, peek
 from src.robot.execution.lifecycle import StepOutcome, TeardownReport
@@ -45,9 +45,7 @@ from tests.test_robot_boundaries import (
     _synthetic_eye_in_hand_data,
     _synthetic_eye_to_hand_data,
 )
-from tests.test_ungated_motion_surfaces import _AcceptingGuard
-from tests.test_ur_arm import _FakePlanner
-from tests.test_ur_arm import _arm as _ur_arm
+from tests._arm_kit import AcceptingGuard, PlannerDouble, bare_arm
 
 _ETH_REASON = (
     "eye-to-hand calibration: this sweep produces the CAMERA to BASE transform a camera world needs"
@@ -59,7 +57,7 @@ _WIDE = WorkspaceLimitsConfig(
 )
 
 
-class _PlannerThatArrives(_FakePlanner):
+class _PlannerThatArrives(PlannerDouble):
     """Plans one waypoint and arrives at the commanded pose, so the arm reads back where it went."""
 
     def __init__(self, plan_result: list[list[float]]) -> None:
@@ -71,12 +69,12 @@ class _PlannerThatArrives(_FakePlanner):
         return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
 
 
-def _curobo_ur(*, plans: bool = True) -> tuple[URRobotArm, list[MotionResult]]:
-    """A UR arm on cuRobo with no live camera world, its planner a double, and every move result kept."""
-    arm = _ur_arm("curobo")
-    arm._preflight = SafetyPreflight([_AcceptingGuard("workspace")])
+def _curobo(*, plans: bool = True) -> tuple[PlannedArm, list[MotionResult]]:
+    """A planned arm on cuRobo with no live camera world, its planner a double, and every move result kept."""
+    arm = bare_arm("curobo")
+    arm._preflight = SafetyPreflight([AcceptingGuard("workspace")])
     planner = _PlannerThatArrives([[0.0, -1.5, 1.5, 0.0, 1.5, 0.0]] if plans else [])
-    arm._curobo_ur = planner  # type: ignore[assignment]
+    arm._curobo = planner  # type: ignore[assignment]
 
     def drive(pose: Pose, *, vel: Any = None, acc: Any = None) -> MotionResult:
         # The route. This file is about what a calibration sweep says about the camera world, which the verb stamps
@@ -139,7 +137,7 @@ def _eye_in_hand(arm: object) -> tuple[CalibrationRoutine, list[Pose]]:
 class TheRoutineDeclinesTests(unittest.TestCase):
 
     def test_every_move_of_an_eye_to_hand_sweep_is_declined_for_the_mounting(self) -> None:
-        arm, seen = _curobo_ur()
+        arm, seen = _curobo()
         routine, poses = _eye_to_hand(arm)
         result = routine.run_with_poses(poses)
         declined = CameraWorldStamp.declined(CameraWorldDecline(_ETH_REASON))
@@ -152,7 +150,7 @@ class TheRoutineDeclinesTests(unittest.TestCase):
 
     def test_the_sweep_runs_on_a_cell_that_refuses_undeclared_motion(self) -> None:
         """By owner decision a cuRobo arm refuses a motion nothing declined, and the sweep still runs."""
-        arm, seen = _curobo_ur()
+        arm, seen = _curobo()
         routine, poses = _eye_to_hand(arm)
         routine.run_with_poses(poses)
         self.assertEqual({(r.status, r.camera_world.use) for r in seen},
@@ -162,7 +160,7 @@ class TheRoutineDeclinesTests(unittest.TestCase):
         self.assertIs(CameraWorldUse.MISSING, bare.camera_world.use)
 
     def test_an_eye_in_hand_sweep_declines_with_its_own_reason(self) -> None:
-        arm, seen = _curobo_ur()
+        arm, seen = _curobo()
         routine, poses = _eye_in_hand(arm)
         result = routine.run_with_poses(poses)
         declined = CameraWorldStamp.declined(CameraWorldDecline(_EIH_REASON))
@@ -170,7 +168,7 @@ class TheRoutineDeclinesTests(unittest.TestCase):
         self.assertEqual(result.camera_worlds, (declined,) * len(poses))
 
     def test_a_decline_the_caller_states_replaces_the_mounting_reason(self) -> None:
-        arm, seen = _curobo_ur()
+        arm, seen = _curobo()
         bench = CameraWorldDecline("bench rehearsal of the sweep, the cameras are switched off")
         routine, poses = _eye_to_hand(arm, camera_world=bench)
         result = routine.run_with_poses(poses)
@@ -178,7 +176,7 @@ class TheRoutineDeclinesTests(unittest.TestCase):
         self.assertEqual(result.camera_worlds, (CameraWorldStamp.declined(bench),) * len(poses))
 
     def test_a_rejected_move_is_logged_with_its_stamp(self) -> None:
-        arm, _ = _curobo_ur(plans=False)
+        arm, _ = _curobo(plans=False)
         routine, poses = _eye_to_hand(arm)
         with self.assertLogs(routine.logger, level="WARNING") as logs:
             self.assertFalse(routine._move_to_pose(poses[0]))
@@ -300,7 +298,7 @@ class TheCliConnectsTheArmThroughRobotTests(unittest.TestCase):
         camera.release.assert_called_once_with()
 
     def test_the_calibrate_cli_prints_the_camera_world_line(self) -> None:
-        arm = _ur_arm("curobo")
+        arm = bare_arm("curobo")
         arm.connect = MagicMock(side_effect=AssertionError("--dry-run connected the arm"))  # type: ignore[method-assign]
         code, printed, _, _ = self._run("--dry-run", arm=arm)  # type: ignore[arg-type]
         self.assertEqual(code, calibrate._EXIT_OK, printed)

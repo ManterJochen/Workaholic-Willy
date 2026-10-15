@@ -1,21 +1,22 @@
-"""Every public way to command a joint move goes through the preflight.
+"""Every public way to command a motion goes through the preflight.
 
-``RobotArm.move_joint`` promises, in the Protocol's own docstring, to raise ``RobotMotionRejected``
+``RobotArm.move_joint`` promised, in the Protocol's own docstring, to raise ``RobotMotionRejected``
 "If a workspace / safety pre-check denies the move". None of the three drivers ran one, while
-``move_to_joints`` -- its typed twin, reaching the same controller call -- always did. So the two
-halves of one contract disagreed, and the half that was public, protocol-level and already called
-directly by runner code was the unguarded one.
+``move_to_joints``, its typed twin reaching the same controller call, always did. So the two halves of one
+contract disagreed, and the half that was public and called directly by runner code was the unguarded one.
+``move_home`` had the same split, and so did the async twins. The raising and bool verbs and the async ones
+left the Protocol on 2026-09-19; what they taught stays here, on the typed verbs that remain.
 
-``move_home`` had the same split. The UR arm was hardened on 2026-08-09; Isaac's called ``move_joint``
-straight through and KUKA's sent ``send_movej`` down the EKI link with no check of any kind. UR's
-async twin ``amove_home`` skipped the hardened method entirely and warned past the workspace box.
-
-These tests are the fence. A driver added later that forgets the gate fails the last test here.
+These tests are the fence. A planned arm answers no motion verb itself, only the hooks ``PlannedArm`` declares
+(``tests/test_every_planned_arm_stays_inside_the_fence.py`` holds that over every registered vendor), so the gate is
+held here once, on a ``PlannedArm`` over the fake transport (``tests/_arm_kit.planned_arm``, P0g slice 13), and what
+the controller was sent is read off the fake's tape. The sim arm is not a planned arm yet and keeps its own rows.
 """
 
 from __future__ import annotations
 
 import unittest
+from typing import Any
 from unittest.mock import MagicMock
 
 
@@ -23,11 +24,16 @@ from src.robot.core import JointPositions, MotionStatus, RobotMotionRejected
 from src.robot.safety import SafetyPreflight
 from src.robot.safety.decision import SafetyDecision, SafetyReason
 from src.robot.safety.guard import SafetyContext
+from tests._arm_kit import kit_tree, planned_arm
+from tests._fake_transport import fake_transport
 from tests._plan_end import pose_where_it_ends
 
 #: Said where each arm is built: these doubles plan or check with cuRobo and carry no camera world, so every
 #: motion they command declines it, as a cuRobo cell must since the world became mandatory.
 _DECLINED = "unit double: this test exercises the planner and the guard on a cuRobo arm, and no camera world is wired to it"
+
+
+from tests._arm_kit import AcceptingGuard  # noqa: E402
 
 
 class _RefusingGuard:
@@ -48,10 +54,8 @@ class _RefusingGuard:
         )
 
 
-class _AcceptingGuard(_RefusingGuard):
-    def evaluate(self, ctx: SafetyContext) -> SafetyDecision:
-        self.calls += 1
-        return SafetyDecision.accept(self._name, message="ok")
+#: The accepting guard, held by the kit since P0g slice 13 (``tests/_arm_kit.AcceptingGuard``).
+_AcceptingGuard = AcceptingGuard
 
 
 def _sim_arm(preflight):
@@ -63,38 +67,28 @@ def _sim_arm(preflight):
     return arm
 
 
-def _ur_arm(preflight):
-    from src.config.schema.robot import RobotConfig
-    from src.robot.drivers.ur.arm import URRobotArm
+def _planned(preflight: Any, route: str = "ik") -> tuple[Any, Any]:
+    """A planned arm on ``route`` standing at zero over the fake, ``preflight`` its gate; the arm and its fake.
 
-    # `motion_planner: ik` PINNED. The shipped default is `curobo` now, and these tests are about the
-    # GATE, not the planner: left on the default they reach for a GPU sidecar and fail on a box that
-    # has none, which says nothing about whether move_to consults its guards.
-    arm = URRobotArm(RobotConfig.model_validate(
-        {"vendor": "ur", "ur": {"motion_planner": "ik"}, "gripper": {"model": "robotiq_2f85"},
-         "safety": {"payload": {"enforce": False}}}
-    ))
-    conn = MagicMock()
-    conn.is_connected = True
-    conn.moveJ.return_value = True
-    conn.get_joint_positions.return_value = [0.0] * 6
-    arm._conn = conn
-    arm._preflight = preflight
-    return arm, conn
+    `ik` PINNED by default. The shipped default is `curobo`, and these tests are about the GATE, not the planner: left
+    on the default they reach for a GPU sidecar and fail on a box that has none, which says nothing about whether a
+    verb consults its guards.
+    """
+    fake = fake_transport(joints=[0.0] * 6)
+    arm = planned_arm(kit_tree(route, safety={"payload": {"enforce": False}}), transport=fake, preflight=preflight)
+    return arm, fake
 
 
-def _kuka_arm(preflight):
-    from src.config.schema.robot import RobotConfig
-    from src.robot.drivers.kuka.arm import KukaRobotArm
+def _motions(fake: Any) -> list[Any]:
+    """Every motion the fake was sent: joint moves and Cartesian moves."""
+    return [call for call in fake.tape if call.verb in ("run_trajectory", "move_pose")]
 
-    arm = KukaRobotArm(RobotConfig.model_validate(
-        {"vendor": "kuka", "safety": {"payload": {"enforce": False}}}
-    ))
-    eki = MagicMock()
-    eki.is_connected = True
-    arm._eki = eki
-    arm._preflight = preflight
-    return arm, eki
+
+def _assert_nothing_sent(test: unittest.TestCase, fake: Any) -> None:
+    """No motion, on a tape that holds the steady gate every verb asks before its guards (the anchor): a fake that
+    recorded nothing fails here rather than passing every fence."""
+    test.assertTrue(fake.calls("wait_until_steady"), "the fake recorded no steady gate, so 'nothing' reads nothing")
+    test.assertEqual([], _motions(fake))
 
 
 _Q = JointPositions([0.0, -1.5, 1.5, 0.0, 0.0, 0.0])
@@ -113,36 +107,30 @@ def _pose(x: float = 400.0, y: float = 0.0, z: float = 300.0):
     )
 
 
-class MoveJointIsGatedTests(unittest.TestCase):
-    """The Protocol says this raises when a pre-check denies the move. Now it does."""
+class TheJointVerbIsGatedTests(unittest.TestCase):
+    """A refused joint move commands nothing, on every driver, and says so in its result."""
 
-    def test_ur_move_joint_raises_and_commands_nothing(self) -> None:
-        arm, conn = _ur_arm(SafetyPreflight([_RefusingGuard()]))
-        with self.assertRaises(RobotMotionRejected):
-            arm.move_joint(_Q)
-        conn.moveJ.assert_not_called()
+    def test_a_planned_arm_refuses_and_commands_nothing(self) -> None:
+        guard = _RefusingGuard()
+        arm, fake = _planned(SafetyPreflight([guard]))
+        self.assertFalse(arm.move_to_joints(_Q).ok)
+        self.assertEqual(1, guard.calls, "the refusal did not come from the pipeline")
+        _assert_nothing_sent(self, fake)
 
-    def test_ur_move_joint_still_drives_when_accepted(self) -> None:
-        arm, conn = _ur_arm(SafetyPreflight([_AcceptingGuard()]))
-        arm.move_joint(_Q)
-        conn.moveJ.assert_called_once()
+    def test_a_planned_arm_still_drives_when_accepted(self) -> None:
+        arm, fake = _planned(SafetyPreflight([_AcceptingGuard()]))
+        self.assertTrue(arm.move_to_joints(_Q).ok)
+        self.assertEqual(["run_trajectory"], [call.verb for call in _motions(fake)])
 
-    def test_sim_move_joint_raises_even_in_mock_mode(self) -> None:
+    def test_sim_refuses_even_in_mock_mode(self) -> None:
         """The mock is what the off-box suite drives. A mock that accepts what the real driver
         rejects is a mock that hides regressions."""
         arm = _sim_arm(SafetyPreflight([_RefusingGuard()]))
         before = arm.get_joint_positions()
-        with self.assertRaises(RobotMotionRejected):
-            arm.move_joint(_Q)
+        self.assertFalse(arm.move_to_joints(_Q).ok)
         self.assertEqual(list(arm.get_joint_positions().tolist()), list(before.tolist()))
 
-    def test_kuka_move_joint_raises_and_sends_nothing(self) -> None:
-        arm, eki = _kuka_arm(SafetyPreflight([_RefusingGuard()]))
-        with self.assertRaises(RobotMotionRejected):
-            arm.move_joint(_Q)
-        eki.send_movej.assert_not_called()
-
-    def test_the_typed_twin_gates_exactly_once(self) -> None:
+    def test_the_joint_verb_gates_exactly_once(self) -> None:
         """`move_to_joints` gates, then drives the ungated primitive. Gating twice would be a
         second full guard pass per move, which with the exact-mesh backend is not free."""
         guard = _AcceptingGuard()
@@ -150,6 +138,14 @@ class MoveJointIsGatedTests(unittest.TestCase):
         result = arm.move_to_joints(_Q)
         self.assertIs(result.status, MotionStatus.EXECUTED)
         self.assertEqual(guard.calls, 1, "the destination was evaluated more than once")
+
+    def test_raise_unless_executed_raises_what_the_old_verb_raised(self) -> None:
+        """Runner code that read "no exception means it moved" keeps that meaning in one call."""
+        arm, fake = _planned(SafetyPreflight([_RefusingGuard()]))
+        with self.assertRaises(RobotMotionRejected) as caught:
+            arm.move_to_joints(_Q).raise_unless_executed()
+        self.assertIsNotNone(caught.exception.result)
+        _assert_nothing_sent(self, fake)
 
 
 class MoveHomeIsGatedEverywhereTests(unittest.TestCase):
@@ -161,90 +157,59 @@ class MoveHomeIsGatedEverywhereTests(unittest.TestCase):
         self.assertFalse(arm.move_home())
         self.assertEqual(list(arm.get_joint_positions().tolist()), list(before.tolist()))
 
-    def test_kuka_move_home_is_refused_and_sends_nothing(self) -> None:
-        arm, eki = _kuka_arm(SafetyPreflight([_RefusingGuard()]))
-        self.assertFalse(arm.move_home())
-        eki.send_movej.assert_not_called()
-
-    def test_ur_amove_home_is_refused(self) -> None:
-        import asyncio
-
-        arm, conn = _ur_arm(SafetyPreflight([_RefusingGuard()]))
-        arm._motion = MagicMock()
-        self.assertFalse(asyncio.run(arm.amove_home()))
-        arm._motion.amove_home.assert_not_called()
-
 
 class EveryDriverGatesTests(unittest.TestCase):
     """The fence. A driver added later that forgets the gate fails here, not on a cell."""
 
-    def test_no_driver_reaches_its_controller_from_move_joint_without_gating(self) -> None:
+    def test_no_driver_reaches_its_controller_from_the_joint_verb_without_gating(self) -> None:
         cases = []
-        arm, conn = _ur_arm(SafetyPreflight([_RefusingGuard()]))
-        cases.append(("ur", arm, lambda: conn.moveJ.assert_not_called()))
-        arm, eki = _kuka_arm(SafetyPreflight([_RefusingGuard()]))
-        cases.append(("kuka", arm, lambda: eki.send_movej.assert_not_called()))
+        arm, fake = _planned(SafetyPreflight([_RefusingGuard()]))
+        cases.append(("planned", arm, lambda: _assert_nothing_sent(self, fake)))
         sim = _sim_arm(SafetyPreflight([_RefusingGuard()]))
         cases.append(("sim", sim, lambda: None))
 
         for vendor, driver, assert_quiet in cases:
             with self.subTest(vendor=vendor):
-                with self.assertRaises(RobotMotionRejected):
-                    driver.move_joint(_Q)
+                self.assertFalse(driver.move_to_joints(_Q).ok)
                 assert_quiet()
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class CartesianSurfacesAreGatedTests(unittest.TestCase):
-    """`move_to` and `move_linear` ran the workspace box and nothing else.
+    """A Cartesian move runs every guard, not only the workspace box.
 
-    ``MotionController.move_to`` says so in its own comment: "WORKSPACE BOX ONLY". So on a cell where
-    `move()` runs all six guards, these two surfaces commanded motion that no joint-limit, IK-quality,
-    self-collision, fixture, payload or continuity guard ever saw. They are not obscure: the pick
-    loop's viewpoint relocation called `move_to` directly.
+    ``MotionController.move_to`` says of itself: "WORKSPACE BOX ONLY". So on a cell where `move()` runs
+    all six guards, the bool `move_to` and `move_linear` once commanded motion that no joint-limit,
+    IK-quality, self-collision, fixture, payload or continuity guard ever saw.
     """
 
-    def test_ur_move_to_is_refused_and_commands_nothing(self) -> None:
+    def test_a_planned_move_is_refused_and_commands_nothing(self) -> None:
         guard = _RefusingGuard()
-        arm, conn = _ur_arm(SafetyPreflight([guard]))
-        # IK answers, so the refusal below is the GUARD's. Without it the mocked connection fails IK
+        arm, fake = _planned(SafetyPreflight([guard]))
+        # IK answers, so the refusal below is the GUARD's. Without it the fake controller finds no IK
         # and the surface refuses for a reason that has nothing to do with the pipeline.
-        arm.ik = lambda pose: _Q  # type: ignore[assignment, misc]
-        arm._motion = MagicMock()
-        self.assertFalse(arm.move_to(_pose()))
-        arm._motion.move_to.assert_not_called()
+        arm.ik = lambda pose: _Q
+        self.assertFalse(arm.move(_pose()).ok)
+        _assert_nothing_sent(self, fake)
         self.assertEqual(guard.calls, 1, "the refusal did not come from the pipeline")
 
-    def test_ur_move_linear_raises_and_commands_nothing(self) -> None:
+    def test_a_planned_move_linear_raises_and_commands_nothing(self) -> None:
         guard = _RefusingGuard()
-        arm, conn = _ur_arm(SafetyPreflight([guard]))
-        arm.ik = lambda pose: _Q  # type: ignore[assignment, misc]
-        arm._motion = MagicMock()
+        arm, fake = _planned(SafetyPreflight([guard]))
+        arm.ik = lambda pose: _Q
         with self.assertRaises(RobotMotionRejected):
             arm.move_linear(_pose())
-        arm._motion.move_to.assert_not_called()
+        _assert_nothing_sent(self, fake)
         self.assertEqual(guard.calls, 1, "the refusal did not come from the pipeline")
 
-    def test_ur_move_gates_exactly_once(self) -> None:
+    def test_a_planned_move_gates_exactly_once(self) -> None:
         """`move()` drives the ungated primitive, so the pipeline runs once per commanded pose."""
         guard = _AcceptingGuard("workspace")
-        arm, conn = _ur_arm(SafetyPreflight([guard]))
-        arm.ik = lambda pose: _Q  # type: ignore[assignment, misc]
-        arm._motion = MagicMock()
-        arm._motion.move_to.return_value = True
+        arm, fake = _planned(SafetyPreflight([guard]))
+        arm.ik = lambda pose: _Q
         result = arm.move(_pose())
         self.assertIs(result.status, MotionStatus.EXECUTED, result.message)
         self.assertEqual(guard.calls, 1, "the pose was evaluated more than once")
-
-    def test_kuka_move_to_is_refused_and_sends_nothing(self) -> None:
-        arm, eki = _kuka_arm(SafetyPreflight([_RefusingGuard()]))
-        arm.ik = lambda pose: _Q  # type: ignore[assignment, misc]
-        arm.get_joint_positions = lambda: _Q  # type: ignore[assignment, misc]
-        self.assertFalse(arm.move_to(_pose()))
-        eki.send_move_cartesian.assert_not_called()
+        self.assertEqual(["move_pose"], [call.verb for call in _motions(fake)])
 
 
 class ThePlannedEndpointGetsTheBoxTests(unittest.TestCase):
@@ -255,23 +220,8 @@ class ThePlannedEndpointGetsTheBoxTests(unittest.TestCase):
     four static guards, which is what the sim path always had. The real UR was checking three.
     """
 
-    def _curobo_arm(self, preflight):
-        from src.config.schema.robot import RobotConfig
-        from src.robot.drivers.ur.arm import URRobotArm
-
-        arm = URRobotArm(RobotConfig.model_validate({
-            "vendor": "ur",
-            "ur": {"motion_planner": "curobo"},
-            "safety": {"payload": {"enforce": False}},
-            "gripper": {"model": "robotiq_2f85"},
-        }))
-        conn = MagicMock()
-        conn.is_connected = True
-        conn.moveJ.return_value = True
-        conn.get_joint_positions.return_value = [0.0] * 6
-        arm._conn = conn
-        arm._preflight = preflight
-        return arm
+    def _curobo_arm(self, preflight: Any) -> Any:
+        return _planned(preflight, "curobo")[0]
 
     def test_the_box_is_applied_to_the_planned_move(self) -> None:
         guard = _AcceptingGuard("workspace")
@@ -279,7 +229,7 @@ class ThePlannedEndpointGetsTheBoxTests(unittest.TestCase):
         self.enterContext(arm.without_camera_world(_DECLINED))
         planner = MagicMock()
         planner.plan_joint.side_effect = lambda goal, **_: [[0.0] * 6, list(goal)]
-        arm._curobo_ur = planner
+        arm._curobo = planner
         arm.move(pose_where_it_ends(arm, [0.1] * 6))
         self.assertGreaterEqual(guard.calls, 1, "the workspace guard never saw the planned move")
 
@@ -287,7 +237,7 @@ class ThePlannedEndpointGetsTheBoxTests(unittest.TestCase):
         arm = self._curobo_arm(SafetyPreflight([_RefusingGuard("workspace")]))
         planner = MagicMock()
         planner.plan_joint.side_effect = lambda goal, **_: [[0.0] * 6, list(goal)]
-        arm._curobo_ur = planner
+        arm._curobo = planner
         arm.move(pose_where_it_ends(arm, [0.1] * 6))
         planner.execute.assert_not_called()
 
@@ -314,7 +264,7 @@ class ThePlannedEndpointGetsTheBoxTests(unittest.TestCase):
             return [[0.0] * 6, end]
 
         planner.plan_joint.side_effect = plan_joint
-        arm._curobo_ur = planner
+        arm._curobo = planner
         arm.move(pose_where_it_ends(arm, final))
         self.assertTrue(returned, "nothing was planned, so the gate on a plan's end was never reached")
         self.assertEqual(seen["joints"], returned[-1])
@@ -322,37 +272,12 @@ class ThePlannedEndpointGetsTheBoxTests(unittest.TestCase):
 
 
 class EveryCartesianSurfaceIsGatedTests(unittest.TestCase):
-    """The attestation says the pipeline judges every motion an arm's verbs command. Four did not.
+    """The attestation says the pipeline judges every motion an arm's verbs command, and it once did not.
 
-    UR `amove_to` called `MotionController.amove_to` directly, so only that controller path's own box,
-    IK and singularity checks ran; KUKA `move_linear` sent LIN down the EKI link with no check at all;
-    and the sim mock's `move_to` and `move_linear` committed the pose before any guard saw it. Each was a
-    motion `SafetyAttestation.of(arm)` reported as GATED while the pipeline never judged it, and the sim
-    mock is what the whole off-box suite drives.
+    UR's async `amove_to` reached the controller past the preflight, the KUKA driver's `move_linear` sent LIN
+    with no check, and the sim mock's `move_to` and `move_linear` committed the pose before any guard saw it.
+    The async verbs and the KUKA driver are gone (2026-09-19); the sim mock's surfaces stay fenced here.
     """
-
-    def test_ur_amove_to_is_refused_and_commands_nothing(self) -> None:
-        import asyncio
-        from unittest.mock import AsyncMock
-
-        guard = _RefusingGuard()
-        arm, conn = _ur_arm(SafetyPreflight([guard]))
-        arm.ik = lambda pose: _Q  # type: ignore[assignment, misc]
-        arm._motion = MagicMock()
-        arm._motion.amove_to = AsyncMock(return_value=True)
-        self.assertFalse(asyncio.run(arm.amove_to(_pose())))
-        arm._motion.amove_to.assert_not_called()
-        self.assertEqual(guard.calls, 1, "the refusal did not come from the pipeline")
-
-    def test_kuka_move_linear_raises_and_sends_nothing(self) -> None:
-        guard = _RefusingGuard()
-        arm, eki = _kuka_arm(SafetyPreflight([guard]))
-        arm.ik = lambda pose: _Q  # type: ignore[assignment, misc]
-        arm.get_joint_positions = lambda: _Q  # type: ignore[assignment, misc]
-        with self.assertRaises(RobotMotionRejected):
-            arm.move_linear(_pose())
-        eki.send_move_cartesian.assert_not_called()
-        self.assertEqual(guard.calls, 1, "the refusal did not come from the pipeline")
 
     def test_sim_mock_move_linear_raises_and_keeps_the_tcp(self) -> None:
         arm = _sim_arm(SafetyPreflight([_RefusingGuard()]))
@@ -361,34 +286,22 @@ class EveryCartesianSurfaceIsGatedTests(unittest.TestCase):
             arm.move_linear(_pose(410.0, 5.0, 290.0))
         self.assertEqual(arm.get_tcp_pose().position_mm.tolist(), before)
 
-    def test_sim_mock_move_to_is_refused_and_keeps_the_tcp(self) -> None:
+    def test_sim_mock_move_is_refused_and_keeps_the_tcp(self) -> None:
         arm = _sim_arm(SafetyPreflight([_RefusingGuard()]))
         before = arm.get_tcp_pose().position_mm.tolist()
-        self.assertFalse(arm.move_to(_pose(410.0, 5.0, 290.0)))
+        self.assertFalse(arm.move(_pose(410.0, 5.0, 290.0)).ok)
         self.assertEqual(arm.get_tcp_pose().position_mm.tolist(), before)
 
     def test_the_accepted_surfaces_still_move(self) -> None:
         """The control. A gate that refused everything would pass every test above."""
-        import asyncio
-        from unittest.mock import AsyncMock
-
-        arm, conn = _ur_arm(SafetyPreflight([_AcceptingGuard()]))
-        arm.ik = lambda pose: _Q  # type: ignore[assignment, misc]
-        arm._motion = MagicMock()
-        arm._motion.amove_to = AsyncMock(return_value=True)
-        self.assertTrue(asyncio.run(arm.amove_to(_pose())))
-        arm._motion.amove_to.assert_awaited_once()
-
-        kuka, eki = _kuka_arm(SafetyPreflight([_AcceptingGuard()]))
-        kuka.ik = lambda pose: _Q  # type: ignore[assignment, misc]
-        kuka.get_joint_positions = lambda: _Q  # type: ignore[assignment, misc]
-        kuka.move_linear(_pose())
-        eki.send_move_cartesian.assert_called_once()
-
         sim = _sim_arm(SafetyPreflight([_AcceptingGuard()]))
         target = _pose(410.0, 5.0, 290.0)
         sim.move_linear(target)
         self.assertEqual(sim.get_tcp_pose().position_mm.tolist(), target.position_mm.tolist())
         target = _pose(420.0, -5.0, 280.0)
-        self.assertTrue(sim.move_to(target))
+        self.assertTrue(sim.move(target).ok)
         self.assertEqual(sim.get_tcp_pose().position_mm.tolist(), target.position_mm.tolist())
+
+
+if __name__ == "__main__":
+    unittest.main()

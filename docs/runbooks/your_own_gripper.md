@@ -41,7 +41,7 @@ Any of:
 
 - a gripper that is not the 2F-85, the Hand-E or the EGU-50 is going onto a UR arm this tree plans for
 - the desk checklist or the doctor names `write_hand_from_dimensions.py`, `write_hand_from_mesh.py`,
-  `bake_gripper_variant.py`, `fit_cover_spheres.py`, `choose_ur_retract.py` or `matrix_gate.py` in a
+  `bake_gripper_variant.py`, `scripts/arms/fit.py`, `scripts/arms/retract.py` or `scripts/arms/gate.py` in a
   remedy
 - `robot.gripper.model` names a hand and the loader refuses it as unknown
 
@@ -180,17 +180,17 @@ was not tried or did not fit within the cap:
 
 <!-- step: spheres-curve -->
 ```bash
-$PY scripts/curobo/fit_cover_spheres.py --hand $HAND --curve
+$PY scripts/arms/fit.py --hand $HAND --curve
 ```
 
 <!-- step: spheres-write -->
 ```bash
-$PY scripts/curobo/fit_cover_spheres.py --hand $HAND --write
+$PY scripts/arms/fit.py --hand $HAND --write
 ```
 
 <!-- step: spheres-ruler -->
 ```bash
-$PY scripts/curobo/measure_sphere_map.py --hand $HAND
+$PY scripts/arms/measure_sphere_map.py --hand $HAND
 ```
 
 ### 4. Choose the retract, at the tool frame your cell declares
@@ -202,12 +202,12 @@ flange approaches along `+Z`, which is `0 0 0 1`.
 
 <!-- step: retract-choose -->
 ```bash
-$PY scripts/curobo/choose_ur_retract.py $ARM --hand $HAND --tool-rotation-xyzw $ROT
+$PY scripts/arms/retract.py $ARM --hand $HAND --tool-rotation-xyzw $ROT
 ```
 
 <!-- step: retract-check -->
 ```bash
-$PY scripts/curobo/choose_ur_retract.py $ARM --hand $HAND --tool-rotation-xyzw $ROT --check
+$PY scripts/arms/retract.py $ARM --hand $HAND --tool-rotation-xyzw $ROT --check
 ```
 
 ### 5. Measure the combination: the evidence a planner starts on
@@ -218,14 +218,14 @@ wrist sweep with the planner and the exact guard, and writes the file:
 
 <!-- step: evidence-gate -->
 ```bash
-$PY scripts/curobo/matrix_gate.py --arm $ARM --hand $HAND --coupling-mm $COUPLING_MM --planner-margin-mm 4 --guard-margin-mm 10 --attach 0 --tool-rotation-xyzw $ROT --write
+$PY scripts/arms/gate.py --arm $ARM --hand $HAND --coupling-mm $COUPLING_MM --planner-margin-mm 4 --guard-margin-mm 10 --attach 0 --tool-rotation-xyzw $ROT --write
 ```
 
 ### 6. The cell layer
 
-Name the hand, its driver, its plates, the tool frame and the arm, both as `ur.model` and as the
-model the guard derives its links from: the layer chains on `$ARM`, it still loads on its own, and
-the arm it states is the one the retract table expects your hand's row on. Write no widths and no
+Name the hand, its driver, its plates, the tool frame and the arm as `ur.model`, the one name the
+guard, the mesh bundle and the planner take the arm from: the layer chains on `$ARM`, it still loads on
+its own, and the arm it states is the one the retract table expects your hand's row on. Write no widths and no
 `grasping.gripper_geometry`: the hand supplies them. Weigh the whole assembly for the payload; the
 numbers below are placeholders a bench replaces.
 
@@ -252,7 +252,6 @@ robot:
       mass_kg: $MASS_KG
       cog_mm: [0.0, 0.0, $COG_Z_MM]
     self_collision:
-      kinematics_model: $ARM
       planner_margin_mm: 4.0
     planning_world:
       payload:
@@ -270,8 +269,8 @@ the exact-mesh guard judges them. Its twin layer:
 <!-- step: ik-layer file: config/robot/robot.${CELL}_ik.yaml -->
 ```yaml
 robot:
-  ur:
-    motion_planner: ik
+  motion:
+    planner: ik
 ```
 
 ---
@@ -320,7 +319,7 @@ $PY -m src.robot.execution.real_cell --runs 1 --profile $ARM,$CELL
 ## Rollback
 
 Remove what the chain wrote, newest first, through version control: the cell layers, the evidence
-file under `src/robot/safety/planning/robot/evidence/`, the hand's rows in `ur_retract.yaml`, the
+file under `src/robot/safety/planning/robot/evidence/`, the hand's rows in `retract.yaml`, the
 sphere map `$HAND_gripper_spheres.yml`, the bundle and its `bundles.json` row, and the registry file.
 Never rewrite a bundle after its retract rows were judged: the table binds the bundle it was judged
 on, so a new body means the chooser and the gate run again.

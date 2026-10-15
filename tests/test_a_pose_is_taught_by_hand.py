@@ -94,11 +94,11 @@ def _rig(rig_id: str, mounting: str | None = None, *, body: bool = False) -> Sim
 
 
 def _tree(primary: str = "wrist") -> SimpleNamespace:
-    """A loaded tree as teaching reads it: a camera on the wrist (the primary), a fixed one over the table, and one
-    whose mounting is not declared yet (not calibrated, no body)."""
+    """A loaded tree as teaching reads it: a camera on the wrist (the primary), a fixed one over the table, one
+    whose mounting is not declared yet (not calibrated, no body), and the robot section with the workspace box."""
     rigs = [_rig("wrist", "eye_in_hand", body=True), _rig("overhead", "eye_to_hand"), _rig("side")]
     return SimpleNamespace(app_config=SimpleNamespace(camera=SimpleNamespace(
-        cameras=SimpleNamespace(primary_rig_id=primary, rigs=rigs))))
+        cameras=SimpleNamespace(primary_rig_id=primary, rigs=rigs))), robot=SimpleNamespace(workspace_limits=BOX))
 
 
 #: The tree every run is taught against unless a test says otherwise.
@@ -220,9 +220,8 @@ class _GuidedArm:
         self.stands = [list(stand) for stand in stands]
         self.clock = clock
         self.payload = payload
-        self.capabilities = RobotCapabilities(vendor=vendor)
+        self.capabilities = RobotCapabilities(vendor=vendor, dof=6, controller=None, owns_a_controller=vendor not in ("sim", "dummy"))
         self.is_connected = True
-        self.config = SimpleNamespace(workspace_limits=BOX)
         self.safety_preflight = SimpleNamespace(guards=(SimpleNamespace(
             name="joint_limit", margin_deg=5.0, within_half_turn_of_home=True, limits_for_arm=lambda _arm: WINDOW),))
         self.log: list[str] = []
@@ -1174,6 +1173,24 @@ class Example11TeachesForOneCameraTests(unittest.TestCase):
         self.assertEqual((run["keywords"]["for_rig"], run["keywords"]["camera"]), ("overhead", None))
         self.assertIn("No camera window, the poses are still taught for rig 'overhead': RealSense rig 'overhead' could "
                       "not start: no device connected", run["printed"])
+
+
+class TheBoxComesFromTheRobotSectionTests(_Case):
+    """The arm contract: the workspace box is read off a robot section, the robot's or the tree's, never off the arm,
+    whose ``config`` no protocol declares (``tests/test_robot_boundaries.py``)."""
+
+    def test_an_arm_that_carries_a_config_is_not_asked_for_its_box(self) -> None:
+        self.arm(_stand(LOOK_1_DEG))
+        self.guided.config = SimpleNamespace(workspace_limits=BOX)  # type: ignore[attr-defined]
+        tree = _tree()
+        del tree.robot
+        with self.assertRaisesRegex(HandGuidingRefused, "the workspace box is not known"):
+            self.teach(_answers("", "", "", "q"), tree=tree)
+
+    def test_the_trees_robot_section_gives_the_box(self) -> None:
+        self.arm(_stand(LOOK_1_DEG))
+        self.assertEqual([pose.name for pose in self.teach(_answers("", "", "", "q"))], ["LOOK_1"])
+
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -1,7 +1,8 @@
 """Run a runbook's own commands against a plan, so the runbook is the commands that ran.
 
     .venv/Scripts/python.exe scripts/trial/run_runbook.py --runbook docs/runbooks/your_own_gripper.md \\
-        --plan scripts/trial/customer_hand_trial.json --root D:/willy_trial/customer_hand --logs LOGDIR [--from ID]
+        --plan scripts/trial/customer_hand_trial.json --root D:/willy_trial/customer_hand --logs LOGDIR [--from ID] \\
+        [--bind NAME=VALUE ...]
 
 A trial instrument, not product code. Standard library only.
 
@@ -41,7 +42,7 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -154,6 +155,17 @@ def _kill_tree(process: subprocess.Popen) -> None:
     process.wait()
 
 
+def parse_binds(items: list[str]) -> dict[str, str]:
+    """``--bind NAME=VALUE`` items as a dict; a value may hold ``=``, a name and a value may not be empty."""
+    out: dict[str, str] = {}
+    for item in items:
+        name, sep, value = item.partition("=")
+        if not sep or not name or not value:
+            raise Malformed(f"--bind {item!r} is not NAME=VALUE")
+        out[name] = value
+    return out
+
+
 @dataclass
 class Runner:
     runbook_path: str
@@ -161,6 +173,9 @@ class Runner:
     plan: dict[str, Any]
     root: Path
     logs: Path
+    #: ``--bind`` values, which win over the plan's and every phase's bindings (P0h h8): the plan binds the reference
+    #: workstation's folders, and another box, or Linux, binds its own without editing the plan.
+    overrides: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.by_id = {step.id: step for step in self.steps}
@@ -182,6 +197,7 @@ class Runner:
         bound = {"ROOT": self.root.as_posix(), "LOGS": self.logs.as_posix()}
         bound.update({key: str(value) for key, value in (self.plan.get("bindings") or {}).items()})
         bound.update({key: str(value) for key, value in (phase.get("bindings") or {}).items()})
+        bound.update(self.overrides)
         for _ in range(len(bound) + 1):
             resolved = {key: _NAME.sub(lambda m: bound.get(m.group("braced") or m.group("bare"), m.group(0)), value)
                         for key, value in bound.items()}
@@ -191,7 +207,16 @@ class Runner:
         raise Malformed(f"the bindings of phase {phase.get('name')!r} name each other in a circle")
 
     def check(self) -> None:
-        """Refuse the whole plan before anything runs: an unknown runbook id, an unbound name, a step expecting nothing."""
+        """Refuse the whole plan before anything runs: an unknown runbook id, an unbound name, a step expecting nothing,
+        a ``--bind`` for a name the plan does not bind (a typo would leave the plan's own folder in force)."""
+        planned = set(self.plan.get("bindings") or {})
+        for phase in self.plan.get("phases") or []:
+            planned |= set(phase.get("bindings") or {})
+        for name in self.overrides:
+            if name in ("ROOT", "LOGS"):
+                raise Malformed(f"--bind {name} is --{name.lower()}'s to set")
+            if name not in planned:
+                raise Malformed(f"--bind {name}: the plan binds no such name ({', '.join(sorted(planned))})")
         env_bound = self._bindings({})
         for phase in [{}, *(self.plan.get("phases") or [])]:
             for name, value in self._bindings(phase).items():
@@ -373,12 +398,14 @@ def main(argv: "list[str] | None" = None) -> int:
     parser.add_argument("--root", required=True, help="the copy the commands run in")
     parser.add_argument("--logs", required=True, help="where each step's output and the record go")
     parser.add_argument("--from", dest="from_id", default=None, help="resume at this step inside one copy")
+    parser.add_argument("--bind", action="append", default=[], metavar="NAME=VALUE",
+                        help="bind a name the plan binds to this box's value, over the plan and every phase")
     args = parser.parse_args(argv)
     try:
         runner = Runner(runbook_path=args.runbook,
                         steps=parse_runbook(Path(args.runbook).read_text(encoding="utf-8")),
                         plan=json.loads(Path(args.plan).read_text(encoding="utf-8")),
-                        root=Path(args.root), logs=Path(args.logs))
+                        root=Path(args.root), logs=Path(args.logs), overrides=parse_binds(args.bind))
         code = runner.run(from_id=args.from_id)
     except Malformed as exc:
         print(f"malformed: {exc}", file=sys.stderr)

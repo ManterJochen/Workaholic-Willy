@@ -37,10 +37,11 @@ from src.robot.execution import handling
 from src.robot.execution.handling import HandlingOutcome
 from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy, PolicyOutcome
 from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
+from tests._helpers import PlansItsMotions
 from tests.test_jaw_io_gripper import CLOSE_PIN, HIGH, LOW, SETTLE_S, _Timeline, _toggle
 
 
-class _JudgingArm:
+class _JudgingArm(PlansItsMotions):
     """An arm that keeps its lines, holds its world and judges the next leg, each step written onto ``events``."""
 
     #: A route the place verb reads as PLANNED (``motion.route_of``): cuRobo plans it and the guard judges its lines.

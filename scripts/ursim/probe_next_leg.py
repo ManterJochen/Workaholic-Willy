@@ -53,11 +53,11 @@ if str(_REPO_ROOT) not in sys.path:
 
 import numpy as np  # noqa: E402
 
+from src.config.arms import load_arm  # noqa: E402
 from src.config.schema.robot import RobotConfig  # noqa: E402
 from src.geometry import Frame, Pose  # noqa: E402
 from src.robot.core import JointPositions, MotionStatus  # noqa: E402
 from src.robot.drivers.ur.arm import URRobotArm  # noqa: E402
-from src.robot.drivers.ur.curobo_motion import UR_ARM_JOINT_NAMES  # noqa: E402
 from tests._sidecar_identity import arm_identity  # noqa: E402
 from tests.test_every_verb_meets_the_camera_world import _Camera, _Client, _world  # noqa: E402
 
@@ -79,7 +79,7 @@ class _IdentifiedClient(_Client):
     """The unit tests' sidecar, saying it was started on the UR10 descriptor with the Hand-E, as a cell's does."""
 
     def __init__(self) -> None:
-        super().__init__(joint_names=UR_ARM_JOINT_NAMES)
+        super().__init__(joint_names=tuple(joint.name for joint in load_arm("ur5e").joints))
         self.identity = arm_identity("ur10", hand="robotiq_hande", approach="+Z", closing="+X")
 
 
@@ -105,25 +105,25 @@ def _host(args: argparse.Namespace) -> str:
 def _arm(host: str, *, gate_at: str = "verb") -> URRobotArm:
     config = RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": "ur10", "ip": host, "motion_planner": "curobo", "brake_on_halt": True},
+        "ur": {"model": "ur10", "ip": host, "brake_on_halt": True},
         "motion_limits": {"max_velocity": 0.25, "max_acceleration": 0.5},
         # The UR10's reach: the probe's poses stand outside the shipped half-metre box.
         "workspace_limits": {"x_min": -1300.0, "x_max": 1300.0, "y_min": -1300.0, "y_max": 1300.0, "z_min": -100.0,
                              "z_max": 1300.0},
-        "motion": {"judge_next_leg": "in_settles_and_motion"},
+        "motion": {"planner": "curobo", "judge_next_leg": "in_settles_and_motion"},
         "safety": {"payload": {"enforce": False}, "ik_quality": {"enforce": False},
                    "self_collision": {"planner_margin_mm": 4.0},
                    "dwell": {"gate_at": gate_at},
                    "planning_world": {"hold": {"carry": True, "drop": True}}},
         "gripper": {"model": "robotiq_hande", "coupling_plates": [],
-                    "tool_frame": {"source": "polyscope", "offset_mm": (0.0, 0.0, 157.0)}},
+                    "tool_frame": {"source": "controller", "offset_mm": (0.0, 0.0, 157.0)}},
     })
     # The test suite's planner double, which answers as a CuroboPlanClient does for what this probe asks.
     arm = URRobotArm(config, curobo_client_factory=_IdentifiedClient)  # type: ignore[arg-type]
     arm._conn.connect()
     ctrl = arm._conn._ctrl
     assert ctrl is not None, "connected, so the control interface is up"
-    ctrl.setTcp(list(TCP_M))  # the controller holds the tool, as the cell's polyscope frame says
+    ctrl.setTcp(list(TCP_M))  # the controller holds the tool, as the cell's controller frame says
     arm.set_live_planner_world(_world(_Camera(silent=False)))
     return arm
 

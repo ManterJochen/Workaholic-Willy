@@ -215,7 +215,7 @@ class UncheckedPathWarningPremiseTests(unittest.TestCase):
     """The shipped-tree facts that `SafetyPreflight.gate_planned_path` cites to warn, not refuse.
 
     ⛔ THE COMMENT AT `preflight.py` SAID "Every profile this repository ships has
-    `motion_planner: curobo`" AND ONE DOES NOT. Measured 2026-09-10 over the base tree plus all 26
+    `motion_planner: curobo`" (now `robot.motion.planner`) AND ONE DOES NOT. Measured 2026-09-10 over the base tree plus all 26
     overlay layers: `ursim` ships `ik`, deliberately, because the URSim container has no GPU and the
     cuRobo sidecar cannot start there, so the fail-closed planner path would refuse every move.
 
@@ -226,7 +226,7 @@ class UncheckedPathWarningPremiseTests(unittest.TestCase):
     comment red instead of leaving it to be read as true.
     """
 
-    #: Profiles whose `robot.ur.motion_planner` is NOT `curobo`, and why. `ursim` is a container with
+    #: Profiles whose `robot.motion.planner` is NOT `curobo`, and why. `ursim` is a container with
     #: no GPU; adding a row here is a decision, not a fix.
     NON_CUROBO_PROFILES = {"ursim": "ik"}
 
@@ -268,17 +268,17 @@ class UncheckedPathWarningPremiseTests(unittest.TestCase):
         from src.config.tree import default_data_dir
 
         measured = {
-            name: robot.ur.motion_planner
+            name: robot.motion.planner
             for name, robot in self._robot_configs()
-            if robot.ur.motion_planner != "curobo"
+            if robot.motion.planner != "curobo"
         }
         for name, planner in self.NON_CUROBO_PROFILES.items():
             with self.subTest(declared=name):
-                self.assertEqual(measured.get(name), planner, "a declared exception changed its motion_planner")
+                self.assertEqual(measured.get(name), planner, "a declared exception changed its planner")
         for name, planner in measured.items():
             layer = default_data_dir() / "robot" / f"robot.{name}.yaml"
             raw = (yaml.safe_load(layer.read_text(encoding="utf-8")) if layer.is_file() else None) or {}
-            stated = ((raw.get("robot") or {}).get("ur") or {}).get("motion_planner")
+            stated = ((raw.get("robot") or {}).get("motion") or {}).get("planner")
             with self.subTest(profile=name):
                 self.assertEqual(stated, planner,
                                  f"{name} runs {planner!r} and its own layer does not say so: it stopped planning "

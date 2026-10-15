@@ -19,6 +19,7 @@ import unittest
 
 import numpy as np
 
+from src.config.arms import available_arms
 from src.robot.safety._ur_ik import (
     BRANCH_POINT_TOL_RAD,
     IK_SOLUTION_TOL_MM,
@@ -30,9 +31,9 @@ from src.robot.safety._ur_ik import (
     ur_branch,
     ur_flange_ik,
 )
-from src.robot.safety._ur_kinematics import UR_DH_TABLES_M, ur_link_transforms_mm
+from src.robot.safety._ur_kinematics import ur_dh_rows, ur_link_transforms_mm
 
-#: Random configurations per model. Each call costs about 2.4 ms, so this is about 3 s for the seven models.
+#: Random configurations per model. Each call costs about 2.4 ms, so this is about 4 s for the eight described arms.
 _PER_MODEL = 200
 
 
@@ -56,7 +57,8 @@ def _apart(a: "tuple[float, ...] | np.ndarray", b: "tuple[float, ...] | np.ndarr
 
 def _clear_of_singularities(model: str, q: np.ndarray) -> bool:
     """Wrist 2 and the elbow away from 0 and pi, and the wrist centre off the shoulder's cylinder."""
-    table = UR_DH_TABLES_M[model]
+    table = ur_dh_rows(model)
+    assert table is not None, f"no arm description for {model}"
     flange = _flange(model, q)
     wrist = flange @ np.array([0.0, 0.0, -table[5].d_m * 1000.0, 1.0])
     return (abs(math.sin(q[4])) > 0.05 and abs(math.sin(q[2])) > 0.05
@@ -66,7 +68,7 @@ def _clear_of_singularities(model: str, q: np.ndarray) -> bool:
 class EverySolutionReachesTheGoalTests(unittest.TestCase):
     def test_every_solution_puts_the_flange_on_the_goal_on_every_model(self) -> None:
         rng = np.random.default_rng(20260923)
-        for model in UR_DH_TABLES_M:
+        for model in available_arms():
             with self.subTest(model=model):
                 worst_mm = worst_rad = 0.0
                 for _ in range(_PER_MODEL):
@@ -84,7 +86,7 @@ class EverySolutionReachesTheGoalTests(unittest.TestCase):
 
     def test_the_configuration_the_pose_came_from_is_among_them(self) -> None:
         rng = np.random.default_rng(7)
-        for model in UR_DH_TABLES_M:
+        for model in available_arms():
             with self.subTest(model=model):
                 checked = 0
                 while checked < _PER_MODEL // 2:
@@ -121,7 +123,7 @@ class SingularPosesDoNotBreakItTests(unittest.TestCase):
     }
 
     def test_every_singular_case_returns_solutions_that_reach_the_goal(self) -> None:
-        for model in UR_DH_TABLES_M:
+        for model in available_arms():
             for name, q in self._CASES.items():
                 with self.subTest(model=model, case=name):
                     goal = _flange(model, q)
@@ -166,7 +168,8 @@ class WhatIsNotAnAnswerTests(unittest.TestCase):
         self.assertEqual((), ur_flange_ik("ur10", goal))
 
     def test_an_unknown_model_is_none(self) -> None:
-        self.assertIsNone(ur_flange_ik("ur20", np.eye(4)))
+        # ur99, an arm nobody describes: ur20 was this test's unknown arm until the arm registry described it (P0d D3b).
+        self.assertIsNone(ur_flange_ik("ur99", np.eye(4)))
 
     def test_a_goal_that_is_not_a_transform_is_refused(self) -> None:
         with self.assertRaises(ValueError):
@@ -254,7 +257,7 @@ class TheBranchTests(unittest.TestCase):
 
     def test_each_of_the_eight_solutions_reads_the_branch_it_was_solved_on_on_every_model(self) -> None:
         rng = np.random.default_rng(29)
-        for model in UR_DH_TABLES_M:
+        for model in available_arms():
             checked = 0
             while checked < 20:
                 q = rng.uniform(-math.pi, math.pi, 6)

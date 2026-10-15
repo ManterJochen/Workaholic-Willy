@@ -41,8 +41,11 @@ if str(_ROOT) not in sys.path:
 if str(_ROOT / "scripts" / "bench") not in sys.path:
     sys.path.insert(0, str(_ROOT / "scripts" / "bench"))
 
-#: Where the recordings and the cell's config tree lie: ``<bank>/<day>/views/*.npz`` and ``<bank>/robominds_config``.
-BANK = Path(os.environ.get("WILLY_REPLAY_BANK", "D:/dev/willy_replay_bank"))
+#: Where the recordings and the cell's config tree lie: ``<bank>/<day>/views/*.npz`` and ``<bank>/robominds_config``;
+#: ``WILLY_REPLAY_BANK``, else the reference workstation's folder on Windows (P0h h8), else ``~/willy_replay_bank``.
+_WINDOWS_BANK_GUESS = "D:/dev/willy_replay_bank"
+BANK = Path(os.environ.get("WILLY_REPLAY_BANK") or (
+    _WINDOWS_BANK_GUESS if sys.platform == "win32" else str(Path.home() / "willy_replay_bank")))
 #: How many grasps of a look the cell tries at most (``pick_loop.GRASPS_TRIED_PER_ATTEMPT``: the best and up to 35 more).
 MAX_TRIES = 36
 #: The stamp the recorded frames are given, seconds, and how much later each world is asked for.
@@ -210,7 +213,7 @@ class ReplayCell:
 
         from src.config.tree import load_tree  # noqa: PLC0415
         from src.robot.drivers.ur.arm import URRobotArm  # noqa: PLC0415
-        from src.robot.drivers.ur.tool_frame import tool_frame_matrix  # noqa: PLC0415
+        from src.geometry.matrix import position_quaternion_to_matrix  # noqa: PLC0415
 
         tree = load_tree(None, root=str(config_dir))
         if not tree.ok:
@@ -221,15 +224,16 @@ class ReplayCell:
         if home is None:
             raise RuntimeError("the bank's cell declares no robot.home_joint_positions for its arm to stand at")
         frame = self.robot.gripper.tool_frame
-        self.tool = np.asarray(tool_frame_matrix(frame.offset_mm, frame.rotation_quat_xyzw), dtype=np.float64)
+        self.tool = position_quaternion_to_matrix(np.asarray(frame.offset_mm, dtype=np.float64),
+                                                  np.asarray(frame.rotation_quat_xyzw, dtype=np.float64))
         self.state = instant_ur.ControllerState(
-            model=str(self.robot.ur.model).lower(), joints=[float(v) for v in home],
-            tcp_offset=instant_ur.ur_pose(self.tool) if frame.source == "polyscope" else [0.0] * 6)
+            model=str(self.robot.arm.model).lower(), joints=[float(v) for v in home],
+            tcp_offset=instant_ur.ur_pose(self.tool) if frame.source == "controller" else [0.0] * 6)
         instant_ur.install(self.state)
         self.arm = URRobotArm(self.robot)
         self.arm.connect()
         self.preflight: Any = self.arm._preflight  # noqa: SLF001
-        self.model = str(self.robot.ur.model).lower()
+        self.model = str(self.robot.arm.model).lower()
         self._services: dict[bytes, Any] = {}
         #: When the last look of the pick :meth:`world` built was taken, on the recorded frames' clock.
         self.last_look_s = _STAMP_S
@@ -434,7 +438,7 @@ class ReplayCell:
         return min(turned, key=lambda q: float(np.sum((q - seed) ** 2)))
 
     def _goal(self, tcp: np.ndarray, seed: np.ndarray) -> "np.ndarray | None":
-        """The configuration the cell's driver moves to for ``tcp`` from ``seed`` (``URArm._ranked_goals``): of the
+        """The configuration the cell's driver moves to for ``tcp`` from ``seed`` (``PlannedArm._ranked_goals``): of the
         goals in the guard's window, each by the moveJ it takes (``_ur_ik.nearest_goals``), the arm's own branch first.
         Taken nearest by the sum of squares alone, the standoff of 2026-10-12 at 08:21 and 08:22 stood on the other
         shoulder with the elbow under the table, and the guard refused every grasp of both picks."""
@@ -444,7 +448,7 @@ class ReplayCell:
         solutions = ur_flange_ik(self.model, self._flange(tcp), q6_if_singular=float(seed[-1]))
         if not solutions:
             return None
-        lower, upper = self.arm._goal_joint_window()  # noqa: SLF001 (the driver's own window)
+        lower, upper = self.arm.goal_joint_window()
         goals = nearest_goals(solutions, current=seed.tolist(), lower=lower, upper=upper, velocity=1.0)
         if not goals:
             return None

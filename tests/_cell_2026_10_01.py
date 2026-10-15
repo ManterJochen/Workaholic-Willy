@@ -152,15 +152,15 @@ def owner_robot(**safety_world: object) -> dict[str, Any]:
     world.update(safety_world)
     return {
         "vendor": "ur",
-        "ur": {"model": "ur10", "motion_planner": "curobo"},
+        "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
         "workspace_limits": {"x_min": -420.0, "x_max": 400.0, "y_min": -900.0, "y_max": -270.0, "z_min": 16.0,
                              "z_max": 800.0},
         "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "hand_adapter", "thickness_mm": 23.0}],
-                    "tool_frame": {"source": "polyscope", "offset_mm": [0.0, 0.0, 157.0],
+                    "tool_frame": {"source": "controller", "offset_mm": [0.0, 0.0, 157.0],
                                    "rotation_quat_xyzw": [0.0, 0.0, -0.7071068, 0.7071068]}},
         "safety": {"payload": {"enforce": False},
                    "self_collision": {"backend": "fcl", "min_distance_mm": 5.0, "perceived_min_distance_mm": 5.0,
-                                      "kinematics_model": "ur10", "planner_margin_mm": 4.0, "tool_model": "finger"},
+                                      "planner_margin_mm": 4.0, "tool_model": "finger"},
                    "planning_world": world},
     }
 
@@ -171,16 +171,15 @@ class OwnerCell:
     def __init__(self, robot: "dict[str, Any] | None" = None) -> None:
         from src.config.schema.robot import RobotConfig
         from src.robot.drivers.ur.arm import URRobotArm
-        from src.robot.drivers.ur.tool_frame import tool_frame_matrix
+        from src.geometry.matrix import position_quaternion_to_matrix
 
         self.config = RobotConfig.model_validate(robot if robot is not None else owner_robot())
         self.arm = URRobotArm(self.config)
         self.preflight = self.arm._preflight  # noqa: SLF001
         self.guard = self.preflight._path_authority(self.arm)  # noqa: SLF001
         offset, turn = self.config.gripper.tool_frame.offset_mm, self.config.gripper.tool_frame.rotation_quat_xyzw
-        self.tool = np.asarray(tool_frame_matrix((float(offset[0]), float(offset[1]), float(offset[2])),
-                                                 (float(turn[0]), float(turn[1]), float(turn[2]), float(turn[3]))),
-                               dtype=np.float64)
+        self.tool = position_quaternion_to_matrix(np.asarray(offset, dtype=np.float64),
+                                                  np.asarray(turn, dtype=np.float64))
 
     def has_the_engine(self) -> bool:
         return self.guard is not None and self.guard.exact_mesh_engine(self.arm) is not None

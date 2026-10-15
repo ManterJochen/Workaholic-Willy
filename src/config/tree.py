@@ -81,6 +81,26 @@ def _registry_hands(root: Path, config: Any) -> tuple[str, ...]:
     return hands
 
 
+def _registry_arm(root: Path, config: Any) -> None:
+    """Refuse a tree that describes the arm its cell selects differently from the repository's registry (P0e E12).
+
+    The third authority check beside the hands' and the cameras': the arm's collision bundles, sphere maps, retract
+    rows and evidence were measured through the repository's description, so a tree may repeat that file and nothing
+    else (``src.config.arms.tree_arm_refusal``, which holds the rule). Until P0e the loader never asked it, and an
+    edited ``arms/<model>.yaml`` in a deployment tree was ignored in silence. Only the selected arm is compared; a cell
+    that selects no model (the desk dummy) reads nothing.
+    """
+    from .arms import tree_arm_refusal  # noqa: PLC0415
+    from .loader import ConfigError  # noqa: PLC0415
+
+    model = getattr(getattr(getattr(config, "robot", None), "arm", None), "model", "")
+    if not model:
+        return
+    refusal = tree_arm_refusal(str(model), data_dir=root)
+    if refusal is not None:
+        raise ConfigError(refusal)
+
+
 def _registry_cameras(root: Path, config: Any) -> None:
     """Refuse an unreadable camera registry, or a rig's camera the repository does not hold alike.
 
@@ -503,6 +523,7 @@ class ConfigTree:
             )
             hands = _registry_hands(self.root, config)
             _registry_cameras(self.root, config)
+            _registry_arm(self.root, config)
         except ConfigError as exc:
             return LoadedTree(tree=self, error=str(exc), values=given)
         return LoadedTree(tree=self, config=config, hands=hands, values=given)
@@ -513,9 +534,9 @@ class ConfigTree:
         `connected` has no default. `set_keys` declares `connected: bool = False`, the permissive
         value, and its one production caller, `api/routers/config.py:138`, has
         `CellSession.connected` one attribute away. A caller that leaves it out skips the
-        `requires_disconnected` guard on the two controller-address keys, `robot.ur.ip` and
-        `robot.kuka.controller_ip`: the machine that receives every motion is repointable from the
-        browser while the cell is live, with nothing in the result saying the guard did not run.
+        `requires_disconnected` guard on the controller-address key, `robot.ur.ip`: the machine
+        that receives every motion is repointable from the browser while the cell is live, with
+        nothing in the result saying the guard did not run.
 
         `root`, `layers` and `profile` come from the tree, so the write cannot land in a file that
         a different chain then validates. `set_keys` raises on that disagreement; here it is

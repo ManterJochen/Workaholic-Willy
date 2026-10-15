@@ -5,8 +5,8 @@ with a contract-locked member set. The extras a controller can offer (digital an
 analog I/O, live force and torque, live robot and safety status, what a straight line
 keeps, a model of the carried part, a move home that says why it was refused, the
 configuration a pose goes to, a joint move on its straight joint line and nothing else, a line judged as if the
-jaws held a part, where the controller puts its flange) are declared here as
-separate ``runtime_checkable`` Protocols,
+jaws held a part, where the controller puts its flange, and what a UR cell judges and holds ahead of its motions) are
+declared here as separate ``runtime_checkable`` Protocols,
 mirroring :class:`~src.robot.core.gripper.ObjectDetectingGripper`. Hand guiding follows the same
 pattern from its own module, :mod:`~src.robot.core.freedrive`: an arm a person may move by
 hand advertises ``SupportsFreedrive`` (the UR driver, on teach mode), and one that does not,
@@ -31,10 +31,10 @@ implement the same Protocols against its own controller.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from contextlib import AbstractContextManager
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import numpy as np
 
@@ -50,35 +50,52 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.geometry import Pose
 
     from .camera_world import CameraWorldDecline
+    from .errors import ArmFault
     from .joint_positions import JointPositions
     from .motion_result import MotionResult
 
 __all__ = [
+    "AppliesToolFrame",
+    "BrakesWhenHalted",
     "ArmHalted",
     "CarriesPayload",
+    "CarriesWristBodies",
     "ChoosesConfigurations",
+    "ControllerProvenance",
     "DigitalIOPort",
     "DrivesJointLines",
     "DrivesJointPaths",
     "HALT_BRAKE_OUTCOMES",
     "HaltState",
+    "HoldsItsFingersAsOpened",
     "HoldsItsWorld",
+    "HoldsItsWorldAtJunctions",
     "HomesTyped",
     "JudgesCarriedLines",
     "JudgesGraspsAhead",
     "JudgesLinesAhead",
+    "JudgesNextLegs",
+    "JudgesTheLineDown",
+    "KeepsItsBranch",
     "KeepsLines",
     "KnowsItsFlange",
+    "KnowsItsHand",
     "LineMotion",
     "LineReading",
     "PayloadModel",
+    "ReadsItsStatusQuickly",
+    "ReportsControllerProvenance",
+    "ReportsWristBodies",
+    "ScreensJointGoals",
     "RobotMode",
     "RobotStatus",
     "SafetyMode",
+    "ScreensConfigurations",
     "SupportsDigitalIO",
     "SupportsForceTorque",
     "SupportsHalt",
     "SupportsRobotStatus",
+    "SupportsWatching",
     "Wrench",
     "brakes_in_motion_of",
     "chose_no_carried_part",
@@ -184,6 +201,11 @@ class RobotStatus:
     ``safetystatus`` string, so an operator reads a fault rather than a code.
     ``halted`` is why the arm's halt latch is set (:class:`SupportsHalt`), ``""`` while it is not: it is the arm's,
     not the controller's, and it is read beside the controller's fields rather than in them.
+
+    ``program_running`` says whether the program on the controller that takes this cell's motion commands runs (on a
+    UR the RTDE control script). It is required and keyword-only, so a producer that cannot say does not build a
+    status that reads as ready (P0e E13): measured on URSim, a UR in RUNNING and NORMAL with no stop latched took no
+    command at all once that script had stopped.
     """
 
     robot_mode: RobotMode
@@ -192,21 +214,29 @@ class RobotStatus:
     emergency_stopped: bool
     message: str = ""
     halted: str = ""
+    program_running: bool = field(kw_only=True)
 
     @property
-    def controller_operational(self) -> bool:
-        """The controller's own answer: powered, running, in NORMAL safety and not stopped. The halt latch aside.
-
-        What every console gate reads, after it read the latch: a halted arm on a healthy controller is halted, and
-        must never read as a protective stop, whose remedy (the pendant) is not the halt's (a person confirms the cell
-        is clear).
-        """
+    def controller_ready(self) -> bool:
+        """The controller's state alone: powered, running, in NORMAL safety and not stopped, its program and the halt
+        latch aside."""
         return (
             self.robot_mode == RobotMode.RUNNING
             and self.safety_mode == SafetyMode.NORMAL
             and not self.protective_stopped
             and not self.emergency_stopped
         )
+
+    @property
+    def controller_operational(self) -> bool:
+        """The controller's own answer: ready, and running the program that takes this cell's commands. The halt latch
+        aside.
+
+        What every console gate reads, after it read the latch: a halted arm on a healthy controller is halted, and
+        must never read as a protective stop, whose remedy (the pendant) is not the halt's (a person confirms the cell
+        is clear).
+        """
+        return self.controller_ready and self.program_running
 
     @property
     def is_operational(self) -> bool:
@@ -271,20 +301,119 @@ class SupportsForceTorque(Protocol):
 
 
 @runtime_checkable
-class SupportsRobotStatus(Protocol):
-    """Capability extension: read the live robot and safety state, and clear a stop.
+class CarriesWristBodies(Protocol):
+    """Capability extension: the arm holds the wrist cameras mounted on its own flange.
 
-    This lets a pipeline surface a controller fault with its safety mode and text
-    instead of a bare motion rejection, and clear a protective stop so the cell
-    resumes work.
+    A camera on the wrist travels with the arm, so the planner routes around it and the self filter takes it out of
+    what the cameras see. An arm that cannot take them is one a cell with a wrist camera may not be built on, and
+    the refusal says so by name (:class:`~src.robot.execution.wrist_bodies.WristBodies`). Until 2026-09-20 the caller
+    asked with ``getattr``, so an arm without the member never received the cameras, with nothing saying so.
+
+    The bodies are ``safety.planning.body_link.WristBody`` values; ``core`` sits below ``safety`` and types them
+    loosely rather than importing upward.
+    """
+
+    def set_wrist_bodies(self, bodies: "Sequence[Any]") -> None:
+        """Hand this arm the wrist cameras it carries, before its planner or guard is built. Empty clears them."""
+        ...
+
+
+@runtime_checkable
+class AppliesToolFrame(Protocol):
+    """Capability extension: the arm says which flange-to-TCP frame its poses stand on, right now.
+
+    A hand-eye solve is recorded against the frame applied while it was measured, so an arm that cannot say which
+    one it applied leaves the record unanchored, and the artifact says so instead of guessing.
+    """
+
+    @property
+    def active_tool_frame(self) -> "np.ndarray | None":
+        """The flange to TCP this arm applies now, as a 4x4 in millimetres, or ``None`` where it is not known."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class ControllerProvenance:
+    """What the controller says about itself: evidence a person can judge, never a guess.
+
+    ``is_simulator`` is three-valued and never ``False``. A driver sets it ``True`` only where the pair it holds
+    proves a simulator; anything short of proof stays ``None``, because "we could not tell" and "it is a real
+    controller" are different answers, and a console that renders them alike tells an operator a physical arm is
+    connected when nothing checked. Measured 2026-08-19: a URSim UR3e rendered as a physical arm, because the only
+    flag on the panel was ``is_simulated``, which is about the driver and is rightly ``False`` for URSim.
+
+    The evidence itself is reported whether or not it proves anything, so a person can read the serial and the
+    address and judge them.
+
+    Attributes:
+        serial (str | None): The controller's own serial number, ``None`` where it did not answer (default: None).
+        host (str | None): The address the driver talks to (default: None).
+        is_simulator (bool | None): ``True`` only where the driver proved a simulator, ``None`` otherwise; never
+            ``False`` (default: None).
+    """
+
+    serial: str | None = None
+    host: str | None = None
+    is_simulator: bool | None = None
+
+    def __post_init__(self) -> None:
+        if self.is_simulator is False:
+            raise ValueError(
+                "ControllerProvenance.is_simulator is True or None: absence of proof is absence of a claim, "
+                "not a claim that the controller is real."
+            )
+
+    def says_nothing(self) -> bool:
+        """Whether no evidence was gathered at all, so a caller adds no keys rather than empty ones.
+
+        Returns:
+            bool: ``True`` where serial, host and verdict are all unknown.
+        """
+        return self.serial is None and self.host is None and self.is_simulator is None
+
+    def render(self) -> str:
+        """Describe this to a person.
+
+        Returns:
+            str: One line, ASCII, no trailing newline.
+        """
+        verdict = "simulator (proven)" if self.is_simulator else "simulator unproven"
+        return f"serial {self.serial or 'unknown'}, host {self.host or 'unknown'}, {verdict}"
+
+
+@runtime_checkable
+class ReportsControllerProvenance(Protocol):
+    """Capability extension: the arm asks its controller what it is, and never raises doing it.
+
+    The console reached for ``arm._conn`` to answer this, which is a UR attribute: a second vendor would have
+    rendered "cannot tell" forever, and nothing would have said so. The rule that turns evidence into proof is the
+    controller's own, so it lives in the driver that knows the controller.
+    """
+
+    def controller_provenance(self) -> ControllerProvenance:
+        """What this arm's controller says about itself. Best effort; an unreachable controller says nothing."""
+        ...
+
+
+@runtime_checkable
+class SupportsRobotStatus(Protocol):
+    """Capability extension: read the live robot and safety state, and let a person acknowledge a fault.
+
+    This lets a pipeline say a controller fault (:class:`~src.robot.core.errors.ArmFault`, with the safety mode and the
+    controller's own text) instead of a bare motion rejection. Clearing it is a person's action and never the stack's.
     """
 
     def get_robot_status(self) -> RobotStatus:
         """A snapshot of the controller's robot mode, safety mode and stop flags."""
         ...
 
-    def recover_from_protective_stop(self) -> bool:
-        """Try to clear an active protective stop. ``True`` if the controller acknowledged."""
+    def acknowledge_fault(self, fault: "ArmFault") -> bool:
+        """A person acknowledges ``fault`` at this controller; ``True`` where it acknowledged.
+
+        Recovery is never automatic (the owner, 2026-09-19): this is reached from a script run at the cell, where whoever
+        clears a stop can see the arm, and a boundary test forbids a call from the execution, grasping and safety layers
+        and from the console. A fault whose ``acknowledgeable`` is ``False`` answers ``False``.
+        """
         ...
 
 
@@ -346,6 +475,38 @@ class HaltState:
     def to_dict(self) -> dict[str, object]:
         return {"reason": self.reason, "requested_at": self.requested_at, "in_motion": self.in_motion,
                 "braked": self.braked, "brake_s": self.brake_s, "brake": self.brake}
+
+
+class MoveEnd(StrEnum):
+    """How the last move a link to a controller was asked for ended, for the sentence a refused verb says.
+
+    Read by the thread that asked for the move, right after it returned, never across threads. The UR connection
+    keeps it (``URConnection.last_move_end``); a transport that keeps the halt latch reports it
+    (:class:`~src.robot.core.transport.HoldsAHaltLatch`). Here since P0e E7, where the UR connection defined it.
+    """
+
+    #: No move was asked for yet.
+    NONE = "none"
+    #: The move was sent as it always was, and the answer is the controller's own (brakes off, or a caller's asynchronous move).
+    SENT = "sent"
+    #: A watched move stood at its target: joints within 2e-3 rad, a line's TCP within 1 mm and 2e-3 rad.
+    ARRIVED = "arrived"
+    #: The halt latch was set: nothing was sent.
+    REFUSED_HALTED = "refused_halted"
+    #: The halt braked the move in flight (stopJ or stopL on a UR) and the arm stood still.
+    BRAKED = "braked"
+    #: The halt's brake was sent and the arm was not seen to stand still, or the brake itself failed.
+    BRAKE_UNCONFIRMED = "brake_unconfirmed"
+    #: A watched move ended away from its target with nobody braking it.
+    ENDED_SHORT = "ended_short"
+    #: A protective or emergency stop, or the end of the control program, ended a watched move.
+    STOPPED = "stopped"
+    #: The controller refused to start the move, or never showed it running; a move it never showed was stopped.
+    NOT_STARTED = "not_started"
+
+
+#: The ends of a move the halt explains: a verb that meets one answers CANCELLED, not a controller refusal.
+HALT_ENDS: frozenset[MoveEnd] = frozenset({MoveEnd.REFUSED_HALTED, MoveEnd.BRAKED, MoveEnd.BRAKE_UNCONFIRMED})
 
 
 @runtime_checkable
@@ -427,6 +588,20 @@ def halt_state_of(arm: object) -> HaltState | None:
     return state if isinstance(state, HaltState) else None
 
 
+@runtime_checkable
+class BrakesWhenHalted(Protocol):
+    """Capability extension: the arm says whether a halt brakes the move in flight, or lets it run to its end.
+
+    Beside :class:`SupportsHalt` and not in it, because a latch is the same question on every arm and what becomes of
+    the move in flight is not: the UR brakes it under control where ``robot.ur.brake_on_halt`` says so, the dummy has
+    nothing in flight. The console says which on its brake panel (:func:`brakes_in_motion_of`).
+    """
+
+    def brakes_in_motion(self) -> bool:
+        """Whether a halt brakes a move in flight here, rather than letting it run to its end."""
+        ...
+
+
 def brakes_in_motion_of(arm: object) -> bool:
     """Whether ``arm`` brakes a move in flight when it is halted (the UR with ``robot.ur.brake_on_halt``).
 
@@ -439,6 +614,24 @@ def brakes_in_motion_of(arm: object) -> bool:
         return method() is True
     except Exception:  # noqa: BLE001 (an arm that cannot say brakes nothing anybody can count on)
         return False
+
+
+@runtime_checkable
+class SupportsWatching(Protocol):
+    """Capability extension: watch the controller without driving it (P0i, owner 2026-09-26).
+
+    ``watch()`` opens a link on which the status reads and a person's acknowledgement answer and which opens on a
+    controller in a protective stop, where a control program will not start; ``is_connected`` stays ``False`` on it, so
+    every motion verb refuses with nothing sent, and ``disconnect()`` closes it. The fault door watches: a stop is what
+    it is for, and a full connect is refused by exactly that stop (measured on URSim, 2026-09-26).
+    """
+
+    @property
+    def is_watching(self) -> bool: ...
+
+    def watch(self) -> None:
+        """Open the watch; a no-op on an arm that is connected or already watching."""
+        ...
 
 
 class PayloadModel(StrEnum):
@@ -540,6 +733,40 @@ class HomesTyped(Protocol):
 
     def move_to_home(self) -> "MotionResult":
         """Move to the configured home, gated, and return the typed result of that one move."""
+        ...
+
+    @property
+    def home_joint_positions(self) -> "Sequence[float]":
+        """The joints :meth:`move_to_home` drives to, in radians. The joint-limit guard centres a cable's
+        half-turn window on them (``safety.joint_limits.within_half_turn_of_home``)."""
+        ...
+
+
+@runtime_checkable
+class ScreensJointGoals(Protocol):
+    """Capability extension: the arm says what a goal it plans to is screened against before any motion.
+
+    The workspace box its guard holds a grasp centre to and that guard's margin, the joint window its planner
+    chooses a goal configuration in, and where its tool stands at a joint vector by its own chain. A calibration
+    station is screened by the numbers the arm will judge it with, instead of by a copy of its configuration.
+    """
+
+    @property
+    def workspace_limits(self) -> Any:
+        """The box the workspace guard holds every grasp centre to (``robot.workspace_limits``), millimetres."""
+        ...
+
+    @property
+    def workspace_margin_mm(self) -> float:
+        """How far inside that box the guard keeps a grasp centre, millimetres."""
+        ...
+
+    def goal_joint_window(self) -> "tuple[Sequence[float], Sequence[float]]":
+        """Where a chosen goal's joints may lie, radians: the planner's window narrowed to what the guard admits."""
+        ...
+
+    def tcp_at_joints_mm(self, joints: Any) -> "np.ndarray | None":
+        """The TCP at ``joints`` as a 4x4 in millimetres by the arm's own chain and tool frame, or ``None``."""
         ...
 
 
@@ -702,6 +929,169 @@ class JudgesLinesAhead(Protocol):
     def lines_refusal_ahead(self, *, approach: "Pose", lines: "Sequence[Pose]") -> str:
         """Why the move to ``approach`` or one of ``lines`` after it would be refused, judged now from where the arm
         stands; ``""`` where every judgement passes, and where this arm cannot judge them ahead. Nothing moves."""
+        ...
+
+
+@runtime_checkable
+class JudgesNextLegs(Protocol):
+    """Capability extension: the arm judges the next leg while the jaws' stroke is waited out (2026-10-08).
+
+    A grasp closes, a place opens, and the jaws take their stroke while the arm stands. Where ``robot.motion.
+    judge_next_leg`` says so, a verb has the hand leave the stroke to it (``set_closed(wait=False)``) and asks the arm
+    meanwhile: the line out of a place (:meth:`judge_line_ahead`), and the joint move declared next
+    (:meth:`expecting_next`, :meth:`judge_the_next_leg`), the carry to a bin's look after a pick and the return after a
+    place. A leg judged ahead runs as it was judged where nothing it was judged on changed. Judging moves nothing. It is
+    not a member of :class:`~src.robot.core.RobotArm`, for the reason :class:`HomesTyped` gives; an arm that does not
+    implement it, or reads ``judges_next_legs`` false, has every leg judged as it runs.
+    """
+
+    @property
+    def judges_next_legs(self) -> bool:
+        """Whether a verb judges the next leg while the jaws' stroke is waited out."""
+        ...
+
+    def expecting_next(self, joints: "JointPositions") -> "AbstractContextManager[None]":
+        """A block within which the joint move to ``joints`` is the leg after the verbs running in it."""
+        ...
+
+    def judge_the_next_leg(self, after: "Pose", *, junction: str, now: bool = True) -> str:
+        """Judge the declared joint move from where the line to ``after`` leaves the arm and keep it for that move;
+        ``""`` where it was kept or left to the line, else why not. Nothing moves."""
+        ...
+
+    def judge_line_ahead(self, pose: "Pose") -> "MotionResult | None":
+        """Judge the line to ``pose`` from where the arm stands, now, and keep it for that one line; ``None`` where it
+        would run, else the refusal it would meet. Nothing moves."""
+        ...
+
+
+@runtime_checkable
+class HoldsItsWorldAtJunctions(Protocol):
+    """Capability extension: the arm holds its world across a junction of a grasp or a place, rather than taking a new
+    frame there (``safety.planning_world.hold``: ``standoff``, ``carry``, ``drop``; the owner's O2 of 2026-10-09).
+
+    Beside :class:`HoldsItsWorld`, which holds the world for a block a caller names: these say where the cell's
+    switches hold it, and hold the approach a grasp judged ahead only where its route stands ready to run as judged. It
+    is not a member of :class:`~src.robot.core.RobotArm`, for the reason :class:`HomesTyped` gives; an arm that does not
+    implement it refreshes at every junction, as before.
+    """
+
+    def holds_world_at(self, junction: str) -> bool:
+        """Whether this arm holds its world across ``junction``, where a live camera world is wired."""
+        ...
+
+    def holding_the_approach(self, standoff: "Pose", reason: str) -> "AbstractContextManager[bool]":
+        """A block that holds the world the grasp judged ahead to ``standoff`` was judged in; yields whether it holds."""
+        ...
+
+
+@runtime_checkable
+class JudgesTheLineDown(Protocol):
+    """Capability extension: the arm judges the line down from a standoff to a grasp in the world it has, with no new
+    frame, from the configuration the route to the standoff ends on.
+
+    A pick asks it of the next grasp of a look once the one before was refused before anything was sent (the owner,
+    2026-10-12: the guard's boxes decide what the next grasp is spared). Asking moves nothing. It is not a member of
+    :class:`~src.robot.core.RobotArm`, for the reason :class:`HomesTyped` gives; a pick on an arm that does not implement
+    it judges the next grasp whole, as before.
+    """
+
+    def line_down_refusal(self, *, standoff: "Pose", grasp: "Pose") -> str:
+        """Why the line down from ``standoff`` to ``grasp`` would be refused, or ``""`` where it would run, where
+        nothing is judged ahead, and where no configuration reaches the standoff. Nothing moves."""
+        ...
+
+
+@runtime_checkable
+class KeepsItsBranch(Protocol):
+    """Capability extension: the arm keeps the branch it holds for the Cartesian moves of a block (the owner's R2 of
+    2026-10-08: a change of branch is the last resort).
+
+    A pick tries every grasp of a look inside such a block first, and leaves the grasps it refuses for their branch until
+    after them; it reads, on the closed form alone, whether a pose has a configuration on the arm's branch at all. It is
+    not a member of :class:`~src.robot.core.RobotArm`, for the reason :class:`HomesTyped` gives; a pick on an arm that
+    does not implement it tries its grasps in their order, as before.
+    """
+
+    def keeping_its_branch(self, overshoot_deg: float = 15.0) -> "AbstractContextManager[Any]":
+        """A block in which every Cartesian move keeps the branch the arm holds; yields what the block refused for it."""
+        ...
+
+    def has_a_goal_on_its_branch(self, pose: "Pose", here: "Sequence[float]") -> "bool | None":
+        """Whether ``pose`` has a configuration on the branch the arm holds at ``here``; ``None`` where it cannot tell."""
+        ...
+
+
+@runtime_checkable
+class ScreensConfigurations(Protocol):
+    """Capability extension: the arm says what the exact guard and the planner make of joints before any move goes there.
+
+    A pose is screened where it is taught, where a campaign starts and at the desk (the owner, 2026-09-30), so a pose
+    only the planner's padded spheres refuse is known before a pick meets it. The verdict is a
+    ``safety.planning.band.PoseScreen``; ``core`` sits below ``safety`` and types it loosely rather than importing
+    upward. It is not a member of :class:`~src.robot.core.RobotArm`, for the reason :class:`HomesTyped` gives; a pose on
+    an arm that does not implement it is judged when a motion goes there.
+    """
+
+    def screen_configuration(self, joints: "JointPositions", *, ask_planner: bool = True) -> Any:
+        """What the guard and the planner say about ``joints``, as a ``PoseScreen``. Nothing moves."""
+        ...
+
+
+@runtime_checkable
+class ReadsItsStatusQuickly(Protocol):
+    """Capability extension: the arm reads the controller's state from what it already receives, with no round trip.
+
+    :meth:`SupportsRobotStatus.get_robot_status` may ask the controller for its text on every call (the UR's dashboard);
+    a ready bar that polls asks this instead, whose ``message`` stays empty. Beside that Protocol and not in it, because
+    a status read is every status arm's and a cheap one is not.
+    """
+
+    def quick_robot_status(self) -> RobotStatus:
+        """The controller's fields and the halt latch, from the receive stream; raises on a closed connection."""
+        ...
+
+
+@runtime_checkable
+class KnowsItsHand(Protocol):
+    """Capability extension: the arm is handed the hand it carries, to read and never to command.
+
+    Where only the boxes a camera saw refuse the planner's world, the exact guard decides them alone while this hand
+    reads empty and open (``core.gripper.why_not_known_open``, the owner, 2026-10-01). ``connect_cell`` hands it once
+    both are up. An arm handed none, or one that does not implement this, keeps those boxes in, and the planner decides
+    as before.
+    """
+
+    def set_hand(self, gripper: object | None) -> None:
+        """Hand this arm the hand it carries; ``None`` for none."""
+        ...
+
+
+@runtime_checkable
+class HoldsItsFingersAsOpened(Protocol):
+    """Capability extension: the arm's guard holds the hand's fingers as wide as the hand was told to open them.
+
+    A grasp planned for jaws that open only as needed (lever G, a Robotiq hand, 2026-10-13) is judged and driven with the
+    fingers where the hand reads them back, and not at the full stroke they were baked at (``GraspExecutionPolicy``).
+    An arm that does not implement this judges them fully open, which is never nearer the part than they are.
+    """
+
+    def set_finger_opening(self, width_mm: float | None) -> None:
+        """Hold the fingers ``width_mm`` apart between their inner faces in this arm's guard; ``None`` fully open."""
+        ...
+
+
+@runtime_checkable
+class ReportsWristBodies(Protocol):
+    """Capability extension: the arm says which wrist cameras it carries, as its guard holds them.
+
+    The pick places their housing on each grasp to choose its wrist turn (``wrist_turn``). Beside
+    :class:`CarriesWristBodies`, which hands them in, because an arm that takes them may hold them in a planner it does
+    not show. The bodies are ``safety.planning.body_link.WristBody`` values, typed loosely as there.
+    """
+
+    def wrist_bodies(self) -> "tuple[Any, ...]":
+        """The wrist cameras this arm carries; empty for none."""
         ...
 
 

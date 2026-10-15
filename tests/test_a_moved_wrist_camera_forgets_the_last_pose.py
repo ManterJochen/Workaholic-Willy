@@ -44,7 +44,8 @@ try:  # pyrealsense2 is pinned in requirements.txt, and the wheel is absent on s
 except Exception as exc:  # pragma: no cover - exercised only where the wheel is missing
     rs = None  # type: ignore[assignment]
     _HAS_RS = False
-    _SKIP = f"pyrealsense2 not installed ({exc.__class__.__name__}) -- pip install -r requirements.txt"
+    _SKIP = (f"pyrealsense2 cannot be imported ({exc.__class__.__name__}: {exc}) -- pip install -r requirements.txt, "
+             "and on Linux sudo apt install libusb-1.0-0")
 
 _W, _H = 64, 48
 #: Pixels well inside each half, clear of the edge the spatial filter smooths across.

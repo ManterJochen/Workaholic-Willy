@@ -11,7 +11,9 @@ What it checks, all printed in one block:
      centroid and compares it with the object's true base position. The Umeyama fit RMSE is the
      calibration metric; an oblique view sees the object surface, not its volumetric centre, so a
      centroid delta of a few cm is expected.
-  4. Saves wrist RGB and depth PNGs under :data:`CACHE_DIR` so the viewpoint is inspectable.
+  4. Saves wrist RGB and depth PNGs under logs/debug/eih_wrist/ (``utility.paths.debug_dir``;
+     ``WILLY_DEBUG_DIR`` moves it), so the viewpoint is inspectable, and says of each file
+     whether it was written.
 
 Run (Isaac bundled python):
     <isaac-sim>\\python.bat -m src.willy_sim.inspect_wrist_cam            # headless
@@ -24,6 +26,8 @@ All heavy imports are lazy / on-box only; importing the module stays macOS/CI-sa
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 
@@ -38,8 +42,7 @@ from src.willy_sim.scene import (
 )
 from src.geometry import Frame, Pose
 from src.robot.core.camera_world import CameraWorldDecline
-
-CACHE_DIR = "logs/willy_sim"
+from src.utility.paths import debug_dir
 
 # Two straight-down viewing poses, both reachable: TCP approach down, meaning TCP +Z onto base -Z,
 # via quat [1,0,0,0], a 180 deg rotation about base X. Two slightly different arm configs are what
@@ -56,6 +59,27 @@ VIEWPOSE_B = Pose(
     frame=Frame.BASE,
     label="eih-viewpose-b",
 )
+
+
+def save_views(rgb_bgr: np.ndarray | None, depth: np.ndarray, finite: np.ndarray, *, where: Path,
+               imwrite: Callable[[str, np.ndarray], bool]) -> list[str]:
+    """Write what the wrist sees into ``where``, one line per image saying whether it was written.
+
+    ``cv2.imwrite`` answers ``False`` instead of raising when it cannot write, so each answer is read: until P0h h8 this
+    runner wrote into a folder of one box and printed "saved" on every other.
+    """
+    images: list[tuple[str, np.ndarray]] = []
+    if rgb_bgr is not None:
+        images.append(("_eih_wrist_rgb.png", rgb_bgr))
+    if finite.size:
+        lo, hi = float(finite.min()), float(finite.max())
+        images.append(("_eih_wrist_depth.png",
+                       (np.clip((depth - lo) / max(1e-6, hi - lo), 0, 1) * 255).astype(np.uint8)))
+    lines = []
+    for name, image in images:
+        path = where / name
+        lines.append(f"  saved {path}" if imwrite(str(path), image) else f"  NOT saved: cv2.imwrite could not write {path}")
+    return lines
 
 
 def main() -> None:
@@ -182,13 +206,9 @@ def main() -> None:
             import cv2  # type: ignore[import-not-found]
 
             rgba = cur.get("rgb") if isinstance(cur, dict) else None
-            if rgba is not None:
-                cv2.imwrite(f"{CACHE_DIR}/_eih_wrist_rgb.png", np.asarray(rgba)[..., :3][..., ::-1])
-            if fin.size:
-                lo, hi = float(fin.min()), float(fin.max())
-                vis = (np.clip((depth - lo) / max(1e-6, hi - lo), 0, 1) * 255).astype(np.uint8)
-                cv2.imwrite(f"{CACHE_DIR}/_eih_wrist_depth.png", vis)
-            print(f"  saved {CACHE_DIR}/_eih_wrist_rgb.png and _eih_wrist_depth.png", flush=True)
+            rgb = np.asarray(rgba)[..., :3][..., ::-1] if rgba is not None else None
+            for line in save_views(rgb, depth, fin, where=debug_dir("eih_wrist"), imwrite=cv2.imwrite):
+                print(line, flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"  (image save skipped: {exc})", flush=True)
 

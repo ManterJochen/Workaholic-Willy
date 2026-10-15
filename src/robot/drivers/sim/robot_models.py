@@ -6,15 +6,15 @@ the driver and the scene builder derive the model-specific parts from it.
 
 The canonical model key, "ur5e" or "ur3e", is the one string the whole stack shares:
 
-  * the safety self-collision DH table, ``UR_DH_TABLES_M`` in
-    :mod:`src.robot.safety._ur_kinematics`;
+  * the arm registry, ``config/arms/<model>.yaml``, which holds each arm's joints and its sim
+    block;
   * the cuRobo robot config filename, ``willy_{key}.yml``, built on-box by
-    ``scripts/curobo/build_ur_config.py``;
-  * the ``kinematics_model`` of the safety config.
+    ``scripts/arms/descriptor.py``;
+  * the model the Isaac arm reports as ``capabilities.model``, which the self-collision guard judges it as.
 
-This registry adds the two Isaac-specific parts that key cannot express: the Lula
-supported-config name, which is capitalised as "UR3e", and the USD relative path in the
-Isaac asset pack, which is the combined arm and gripper asset.
+Each spec is built from its arm's description (P0d D3d; the hand-kept ``_UR_MODELS`` went in D4) and adds the
+Isaac-specific parts that key cannot express: the Lula supported-config name, which is capitalised as "UR3e", and the
+USD relative path in the Isaac asset pack, which is the combined arm and gripper asset.
 
 It is import-safe, being pure data with no ``isaacsim`` import, so it loads anywhere the
 rest of the config does.
@@ -22,12 +22,12 @@ rest of the config does.
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 
 __all__ = [
-    "NO_DESCRIPTOR",
     "URModelSpec",
-    "curobo_arm_descriptor",
+    "simulable_models",
     "ur_model_spec",
 ]
 
@@ -36,8 +36,8 @@ __all__ = [
 class URModelSpec:
     """The model-specific parts the sim driver and the scene builder need.
 
-    ``key`` is the canonical lower-case model key, the same string as the safety
-    ``kinematics_model`` and the ``{key}.yml`` cuRobo config. ``lula_key`` is the Isaac
+    ``key`` is the canonical lower-case model key, the same string as the arm's
+    ``capabilities.model`` and the ``{key}.yml`` cuRobo config. ``lula_key`` is the Isaac
     supported-config name passed to
     ``interface_config_loader.load_supported_lula_kinematics_solver_config`` and
     ``load_supported_motion_policy_config``. ``usd_relpath`` is appended to the Isaac
@@ -103,88 +103,51 @@ class URModelSpec:
     wrist_link_name: str = "wrist_3_link"
 
 
-# Every UR from the UR3 to the UR10, e-series and CB-series, verified on-box: each asset
-# directory exists under ``.../Isaac/Robots/UniversalRobots/``, each key has a DH row in
-# ``_ur_kinematics``, a joint-limit row, an entry in ``UR_MODEL_KEYS`` and a buildable
-# ``{key}.yml``. All four key sets are compared against each other, so they cannot drift in
-# either direction. ur16e is not here although it has a DH row, joint limits and a buildable
-# descriptor: it has no exact-mesh bundle yet. ur20 and ur30 have Isaac assets and no DH row here.
-# Each is admitted once its evidence passes.
-_UR_MODELS: dict[str, URModelSpec] = {
-    # UR3, CB-series. Bare asset, with no Gripper variant set at all, so the sim mounts the hand standalone.
-    "ur3": URModelSpec(
-        "ur3", "UR3", "/Isaac/Robots/UniversalRobots/ur3/ur3.usd",
-        max_reach_mm=500.0, max_payload_kg=3.0,
-        # Derived, not measured: the UR5e patch scaled by 500/850. The far corner sits at
-        # 361.4 mm against a 434.2 mm horizontal radius at table height, so 72.8 mm of margin.
-        workspace_center_mm=(260.0, 0.0), workspace_half_extents_mm=(90.0, 90.0)),
-    # ur3e ships bare, with no Gripper variant set, so the sim mounts the hand standalone.
-    "ur3e": URModelSpec(
-        "ur3e", "UR3e", "/Isaac/Robots/UniversalRobots/ur3e/ur3e.usd",
-        max_reach_mm=500.0, max_payload_kg=3.0,
-        # Measured on a standing cell, and computed rather than guessed: a guessed 330 +- 110
-        # comes out 18.3 mm over. 500 mm of reach less a 40 mm dexterity margin, about a
-        # 151.9 mm shoulder, leaves 434 mm of horizontal radius at table height, and the far
-        # corner of this patch sits at 412 mm. The UR5e patch reaches 600 mm and overshoots by
-        # 177 mm, which is why a UR3e cell cannot inherit it.
-        workspace_center_mm=(300.0, 0.0), workspace_half_extents_mm=(100.0, 100.0)),
-    # UR5, CB-series. The same a2 as the UR5e and 73 mm less shoulder.
-    "ur5": URModelSpec(
-        "ur5", "UR5", "/Isaac/Robots/UniversalRobots/ur5/ur5.usd",
-        max_reach_mm=850.0, max_payload_kg=5.0,
-        # Derived: the same patch as the UR5e, because the reach is the same. The far corner
-        # sits at 618.5 mm against 805.1 mm of horizontal radius, so 186.6 mm of margin. The CB
-        # shoulder is 73 mm lower, which is why the radius differs from the UR5e one.
-        workspace_center_mm=(450.0, 0.0), workspace_half_extents_mm=(150.0, 150.0)),
-    "ur5e": URModelSpec(
-        "ur5e", "UR5e", "/Isaac/Robots/UniversalRobots/ur5e/ur5e.usd",
-        max_reach_mm=850.0, max_payload_kg=5.0,
-        # Measured: the validated pick patch the sim runners use, and the reference every
-        # derived patch is scaled from. Far corner 618.5 mm against 793.5 mm of radius.
-        workspace_center_mm=(450.0, 0.0), workspace_half_extents_mm=(150.0, 150.0),
-        baked_gripper_variant="Robotiq_2f_85", baked_hand="robotiq_2f85"),
-    # UR10, CB-series. Its Gripper variant set holds only suction tools and no Robotiq, so a jaw
-    # hand is mounted standalone exactly as on the bare models.
-    "ur10": URModelSpec(
-        "ur10", "UR10", "/Isaac/Robots/UniversalRobots/ur10/ur10.usd",
-        max_reach_mm=1300.0, max_payload_kg=10.0,
-        # Derived: the UR5e patch scaled by 1300/850. Far corner 948.3 mm against 1253.6 mm of
-        # radius, so 305.2 mm of margin. Conservative on purpose: this uses about three quarters
-        # of what the arm can reach, and a cell that wants the rest should measure it.
-        workspace_center_mm=(690.0, 0.0), workspace_half_extents_mm=(230.0, 230.0)),
-    "ur10e": URModelSpec(
-        "ur10e", "UR10e", "/Isaac/Robots/UniversalRobots/ur10e/ur10e.usd",
-        max_reach_mm=1300.0, max_payload_kg=12.5,
-        # Derived, and not inherited: the UR5e patch on an entry declaring 1300 mm of reach would
-        # claim a 618 mm corner on an arm that reaches 1247 mm. Far corner 948.3 mm, against
-        # 1247.0 mm of radius.
-        workspace_center_mm=(690.0, 0.0), workspace_half_extents_mm=(230.0, 230.0),
-        baked_gripper_variant="Robotiq_2f_85", baked_hand="robotiq_2f85"),
-}
+@functools.lru_cache(maxsize=None)
+def _described_spec(key: str) -> URModelSpec | None:
+    """The spec an arm's description gives a simulator, or ``None`` where it gives none.
+
+    ``None`` for an arm the registry does not describe, for a non-UR description, and for a description with no ``sim``
+    block: ur16e and ur20 are described and have no Isaac asset, which is the answer the hand-kept table gave.
+    """
+    from src.config import ConfigError  # noqa: PLC0415 (the config layer is below the drivers; lazy for import cost)
+    from src.config.arms import load_arm  # noqa: PLC0415
+
+    try:
+        description = load_arm(key)
+    except ConfigError:
+        return None
+    sim = description.sim
+    if description.vendor != "ur" or sim is None or description.reach_mm is None or description.payload_kg is None:
+        return None
+    return URModelSpec(
+        key=description.model, lula_key=sim.lula_key, usd_relpath=sim.usd_relpath,
+        max_reach_mm=description.reach_mm, max_payload_kg=description.payload_kg,
+        workspace_center_mm=sim.workspace_center_mm, workspace_half_extents_mm=sim.workspace_half_extents_mm,
+        baked_gripper_variant=sim.baked_gripper_variant, baked_hand=sim.baked_hand, wrist_link_name=sim.wrist_link,
+    )
+
+
+def simulable_models() -> list[str]:
+    """Every arm a simulator here can stand up, sorted: the described arms that carry a ``sim`` block."""
+    from src.config.arms import available_arms  # noqa: PLC0415
+
+    return [model for model in available_arms() if _described_spec(model) is not None]
 
 
 def ur_model_spec(model: str) -> URModelSpec:
-    """The :class:`URModelSpec` for ``model``, case-insensitively. An unknown key raises ``ValueError``."""
-    spec = _UR_MODELS.get(model.lower())
+    """The :class:`URModelSpec` for ``model``, case-insensitively; ``ValueError`` for an arm no simulator here can build.
+
+    Built from the arm registry since P0d D3d, from the description's ``sim`` block and its reach and payload. Every
+    reader of the spec (the sim driver, the scene builder, the gripper mount, the reach helper, the ETH calibration, the
+    bootstrap banner and datagen's robot resolver) goes through this function, so none of them moved: only where the
+    numbers come from did.
+    """
+    spec = _described_spec(model.lower())
     if spec is None:
         raise ValueError(
-            f"unsupported sim robot_model {model!r}; known: {sorted(_UR_MODELS)}. Add a URModelSpec "
-            "(Lula key + Isaac USD relpath) and build the matching cuRobo {key}.yml to support it."
+            f"unsupported sim robot_model {model!r}; a simulator here can stand up: {simulable_models()}. Give the arm "
+            f"a sim block in config/arms/{model.lower()}.yaml (Lula key, Isaac USD relpath, wrist link, workspace) and "
+            f"build its cuRobo descriptor to support it."
         )
     return spec
-
-
-#: What a reading names as the descriptor of a cell that names no hand: no file, and the key to set.
-NO_DESCRIPTOR = "<none: robot.gripper.model is unset>"
-
-
-def curobo_arm_descriptor(model: str) -> str:
-    """The cuRobo descriptor for ``model``: ``willy_{key}.yml``.
-
-    Built on the box by ``scripts/curobo/build_ur_config.py {key}``. One per arm, and it carries no
-    hand: the hand a cell names is a body link the planner sidecar adds when it starts, placed by
-    the cell's declared tool frame (``safety/planning/body_link.py``). A descriptor that carries a
-    hand and is named by both still sits in the content directory, and a planner refuses one by the
-    hand its provenance names. An arm the registry does not hold names no file and raises.
-    """
-    return f"willy_{ur_model_spec(model).key}.yml"

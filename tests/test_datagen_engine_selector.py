@@ -18,6 +18,7 @@ import ast
 import unittest
 from pathlib import Path
 
+from src.utility.interpreters import Interpreter, interpreter_command
 from datagen.config import DatagenConfig
 from datagen.render.engine import ENGINES, build_engine, engine_is_available
 
@@ -102,7 +103,10 @@ class TheSelectorRefusesRatherThanFallsBackTests(unittest.TestCase):
             build_engine(DatagenConfig())
         message = str(caught.exception)
         self.assertIn("isaac", message)
-        self.assertIn("python.bat", message, "the refusal must name the way out, not just the symptom")
+        # This platform's launcher (P0h h2): python.bat on Windows, python.sh elsewhere. The literal python.bat failed
+        # the first Linux run of this suite on a refusal that named python.sh, rightly (P0h h6).
+        self.assertIn(interpreter_command(Interpreter.ISAAC), message,
+                      "the refusal must name the way out, not just the symptom")
 
     def test_the_availability_probe_names_an_unknown_engine(self) -> None:
         ok, reason = engine_is_available("definitely-not-an-engine")

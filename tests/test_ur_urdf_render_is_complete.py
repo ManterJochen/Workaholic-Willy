@@ -16,7 +16,7 @@ import unittest
 import xml.etree.ElementTree as ET
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-_MODULE = _ROOT / "scripts" / "curobo" / "_ur_description.py"
+_MODULE = _ROOT / "scripts" / "arms" / "_ur_description.py"
 
 _LINKS = {"base_link", "base_link_inertia", "shoulder_link", "upper_arm_link", "forearm_link", "wrist_1_link",
           "wrist_2_link", "wrist_3_link", "ft_frame", "base", "flange", "tool0"}

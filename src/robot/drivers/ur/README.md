@@ -15,19 +15,21 @@ with robot.connected(), robot.without_camera_world("bench run, the table is clea
 ```
 
 The whole walk at a cell is [examples/real_robot/03_connect_and_move.py](../../../../examples/real_robot/03_connect_and_move.py);
-`create_arm("ur", config=tree.robot)` builds the arm alone. Two command lines belong to this driver:
+`create_arm("ur", config=tree.robot)` builds the arm alone, and the drivers' readiness check asks for it:
 
 ```bash
 python -m src.robot.drivers.doctor --require ur   # exit 0 when ur_rtde imports on this machine
-python -m src.robot.drivers.ur --read             # every pin on the tool I/O bank; moves nothing
 ```
+
+The bench that measures a gripper's pins on the controller's digital I/O was this driver's command line until P0g. It
+builds the cell's gripper, which a driver does not, so it is `python -m src.robot.execution.io_bench` now
+([execution](../../execution/README.md#the-io-bench)).
 
 ## The nouns
 
 | Noun | Built by | Verb | Returns |
 |---|---|---|---|
 | `URRobotArm` | `Robot.from_tree(tree)`, or `create_arm("ur", config=tree.robot)` | `move(pose)`, `move_to_joints(joints)`, `get_tcp_pose()` | `MotionResult` with a `MotionStatus`; a base-frame `Pose` |
-| `Bench` | `Bench.from_robot_config(tree.robot, arm, confirm=...)` | `run(action)` with `Read`, `Watch`, `Set`, `Pulse` or `Measure` | `BenchReading` |
 | `URConnection` | the arm, at `connect()` | the RTDE reads, moves, I/O and payload push | the one place `ur_rtde` is imported |
 
 Without connecting, `line_motion()` says what `move(pose, linear=True)` keeps of the line. Wrench,
@@ -41,13 +43,15 @@ and on the `ik` planner, where nobody judges a path, every such motion is refuse
 ## What `connect()` refuses
 
 Each refusal is a `RobotConnectionError`, and the controller is left disconnected. The payload and
-the tool frame the base tree ships are refused on purpose: a cell nobody has measured does not move.
+the tool frame the base tree ships are refused on purpose: a cell nobody has measured does not move. Connect is the
+planned arm's since P0g slice 15 ([planned/](../planned/README.md)); the UR answers the address, its size class, its
+series twin and its own rows.
 
 | Refusal | When | What to do |
 |---|---|---|
 | unweighed payload | `safety.payload.enforce: true` with `mass_kg: 0.0`, the shipped value | Weigh the whole wrist assembly and set `mass_kg` and `cog_mm`, or `enforce: false` for a bare flange |
 | payload as a point mass | `mass_kg` above 0 with `cog_mm: [0, 0, 0]` | Measure the centre of gravity from the flange, in millimetres |
-| undeclared tool frame | `gripper.tool_frame.source: undeclared`, the shipped value | Set `offset_mm` and `rotation_quat_xyzw`, then `source: willy` or `polyscope` |
+| undeclared tool frame | `gripper.tool_frame.source: undeclared`, the shipped value | Set `offset_mm` and `rotation_quat_xyzw`, then `source: willy` or `controller` |
 | wrong model | the dashboard reports another size of UR than `robot.ur.model` | Set `robot.ur.model` to the arm that is plugged in |
 | wrong series | a CB-series arm configured as its e-Series namesake or the reverse, and the other DH table fits better | The same key; check the pendant TCP too |
 | wrong tool frame | the controller's active tool frame is more than `verify_tolerance_mm` or 5 degrees from the declared one | Match the pendant TCP to the config, or switch `source` |
@@ -55,20 +59,20 @@ the tool frame the base tree ships are refused on purpose: a cell nobody has mea
 | payload push failed | the controller refused `setPayload` | The connection is rolled back; read the message |
 
 `source: willy` means this driver composes the tool frame and the controller runs a bare flange;
-`source: polyscope` means an operator set the TCP on the pendant and the driver only verifies it. The
-tool frame is derived, never read: `inv(flange from the DH table) @ getForwardKinematics(q)`. The model
+`source: controller` means an operator set the TCP on the pendant and the driver only verifies it. The
+tool frame is derived, never read: `inv(flange from the description's chain) @ getForwardKinematics()`. The model
 check needs the dashboard: a dashboard that does not answer is logged, not refused.
 
 ## What a motion refuses
 
 | Refusal | When | What to do |
 |---|---|---|
-| `CONTROLLER_REJECTED` | `robot.ur.motion_planner: curobo` and the planner is not available | `python -m src.robot.safety.planning --doctor`; nothing falls back to blind IK |
+| `CONTROLLER_REJECTED` | `robot.motion.planner: curobo` and the planner is not available | `python -m src.robot.safety.planning --doctor`; nothing falls back to blind IK |
 | `TIMEOUT` | no straight line to the goal is clear and cuRobo found no collision-free plan to any configuration of it | Move the goal or clear the cell; `ur_arm.log` names every configuration tried and why it failed |
 | `IK_FAILED` | on `curobo`, the flange goal is out of the arm's reach | Move the goal |
 | `JOINT_LIMIT_REJECTED`, no configuration in the window | on `curobo`, no configuration of the goal lies inside the planner's and the joint-limit guard's window | Move the goal; with `within_half_turn_of_home`, it lies behind home |
 | `JOINT_LIMIT_REJECTED`, a detour | on `curobo`, every plan cuRobo found swings a joint more than `safety.planned_motion.max_detour_deg` past its span | Clear the way, or raise the bound; the message names the joint |
-| `JOINT_LIMIT_REJECTED`, a joint target past a full turn | a joint target holds a value beyond 2 pi, which reads as degrees | Joint targets are radians |
+| `JOINT_LIMIT_REJECTED`, a joint target in degrees | a joint target holds a value past the range the arm's description rates its joint for (`limit_deg`, a full turn either way on every UR), which reads as degrees; the message names each such joint | Joint targets are radians; a home in degrees goes in `robot.home_joint_positions_deg` |
 | `SELF_COLLISION_REJECTED` or `JOINT_LIMIT_REJECTED`, the start | the planner will not start from where the arm stands, for more than its cushion band or with no escape leg out of it | Jog the arm out of that configuration; the message names the pair, the planner's depth, the distance the exact meshes keep and why no leg was taken |
 | `SELF_COLLISION_REJECTED`, the band's goal | a goal in the planner's cushion band that no approach leg of at most 20 degrees per joint reaches: `no plan reaches it` | Reach it on a straight line, or re-teach it by hand where both authorities clear it and screen it again |
 | `SELF_COLLISION_REJECTED` or `JOINT_LIMIT_REJECTED`, a leg | the path gate or the planner refuses a leg of the plan that would run | Read the message; nothing has moved |
@@ -81,7 +85,7 @@ check needs the dashboard: a dashboard that does not answer is logged, not refus
 | `CANCELLED`, halted | the halt latch is set: nothing is sent; or a halt braked the move in flight, and a judged path sends no later waypoint | A person says the cell is clear (`clear_halt()`), then the way back |
 | a refused straight line | `linear=True` and a joint turns over 0.35 rad between samples, or the flange leaves the line by 1 mm | Plan the move in legs, or drop `linear` |
 
-`move_joint` and `move_linear` raise `RobotMotionRejected` carrying the result, and `move_home`
+`move_linear` raises `RobotMotionRejected` carrying the result, and `move_home`
 returns `False`. The `Robot` verbs return a report instead. `ik` as the planner is the controller's
 calibrated IK and a straight `moveJ` or `moveL`, which knows nothing about the cell and drives through
 anything in it.
@@ -136,7 +140,7 @@ into the world. Where the planner refuses samples on its world, the arm asks it 
 samples with every box the camera saw set aside (`judge_joint_path(..., ignore_perceived=)`), and admits them
 only where its world and bounds then clear and the robot itself reads as before, no part is carried (any
 `attach_payload` on the arm since the last `detach_payload`, modelled or not, and
-`CuroboUrPlanner.carries_part`), the hand it carries reads empty and open (`set_hand`, which `connect_cell`
+`CuroboPlanner.carries_part`), the hand it carries reads empty and open (`set_hand`, which `connect_cell`
 calls once both are up: a toggle's count open, a gripper measured fully open; no hand, or any other, keeps
 the boxes in), the glue's last confirmed refresh handed the planner exactly the boxes the exact guard holds
 (`perceived_in_world`), and the exact guard accepts every refused sample with them at
@@ -161,7 +165,7 @@ pose, and the refusal names the way out, a person releasing the part (`Robot.rel
 A **planned** move out of a band pose, or into one, takes a straight **escape** or **approach** leg of at
 most 20 degrees per joint, only the joints between the colliding links, to the nearest configuration both
 authorities clear; both judge the leg as a straight line, and cuRobo plans between clear configurations
-(`CuroboUrPlanner.plan_joint(goal, start_ur=...)`, whose explicit start is never read from the controller).
+(`CuroboPlanner.plan_joint(goal, start_ur=...)`, whose explicit start is never read from the controller).
 The route is judged whole again, and the shortening keeps each leg as the one `moveJ` it was judged as; the
 route's log line says the leg. Once a leg left the start, a goal that still does not plan is that goal's
 failure, and the next goal is planned from the leg's end; only a start no leg leaves is refused as the
@@ -176,7 +180,8 @@ and moveL reach with such a hand, and only the two refusals read `ERROR`. Teachi
 
 A joint target (`move_to_joints`, `move_home`, a joint station) goes the same way: a joint outside the
 window runs as its full turn inside it, the same pose, and the log says so; a joint inside is left as
-written, and a value past a full turn, a target in degrees, is refused. Its straight line runs as one
+written, and a target holding a value past the range the arm's description rates its joint for, a target in
+degrees, is turned nowhere and refused. Its straight line runs as one
 `moveJ` where both authorities pass it at the same clearance, and where it collides cuRobo plans
 around it to the same target under the same detour bound.
 
@@ -202,8 +207,8 @@ leg before it is sent.
   `_drive_checked_line`. Where the arm then stands more than 0.5 mm from where the motion was judged from, it is
   judged again from there (three times at most, then `TIMEOUT`); a timeout sends nothing, and a halt is refused by
   the send itself. A route's first waypoint, where the gate found the arm, is not sent as a `moveJ` of its own.
-  `gates_its_own_sends` tells the verbs (`GraspExecutionPolicy`, `Robot.move`, `Robot.pick`) to ask with no gate
-  of their own.
+  Without it (`gate_at: verb`, as shipped) the arm waits once at the start of each motion verb, before it judges
+  anything (P0e E9); no verb above the arm waits.
 - **The world held at the standoff** (`safety.planning_world.hold.standoff`, the map's O2). `grasp_refusal_ahead`
   judges the route in the world the line down was judged in, and `holding_the_approach(standoff, reason)` holds that
   world for the move to the standoff and the line down from it, where the route judged ahead stands ready
@@ -297,6 +302,10 @@ requests (`halt_requests`), so a halt that came and was cleared mid-leg still en
 output a halted arm still writes is `end_output_pulse(pin)`, which only ever drives low: a double solenoid's coil
 and a vacuum blow-off end their pulse through it, never a toggle hand.
 
+`controller_provenance()` (`ReportsControllerProvenance`) answers the console's question what the controller is:
+its serial and address, and `is_simulator` `True` only where URSim's placeholder serial (10 digits ending 9999 on a
+CB3, 11 ending 99999 on an e-Series) meets a loopback address; it never raises, and a silent dashboard says nothing.
+
 Two reads serve the console's ready bar without the dashboard: `quick_robot_status()`, the four receive-stream
 fields and the latch, and `planner_state` (`not_used`, `off`, `starting`, `ready`), attribute reads that never
 wait for the planner's lock. A disconnect retires the planner: it waits for a start in progress (at most 120 s) or
@@ -325,27 +334,6 @@ own profile only after those measurements and a supervised halt at the cell.
   1.6.5, `getInverseKinematics` of a pose out of reach answered `[]` and the control script stopped ("RTDE control
   script is not running!"): every later call failed until a reconnect. A line with a sample out of reach meets it,
   `line_ik: local` or not, because such a line is solved by the controller.
-
-## The I/O bench
-
-`python -m src.robot.drivers.ur` measures the digital I/O a gripper is wired to. It opens the
-connection, so the refusals above apply, and it has no path to a motion. Driving a pin is still
-physical, so every write needs `--yes`, and a non-interactive shell refuses rather than prompts.
-
-```bash
-python -m src.robot.drivers.ur --watch 0 --for 15              # trip a sensor by hand and watch the pin
-python -m src.robot.drivers.ur --set 4=1 --yes                 # drive one output, then read it back
-python -m src.robot.drivers.ur --measure 4=1 --watch 0 --yes   # the time close_settle_s wants
-python -m src.robot.drivers.ur --where                         # JointPositions.deg(...) to paste, and the TCP
-```
-
-One action per call. `--port` picks the bank (`tool` by default) and `--profile` the cell; every
-refusal prints the profile chain it loaded, and says so where neither `--profile` nor `WILLY_PROFILE`
-was given and the base tree, which names a Robotiq, was read. `--where` is read-only. Run
-`--measure` a few times and configure the worst reading. It exits 0 when the action ran, 1 when the
-config or the connection refused, 2 when the input never answered, and 3 on an unexpected error.
-`Bench.from_robot_config` is the same from Python and reads the bank from `gripper.jaw_io.io_port`
-or `gripper.vacuum.io_port`; the `io_bench.py` functions under it confirm nothing.
 
 ## Status
 
@@ -377,22 +365,18 @@ Nothing in this list moves the arm.
 
 A green run means the declaration is coherent and the controller accepts it, not that it matches what
 is bolted to the robot. The full procedure is [docs/runbooks/cell_bringup.md](../../../../docs/runbooks/cell_bringup.md),
-another UR model is [ur_family_bringup.md](../../../../docs/runbooks/ur_family_bringup.md), and the
+another arm model is [add_an_arm_model.md](../../../../docs/runbooks/add_an_arm_model.md), and the
 first pick is [real_cell_first_pick.md](../../../../docs/runbooks/real_cell_first_pick.md).
 
 ## Files
 
 | File | Holds |
 |---|---|
-| `arm.py` | `URRobotArm`, `UR_CAPABILITIES`, `ur_capabilities(model)`: `move()`, the connect refusals, the planner switch, the halt, `quick_robot_status()` |
-| `connection.py` | `URConnection`, the RTDE boundary: the halt latch, and with `brake_on_halt` the watched move a halt brakes (`MoveEnd`); the controller's own rows (`controller_kinematics`) and TCP; the steady gate on `isSteady` or the joint speeds |
-| `freedrive.py` | `URFreedriveSession`: hand guiding on teach mode behind an RTDE watchdog, held again on every way out |
-| `motion.py` | `MotionController`: clamped, workspace-checked point-to-point moves for `move_to`, and the singularity check before each, on the controller's FK or the arm's own rows (`singularity_fk`) |
-| `curobo_motion.py` | `CuroboUrPlanner`: a collision-free plan to a pose or a joint goal, from where the arm stands or an explicit `start_ur`, run as one `moveJ` per waypoint of the list the arm judged; `judge_joint_path`, every refused sample of a path with its terms and pairs |
-| `planner_frame.py` | `PlannerFrameClient`: the planner's base is the controller's turned half a turn about Z |
-| `tool_frame.py` | the derived tool frame and its comparison with the declared one |
+| `arm.py` | `URRobotArm`, a `PlannedArm` ([planned/](../planned/README.md)) with the UR side: its identity built from the arm description (`capabilities`), the build over the UR transport, its answers to connect's hooks (the address, the controller's size class, the series twin, its own rows; connect and the tool frame check are the planned arm's since P0g slice 15), the home's FK on a fresh program, the controller's own rows, which capability mixins it lists (the I/O, the force readings, the status with `quick_robot_status()`, the fault release and the provenance, each over a verb of the transport since P0g slices 6 and 7, and hand guiding with the payload read-back over `ControllerFreedrive` since port S4) |
+| `connection.py` | `URConnection`, the RTDE boundary: the halt latch, and with `brake_on_halt` the watched move a halt brakes (how it ended: `MoveEnd`, in `robot.core`); the controller's own rows (`controller_kinematics`) and TCP; the steady gate on `isSteady` or the joint speeds |
+| `transport.py` | `URTransport`: RTDE and `MotionController` behind every verb of `robot.core.transport`, the halt latch, the I/O registers, the force readings, the status, the stop release, the provenance (P0e E7, P0g slices 6 and 7) and the hand-guiding verbs, teach mode behind the RTDE watchdog (port S4), among them, with the UR robot- and safety-mode tables and the URSim proof rule (a placeholder serial on a loopback address); the arm's planning half reaches the controller only through it, and `_conn` and `_motion` are properties over it, so a test's injection lands there |
+| `motion.py` | `MotionController`: clamped, workspace-checked point-to-point moves for the ik path of `move`, and the singularity check before each, on the controller's FK or the arm's own rows (`singularity_fk`) |
 | `pose.py`, `pose_adapter.py` | `URPose` in millimetres and axis-angle, and its bridge to `Pose` |
-| `io_bench.py`, `bench.py`, `__main__.py` | the I/O bench: primitives, the `Bench` noun and the command line |
 
 ## Details
 

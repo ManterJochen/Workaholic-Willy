@@ -30,9 +30,9 @@ _TOOL = {
 def _cell(**over: Any) -> RobotConfig:
     """A real UR cell the matrix measured: ur5e, 2F-85, +Y+X, 4 mm against a 10 mm guard."""
     tree: dict = {
-        "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
+        "vendor": "ur", "ur": {"model": "ur5e"}, "motion": {"planner": "curobo"},
         "gripper": {"model": "robotiq_2f85", "tool_frame": _TOOL},
-        "safety": {"self_collision": {"kinematics_model": "ur5e", "planner_margin_mm": 4.0, "backend": "fcl"}},
+        "safety": {"self_collision": {"planner_margin_mm": 4.0, "backend": "fcl"}},
     }
     for section, fields in over.items():
         tree.setdefault(section, {}).update(fields)
@@ -89,7 +89,7 @@ class TheLibraryTwinTests(unittest.TestCase):
         from src.robot.execution.planner_start import PlannerStart
 
         sidecar = _Sidecar(self)
-        cell = _cell(safety={"self_collision": {"kinematics_model": "ur5e", "backend": "fcl"}})
+        cell = _cell(safety={"self_collision": {"backend": "fcl"}})
         report = PlannerStart.from_robot_config(cell).run()
         self.assertFalse(report.started)
         self.assertIn("planner_margin_mm", report.refusal)
@@ -99,11 +99,24 @@ class TheLibraryTwinTests(unittest.TestCase):
         from src.robot.execution.planner_start import PlannerStart
 
         _Sidecar(self)
-        ik = PlannerStart.from_robot_config(_cell(ur={"model": "ur5e", "motion_planner": "ik"})).run()
-        self.assertIn("motion_planner", ik.refusal)
+        ik = PlannerStart.from_robot_config(_cell(motion={"planner": "ik"})).run()
+        self.assertIn("robot.motion.planner", ik.refusal)
         dummy = PlannerStart.from_robot_config(_cell().model_copy(update={"vendor": "dummy"})).run()
-        self.assertIn("robot.vendor", dummy.refusal)
+        self.assertIn("StartsAPlanner", dummy.refusal)
         self.assertEqual((ik.exit_code, dummy.exit_code), (1, 1))
+
+    def test_an_arm_without_a_planner_to_start_is_refused_by_that_capability_not_its_vendor(self) -> None:
+        """P0i i1, changes behaviour on purpose: the dummy and the sim arm were refused by the spelling of robot.vendor
+        before either was built; each is now built alone and refused because it offers no StartsAPlanner."""
+        from src.robot.execution.planner_start import PlannerStart
+
+        sidecar = _Sidecar(self)
+        for vendor, arm in (("dummy", "DummyRobotArm"), ("sim", "IsaacRobotArm")):
+            with self.subTest(vendor=vendor):
+                report = PlannerStart.from_robot_config(_cell().model_copy(update={"vendor": vendor})).run()
+                self.assertEqual(report.refusal, f"{arm} has no planner a desk can start (StartsAPlanner)")
+                self.assertEqual(report.exit_code, 1)
+        self.assertEqual(sidecar.started, [])
 
     def test_the_cell_step_is_the_twin(self) -> None:
         from src.robot.execution.cell import Cell

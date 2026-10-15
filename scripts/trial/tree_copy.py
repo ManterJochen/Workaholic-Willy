@@ -41,7 +41,7 @@ WATCHED_DIRS = (
 )
 #: What a test's source names when it reads an artefact family the chain writes.
 ARTIFACT_PATTERNS = (
-    "available_grippers(", "_hand_meshes", "_gripper_spheres", "ur_retract", "EVIDENCE_DIR", "bundles.json",
+    "available_grippers(", "_hand_meshes", "_gripper_spheres", "retract.yaml", "EVIDENCE_DIR", "bundles.json",
     "grippers/", "real_cell", "preflight", "planner_hand", "robot.*.yaml",
 )
 _SKIPPED_PARTS = {"__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache"}

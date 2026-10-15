@@ -3,9 +3,9 @@
 The owner's answer to the build plan's first question (Q1 = A, 2026-09-30): the brake ships OFF, and with it off "the UR
 motion path stays exactly as today (synchronous, byte-for-byte the same commands; pinned by tests)". This file is that pin.
 
-A table of moves runs every way a UR arm reaches its controller: the ik verbs (``move_to`` joint and linear, ``move``,
-``move_joint``, ``move_to_joints``, ``move_linear``, ``move_home``), the raw transports a caller can reach
-(``arm.motion``, ``arm.connection``), the cuRobo verbs with their judged routes (a planned path, a straight joint line, a
+A table of moves runs every way a UR arm reaches its controller: the ik verbs (``move``, ``move_to_joints``,
+``move_linear``, ``move_home``; the raising, bool and async twins left on 2026-09-19), the raw transports a caller can reach
+(``arm._motion``, ``arm._conn``), the cuRobo verbs with their judged routes (a planned path, a straight joint line, a
 checked line) and the execution glue's waypoint legs, a move the controller refuses, one that raises, the outputs and the
 status read. Each runs on a fresh arm whose four ur_rtde interfaces are recording doubles (``tests/_halt_fakes.py``). What
 they recorded, every call of every interface with its arguments, in order, and what the verb answered, is compared with
@@ -13,7 +13,7 @@ they recorded, every call of every interface with its arguments, in order, and w
 1 plus the console contract, 2026-10-01).
 
 The judging is a double where it is not the subject: an accepting preflight, and on cuRobo the route the judge would have
-handed over. Everything below it runs as shipped: the connection, ``MotionController``, ``CuroboUrPlanner.execute``, the
+handed over. Everything below it runs as shipped: the connection, ``MotionController``, ``CuroboPlanner.execute``, the
 arm's drives and the controller-state sentence a failed move reads.
 
 Compared exactly: the interface, the method, their order, every integer, flag and string. Floats are compared to 1e-12,
@@ -21,11 +21,15 @@ relative: the arguments come out of the DH chain and pose conversions, where ano
 bit differently, and a changed argument differs by far more than that.
 
 ``stop()`` is not in the table on purpose: it is the one verb the halt changes (it latches now, and sends nothing).
+The one call a motion verb may send beyond the recording is the arm's own steady gate (``isSteady``), first, which every
+motion verb asks since P0e E9; and the questions the arm may ask beyond it are whether the control program runs
+(``isProgramRunning``, P0e E13) and whether a pose has an inverse kinematics solution
+(``getInverseKinematicsHasSolution``, P0e E14), and an output write asks first whether the IO link is up
+(``isConnected``, P0g io1). The comparison takes them off and compares the rest exactly.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import math
 import re
@@ -36,12 +40,17 @@ from typing import Any, Callable
 
 import numpy as np
 
+from src.config.arms import load_arm
 from src.geometry import Frame, Pose
 from src.robot.core import JointPositions, MotionResult
 from src.robot.core.arm_capabilities import DigitalIOPort
-from src.robot.drivers.ur.arm import URRobotArm, _Route
-from src.robot.drivers.ur.curobo_motion import CuroboUrPlanner
+from src.robot.drivers.planned.arm import _Route
+from src.robot.drivers.ur.arm import URRobotArm
+from src.robot.drivers.planned.curobo_motion import CuroboPlanner
 from tests._halt_fakes import RecordingRtde, no_client, ur_arm_on
+
+#: The controller's joint order as the ur5e description states it; the planner is handed it since P0e E4.
+_UR_JOINT_NAMES = tuple(joint.name for joint in load_arm("ur5e").joints)
 
 GOLDEN = Path(__file__).resolve().parent / "data" / "ur_calls_before_the_halt.json"
 
@@ -123,7 +132,7 @@ def _glue(waypoints: "list[list[float]]", **overrides: Any) -> Callable[[], dict
     def case() -> dict[str, Any]:
         rtde = RecordingRtde(overrides=overrides or None)
         arm = arm_on(rtde)
-        planner = CuroboUrPlanner(arm._conn, client_factory=no_client, vel=0.6, acc=0.9)
+        planner = CuroboPlanner(arm._transport, joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180, client_factory=no_client, vel=0.6, acc=0.9)
         answer = _run(lambda: planner.execute(waypoints, _POSE, vel=0.3, acc=0.5))
         return {"calls": rtde.calls, "outcome": answer}
 
@@ -133,7 +142,7 @@ def _glue(waypoints: "list[list[float]]", **overrides: Any) -> Callable[[], dict
 def _connection() -> dict[str, Any]:
     rtde = RecordingRtde()
     arm = arm_on(rtde)
-    conn = arm.connection
+    conn = arm._conn
     answers = [
         _run(lambda: conn.moveJ(list(_Q.tolist()))),
         _run(lambda: conn.moveJ(list(_Q.tolist()), 0.2, 0.3)),
@@ -167,17 +176,12 @@ def _status() -> dict[str, Any]:
 _REFUSED = RuntimeError("RTDE control script is not running!")
 
 TABLE: dict[str, Callable[[], dict[str, Any]]] = {
-    "ik_move_to": _ik(lambda arm: arm.move_to(_POSE)),
-    "ik_move_to_linear": _ik(lambda arm: arm.move_to(_POSE, linear=True, vel=0.2, acc=0.3)),
     "ik_move": _ik(lambda arm: arm.move(_POSE)),
     "ik_move_line": _ik(lambda arm: arm.move(_POSE, linear=True, vel=0.25)),
-    "ik_move_joint": _ik(lambda arm: arm.move_joint(_Q, velocity=0.4, acceleration=0.6)),
     "ik_move_to_joints": _ik(lambda arm: arm.move_to_joints(_Q)),
     "ik_move_linear": _ik(lambda arm: arm.move_linear(_POSE, velocity=0.1)),
     "ik_move_home": _ik(lambda arm: arm.move_home()),
-    "ik_amove_to": _ik(lambda arm: asyncio.run(arm.amove_to(_POSE))),
-    "motion_move_home": _ik(lambda arm: arm.motion.move_home()),
-    "motion_move_to_linear": _ik(lambda arm: arm.motion.move_to(arm._pose_to_controller(_POSE), linear=True)),
+    "motion_move_to_linear": _ik(lambda arm: arm._motion.move_to(arm._pose_to_controller(_POSE), linear=True)),
     "connection_moves": _connection,
     "curobo_move_planned": _curobo(lambda arm: arm.move(_POSE, vel=0.3, acc=0.4),
                                    pose_route=_route(_WAYPOINTS, planned=True)),
@@ -185,15 +189,12 @@ TABLE: dict[str, Callable[[], dict[str, Any]]] = {
                                              joint_route=_route(_WAYPOINTS, planned=True)),
     "curobo_move_to_joints_line": _curobo(lambda arm: arm.move_to_joints(_Q),
                                           joint_route=_route([_WAYPOINTS[0], _WAYPOINTS[-1]], planned=False)),
-    "curobo_move_joint_planned": _curobo(lambda arm: arm.move_joint(_Q),
-                                         joint_route=_route(_WAYPOINTS, planned=True)),
     "curobo_move_home_planned": _curobo(lambda arm: arm.move_home(),
                                         joint_route=_route(_WAYPOINTS, planned=True)),
     "curobo_checked_line": _curobo(lambda arm: arm.move(_POSE, linear=True, vel=0.1, acc=0.2)),
     "curobo_move_linear": _curobo(lambda arm: arm.move_linear(_POSE)),
     "glue_waypoints": _glue(_WAYPOINTS),
     "refused_moveJ": _ik(lambda arm: arm.move_to_joints(_Q), ctrl={"moveJ": False}),
-    "refused_move_to": _ik(lambda arm: arm.move_to(_POSE), ctrl={"moveJ": False}),
     "refused_moveL_line": _curobo(lambda arm: arm.move(_POSE, linear=True), ctrl={"moveL": False}),
     "refused_move_linear": _ik(lambda arm: arm.move_linear(_POSE), ctrl={"moveL": False}),
     "refused_waypoint": _glue(_WAYPOINTS, ctrl={"moveJ": [True, True, False, True]}),
@@ -212,6 +213,32 @@ def record_table() -> dict[str, Any]:
 # ------------------------------------------------------------------------------------------------------------------
 # The comparison
 # ------------------------------------------------------------------------------------------------------------------
+
+
+#: The arm's own steady gate, asked first by every motion verb since P0e E9 (aurora 7cbc7a3c): the one call this table
+#: did not record before the halt existed.
+_STEADY_GATE = ["ctrl", "isSteady"]
+
+
+#: Whether the control program runs, which every controller status reads since P0e E13 (aurora 1a3c5642). A read of
+#: the control interface's cached state, and no command: the recording holds none.
+_PROGRAM_READ = ["ctrl", "isProgramRunning"]
+#: Whether a pose has a solution, which the controller IK asks first since P0e E14 (aurora 2dc25c18). A question, and
+#: no command: the recording holds none.
+_HAS_SOLUTION = ["ctrl", "getInverseKinematicsHasSolution"]
+#: Whether the IO link is up, which every output write asks first since P0g io1 (aurora b9e3bff3). A reading, and no
+#: command: the recording holds none.
+_IO_LINK = ["io", "isConnected"]
+
+
+def _past_the_steady_gate(recorded: Any) -> Any:
+    """``recorded`` with the steady gate's call taken off its front, where the arm asked it first, and with the
+    questions P0e and P0g added left aside: the status's read of the control program, the IK's question before it
+    solves, and the IO link's reading before an output write."""
+    calls = [call for call in recorded["calls"] if call[:2] not in (_PROGRAM_READ, _HAS_SOLUTION, _IO_LINK)]
+    if calls and calls[0][:2] == _STEADY_GATE:
+        calls = calls[1:]
+    return {**recorded, "calls": calls}
 
 
 def _same(recorded: Any, golden: Any, where: str) -> "str | None":
@@ -259,7 +286,7 @@ class TheBrakesOffPathIsTheOldPathTests(unittest.TestCase):
     def test_every_move_sends_what_it_sent_before_the_halt_existed(self) -> None:
         for name, case in TABLE.items():
             with self.subTest(case=name):
-                recorded = json.loads(json.dumps(case()))
+                recorded = _past_the_steady_gate(json.loads(json.dumps(case())))
                 said = _same(recorded, self.golden[name], name)
                 self.assertIsNone(said, said)
 

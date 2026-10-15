@@ -22,6 +22,7 @@ import numpy as np
 
 from src.geometry import Frame, Pose
 from src.robot.core import MotionResult
+from src.robot.core.arm_capabilities import PayloadModel
 from src.robot.core.camera_world import (
     DECLINE_ON_A_LIVE_WORLD_MESSAGE,
     NO_CAMERA_WORLD_MESSAGE,
@@ -33,6 +34,7 @@ from src.robot.core.gripper import HoldEvidence
 from src.robot.drivers.dummy.arm import DummyRobotArm
 from src.robot.execution.robot import Robot
 from tests.test_robot_hand_verbs import _Hand
+from tests._helpers import HoldsAWorld
 
 _DECLINE = CameraWorldDecline("unit double: a pick on a bench with no cameras")
 
@@ -53,7 +55,7 @@ class _Log:
         self.entries: list[tuple[Any, ...]] = []
 
 
-class _RecordingArm(DummyRobotArm):
+class _RecordingArm(HoldsAWorld, DummyRobotArm):
     """The dummy arm, writing each motion and its keywords onto a log the gripper shares; fails where told."""
 
     def __init__(self, log: _Log, *, refuse_linear: bool = False, raise_on: "int | None" = None,
@@ -63,18 +65,29 @@ class _RecordingArm(DummyRobotArm):
         self.refuse_linear = refuse_linear
         self.raise_on = raise_on
         self.detaches = 0
-        if world is not None:
-            self.live_planner_world = world
+        self.set_live_planner_world(world)
         self.held_at_motion: list[bool] = []
+
+    # The WHOLE payload capability, because an arm carries one or does not: a double that answers only
+    # `detach_payload` is a shape no driver has, and the verbs ask with `isinstance(arm, CarriesPayload)`.
+    def attach_payload(self, grip_width_mm: float) -> bool:
+        self.log.entries.append(("attach", round(float(grip_width_mm), 3)))
+        return True
 
     def detach_payload(self) -> bool:
         self.detaches += 1
         self.log.entries.append(("detach",))
         return True
 
+    def payload_declined_reason(self) -> "str | None":
+        return None
+
+    def payload_model(self) -> PayloadModel:
+        return PayloadModel.PLANNER_AND_FILTER
+
     def move(self, pose: Pose, **kwargs: Any) -> MotionResult:
         index = sum(1 for entry in self.log.entries if entry[0] == "move")
-        world = getattr(self, "live_planner_world", None)
+        world = self.live_planner_world
         self.held_at_motion.append(bool(getattr(world, "holding", False)))
         self.log.entries.append(("move", tuple(round(float(v), 3) for v in pose.position_mm),
                                  bool(kwargs.get("linear", False)), kwargs.get("camera_world")))
@@ -130,6 +143,9 @@ class PickAndPlaceInOrderTests(unittest.TestCase):
             ("move", (400.0, 0.0, 180.0), False),
             ("move", (400.0, 0.0, 100.0), True),
             ("set_width", 39.0),
+            # The planner learns what it carries before the motion that carries it: this arm models a payload,
+            # so the grasp attaches the measured width and the release below forgets it again.
+            ("attach", 39.0),
             ("move", (400.0, 0.0, 180.0), True),
         ], _kinds(log))
         assert report.hand is not None
@@ -147,6 +163,7 @@ class PickAndPlaceInOrderTests(unittest.TestCase):
             ("move", (400.0, 0.0, 150.0), False),
             ("move", (400.0, 0.0, 100.0), True),
             ("set_width", 85.0),
+            ("detach",),
             ("move", (400.0, 0.0, 150.0), True),
         ], _kinds(log))
 
@@ -186,10 +203,11 @@ class PickAndPlaceInOrderTests(unittest.TestCase):
 
 class TheCameraWorldIsRefusedBeforeAnyCommandTests(unittest.TestCase):
     def test_a_pick_on_a_curobo_arm_with_no_world_and_no_decline_commands_nothing(self) -> None:
-        from tests.test_camera_world_on_every_driver import _sim_unconnected, _ur_curobo
+        from tests._arm_kit import curobo_arm
+        from tests.test_camera_world_on_every_driver import _sim_unconnected
 
         handling = _handling()
-        for label, build in (("ur", _ur_curobo), ("sim, not a UR", _sim_unconnected)):
+        for label, build in (("planned arm", curobo_arm), ("sim, not a PlannedArm", _sim_unconnected)):
             with self.subTest(label):
                 arm = build()
                 hand = _Hand(hold=HoldEvidence.HELD)
@@ -224,11 +242,11 @@ class TheCameraWorldIsRefusedBeforeAnyCommandTests(unittest.TestCase):
         self.assertIs(CameraWorldUse.DECLINED, report.camera_worlds[0].use)
 
     def test_a_declined_pick_on_a_wired_world_commands_nothing(self) -> None:
-        from tests.test_camera_world_on_every_driver import _ur_curobo
+        from tests._arm_kit import curobo_arm
 
         handling = _handling()
         hand = _Hand(hold=HoldEvidence.HELD)
-        robot = Robot.from_parts(arm=_ur_curobo(live_world=object()), gripper=hand, lock_key=None)
+        robot = Robot.from_parts(arm=curobo_arm(live_world=object()), gripper=hand, lock_key=None)
 
         report = robot.pick(_pose(), 40.0, camera_world=_DECLINE)
 
@@ -440,19 +458,19 @@ class APlaceHoldsItsKeepOutTests(unittest.TestCase):
 
 
 class LinesTheArmCannotKeepTests(unittest.TestCase):
-    def test_the_ur_descent_is_a_checked_line(self) -> None:
+    def test_the_planned_descent_is_a_checked_line(self) -> None:
         from src.robot.core import MotionCommand
-        from tests.test_ur_checked_linear import _arm as _line_ur
-        from tests.test_ur_checked_linear import _mesh_backend_available
+        from tests._arm_kit import line_arm
+        from tests.test_a_checked_line_is_sampled_and_solved import _mesh_backend_available
 
         if not _mesh_backend_available():
             self.skipTest("no exact mesh backend on this box")
-        arm = _line_ur()
-        arm._curobo_ur.detach_payload = lambda: True  # type: ignore[union-attr]
+        arm = line_arm()
+        arm._curobo.detach_payload = lambda: True  # type: ignore[union-attr]
         arm.wait_until_steady = lambda timeout_s=5.0, poll_interval_s=0.02: True  # type: ignore[method-assign]
         approach = MagicMock(return_value=MotionResult.executed(MotionCommand.MOVE_TO, message="planned"))
         arm._drive_curobo = approach  # type: ignore[method-assign]
-        planner = arm._curobo_ur
+        planner = arm._curobo
         checks: list[int] = []
         original = planner.check_joint_path  # type: ignore[union-attr]
 
@@ -498,13 +516,13 @@ class LinesTheArmCannotKeepTests(unittest.TestCase):
         self.assertIs(handling.HandlingOutcome.EXECUTED, control.outcome, control.render())
         self.assertIn("no controller", control.render())
 
-    def test_a_ur_whose_path_cannot_be_judged_refuses_before_the_pre_open(self) -> None:
+    def test_an_arm_whose_path_cannot_be_judged_refuses_before_the_pre_open(self) -> None:
         from src.robot.safety.preflight import SafetyPreflight
-        from tests.test_ur_checked_linear import _arm as _line_ur
+        from tests._arm_kit import line_arm
 
         handling = _handling()
         hand = _Hand(hold=HoldEvidence.HELD)
-        robot = Robot.from_parts(arm=_line_ur(), gripper=hand, lock_key=None)
+        robot = Robot.from_parts(arm=line_arm(), gripper=hand, lock_key=None)
         sentence = "no self_collision guard is wired, so nothing here can judge a path"
 
         with patch.object(SafetyPreflight, "path_judge_refusal", return_value=sentence):
@@ -537,11 +555,11 @@ class TheSteadyGateTests(unittest.TestCase):
     def test_a_dwell_timeout_moves_nothing_further(self) -> None:
         from src.robot.core import MotionStatus
         from src.robot.safety.preflight import SafetyPreflight
-        from tests.test_ur_checked_linear import _arm as _line_ur
+        from tests._arm_kit import line_arm
 
         handling = _handling()
-        arm = _line_ur()
-        arm._curobo_ur.detach_payload = lambda: True  # type: ignore[union-attr]
+        arm = line_arm()
+        arm._curobo.detach_payload = lambda: True  # type: ignore[union-attr]
         arm.wait_until_steady = lambda timeout_s=5.0, poll_interval_s=0.02: False  # type: ignore[method-assign]
         arm._drive_curobo = MagicMock()  # type: ignore[method-assign]
         hand = _Hand(hold=HoldEvidence.HELD)

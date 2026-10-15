@@ -8,7 +8,7 @@ handle-sensitive gripper branches already knew this. Vacuum and jaw_io ask
 MEASURED, and this is what the file pins: the Robotiq branch asked ``robot_cfg.vendor`` instead. A
 ``DummyRobotArm`` handed to the shipped ``vendor: ur`` tree produced ``arm=DummyRobotArm`` beside
 ``gripper=GripperController`` with ``substitution=None`` -- a real Robotiq driver aimed at
-``robot.ur.ip`` (schema default ``192.168.1.100``, a plausible controller address on a real subnet)
+``robot.ur.ip`` (the schema default then, ``192.168.1.100``, a plausible controller address on a real subnet)
 while the arm held no controller connection at all, and nothing on the built cell said so.
 
 The second class of test here guards the path that must NOT change: a real UR cell that supplies no
@@ -16,10 +16,10 @@ arm still builds a real Robotiq, because there the arm was built from this same 
 
 The third class pins the ADDRESS half, which the vendor half deliberately left on the config: a
 Robotiq is reached over the socket the URCap opens at the UR controller's address, and a non-UR tree
-leaves ``robot.ur.ip`` at the schema default. ``URRobotArm`` keeps the tree it was built from, so a
-supplied UR arm carries that address itself and the branch no longer has to ask a tree that does not
-describe the arm. An arm that says ``ur`` and holds no address is refused rather than aimed at
-whatever the tree happens to say.
+describes no UR controller. ``URRobotArm`` names the controller it was built for in its own identity
+(``capabilities.controller``, since P0e), so a supplied UR arm carries that address itself and the
+branch no longer has to ask a tree that does not describe the arm. An arm that says ``ur`` and names
+no address is refused rather than aimed at whatever the tree happens to say.
 """
 
 from __future__ import annotations
@@ -63,14 +63,14 @@ _ARM_OWN_CELL = {**_UR_CELL, "ur": {"ip": "10.7.7.7"}}
 
 
 class _ArmThatClaimsUrAndHoldsNoAddress:
-    """Says ``ur`` and carries no config, which is the one shape with no address anywhere on it.
+    """Says ``ur`` and names no controller (``capabilities.controller`` is None), so there is no address to aim at.
 
     Not a hypothetical shape: every handle-reading branch in ``from_robot_config`` reaches through
     ``getattr``, so a partial double, an adapter around a driver, or a future UR-family driver that
-    does not keep its tree all land here.
+    names no controller all land here.
     """
 
-    capabilities = RobotCapabilities(vendor="ur", model="ur5e")
+    capabilities = RobotCapabilities(vendor="ur", model="ur5e", dof=6, controller=None, owns_a_controller=True)
 
 
 def _substitution(gripper: object):

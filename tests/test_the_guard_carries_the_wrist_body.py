@@ -1,10 +1,14 @@
-"""The exact mesh guard, the self filter and the UR driver carry a wrist camera's body.
+"""The exact mesh guard, the self filter and a planned arm carry a wrist camera's body.
 
 As the owner decided, the planner, the exact guard and the self filter all know the body. The guard holds the camera
 as a part on frame 6 and, unlike everything else on the flange, checks it against wrist_2, one frame in, because a
 housing sticks out sideways. Bodies are handed in before anything is built: a camera handed to a guard that already
-built its backend, or to an arm whose planner already started, would be one they say they hold and do not. A polyscope
+built its backend, or to an arm whose planner already started, would be one they say they hold and do not. A controller
 cell compares the recorded flange to TCP with the frame it derives at connect, within the rig's record tolerances.
+
+The arms are the kit's since P0g slice 13 (``tests/_arm_kit.planned_arm``), which builds the wrist cell as the UR driver
+does (``tests/test_the_kit_builds_what_the_ur_driver_builds.py``); the connect test joined them in slice 15, when connect
+became the planned arm's.
 """
 
 from __future__ import annotations
@@ -17,9 +21,9 @@ import numpy as np
 from src.config.cameras import load_camera
 from src.calibration.serialization import FlangeToTcp
 from src.robot.core import RobotConnectionError
-from src.robot.drivers.ur.arm import URRobotArm
 from src.robot.safety._fcl_self_collision import MeshSelfCollisionBackend
 from src.robot.safety.planning.body_link import WristBody
+from tests._arm_kit import planned_arm
 from tests._wrist_body import camera_to_tool, declared_frame, wrist_body, wrist_cell
 
 
@@ -100,13 +104,13 @@ class ThePairRuleTests(unittest.TestCase):
 
 class BodiesAreHandedInBeforeAnythingIsBuiltTests(unittest.TestCase):
     def test_the_preflight_hands_the_guard_its_bodies_and_says_what_it_holds(self) -> None:
-        arm = URRobotArm(wrist_cell())
+        arm = planned_arm(wrist_cell())
         body = wrist_body()
         arm.set_wrist_bodies([body])
         self.assertEqual(arm._preflight.wrist_bodies(arm), (body,))
 
     def test_a_guard_that_built_its_backend_refuses_a_body(self) -> None:
-        arm = URRobotArm(wrist_cell())
+        arm = planned_arm(wrist_cell())
         guard = arm._preflight._path_authority(arm)
         assert guard is not None
         guard._fcl_backend_built = True
@@ -115,54 +119,58 @@ class BodiesAreHandedInBeforeAnythingIsBuiltTests(unittest.TestCase):
         self.assertIn("before its first judged path", str(caught.exception))
 
     def test_an_arm_whose_planner_was_built_refuses_a_body(self) -> None:
-        arm = URRobotArm(wrist_cell())
-        arm._curobo_ur = object()  # type: ignore[assignment]
+        arm = planned_arm(wrist_cell())
+        arm._curobo = object()  # type: ignore[assignment]
         with self.assertRaises(RuntimeError) as caught:
             arm.set_wrist_bodies([wrist_body()])
         self.assertIn("before its first planned move or planner start", str(caught.exception))
 
     def test_the_planner_is_built_with_the_camera_beside_the_hand(self) -> None:
-        arm = URRobotArm(wrist_cell())
+        arm = planned_arm(wrist_cell())
         body = wrist_body()
         arm.set_wrist_bodies([body])
         client = mock.MagicMock()
         with mock.patch("src.robot.safety.planning.margin.planner_margin_refusal", return_value=None), \
                 mock.patch("src.robot.safety.planning.robot.retract_table.read_retract",
                            return_value=[0.0] * 6), \
-                mock.patch("src.robot.drivers.ur.arm.CuroboPlanClient", client):
+                mock.patch("src.robot.drivers.planned.arm.CuroboPlanClient", client):
             arm._default_curobo_client_factory()()
         sent = client.call_args.kwargs
-        self.assertEqual(sent["wrist_body_links"], [body.link()])
+        self.assertEqual(sent["wrist_body_links"], [body.link(arm="ur5e")])
         self.assertNotIn("wrist_camera_wrist", [link["link"] for link in sent["body_links"]])
 
     def test_a_camera_free_arm_builds_its_planner_with_no_camera(self) -> None:
         """The control."""
-        arm = URRobotArm(wrist_cell())
+        arm = planned_arm(wrist_cell())
         client = mock.MagicMock()
         with mock.patch("src.robot.safety.planning.margin.planner_margin_refusal", return_value=None), \
                 mock.patch("src.robot.safety.planning.robot.retract_table.read_retract",
                            return_value=[0.0] * 6), \
-                mock.patch("src.robot.drivers.ur.arm.CuroboPlanClient", client):
+                mock.patch("src.robot.drivers.planned.arm.CuroboPlanClient", client):
             arm._default_curobo_client_factory()()
         self.assertEqual(client.call_args.kwargs["wrist_body_links"], [])
 
 
 class TheRecordMeetsTheToolFrameTests(unittest.TestCase):
     def test_a_willy_arm_refuses_a_body_recorded_against_another_frame(self) -> None:
-        arm = URRobotArm(wrist_cell())
+        arm = planned_arm(wrist_cell())
         with self.assertRaises(ValueError) as caught:
             arm.set_wrist_bodies([_body(record=_shifted(0.01))])
         self.assertIn("so its body and its pick frame are both stale", str(caught.exception))
         arm.set_wrist_bodies([_body()])
 
-    def test_a_polyscope_arm_refuses_to_connect_beyond_the_record_tolerance(self) -> None:
-        from tests.test_ur_tool_frame import _conn
+    def test_a_controller_arm_refuses_to_connect_beyond_the_record_tolerance(self) -> None:
+        """Connect derives the frame the controller applies (the planned arm's since P0g slice 15), here from a fake
+        controller whose TCP register holds the declared frame, answered from the description's chain."""
+        from tests._fake_transport import chain_of, fake_transport
+        from tests.test_ur_tool_frame import _Q
 
         for shift, refused in ((3.0, True), (0.5, False)):
             with self.subTest(shift=shift):
-                arm = URRobotArm(wrist_cell(source="polyscope"))
-                arm.set_wrist_bodies([_body(source="polyscope", record=_shifted(shift))])
-                arm._conn = _conn(declared_frame())
+                fake = fake_transport(joints=_Q, kinematics=chain_of("ur5e"), tcp_register=declared_frame())
+                fake.connected = False
+                arm = planned_arm(wrist_cell(source="controller"), transport=fake)
+                arm.set_wrist_bodies([_body(source="controller", record=_shifted(shift))])
                 if refused:
                     with self.assertRaises(RobotConnectionError) as caught:
                         arm.connect()
@@ -173,10 +181,10 @@ class TheRecordMeetsTheToolFrameTests(unittest.TestCase):
                     self.assertIsNotNone(arm.active_tool_frame)
 
     def test_a_record_from_the_other_mode_is_refused(self) -> None:
-        arm = URRobotArm(wrist_cell())
+        arm = planned_arm(wrist_cell())
         with self.assertRaises(ValueError) as caught:
-            arm.set_wrist_bodies([_body(source="polyscope")])
-        self.assertIn("was calibrated on a polyscope cell", str(caught.exception))
+            arm.set_wrist_bodies([_body(source="controller")])
+        self.assertIn("was calibrated on a controller cell", str(caught.exception))
 
 
 class TheSelfFilterTakesTheHousingOutTests(unittest.TestCase):
@@ -184,9 +192,9 @@ class TheSelfFilterTakesTheHousingOutTests(unittest.TestCase):
         from src.robot.safety.planning.self_envelope import self_envelope
 
         joints = [0.0, -1.2, 1.3, -0.4, 1.5, 0.2]
-        bare = URRobotArm(wrist_cell())
+        bare = planned_arm(wrist_cell())
         before = self_envelope(bare._preflight, bare, joints)
-        carrying = URRobotArm(wrist_cell())
+        carrying = planned_arm(wrist_cell())
         body = wrist_body()
         carrying.set_wrist_bodies([body])
         after = self_envelope(carrying._preflight, carrying, joints)
@@ -200,7 +208,7 @@ class TheExactGuardHoldsTheCameraTests(unittest.TestCase):
     def test_the_backend_holds_the_camera_part_and_the_evidence_parts_are_unchanged(self) -> None:
         from src.robot.safety._fcl_self_collision import composed_parts, mesh_backend_status
 
-        arm = URRobotArm(wrist_cell())
+        arm = planned_arm(wrist_cell())
         guard = arm._preflight._path_authority(arm)
         assert guard is not None
         model = guard.model_for(arm)

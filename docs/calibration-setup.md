@@ -317,14 +317,16 @@ python -m src.robot.execution.real_cell.calibrate --rig realsense_d435 --freedri
 `--check` validates the configuration and the rig and touches no hardware. On a cuRobo UR cell that
 declares `safety.self_collision.planner_margin_mm` it also looks up the committed planner evidence the
 sweep's planner starts on, the lookup `real_cell --check` makes in its `planner margin` row: a
-combination nobody measured is refused there, with the `scripts/curobo/matrix_gate.py` command that
+combination nobody measured is refused there, with the `scripts/arms/gate.py` command that
 measures it, instead of after the arm has connected. A coupling plate of a thickness no file measured
 is one such combination, and so is a declared `safety.planning_world.payload.length_mm`, which reserves
 16 attach slots and needs a file measured with them (`_a16`), where `payload.enabled: false` plans on the
 committed `_a0` file. An undeclared margin is left to `real_cell --check`, which blocks on it with its own
 fix, so run that first. `--dry-run` builds the arm and opens that one camera, then stops before any
-motion; it starts no planner either, and an arm that offers no hand guiding is refused there for
-`--freedrive` and `--adjust`. Neither moves the robot. Both use the rig id you declared in section 2,
+motion; it starts no planner either. An arm that offers no hand guiding is refused for `--freedrive` and
+`--adjust` before that, at the config stage, which `--check` runs too: it asks the arm the tree builds, never
+connected (P0i). An arm that does not build at all is refused by the build, before anything opens, and before
+that by the ability rows `real_cell --check` prints. Neither moves the robot. Both use the rig id you declared in section 2,
 so on a tree that has no such rig they refuse by name and list the rigs that do exist. The same check,
 dry run and run from Python are
 [`examples/real_robot/07_calibrate_a_fixed_camera.py`](../examples/real_robot/07_calibrate_a_fixed_camera.py)
@@ -423,11 +425,12 @@ model and taught on no cell, so teach your own. From Python a list works too: a 
 `JointStation` per station, as example 08 aims its poses so the flange board faces the camera.
 
 `--check` reads the file and checks every record before anything is built: one unit key, no pose keys
-beside it, six finite numbers, and units that can be what the key says. A `joints_rad` value beyond
-one full turn (2 pi) is refused as probably degrees, a `joints_deg` value beyond 360 as beyond any
-joint, and a `joints_deg` record whose every value lies within 2 pi as probably radians. Nothing
-rewrites a value. The config stage then says how many stations the file holds and how many are joint
-stations:
+beside it, six finite numbers, and units that can be what the key says. A value past the range the
+arm's description rates its joint for (`limit_deg` in `config/arms/<model>.yaml`, a full turn either way
+on every UR) is refused, in `joints_rad` as probably degrees and in `joints_deg` as a place the joint
+does not reach, and a `joints_deg` record whose every value lies within 2 pi as probably radians.
+Nothing rewrites a value. The config stage then says how many stations the file holds and how many are
+joint stations:
 
 ```text
   poses      6 from stations.json, 4 of them joint stations
@@ -661,7 +664,7 @@ The starting values are the ones the repository's tests use, not measurements. T
 settled arm across one grab: every refused frame is logged with the travel it measured (`tool moved
 across the grab: ... mm, ... deg`), so raise them only as far as a still arm needs. On a `willy` tool
 frame the record is written from the declared numbers and compared exactly, so any value above 0 of
-the last two behaves the same. On a `polyscope` one the frame is derived from the controller at every
+the last two behaves the same. On a `controller` one the frame is derived from the controller at every
 connect: connect a few times and set them just above the spread you see. The resolver built from this block composes the
 artifact with the live tool pose on every frame, so a wrist primary needs no `frame_resolver=` in
 code.

@@ -168,7 +168,7 @@ class TheJointMoveDeclaredNextTests(unittest.TestCase):
 
     def test_a_refresh_in_between_has_the_carry_judged_again(self) -> None:
         arm, events, look, _said = self._ready()
-        arm._curobo_ur_planner().refresh_world(near_point_mm=[350.0, -150.0, 220.0])
+        arm._curobo_planner().refresh_world(near_point_mm=[350.0, -150.0, 220.0])
         self._judged_again(arm, events, look)
 
     def test_a_halt_has_the_carry_judged_again(self) -> None:
@@ -285,7 +285,7 @@ class TheJointMoveJudgedDuringTheLineBeforeItTests(unittest.TestCase):
         waiting up to 451 ms on Windows: while it judges the switch interval is 0.5 ms, and it is put back after."""
         import sys
 
-        from src.robot.drivers.ur import arm as arm_module
+        from src.robot.drivers.planned import arm as arm_module
 
         before = sys.getswitchinterval()
         arm, _events, _solved = _at_the_part()
@@ -383,7 +383,7 @@ class ThePicksOwnFlowTests(unittest.TestCase):
 
         arm._conn.moveJ.side_effect = joint_moves
         arm._motion.move_to.side_effect = lines
-        arm.get_robot_status = lambda: RobotStatus(RobotMode.RUNNING, SafetyMode.NORMAL, False, False)
+        arm.get_robot_status = lambda: RobotStatus(RobotMode.RUNNING, SafetyMode.NORMAL, False, False, program_running=True)
         io = _Timeline()
         hand = _toggle(io)
         hand.connect()
@@ -435,7 +435,7 @@ class ThePicksOwnFlowTests(unittest.TestCase):
 
         arm._conn.moveJ.side_effect = joint_moves
         arm._motion.move_to.side_effect = lines
-        arm.get_robot_status = lambda: RobotStatus(RobotMode.RUNNING, SafetyMode.NORMAL, False, False)
+        arm.get_robot_status = lambda: RobotStatus(RobotMode.RUNNING, SafetyMode.NORMAL, False, False, program_running=True)
         io = _Timeline()
         hand = _toggle(io)
         hand.connect()

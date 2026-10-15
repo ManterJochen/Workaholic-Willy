@@ -39,7 +39,7 @@ _WIDTHS = {"min_width_mm": 7.5, "max_width_mm": 61.0}
 class _ArmThatClaimsUrAndHoldsNoAddress:
     """Says ``ur`` and carries no config: the one shape with no controller address anywhere on it."""
 
-    capabilities = RobotCapabilities(vendor="ur", model="ur5e")
+    capabilities = RobotCapabilities(vendor="ur", model="ur5e", dof=6, controller=None, owns_a_controller=True)
 
 
 @dataclass(frozen=True)
@@ -103,13 +103,13 @@ _TABLE: tuple[_Case, ...] = (
         arm="_ArmThatClaimsUrAndHoldsNoAddress", gripper="NullGripper",
         substitution=_Substituted(
             SubstitutionReason.ROBOTIQ_NEEDS_UR, "robotiq",
-            "gripper.vendor='robotiq' and the arm in hand does report vendor 'ur', but it exposes "
-            "no controller address: reading arm.config.ur.ip off it found nothing. The Robotiq is "
+            "gripper.vendor='robotiq' and the arm in hand does report vendor 'ur', but it names "
+            "no controller address: its capabilities.controller is None. The Robotiq is "
             "reached over a socket on that arm's controller, and robot.ur.ip in this tree "
             "('10.9.9.9') describes whatever the config names, not the arm that was handed in.",
-            "Hand in an arm built from a config tree (URRobotArm keeps the one it was constructed "
-            "with), or supply no arm at all and set robot.vendor: ur so this builds the arm from "
-            "this tree and both halves come from the same place.",
+            "Hand in an arm that names its controller (URRobotArm reads robot.ur.ip of the tree "
+            "it was built from), or supply no arm at all and set robot.vendor: ur so this builds "
+            "the arm from this tree and both halves come from the same place.",
         ),
     ),
     _Case(

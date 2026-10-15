@@ -21,9 +21,11 @@ These run against an SDK double; the names they rely on are held against the rea
 from __future__ import annotations
 
 import logging
+import sys
 import unittest
 from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 import numpy as np
 
@@ -154,6 +156,22 @@ def _rig(*, depth: tuple[int, int] = (848, 480), serial: str | None = "SN-415", 
         source="rgbd", rig_id="wrist", enabled=True, fps=30, backend=0, serial_number=serial,
         color_resolution=(1280, 720), depth_resolution=depth, rgbd_backend="realsense",
         realsense=realsense, quality={"warmup_frames": 0}, calibration_paths={"base_dir": "calibration/wrist"})
+
+
+class AnSdkThatDoesNotLoadTests(unittest.TestCase):
+    """P0h h6, measured in Ubuntu-24.04: pyrealsense2 2.58.3 was installed by requirements.txt and failed to import,
+    its loader asking for ``libusb-1.0.so.0``, a system library pip does not bring. The refusal said "pyrealsense2 is
+    not installed" and named the pip command that had just run."""
+
+    def test_the_refusal_carries_the_loaders_reason_and_names_the_system_library(self) -> None:
+        streamer = RealSenseRGBDStreamer(_rig())
+        with mock.patch.dict(sys.modules, {"pyrealsense2": None}), self.assertRaises(ImportError) as refused:
+            streamer._import_rs()  # noqa: SLF001
+        said = str(refused.exception)
+        self.assertIn("pyrealsense2 could not be imported (import of pyrealsense2 halted; None in sys.modules)", said)
+        self.assertIn("pip install -r requirements.txt", said)
+        self.assertIn("sudo apt install libusb-1.0-0", said)
+        self.assertNotIn("pyrealsense2 is not installed", said)
 
 
 class MinZTests(unittest.TestCase):

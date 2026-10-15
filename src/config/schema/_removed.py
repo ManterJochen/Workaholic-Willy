@@ -47,6 +47,12 @@ _DENSE_RECOVERY_REMOVED: Final[str] = (
 
 #: The dotted key as the whole tree names it, to the sentence that replaces it.
 REMOVED_KEYS: Final[dict[str, str]] = {
+    "robot.ur.motion_planner": (
+        "how a cell plans its motions is the cell's key rather than one vendor's: it is now robot.motion.planner, with "
+        "the same values 'ik' and 'curobo' (2026-10-13). Refused rather than ignored, because a cell that sets 'ik' on "
+        "purpose on a box with no cuRobo would otherwise fall back to the 'curobo' default and refuse every motion it "
+        "was asked for. Move the key to robot.motion.planner."
+    ),
     "robot.sim.gripper_mount": (
         "the sim mount is derived from the hand, robot.gripper.model, and the arm asset, "
         "robot.sim.robot_model. Name the hand in robot.gripper.model and delete this key."
@@ -151,6 +157,33 @@ REMOVED_KEYS: Final[dict[str, str]] = {
     "robot.grasping.dense_recovery.max_recovery_actions": _DENSE_RECOVERY_REMOVED,
     "robot.grasping.dense_recovery.strategy": _DENSE_RECOVERY_REMOVED,
     "robot.grasping.dense_recovery.allowed_actions": _DENSE_RECOVERY_REMOVED,
+    "robot.safety.self_collision.kinematics_model": (
+        "the self collision guard judges the arm the cell names: robot.ur.model on a UR cell, robot.sim.robot_model on "
+        "a sim cell, whose Isaac arm reports that model instead of 'isaac-sim' (P0d D5, ported 2026-10-13). The key was "
+        "a second name for the arm that two validators held equal to those two, and a third refused it on any other "
+        "arm, where it had no right value. Name the arm in its vendor block and delete this line, a null one included."
+    ),
+    "robot.calibration.orientation_spread_deg": (
+        "it shaped the poses a calibration sweep generated, and nothing generates a calibration station any more (the "
+        "owner, 2026-09-24): the stations are a file of your own (--fixed-poses), tilted as you write them, or the arm "
+        "guided by hand (--freedrive). Delete this key."
+    ),
+    "robot.calibration.max_attempts_per_pose": (
+        "it was the pose generator's retry budget, and nothing generates a calibration station any more (the owner, "
+        "2026-09-24): the stations are a file of your own (--fixed-poses) or the arm guided by hand (--freedrive). "
+        "Delete this key."
+    ),
+    "robot.calibration.pose_box_z_frac": (
+        "it was the z band the eye-to-hand pose generator drew from, and nothing generates a calibration station any "
+        "more (the owner, 2026-09-24): the sim sweep runs the stations declared for its robot model "
+        "(willy_sim/calibration/stations/eth_<model>.json, or run_eth_calibrate --stations PATH), and a real cell names "
+        "its own (--fixed-poses) or guides the arm by hand (--freedrive). Delete this key."
+    ),
+    "robot.sim.scene_setup.eih_viewpoints": (
+        "it shaped the hemisphere of viewpoints the eye-in-hand sim sweep generated, and nothing generates a "
+        "calibration station any more (the owner, 2026-09-24): the sim sweep runs the stations declared for its robot "
+        "model (willy_sim/calibration/stations/eih_<model>.json, or run_eih_calibrate --stations PATH). Delete this key."
+    ),
 }
 
 

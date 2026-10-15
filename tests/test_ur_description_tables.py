@@ -1,12 +1,12 @@
 """The tables the stack types by hand agree with Universal Robots' pinned description, read without ROS.
 
-``scripts/curobo/_ur_description.py`` reads the vendored config (``test_ur_description_is_pinned.py`` holds its bytes):
+``scripts/arms/_ur_description.py`` reads the vendored config (``test_ur_description_is_pinned.py`` holds its bytes):
 the kinematics as joint origins, the joint limits with UR's ``!degrees`` tag, and which arm's folder each link's mesh
 comes from. This file proves the reader against what the stack already trusts, so that the URDF writer built on it
 starts from numbers that are shown to be the same numbers:
 
-* ``dh_rows`` reproduces ``UR_DH_TABLES_M`` for every model that has a row, to float noise;
-* ``mesh_owner`` reproduces the borrow map ``fetch_ur_meshes.py`` pins meshes by;
+* ``dh_rows`` reproduces every arm registry description's joints, to float noise;
+* ``mesh_owner`` reproduces the borrow map ``fetch.py`` pins meshes by;
 * the elbow is limited to half a turn in every model, the planning limit UM6 adopts for the planner.
 """
 
@@ -19,11 +19,12 @@ import pathlib
 import tempfile
 import unittest
 
-from src.robot.safety._ur_kinematics import UR_DH_TABLES_M
+from src.config.arms import available_arms
+from src.robot.safety._ur_kinematics import ur_dh_rows
 
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
-_MODULE = _ROOT / "scripts" / "curobo" / "_ur_description.py"
-_FETCH = _ROOT / "scripts" / "curobo" / "fetch_ur_meshes.py"
+_MODULE = _ROOT / "scripts" / "arms" / "_ur_description.py"
+_FETCH = _ROOT / "scripts" / "arms" / "fetch.py"
 _TOLERANCE = 1e-12
 
 
@@ -61,7 +62,7 @@ class TheReaderTests(unittest.TestCase):
     def test_the_models_are_the_pinned_models(self) -> None:
         models = self.ur.models()
         self.assertEqual(len(models), 14, models)
-        self.assertLessEqual(set(UR_DH_TABLES_M), set(models))
+        self.assertLessEqual(set(available_arms()), set(models))
         self.assertEqual(list(models), sorted(models))
 
 
@@ -69,10 +70,12 @@ class TheTablesAgreeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.ur = _load(_MODULE, "_ur_description_for_table_tests")
-        cls.fetch = _load(_FETCH, "_fetch_ur_meshes_for_table_tests")
+        cls.fetch = _load(_FETCH, "_fetch_for_table_tests")
 
     def test_every_dh_row_the_stack_types_is_the_description_s(self) -> None:
-        for model, authority in UR_DH_TABLES_M.items():
+        for model in available_arms():
+            authority = ur_dh_rows(model)
+            assert authority is not None
             rows = self.ur.dh_rows(model)
             self.assertEqual(len(rows), 6)
             for i, (row, ref) in enumerate(zip(rows, authority)):
@@ -85,7 +88,9 @@ class TheTablesAgreeTests(unittest.TestCase):
         kinematics = dict(self.ur.load("ur5e").kinematics)
         kinematics["wrist_1"] = dataclasses.replace(kinematics["wrist_1"], z=kinematics["wrist_1"].z + 1e-6)
         rows = self.ur.dh_rows_from(kinematics, where="a perturbed ur5e")
-        self.assertNotAlmostEqual(rows[3][1], UR_DH_TABLES_M["ur5e"][3].d_m, delta=_TOLERANCE)
+        authority = ur_dh_rows("ur5e")
+        assert authority is not None
+        self.assertNotAlmostEqual(rows[3][1], authority[3].d_m, delta=_TOLERANCE)
 
     def test_kinematics_the_dh_form_cannot_hold_refuse(self) -> None:
         kinematics = dict(self.ur.load("ur5e").kinematics)
@@ -95,7 +100,7 @@ class TheTablesAgreeTests(unittest.TestCase):
         self.assertIn("shoulder", str(caught.exception))
 
     def test_the_mesh_owners_are_the_borrow_map(self) -> None:
-        for model in UR_DH_TABLES_M:
+        for model in available_arms():
             for link in self.ur.LINKS:
                 path = self.ur.load(model).meshes[link].collision
                 stem = pathlib.PurePosixPath(path).stem

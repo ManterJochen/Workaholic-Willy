@@ -145,7 +145,7 @@ WRITABLE: tuple[Writable, ...] = (
         label="Tool frame owner",
         measure=(
             "'willy' if the controller runs a bare flange and this driver composes the offset; "
-            "'polyscope' if an operator set the TCP on the pendant and the driver only verifies it. "
+            "'controller' if an operator set the TCP on the pendant and the driver only verifies it. "
             "Either way connect() derives what the controller is actually running and refuses a "
             "mismatch."
         ),
@@ -211,16 +211,6 @@ WRITABLE: tuple[Writable, ...] = (
             "so it cannot be changed while anything is connected."
         ),
         vendor="ur",
-        requires_disconnected=True,
-    ),
-    Writable(
-        path="robot.kuka.controller_ip",
-        label="KUKA controller address",
-        measure=(
-            "The controller's address on your network. As with UR: a fact about the cell, and the one "
-            "value that decides which machine moves, so it is refused while anything is connected."
-        ),
-        vendor="kuka",
         requires_disconnected=True,
     ),
 )

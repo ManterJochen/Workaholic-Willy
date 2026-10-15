@@ -24,7 +24,7 @@ from __future__ import annotations
 import argparse
 from typing import Any
 
-from src.config.schema.robot.sim_schema import UR_MODEL_KEYS
+from src.config.arms import admitted_arms
 
 __all__ = ["add_cell_arguments", "cell_profile_kwargs"]
 
@@ -32,7 +32,7 @@ __all__ = ["add_cell_arguments", "cell_profile_kwargs"]
 def add_cell_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     """Add ``--robot-model`` + ``--profile`` to a runner's parser."""
     parser.add_argument(
-        "--robot-model", type=str, default=None, choices=list(UR_MODEL_KEYS),
+        "--robot-model", type=str, default=None, choices=admitted_arms(simulated=True),
         help="which UR this cell drives (default: the config's, a UR5e). Selects the matching config "
              "layer, Lula/Isaac USD, cuRobo config and self-collision kinematics together.",
     )

@@ -30,6 +30,8 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import numpy as np
 
+from src.utility.interpreters import Interpreter, interpreter_command
+
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from datagen.assets.manifest import AssetManifest
     from datagen.config import DatagenConfig
@@ -136,7 +138,7 @@ def engine_is_available(name: str) -> tuple[bool, str]:
         if importlib.util.find_spec("isaacsim") is None:
             return False, ("Isaac Sim is not importable in this interpreter. It is a separate "
                            "multi-GB install with its own bundled Python; run datagen with "
-                           "Isaac's `python.bat`, or choose another engine.")
+                           f"Isaac's `{interpreter_command(Interpreter.ISAAC)}`, or choose another engine.")
         return True, ""
     return False, f"engine {name!r} is registered but has no availability probe"   # pragma: no cover
 

@@ -45,7 +45,7 @@ _ROOTS = (
 _EXCLUDED = ("/deep/", "\\deep\\", "/willy_sim/", "\\willy_sim\\")
 
 #: MEASURED on 2026-09-04, not guessed. Four `render()` methods on report-shaped classes existed
-#: before this package (config/explain.py:132, ur/io_bench.py:62 and :96,
+#: before this package (config/explain.py:132, execution/io_bench/pins.py:68 and :129,
 #: real_cell/preflight.py:65). The floor sits at four so a scan that silently stops matching fails
 #: here instead of passing quietly.
 _MIN_RENDERERS = 4

@@ -5,9 +5,9 @@
 #
 # `vendor` selects which driver `create_arm()` builds, and is checked against the `RobotVendor`
 # enum as the config loads, so a typo is refused there rather than at the first motion. Each
-# vendor owns a sibling block below and only the matching one is read: "ur", "kuka" for the
-# EthernetKRL driver, "sim" for the Isaac or pure-Python mock arm, "dummy" for the featureless
-# in-process stub. `templates/kuka_eki.yaml` is a starting point for a KUKA cell.
+# vendor owns a sibling block below and only the matching one is read: "ur", "sim" for the Isaac
+# or pure-Python mock arm, "dummy" for the featureless in-process stub. KUKA's EthernetKRL driver
+# was deleted on 2026-09-19; `kuka` is a reserved name until its ROS 2 driver lands.
 robot:
   vendor: "ur"
 
@@ -15,19 +15,26 @@ robot:
   # UR-only block. Only consulted when robot.vendor == "ur".
   # ----------------------------------------------------------------------
   ur:
+    # The UR10 cell's controller. The key has no default: a tree that drives a controller says where it is,
+    # and the cell lock holds the cell by this address (ur@192.168.1.100).
     ip: "192.168.1.100"
     rtde_frequency: 0.0        # 0 = the controller picks its own rate, 125 Hz, not zero hertz
-    # Approach-phase planner. "curobo" plans a collision-free trajectory in the isolated planner
-    # process (safety.planning), to the goal configuration nearest the arm, and runs it as one moveJ
-    # per kept waypoint: the fewest of the plan's own waypoints whose legs stay within the path
-    # gate's step, judged leg by leg by the path gate and the planner. "ik" is the controller's
-    # straight line, which knows nothing about the bench, the bin or anything else in the cell and
-    # will drive through all of it. The "curobo" path is fail-closed: with no cuRobo environment
-    # the move is refused with CONTROLLER_REJECTED and never degrades to blind IK, so confirm that
-    # environment first with `python -m src.robot.safety.planning --doctor`. What the planner knows
-    # about the cell comes from `safety.planning_world`; with that block off it plans against its
-    # own robot model and a generic 1.6 m table and nothing else.
-    motion_planner: "curobo"
+
+  # ----------------------------------------------------------------------
+  # How this cell's motions are planned, whichever arm drives them.
+  # ----------------------------------------------------------------------
+  motion:
+    # "curobo" plans a collision-free trajectory in the isolated planner process (safety.planning), to
+    # the goal configuration nearest the arm, and runs it as one moveJ per kept waypoint: the fewest of
+    # the plan's own waypoints whose legs stay within the path gate's step, judged leg by leg by the
+    # path gate and the planner. "ik" is the controller's straight line, which knows nothing about the
+    # bench, the bin or anything else in the cell and will drive through all of it. The "curobo" path
+    # is fail-closed: with no cuRobo environment the move is refused with CONTROLLER_REJECTED and never
+    # degrades to blind IK, so confirm that environment first with
+    # `python -m src.robot.safety.planning --doctor`. What the planner knows about the cell comes from
+    # `safety.planning_world`; with that block off it plans against its own robot model and a generic
+    # 1.6 m table and nothing else. It was robot.ur.motion_planner until 2026-10-13.
+    planner: "curobo"
 
   # ----------------------------------------------------------------------
   # Sim block (Isaac Sim or pure-Python mock). Only consulted when
@@ -39,10 +46,10 @@ robot:
     enabled: false
     mock_mode: false
     backend: "isaac"
-    # Which UR the sim cell drives: "ur5e", "ur3e" or "ur10e". It selects the Lula solver config,
-    # the Isaac USD and the cuRobo {model}.yml; see src/robot/drivers/sim/robot_models.py. On an
-    # enabled sim cell it must equal safety.self_collision.kinematics_model, which config load
-    # cross-checks, because otherwise the guard evaluates one arm against the other's link lengths.
+    # Which UR the sim cell drives: "ur5e", or any arm the registry admits for a simulator (ur3, ur3e,
+    # ur5, ur10, ur10e). It selects the Lula solver config, the Isaac USD and the cuRobo {model}.yml;
+    # see src/robot/drivers/sim/robot_models.py. It is the model the Isaac arm reports, so it is the
+    # arm the self-collision guard judges.
     robot_model: "ur5e"
     scene: null
     robot_prim_path: null
@@ -116,7 +123,7 @@ robot:
     #   source: "willy"      this driver composes flange to TCP itself and the controller runs a
     #                        bare flange. Needs no vendor SDK call. The cuRobo path, which plans
     #                        to tool0 and executes moveJ, is handed the flange goal in both modes.
-    #   source: "polyscope"  an operator set the TCP on the teach pendant; the driver passes poses
+    #   source: "controller"  an operator set the TCP on the teach pendant; the driver passes poses
     #                        through and only verifies that the controller agrees.
     #
     # Either way connect() derives what the controller is actually running, the bundled DH table's
@@ -178,12 +185,13 @@ robot:
       workspace_margin_mm: 20.0
 
     # Per-axis joint hard limits and the margin the guard keeps between a commanded angle and the
-    # limit. The static lists below are read first and override everything else. With them null a
-    # UR falls back to the built-in factory table in safety/joint_limits.py, plus or minus 360 deg
-    # on every axis, and no other vendor has one: no driver reads joint limits from RTDE telemetry.
+    # limit. The static lists below are read first and override everything else. With them null an
+    # arm that reports a model the arm registry describes (every UR, the Isaac arm included) falls
+    # back to the factory envelope in config/arms/<model>.yaml, plus or minus 360 deg on every axis,
+    # and no other arm has one: no driver reads joint limits from RTDE telemetry.
     # With neither source the guard fails closed while enforce is true, and that cell is refused
-    # at build by create_arm rather than one move at a time: measured on the web
-    # profile, a kuka cell came up and answered controller_rejected to every motion, naming the
+    # at build by create_arm rather than one move at a time: measured on a cell whose vendor had no
+    # table, which came up and answered controller_rejected to every motion, naming the
     # controller for a missing key here. The two lists are set
     # together or not at all, one entry per axis, with min_deg below max_deg on every axis.
     joint_limits:
@@ -211,7 +219,7 @@ robot:
       max_orientation_step_deg: 30.0
       max_tcp_step_mm: 250.0
 
-    # How a cuRobo UR cell chooses the path of a move (motion_planner "curobo"). A move goes to the
+    # How a cuRobo UR cell chooses the path of a move (robot.motion.planner "curobo"). A move goes to the
     # configuration of its goal nearest the arm on the branch the arm holds, and runs the straight joint
     # line there wherever that line is clear; cuRobo plans only where it is not, and never chooses the goal.
     # line_clearance_mm is how far every configuration of such a line has to stay from the planner's
@@ -263,8 +271,8 @@ robot:
       # accepts whose true mesh distance is 0.000 mm. Cost: about 0.085 ms for the proxy
       # against about 9.6 ms per check.
       # Requires an engine (python-fcl, or Coal via WILLY_COAL_PREFIX) and a bundle for the model;
-      # with either missing the guard warns once and runs the capsule proxy instead. A non-UR
-      # vendor reaches it only by naming kinematics_model, as robot.sim.yaml does with ur5e.
+      # with either missing the guard warns once and runs the capsule proxy instead. An arm the
+      # registry does not describe as a UR has neither and falls back to the proxy by construction.
       backend: "fcl"
       min_distance_mm: 3.0
       # planner_margin_mm is deliberately absent here, in the manner of robot.gripper.model. It is
@@ -289,9 +297,9 @@ robot:
       # 2, the owner's 1 to 2 mm (2026-10-12): 75 of the replay bank's 116 picks have a grasp it admits, 71 at 3.
       perceived_min_distance_mm: 2.0
 
-    # Steady-state gating, consumed by the grasp execution policy rather than by the per-move
-    # pipeline: before each commanded approach, grasp and retreat move it blocks on the driver's
-    # steady signal for up to steady_timeout_s and fails closed on timeout.
+    # Steady-state gating, held by the arm itself rather than by the per-move pipeline: before every
+    # motion verb it waits on the driver's steady signal for up to steady_timeout_s and fails closed on
+    # timeout (gate_at: send waits right before the send instead).
     dwell:
       require_steady_before_motion: true
       steady_timeout_s: 5.0
@@ -628,30 +636,4 @@ robot:
     # outside an RL mode, and that validator is its only reader: nothing builds the online
     # coordinator, so setting it changes nothing.
     online_update_enabled: false
-
-  # ----------------------------------------------------------------------
-  # KUKA-only block, consulted only when `robot.vendor` is `kuka`. The
-  # controller-side KRL and EKI XML templates are described in
-  # `config/robot/templates/kuka/README.md`.
-  # ----------------------------------------------------------------------
-  kuka:
-    # `kr6-r900` with `dof: 6` is the one combination the driver holds a built-in capability
-    # descriptor for; any other name builds the descriptor out of these two fields instead.
-    model: "kr6-r900"
-    dof: 6
-    controller_ip: "192.168.1.20"   # Read only when `eki.role` is client; unused under server
-    # EthernetKRL transport: EKI and KRL over TCP with XML payloads.
-    eki:
-      role: "server"          # Willy listens; KRL dials in
-      # Local bind address while `role` is server. 0.0.0.0 accepts the controller on any interface.
-      host: "0.0.0.0"
-      # TCP port of the EKI channel. It must match `<PORT>` in the controller-side
-      # EkiHwInterface.xml, or the two ends never meet.
-      port: 7000
-      # Per-operation timeout in seconds, covering connect, request and reply, and ack.
-      timeout_s: 5.0
-      # Period in seconds of the background `<Echo>` probes that keep the link observable.
-      heartbeat_s: 0.5
-      # Reader receive buffer in bytes.
-      buffer_size: 65536
 

@@ -9,7 +9,7 @@ newline-delimited JSON over the pipe.
 
 It is a firm dependency for real collision-aware motion, used by both the Isaac sim
 driver in :mod:`src.robot.drivers.sim` and the real-UR execution path in
-:mod:`src.robot.drivers.ur.curobo_motion`. It still stays an out-of-process service,
+:mod:`src.robot.drivers.planned.curobo_motion`. It still stays an out-of-process service,
 never imported in-process, and it cannot become a pip line: it needs python 3.10 and a
 CUDA build, it clashes with ``warp``, and there is no wheel. ``WILLY_CUROBO_PYTHON``
 locates the environment, defaulting to ``ext_deps/curobo_env/python.exe``, and the

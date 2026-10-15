@@ -22,7 +22,7 @@ switches it on in the cell's own profile only after these measurements have pass
       operation register: a line it never showed is stopped and refused after 1 s), the TCP within 1 mm and 2e-3 rad
       of the target and the arm still, and zero refusals. The first 10 again with brakes off, for the durations. Every
       line of a pick (the approach, the line in, the line out) is a moveL, so this is what the owner's picks meet.
-  M4  a multi-waypoint path (``CuroboUrPlanner.execute``, 5 waypoints) halted in leg 3, brakes on. Pass: CANCELLED
+  M4  a multi-waypoint path (``CuroboPlanner.execute``, 5 waypoints) halted in leg 3, brakes on. Pass: CANCELLED
       naming waypoint 3, exactly 3 moveJ on the wire, and the arm never heads for waypoint 4.
   M5  the owner's toggle on tool DO0 (``JawIOGripper`` single_toggle): a halt mid-approach, then the close the pick
       would send. Pass: zero DO0 edges after the halt, read on a second RTDE connection, brakes on and off.
@@ -48,7 +48,7 @@ sets the brake on its connection itself, on or off as that check measures.
 
 Where it departs from the build plan's checklist (6.5): the chain is ``ursim,<model>,haltprobe``, an ik arm, not
 ``ursim,ursim_curobo``, because every check drives the connection, the arm's halt and the glue's ``execute`` directly and
-none needs a planner; and M4 runs ``CuroboUrPlanner.execute`` on five waypoints the probe writes (the legs a planned path
+none needs a planner; and M4 runs ``CuroboPlanner.execute`` on five waypoints the probe writes (the legs a planned path
 runs, one moveJ each), with a planner that refuses to start, not on a path cuRobo planned. A planned M4 needs the
 cuRobo sidecar beside URSim.
 
@@ -91,13 +91,12 @@ import numpy as np  # noqa: E402
 
 from src.config.loader import load_robot_config  # noqa: E402
 from src.robot.core import ArmHalted, MotionCommand, MotionStatus, RobotVendor  # noqa: E402
-from src.robot.core.arm_capabilities import DigitalIOPort  # noqa: E402
+from src.robot.core.arm_capabilities import DigitalIOPort, MoveEnd  # noqa: E402
 from src.robot.drivers import create_arm  # noqa: E402
 from src.robot.drivers.ur import connection as connection_module  # noqa: E402
 from src.robot.drivers.ur.arm import URRobotArm  # noqa: E402
-from src.robot.drivers.ur.connection import MoveEnd  # noqa: E402
 from src.robot.drivers.ur.pose import URPose  # noqa: E402
-from src.robot.drivers.ur.curobo_motion import CuroboUrPlanner  # noqa: E402
+from src.robot.drivers.planned.curobo_motion import CuroboPlanner  # noqa: E402
 from src.robot.execution.handling import _controller_refusal  # noqa: E402
 from src.robot.grippers.jaw_io import JawIOGripper  # noqa: E402
 
@@ -266,8 +265,8 @@ class Probe:
         shutil.copytree(_REPO_ROOT / "config", self.tree)
         (self.tree / "robot" / "robot.haltprobe.yaml").write_text(_LAYER.format(model=model), encoding="utf-8")
         self.cfg = load_robot_config(self.tree, profile=f"ursim,{model},haltprobe")
-        if self.cfg.ur.ip not in ("127.0.0.1", "localhost", "::1"):
-            raise SystemExit(f"profile ur.ip is {self.cfg.ur.ip!r}: this probe moves the arm and runs on the loopback")
+        if self.cfg.arm.controller not in ("127.0.0.1", "localhost", "::1"):
+            raise SystemExit(f"profile ur.ip is {self.cfg.arm.controller!r}: this probe moves the arm and runs on the loopback")
         built = create_arm(RobotVendor.from_string(self.cfg.vendor), config=self.cfg)
         if not isinstance(built, URRobotArm):
             raise SystemExit(f"the scratch profile builds {type(built).__name__}, not a UR arm")
@@ -283,7 +282,7 @@ class Probe:
 
     @property
     def conn(self) -> Any:
-        return self.arm.connection
+        return self.arm._conn
 
     def connect(self) -> None:
         self.arm.connect()
@@ -555,7 +554,9 @@ def m4(p: Probe, w: Watcher) -> None:
     p.healthy()
     p.conn.brake_on_halt = True
     path = [list(HOME)] + [[HOME[0] + 0.25 * k, *HOME[1:]] for k in range(1, 5)]
-    planner = CuroboUrPlanner(p.conn, client_factory=_no_planner, vel=0.5, acc=1.0)
+    # The controller's joint order, as the arm hands it to its planner since P0e E4: the probe's own arm's.
+    planner = CuroboPlanner(p.arm._transport, joint_names=p.arm._joint_names, controller_yaw_deg=p.arm._controller_yaw_deg, client_factory=_no_planner, vel=0.5,
+                              acc=1.0)
     started = time.perf_counter()
 
     def halt_in_leg_three() -> None:

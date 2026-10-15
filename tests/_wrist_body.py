@@ -16,7 +16,7 @@ import numpy as np
 from src.config.schema.robot import RobotConfig
 from src.calibration.serialization import FlangeToTcp
 from src.contracts import UNSET
-from src.robot.drivers.ur.tool_frame import tool_frame_matrix
+from src.geometry.matrix import position_quaternion_to_matrix
 
 #: The shipped 2F-85 frame, which places the hand on a UR flange.
 TOOL_OFFSET_MM = (0.0, 132.0, 0.0)
@@ -26,7 +26,7 @@ TOOL_QUAT = (-0.7071067811865476, 0.0, 0.0, 0.7071067811865476)
 def wrist_cell(*, source: str = "willy", planner: str = "curobo", backend: str = "fcl") -> RobotConfig:
     """A UR cell that enables the live planner world, names the 2F-85 and declares its tool frame."""
     return RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"motion_planner": planner},
+        "vendor": "ur", "ur": {"ip": "127.0.0.1"}, "motion": {"planner": planner},
         "safety": {
             "payload": {"enforce": False},
             "self_collision": {"backend": backend},
@@ -42,7 +42,8 @@ def wrist_cell(*, source: str = "willy", planner: str = "curobo", backend: str =
 
 
 def declared_frame() -> np.ndarray:
-    return tool_frame_matrix(TOOL_OFFSET_MM, TOOL_QUAT)
+    return position_quaternion_to_matrix(np.asarray(TOOL_OFFSET_MM, dtype=np.float64),
+                                         np.asarray(TOOL_QUAT, dtype=np.float64))
 
 
 def camera_to_tool() -> Any:

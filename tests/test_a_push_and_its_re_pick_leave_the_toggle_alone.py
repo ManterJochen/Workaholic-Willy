@@ -63,8 +63,7 @@ def _real_cell(test: unittest.TestCase, **keywords: Any) -> _PushCell:
     """The owner's dense_clutter cell with the real execution policy on the toggle, one log for the arm and DO0."""
     cell = _PushCell(test, arm=_SharedLogArm, **keywords)
     cell.arm.shared = cell.events
-    cell.policy = GraspExecutionPolicy(arm=cell.arm, gripper=cell.jaws, pre_open_width_mm=49.99,  # type: ignore[assignment]
-                                       require_steady_before_motion=True)
+    cell.policy = GraspExecutionPolicy(arm=cell.arm, gripper=cell.jaws, pre_open_width_mm=49.99)  # type: ignore[assignment]
     cell.orchestrator.policy = cell.policy
     return cell
 

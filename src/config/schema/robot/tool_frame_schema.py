@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from .._base import StrictModel
 
@@ -23,13 +23,13 @@ __all__ = ["ToolFrameConfig", "ToolFrameSource"]
 #:   bare flange, as the Isaac driver does (``drivers/sim/arm.py``). It needs no vendor SDK call and
 #:   is the only mode that also covers the cuRobo path, which plans to ``tool0`` and executes
 #:   ``moveJ`` on joint waypoints, bypassing any controller-side tool register
-#:   (``drivers/ur/curobo_motion.py``).
-#: ``polyscope``: the controller holds it, set by an operator on the teach pendant. The driver passes
+#:   (``drivers/planned/curobo_motion.py``).
+#: ``controller``: the controller holds it, set by an operator on the teach pendant. The driver passes
 #:   poses through untouched and only verifies that the controller agrees.
 #:
 #: One measurement checks both live modes and they predict different answers, roughly identity for
-#: ``willy`` and the declared transform for ``polyscope``, so it also shows which mode a cell is in.
-ToolFrameSource = Literal["undeclared", "willy", "polyscope"]
+#: ``willy`` and the declared transform for ``controller``, so it also shows which mode a cell is in.
+ToolFrameSource = Literal["undeclared", "willy", "controller"]
 
 
 class ToolFrameConfig(StrictModel):
@@ -86,8 +86,28 @@ class ToolFrameConfig(StrictModel):
     #: perturbation and ~4.6 mm at a pessimistic 1.0 mm/1e-3 rad.
     verify_tolerance_mm: float = Field(default=10.0, gt=0.0)
 
+    @field_validator("source", mode="before")
+    @classmethod
+    def _renamed_source(cls, value: object) -> object:
+        """``polyscope`` is ``controller`` since P0e: refused with the new name, never read as it."""
+        if value == "polyscope":
+            raise ValueError(
+                "gripper.tool_frame.source 'polyscope' is 'controller' since P0e: the mode names who holds the tool "
+                "frame, and for every vendor that is its controller. Write source: controller. A calibration record "
+                "written as polyscope still reads, as controller."
+            )
+        return value
+
     @model_validator(mode="after")
     def _check_declared(self) -> "ToolFrameConfig":
+        # Before the source: a NaN passes the unit-norm test below (every comparison with it is false), and the
+        # matrix built from it would be refused only at the driver, far from the key that carried it.
+        for key, values in (("offset_mm", self.offset_mm), ("rotation_quat_xyzw", self.rotation_quat_xyzw)):
+            if not all(math.isfinite(v) for v in values):
+                raise ValueError(
+                    f"gripper.tool_frame.{key} must hold finite numbers; got {values}. A NaN or an infinity "
+                    f"here has no pose it could place the grasp centre at."
+                )
         if self.source == "undeclared":
             return self  # nothing to be consistent with yet; the driver is what refuses
 

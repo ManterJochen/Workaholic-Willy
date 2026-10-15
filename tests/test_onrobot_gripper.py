@@ -140,27 +140,21 @@ class ConnectRefusalTests(unittest.TestCase):
 
 class VendorWiringTests(unittest.TestCase):
     def test_a_configured_onrobot_cell_is_not_silently_gripper_less(self) -> None:
-        """⛔⛔ THE ONE THAT MATTERS. `robot_parts` dispatches on the gripper vendor and ends in an
-        `else` that substitutes a NullGripper -- the cell CONNECTS, reports every pick a success and
-        holds nothing. That `else` carries `# pragma: no cover` and nothing enumerated it, so an
-        enum member added without its branch produces a healthy-looking cell that grips air.
-
-        This asserts the branch exists by NAME in the dispatch, because the alternative -- building a
-        whole service to find out -- needs an arm, and the failure this guards against is precisely
-        that a silent fallback looks like success.
+        """⛔⛔ THE ONE THAT MATTERS. A vendor with no driver substitutes a NullGripper -- the cell CONNECTS, reports
+        every pick a success and holds nothing. Until P0g this pinned the dispatch branch by NAME in the source of
+        ``robot_parts``; since slice 8 the build is a lookup of the vendor's spec, so it asks the property itself: an
+        OnRobot tree on an arm with no I/O and no controller builds the OnRobot driver, with no substitution.
         """
-        from pathlib import Path
+        from src.config.schema.robot import RobotConfig
+        from src.robot.drivers.dummy.arm import DummyRobotArm
+        from src.robot.execution.robot_parts import build_gripper, gripper_driver_verdict
 
-        body = (
-            Path(__file__).resolve().parents[1]
-            / "src" / "robot" / "execution" / "robot_parts.py"
-        ).read_text(encoding="utf-8")
-        self.assertIn("GripperVendor.ONROBOT", body, "no dispatch branch: cells would grip air")
-        self.assertLess(
-            body.index("GripperVendor.ONROBOT"),
-            body.index("SubstitutionReason.NO_DRIVER"),
-            "the branch must come BEFORE the NullGripper fallback",
-        )
+        cfg = RobotConfig.model_validate({"vendor": "dummy", "gripper": {"vendor": "onrobot"}})
+        verdict = gripper_driver_verdict(cfg, arm_vendor="franka", arm_has_digital_io=False, arm_ip=None)
+        self.assertIsNone(verdict.reason, verdict.detail)
+        self.assertIs(GripperVendor.ONROBOT, verdict.vendor)
+        built = build_gripper(cfg, arm=DummyRobotArm())
+        self.assertIsInstance(built, OnRobotGripper, "an OnRobot cell would grip air")
 
     def test_the_registry_builds_it(self) -> None:
         from src.robot.grippers import create_gripper
@@ -180,24 +174,26 @@ class VendorWiringTests(unittest.TestCase):
         self.assertNotIn("speed", block.model_dump())
 
     def test_the_host_is_not_the_robots(self) -> None:
-        """⛔ The Compute Box is a SEPARATE DEVICE. The Robotiq branch reuses robot.ur.ip because a
-        URCap daemon runs on the controller; defaulting this one to the arm would point every
-        command at a machine that has never heard of it."""
-        import inspect
+        """⛔ The Compute Box is a SEPARATE DEVICE. The Robotiq reuses the arm's controller address because a URCap
+        daemon runs on the controller; defaulting this one to the arm would point every command at a machine that has
+        never heard of it. Until P0g this read the source of the build; since slice 8 it asks what was built, on an
+        arm that names a controller address other than the box's."""
+        from src.robot.drivers.planned.arm import PlannedArm
+        from src.robot.execution.robot_parts import build_gripper
+        from tests._fake_transport import fake_transport
+        from tests.test_a_planned_arm_is_built_by_keyword import _pieces
 
-        from src.robot.execution import robot_parts
-
-        source = inspect.getsource(robot_parts.build_gripper)
-        # ⚠ FROM THE `create_gripper` CALL, NOT FROM THE ENUM NAME. A window measured from the enum
-        # was 900 characters of explanatory comment and never reached the code, so the assertion
-        # failed on prose rather than on wiring -- a guard that measures the wrong span.
-        import re
-
-        found = re.search(r"create_gripper\(\s*GripperVendor\.ONROBOT", source)
-        assert found is not None, "build_gripper builds no OnRobot driver"
-        branch = source[found.start():found.start() + 600]
-        self.assertIn("rg.host", branch)
-        self.assertNotIn("robot_cfg.ur.ip", branch)
+        pieces = _pieces(fake_transport())
+        arm = PlannedArm(**pieces)
+        self.assertEqual("127.0.0.1", arm.capabilities.controller)
+        cfg = pieces["config"].model_copy(update={"gripper": pieces["config"].gripper.model_copy(update={
+            "vendor": "onrobot", "onrobot": GripperConfig(vendor="onrobot").onrobot.model_copy(
+                update={"host": "10.0.0.7", "port": 5020})})})
+        built = build_gripper(cfg, arm=arm)
+        self.assertIsInstance(built, OnRobotGripper)
+        said = repr(vars(built))
+        self.assertIn("10.0.0.7", said, "the box's own address")
+        self.assertNotIn("127.0.0.1", said, "never the arm's controller")
 
 
 if __name__ == "__main__":  # pragma: no cover

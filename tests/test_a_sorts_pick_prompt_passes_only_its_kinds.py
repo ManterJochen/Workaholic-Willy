@@ -159,9 +159,9 @@ class TheGatePassesOnlyTheKindsTests(unittest.TestCase):
 # ---------------------------------------------------------------------------------------------------------------------
 
 _CAPS = RobotCapabilities(
-    vendor="ur", model="ur5e", dof=6, supports_joint_move=True, supports_linear_move=True,
-    supports_async_move=False, has_native_fk=True, has_native_ik=True, has_force_control=False,
-    is_simulated=False,
+    vendor="ur", model="ur5e", dof=6,
+    has_native_fk=True,
+    is_simulated=False, controller=None, owns_a_controller=True,
 )
 
 

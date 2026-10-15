@@ -198,7 +198,7 @@ class CameraWorldWiring:
     cameras: tuple[str, ...] = ()
     #: Why there is no world, empty when there is one.
     reason: str = ""
-    #: `robot.ur.motion_planner`, because on a UR cell only the cuRobo planner reads the world.
+    #: `robot.motion.planner`, because on a UR cell only the cuRobo planner reads the world.
     planner: str | None = None
 
     @classmethod
@@ -216,7 +216,8 @@ class CameraWorldWiring:
         `get_tcp_pose`, which a camera on the wrist needs and a fixed one does not. A calibration that
         does not load raises what the loader raised, naming the rig's key.
         """
-        planner = getattr(getattr(robot_cfg, "ur", None), "motion_planner", None)
+        selected = robot_cfg.arm
+        planner = selected.planner or None
         if not plan.rig_ids:
             return cls(None, reason=plan.reason, planner=planner)
         views: list[CameraView] = []
@@ -264,7 +265,7 @@ class CameraWorldWiring:
             # world is handed over and never consulted, and the sentence below would announce a
             # protection that does not run.
             return (f"live planner world wired: {len(self.cameras)} camera(s) ({named}), but "
-                    f"robot.ur.motion_planner is {self.planner!r}, so no planner runs on this cell and nothing "
+                    f"robot.motion.planner is {self.planner!r}, so no planner runs on this cell and nothing "
                     "reads it")
         return f"live planner world wired: {len(self.cameras)} camera(s) ({named}), refreshed before every plan"
 

@@ -55,7 +55,7 @@ def _cell(*, brake: bool) -> tuple[Any, JawIOGripper, SimulatedUr, VirtualClock]
 
 
 def _policy(arm: Any, jaws: JawIOGripper) -> GraspExecutionPolicy:
-    return GraspExecutionPolicy(arm=arm, gripper=jaws, pre_open_width_mm=49.99, require_steady_before_motion=True)
+    return GraspExecutionPolicy(arm=arm, gripper=jaws, pre_open_width_mm=49.99)
 
 
 def _do0_writes(sim: SimulatedUr) -> list[Any]:

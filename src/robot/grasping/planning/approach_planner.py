@@ -121,7 +121,7 @@ def approach_waypoints(
     The list is inclusive at both ends: the first entry is the pre-grasp
     position and the last is the grasp itself. Each entry is a generic
     :class:`Pose` so the motion layer can pass it straight to
-    :meth:`RobotArm.move_to` without grasping-specific imports.
+    :meth:`RobotArm.move` without grasping-specific imports.
     """
     pose = _ensure_grasp(grasp)
     if num_waypoints < 2:

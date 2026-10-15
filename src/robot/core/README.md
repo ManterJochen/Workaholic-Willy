@@ -31,14 +31,14 @@ from `geometry`, and has no config and no command line.
 
 | Noun | What it is |
 | --- | --- |
-| `RobotArm` | connect, disconnect, stop; `get_tcp_pose()`, `get_joint_positions()`, `fk`, `ik`; `move_joint`, `move_linear` |
+| `RobotArm` | connect, disconnect, stop; `get_tcp_pose()`, `get_joint_positions()`, `fk`, `ik`; `move_linear` |
 | | the typed `move(pose, ...)` and `move_to_joints(...)`, each returning a `MotionResult` |
-| | the bool helpers `move_to`, `move_home`, `is_inside_workspace`, `wait_until_steady` |
+| | the bool helpers `move_home`, `is_inside_workspace`, `wait_until_steady` |
 | `Gripper` | connect, disconnect, `activate`, `set_width_mm`, `get_width_mm`, `min_width_mm`, `max_width_mm` |
-| `MotionResult` | frozen: `status`, `command`, target, `message`, `camera_world`; `ok`, and `executed()`, `failed()`, `from_bool()` |
+| `MotionResult` | frozen: `status`, `command`, target, `message`, `camera_world`, `sent`; `ok`, `raise_unless_executed()`, and `executed()`, `failed()` (which takes `sent=`), `from_bool()` |
 | `MotionStatus`, `MotionCommand` | why a motion ended, and what was attempted (`MOVE_TO`, `MOVE_HOME`, `MOVE_JOINTS`, `OTHER`) |
 | `JointPositions` | an immutable, validated vector of joint angles in radians |
-| `RobotCapabilities` | what a driver says about itself: vendor, model, DoF, native FK and IK, simulated or not |
+| `RobotCapabilities` | what a driver says about itself: vendor, model, DoF, the controller it drives and whether it owns one, native FK, simulated or not |
 | `RobotVendor`, `GripperVendor` | the vendor names used in config and the registries, with `from_string()` |
 | `CameraWorldStamp`, `CameraWorldDecline` | whether a world built from a current camera image stood behind a motion |
 | `KeepOutBox`, `SegmentationOffer` | a box in BASE that is no obstacle for one motion, and what a perception frame hands the planner |
@@ -48,7 +48,11 @@ from `geometry`, and has no config and no command line.
 
 Opt-in capabilities are Protocols a driver implements only where the hardware offers them, and a
 caller checks with `isinstance` and falls back: `SupportsDigitalIO`, `SupportsForceTorque` (a
-`Wrench`), `SupportsRobotStatus` (a `RobotStatus`, and recovery from a protective stop), `KeepsLines`
+`Wrench`), `SupportsRobotStatus` (a `RobotStatus`, and `acknowledge_fault`, which only a person reaches),
+`SupportsWatching` (`watch()`: a link that reads the state and takes a person's acknowledgement and never
+starts a control program, so it opens on a stopped controller; every motion verb refuses while it is open),
+`ReportsControllerProvenance` (a `ControllerProvenance`: the controller's serial and address, and
+`is_simulator` `True` only on proof, never `False`), `KeepsLines`
 (what `move(pose, linear=True)` keeps of the line: `CHECKED`, `CONTROLLER_LINE`, `TELEPORT` or
 `NOT_KEPT`), `CarriesPayload`, `SupportsFreedrive` (a `FreedriveSession` a person moves the arm
 in, read as `FreedriveSample`, with every motion verb refused while it is open),
@@ -91,6 +95,15 @@ that constant. An execution timeout means the command was accepted and did not f
 may still be moving. `MotionResult.from_bool` labels a bare `False` as `CONTROLLER_REJECTED`; a
 driver that knows the real cause passes `failure_status=`.
 
+A failed motion's `sent` (`MotionSent`) says whether any of its commands had reached the controller:
+`NOTHING` (the arm stands where it stood), `SENT` (it may have moved part of the way) or `UNSTATED` (the
+driver did not say, as the sim's and the dummy's results do not). The status cannot say it:
+`CONTROLLER_REJECTED` comes both before a send (an unavailable planner, a plan that ends off its goal) and
+after one (a `moveJ` that answered `False`), and a range refusal at a later waypoint is `INVALID_TARGET`
+after part of the path ran. The planned drivers set it on their failures, and the calibration sweep reads
+it before the wording. Like the stamp it takes part in equality, and the `repr` shows it only where it
+says something.
+
 A motion's `camera_world` stamp is one of `UNSTATED` (nothing was said), `PLANNED` (the only one that
 vouches), `DECLINED` (a caller's decision), `UNPLANNED` (nothing planned or checked the motion) and
 `MISSING` (a planner would need a world and none was declined, so the motion is refused). Every
@@ -98,7 +111,7 @@ driver stamps `move` and `move_to_joints`, read off the built arm:
 
 | Arm | Its motions say |
 | --- | --- |
-| UR on `ik`, KUKA, dummy, Isaac in `mock_mode`, Isaac on `rmpflow` | `UNPLANNED` |
+| UR on `ik`, dummy, Isaac in `mock_mode`, Isaac on `rmpflow` | `UNPLANNED` |
 | UR on `curobo`, Isaac on `curobo` | `DECLINED`, else `MISSING` with no live world, else `PLANNED` when its refresh vouched, else `UNSTATED` |
 
 A decline is `camera_world=CameraWorldDecline(reason)` on the verb or a block,
@@ -112,7 +125,8 @@ arm and does not follow into a thread started inside it.
 | `UNSUPPORTED`, `NO_CAMERA_WORLD_MESSAGE` | a planned or checked motion with neither a live camera world nor a decline | hand the robot its cameras, or decline with a reason |
 | `UNSUPPORTED`, `DECLINE_ON_A_LIVE_WORLD_MESSAGE` | a declined planned motion on an arm whose live world is wired | drop the decline; the world is there |
 | `ValueError` from `from_string()` | an unknown vendor name | use a name the message lists as buildable |
-| `RobotConnectionError`, `RobotEmergencyStop` | the link or the controller stopped the arm | recover the controller, then connect again |
+| `RobotConnectionError` | the link to the controller cannot be opened or dropped | check the cable and the address, then connect again |
+| `ArmFault` | the cell cannot move until a person acts: `kind` is one `ArmFaultClass` (`protective_stop`, `emergency_stop`, `controller_fault`, ...), `from_status()` reads it off a `RobotStatus`, and `acknowledgeable` says whether software can clear it at all | what `what_to_do()` says; a person clears it where the arm is visible, never the stack |
 | `CANCELLED`, `ArmHalted` | the arm's halt latch is set: a motion or an output switch, with nothing sent. `RobotStatus.is_operational` reads false while `controller_operational` keeps the controller's own answer, so a halt never reads as a stopped controller | a person confirms the cell is clear (`clear_halt()`) |
 | `CameraWorldUnavailable`, `PerceptionFrameMoved` | a camera could not vouch for the cell, or the tool moved during a wrist frame | faults of the cell: a campaign stops on them |
 
@@ -126,8 +140,11 @@ fails at `create_arm`.
 
 This package holds contracts and no behaviour of its own. `ur` and `sim` are the exercised backends;
 the drivers' evidence is in [drivers](../drivers/README.md) and [grippers](../grippers/README.md).
-`has_force_control` and `supports_async_move` are flags with no method behind them: every `move*`
-blocks, and there is no force, streaming or multi-arm contract here. The frame rules (`move_linear`
+No arm offers force or admittance control: `SupportsForceTorque` reads forces and commands none. The
+`has_force_control` flag that stood for it was read by nothing and went on 2026-09-26 with three more
+(P0i i6): every flag `RobotCapabilities` states is read by something, and what an arm offers beyond
+`RobotArm` is asked through its Protocols. Every `move*` blocks, and there is no streaming or multi-arm
+contract here. The frame rules (`move_linear`
 and `ik` take `Frame.BASE`) are stated here and enforced by each driver.
 
 ## Files
@@ -136,12 +153,14 @@ and `ik` take `Frame.BASE`) are stated here and enforced by each driver.
 | --- | --- |
 | `robot_arm.py` | `RobotArm` |
 | `gripper.py` | `Gripper`, its opt-in extensions, `HoldEvidence`, `hold_evidence_of`, `width_is_measured_of`, `why_not_known_open` |
-| `arm_capabilities.py` | the arm capability Protocols and their values: `Wrench`, `RobotStatus`, `LineReading`, `PayloadModel`; `ChoosesConfigurations`, `DrivesJointLines`, `JudgesCarriedLines`, `JudgesGraspsAhead`, `JudgesLinesAhead` |
-| `motion_result.py` | `MotionStatus`, `MotionCommand`, `MotionResult`, `NO_PLAN_FAIL_SAFE_MESSAGE` |
-| `camera_world.py` | the camera world stamp and decline, and how a driver declines, stamps and refuses |
+| `arm_capabilities.py` | the arm capability Protocols and their values: `Wrench`, `RobotStatus`, `LineReading`, `PayloadModel`; `ChoosesConfigurations`, `DrivesJointLines`, `JudgesCarriedLines`, `JudgesGraspsAhead`, `JudgesLinesAhead`; what a UR cell judges and holds ahead (`JudgesNextLegs`, `HoldsItsWorldAtJunctions`, `JudgesTheLineDown`, `KeepsItsBranch`, `ScreensConfigurations`) and what the console and the pick read (`ReadsItsStatusQuickly`, `KnowsItsHand`, `ReportsWristBodies`, `BrakesWhenHalted`); the halt latch, `SupportsHalt` and `HaltState`, and how a move ended, `MoveEnd` and `HALT_ENDS` |
+| `motion_result.py` | `MotionStatus`, `MotionCommand`, `MotionSent`, `MotionResult`, `NO_PLAN_FAIL_SAFE_MESSAGE` |
+| `camera_world.py` | the camera world stamp and decline, and how a driver declines, stamps and refuses; `PlansMotions`, `HoldsAPlannerWorld` and `StartsAPlanner`, asked through `plans_motions`, `holds_a_planner_world` and `live_planner_world_of`, which never raise |
 | `keep_out.py` | `KeepOutBox`, `SegmentationOffer`, `keeping_out(arm, offer)`, and `holding_views(arm)`, which keeps every frame of a wrist pick in the arm's live planner world until the block ends |
 | `shutter_motion.py` | `ShutterMotion`, `ShutterStamp`, `StampedGrab`, `camera_to_base_at_shutter`, `PICK_FRAME_WARMUP_GRABS` |
 | `joint_positions.py`, `capabilities.py` | `JointPositions`, `RobotCapabilities` |
+| `transport.py` | what a planned arm needs from the controller below it (P0e E7): `ArmTransport` and the opt-in `ControllerKinematics`, `ControllerMotion`, `TakesPayload`, `ReportsControllerModel`, `HoldsAHaltLatch`, the halt latch on the link, `ControllerIO`, the I/O registers by bank (P0g slice 6: a write answers whether the controller took it, a read raises where it cannot answer; named apart from `SupportsDigitalIO`, so a transport never passes for an I/O arm), and since slice 7 `ReadsForceTorque`, `ReportsControllerStatus` (with a quick read that skips the controller's text), `ReleasesProtectiveStop` and `ReadsControllerProvenance`, since P0i `WatchesController` (`connect_watch`, `is_watching`: what reads the state and releases a stop without a control program, the UR's receive interface and dashboard), and since port S4 `ControllerFreedrive` (a watchdog armed and kicked, hand guiding begun and ended, a fresh control program, the cheap reads a 30 Hz loop may make, the joint speeds and the payload; offered only by a controller that holds the arm when the kicks stop); poses are base-frame `Pose` in the controller's own frame |
+| `motion_limits.py` | `clamp_to_motion_limits`, the one speed and acceleration clamp every commanded motion is held to |
 | `vendor.py`, `gripper_vendor.py` | `RobotVendor`, `GripperVendor` |
 | `errors.py` | the `RobotError` hierarchy |
 

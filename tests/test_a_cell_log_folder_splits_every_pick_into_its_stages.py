@@ -281,7 +281,7 @@ class TheTasksOwnWayHomeAtItsEndOpensNoPickTests(unittest.TestCase):
             f"wrist pick handed looks: its looks were its rescans\n"
             f"{day} 13:00:09,000 - src.robot.grasping.loop.pick_loop - INFO - no look saw anything to pick (looked from "
             f"look 2)\n"
-            f"{day} 13:00:12,000 - CuroboUrPlanner - INFO - planner world refreshed: 9 box(es), frame 5 ms old, 400.0 ms "
+            f"{day} 13:00:12,000 - CuroboPlanner - INFO - planner world refreshed: 9 box(es), frame 5 ms old, 400.0 ms "
             f"to build, 100.0 ms to register\n"
             f"{day} 13:00:13,000 - URRobotArm - INFO - move_home: direct line; 2 waypoint(s) dense, 2 executed (1 "
             f"leg(s)); joint travel in deg, total/largest leg: x\n", encoding="utf-8")
@@ -313,7 +313,7 @@ class AJudgementOnASecondThreadEndsNoLineTests(unittest.TestCase):
             ("12:00:01,000", "src.robot.grasping.loop.pick_loop", "try 1 of 2: the grasp the look ranked first"),
             ("12:00:12,000", arm, "move to standoff: direct line to goal 1 of 4 (branch shoulder -); 2 waypoint(s) "
                                   "dense, 2 executed (1 leg(s)); joint travel in deg, total/largest leg: x"),
-            ("12:00:18,000", "CuroboUrPlanner", "judged path executed on UR: 2 moveJ"),
+            ("12:00:18,000", "CuroboPlanner", "judged path executed on UR: 2 moveJ"),
             ("12:00:19,000", "MotionController", "Moving to 'drop over yellow bin' [1.0, 2.0, 3.0 mm] (linear) ..."),
             ("12:00:20,000", "JawIOGripper", "actuating jaws OPEN via single_toggle"),
             ("12:00:22,000", arm, "the joint move declared next is judged on a second thread while the line to "
@@ -401,7 +401,7 @@ class AFolderWithFilesMissingStillSplitsTests(_Copies):
             f"{day} 10:00:20,100 - RunRegistry - INFO - Run run-p1 finished (finished): 1/1 succeeded in 20.1 s.\n",
             encoding="utf-8")
         (root / "robot" / "robot.log").write_text(
-            f"{day} 10:00:01,000 - CuroboUrPlanner - INFO - planner world refreshed: 9 box(es), frame 5 ms old, "
+            f"{day} 10:00:01,000 - CuroboPlanner - INFO - planner world refreshed: 9 box(es), frame 5 ms old, "
             f"400.0 ms to build, 100.0 ms to register\n"
             f"{day} 10:00:02,000 - src.robot.grasping.loop.pick_loop - INFO - try 1 of 3: the grasp the look ranked "
             f"first (rank 0 of the look's grasps)\n", encoding="utf-8")

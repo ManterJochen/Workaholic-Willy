@@ -27,7 +27,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import MagicMock
 
-from src.robot.core import RobotConnectionError
+from src.robot.core import ControllerProvenance, ReportsControllerProvenance, RobotConnectionError
 from src.robot.drivers.ur.arm import URRobotArm
 
 
@@ -55,12 +55,16 @@ class ModelSizeParsingTests(unittest.TestCase):
 
 
 class _Arm:
-    """The two attributes ``_verify_controller_model`` touches, and nothing else."""
+    """The attributes ``_verify_controller_model`` touches, and nothing else: the model it asks the transport since
+    P0g slice 7 (``ReportsControllerModel``), over the connection that answers it."""
 
     def __init__(self, declared: str, reported: str | None) -> None:
+        from tests._ur_transport import over
+
         self._capabilities = MagicMock(model=declared)
-        self._conn = MagicMock()
-        self._conn.controller_model.return_value = reported
+        connection = MagicMock()
+        connection.controller_model.return_value = reported
+        self._transport = over(connection)
         self.logger = MagicMock()
 
     verify = URRobotArm._verify_controller_model
@@ -93,72 +97,109 @@ class ModelMismatchTests(unittest.TestCase):
         _Arm("mystery", "UR3").verify()
 
 
-class SimulatorDisclosureTests(unittest.TestCase):
-    """``controller_is_simulator`` is three-valued and never False."""
+class TheUrControllerSaysWhatItIsTests(unittest.TestCase):
+    """The proof rule belongs to the controller, so the driver holds it and answers for itself."""
 
     @staticmethod
-    def _snapshot(serial: str | None, host: str | None) -> dict:
-        from api.telemetry import _add_simulator_evidence
+    def _provenance(serial: str | None, host: str | None, *, raises: bool = False) -> ControllerProvenance:
+        from tests._ur_transport import over
 
-        arm = MagicMock()
-        arm._conn = MagicMock(ip=host)
-        arm._conn.controller_serial.return_value = serial
-        snapshot: dict = {}
-        _add_simulator_evidence(arm, snapshot)
-        return snapshot
+        arm = URRobotArm.__new__(URRobotArm)
+        # Nothing about a hand-built arm was built, its transport included: the connection sits behind one (P0e E7).
+        arm._transport = over(MagicMock(ip=host))
+        arm.logger = MagicMock()
+        if raises:
+            arm._conn.controller_serial.side_effect = RuntimeError("socket gone")
+        else:
+            arm._conn.controller_serial.return_value = serial
+        return arm.controller_provenance()
 
     def test_ursim_is_proven_a_simulator(self) -> None:
         # The measured pair: URSim's placeholder serial AND a loopback address.
-        snapshot = self._snapshot("20195399999", "127.0.0.1")
-        self.assertIs(snapshot["controller_is_simulator"], True)
-        self.assertEqual(snapshot["controller_serial"], "20195399999")
-
-    def test_a_real_serial_on_a_real_address_makes_NO_claim(self) -> None:
-        snapshot = self._snapshot("20195312345", "192.168.1.10")
-        self.assertIsNone(snapshot.get("controller_is_simulator"))
-        # The evidence is still reported, so a person can judge it.
-        self.assertEqual(snapshot["controller_serial"], "20195312345")
-        self.assertEqual(snapshot["controller_host"], "192.168.1.10")
+        provenance = self._provenance("20195399999", "127.0.0.1")
+        self.assertIs(provenance.is_simulator, True)
+        self.assertEqual((provenance.serial, provenance.host), ("20195399999", "127.0.0.1"))
 
     def test_ursim_cb3_is_proven_a_simulator(self) -> None:
         # MEASURED 2026-10-02: URSim CB3 (PolyScope 3.15.8) answers "get serial number" with 2018309999.
-        snapshot = self._snapshot("2018309999", "127.0.0.1")
-        self.assertIs(snapshot["controller_is_simulator"], True)
-        self.assertEqual(snapshot["controller_serial"], "2018309999")
+        self.assertIs(self._provenance("2018309999", "127.0.0.1").is_simulator, True)
+
+    def test_a_real_serial_on_a_real_address_makes_NO_claim(self) -> None:
+        provenance = self._provenance("20195312345", "192.168.1.10")
+        self.assertIsNone(provenance.is_simulator)
+        # The evidence is still reported, so a person can judge it.
+        self.assertEqual((provenance.serial, provenance.host), ("20195312345", "192.168.1.10"))
 
     def test_either_half_alone_is_not_proof(self) -> None:
-        self.assertIsNone(self._snapshot("20195399999", "192.168.1.10").get("controller_is_simulator"))
-        self.assertIsNone(self._snapshot("20195312345", "127.0.0.1").get("controller_is_simulator"))
-        self.assertIsNone(self._snapshot("2018309999", "192.168.1.10").get("controller_is_simulator"))
+        self.assertIsNone(self._provenance("20195399999", "192.168.1.10").is_simulator)
+        self.assertIsNone(self._provenance("20195312345", "127.0.0.1").is_simulator)
+        self.assertIsNone(self._provenance("2018309999", "192.168.1.10").is_simulator)
 
     def test_the_placeholder_is_all_digits_and_has_its_length(self) -> None:
         # The owner's rule of 2026-10-02: 10 digits ending 9999 (a CB3) or 11 ending 99999 (an e-Series), nothing else.
         for serial in ("9999", "99999", "309999", "201830999999", "2018309999x", "201830 9999", "20183099990"):
             with self.subTest(serial=serial):
-                self.assertIsNone(self._snapshot(serial, "127.0.0.1").get("controller_is_simulator"))
+                self.assertIsNone(self._provenance(serial, "127.0.0.1").is_simulator)
 
     def test_it_is_never_False(self) -> None:
         # The whole contract: absence of proof is absence of a claim, not a claim of the opposite.
         for serial, host in [(None, None), ("x", None), (None, "127.0.0.1"), ("20195312345", "10.0.0.5")]:
             with self.subTest(serial=serial, host=host):
-                self.assertIsNot(self._snapshot(serial, host).get("controller_is_simulator"), False)
+                self.assertIsNot(self._provenance(serial, host).is_simulator, False)
+        with self.assertRaises(ValueError):
+            ControllerProvenance(serial="1", host="h", is_simulator=False)
 
-    def test_a_driver_with_no_dashboard_is_untouched(self) -> None:
+    def test_a_controller_that_will_not_answer_says_nothing(self) -> None:
+        self.assertTrue(self._provenance(None, "127.0.0.1", raises=True).says_nothing())
+
+    def test_the_ur_driver_declares_the_capability(self) -> None:
+        self.assertIsInstance(URRobotArm.__new__(URRobotArm), ReportsControllerProvenance)
+
+
+class SimulatorDisclosureTests(unittest.TestCase):
+    """What the console does with the answer: report the evidence, claim only the proof, never raise."""
+
+    @staticmethod
+    def _snapshot(provenance: object) -> dict:
+        from api.telemetry import _add_simulator_evidence
+
+        class _Arm:
+            def controller_provenance(self) -> object:
+                if isinstance(provenance, Exception):
+                    raise provenance
+                return provenance
+
+        snapshot: dict = {}
+        _add_simulator_evidence(_Arm(), snapshot)
+        return snapshot
+
+    def test_a_proven_simulator_is_disclosed_with_its_evidence(self) -> None:
+        snapshot = self._snapshot(ControllerProvenance(serial="20195399999", host="127.0.0.1", is_simulator=True))
+        self.assertIs(snapshot["controller_is_simulator"], True)
+        self.assertEqual((snapshot["controller_serial"], snapshot["controller_host"]), ("20195399999", "127.0.0.1"))
+
+    def test_an_unproven_controller_reports_evidence_and_claims_nothing(self) -> None:
+        snapshot = self._snapshot(ControllerProvenance(serial="20195312345", host="192.168.1.10"))
+        self.assertIsNone(snapshot.get("controller_is_simulator"))
+        self.assertEqual(snapshot["controller_serial"], "20195312345")
+
+    def test_a_driver_without_the_capability_is_untouched(self) -> None:
         from api.telemetry import _add_simulator_evidence
 
         snapshot: dict = {}
         _add_simulator_evidence(MagicMock(spec=["capabilities"]), snapshot)
         self.assertEqual(snapshot, {})
 
-    def test_a_raising_connection_never_breaks_the_status_panel(self) -> None:
-        from api.telemetry import _add_simulator_evidence
+    def test_an_arm_that_says_nothing_adds_no_keys(self) -> None:
+        """"Cannot tell" and "never asked" render alike: as nothing at all, not as empty evidence."""
+        self.assertEqual(self._snapshot(ControllerProvenance()), {})
 
-        arm = MagicMock()
-        arm._conn = MagicMock(ip="127.0.0.1")
-        arm._conn.controller_serial.side_effect = RuntimeError("socket gone")
-        snapshot: dict = {}
-        _add_simulator_evidence(arm, snapshot)
-        self.assertEqual(snapshot, {})
+    def test_an_answer_that_is_not_a_provenance_is_ignored(self) -> None:
+        """A MagicMock satisfies a runtime_checkable Protocol, so the panel checks the answer too."""
+        self.assertEqual(self._snapshot(MagicMock()), {})
+
+    def test_a_raising_arm_never_breaks_the_status_panel(self) -> None:
+        self.assertEqual(self._snapshot(RuntimeError("socket gone")), {})
 
 
 if __name__ == "__main__":  # pragma: no cover

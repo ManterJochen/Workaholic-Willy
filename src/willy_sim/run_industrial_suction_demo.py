@@ -269,7 +269,7 @@ def record_demo(*, out_path: str = DEFAULT_OUT, headless: bool = True, fps: int 
 
     # Opening beat: the arm starts parked aside so the overhead camera perceives the package cleanly; the
     # arm would otherwise occlude it. From here it moves forward into the pick, with no backward detour.
-    arm.move_joint(JointPositions(park_q))
+    arm.move_to_joints(JointPositions(park_q)).raise_unless_executed()
     session.step_n(10)
     # Re-centre the package on the workspace centre (450, 0) so it is reliably framed and reachable, and
     # zero its settle yaw so it sits square to the camera; a yawed box makes even a centred cup read as
@@ -373,7 +373,7 @@ def record_demo(*, out_path: str = DEFAULT_OUT, headless: bool = True, fps: int 
 
     # --- beat: approach the package. Move forward from the parked vision pose to the ready (home) pose,
     # then straight down onto the package: standoff, then contact. No backward detour. ----
-    arm.move_joint(JointPositions(home_q))
+    arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
     session.step_n(8)
     for label, gap in (("standoff", 60.0), ("contact", 26.0)):  # contact 26mm: cup face sits on the top, not in it
         arm.move(Pose(position_mm=pos - approach * gap, quaternion_xyzw=quat, frame=Frame.BASE,

@@ -22,13 +22,17 @@ import inspect
 import unittest
 
 from src.config.schema.robot import RobotConfig
+from src.geometry import Frame, Pose
 from src.robot.drivers.ur.pose import URPose
+from src.robot.drivers.ur.pose_adapter import urpose_to_pose
 from src.robot.safety.workspace import WorkspaceGuard
 
 
-def _pose(z: float, label: str) -> URPose:
+def _pose(z: float, label: str) -> Pose:
     # A top-down pick keeps ONE orientation throughout, which is why the angle term never saves it.
-    return URPose(x=400.0, y=0.0, z=z, rx=0.0, ry=3.14159, rz=0.0, label=label)
+    # The UR driver's record, converted the way the driver does before the box sees it (P0e).
+    return urpose_to_pose(URPose(x=400.0, y=0.0, z=z, rx=0.0, ry=3.14159, rz=0.0, label=label),
+                          frame=Frame.BASE, label=label)
 
 
 _PICK = (("standoff", 300.0), ("descend", 250.0), ("retreat", 300.0))
@@ -58,13 +62,12 @@ class DiversityIsNotOnTheMotionPathTests(unittest.TestCase):
         Matched on the call, not on the name of its argument: the UR controller path boxes `boxed`, the
         grasp centre whenever its arm passes one as `workspace_pose`, and a check spelled
         `validate(pose)` would have let `validate(boxed)` straight through. The box call is looked for
-        in the method that commands the move, because `move_home` carries one too and would answer for
-        a `move_to` that had lost its own; `validate` is refused anywhere in the class."""
-        from src.robot.drivers.kuka import arm as kuka_arm
+        in the method that commands the move, so that another method's box call cannot answer for a
+        `move_to` that had lost its own (the deleted `move_home` carried one until P0e); `validate` is
+        refused anywhere in the class."""
         from src.robot.drivers.ur import motion as ur_motion
 
-        for cls, commanding in ((ur_motion.MotionController, "move_to"),
-                                (kuka_arm.KukaRobotArm, "_drive_pose")):
+        for cls, commanding in ((ur_motion.MotionController, "move_to"),):
             with self.subTest(driver=cls.__name__):
                 self.assertRegex(inspect.getsource(getattr(cls, commanding)), r"guard\.is_inside_workspace\(")
                 self.assertNotRegex(inspect.getsource(cls), r"guard\.validate\(")

@@ -51,6 +51,7 @@ desk on a dummy arm.
 | `Recording` | `Recording.off()`, `Recording.to_file(path)` | | where a campaign appends one record per attempt |
 | `HandEyeCalibration` | `from_tree(tree, rig_id=, mode=)`, `from_config`, `from_parts` | `check()`, `run(dry_run=False)` | `CalibrationCheck`, `CalibrationRunReport` |
 | `PlannerStart` | `from_robot_config` | `run()` | `PlannerStartReport` |
+| `Bench` | `Bench.from_robot_config(tree.robot, arm, confirm=...)` | `run(action)` with `Read`, `Watch`, `Set`, `Pulse` or `Measure` | `BenchReading` |
 | `AutonomousGraspService` | `Cell.build()` | `pick()` | `AutonomousGraspReport` ([autonomous_grasp/](autonomous_grasp/README.md)) |
 
 Every report prints as itself, and `to_dict()` gives the same readings as plain data.
@@ -108,9 +109,9 @@ starts, before any pick (`PickRunReport.error`). A campaign stops on a fault of 
 cannot move, a hand that needs a person (`gripper_fault`) and a recovery that stopped where the arm stands
 (`needs_person`).
 
-**Judged while the arm waits** (the owner, 2026-10-09, each switch off as shipped). On an arm that gates its own
-sends (`safety.dwell.gate_at: send`) the verbs ask with no steady gate of their own: the arm judges first, while it
-settles, and waits right before it sends (`motion.gates_its_own_sends`). `pick` and `place` judge their line down
+**Judged while the arm waits** (the owner, 2026-10-09, each switch off as shipped). The steady gate is the arm's own
+(P0e E9): no verb waits before it asks, and on an arm that gates its own sends (`safety.dwell.gate_at: send`) the
+arm judges first, while it settles, and waits right before it sends. `pick` and `place` judge their line down
 or in in the world their route to the standoff was judged in (`safety.planning_world.hold.standoff`), and `place`
 holds the world its line in was judged in through the release and the line out (`hold.drop`). Where the arm judges
 the next leg (`robot.motion.judge_next_leg`), a place's release leaves the jaws' stroke to the verb: the one change
@@ -326,6 +327,28 @@ with robot.connected():
   person's hands. Save, Hold, Cancel, a halt and a Disconnect hold at once, even while a Save waits for the arm to
   stand still.
 
+## The I/O bench
+
+`python -m src.robot.execution.io_bench` measures the digital I/O a gripper is wired to on a UR. It opens
+the connection, so the UR driver's connect refusals apply ([drivers/ur](../drivers/ur/README.md)), and it has no path
+to a motion. It was the UR driver's command line until P0g. Driving a pin is still
+physical, so every write needs `--yes`, and a non-interactive shell refuses rather than prompts.
+
+```bash
+python -m src.robot.execution.io_bench --watch 0 --for 15              # trip a sensor by hand and watch the pin
+python -m src.robot.execution.io_bench --set 4=1 --yes                 # drive one output, then read it back
+python -m src.robot.execution.io_bench --measure 4=1 --watch 0 --yes   # the time close_settle_s wants
+python -m src.robot.execution.io_bench --where                         # JointPositions.deg(...) to paste, and the TCP
+```
+
+One action per call. `--port` picks the bank (`tool` by default) and `--profile` the cell; every
+refusal prints the profile chain it loaded, and says so where neither `--profile` nor `WILLY_PROFILE`
+was given and the base tree, which names a Robotiq, was read. `--where` is read-only. Run
+`--measure` a few times and configure the worst reading. It exits 0 when the action ran, 1 when the
+config or the connection refused, 2 when the input never answered, and 3 on an unexpected error.
+`Bench.from_robot_config` is the same from Python and reads the bank from `gripper.jaw_io.io_port`
+or `gripper.vacuum.io_port`; the `pins.py` functions under it confirm nothing.
+
 ## What it refuses
 
 | Refusal | When | What to do |
@@ -341,7 +364,7 @@ with robot.connected():
 | `REFUSED` on a report | a closed link, a pose not in BASE, a camera world the arm refuses, an arm no planner guards | the report's message says which; nothing was commanded |
 
 `PickRun.execute()` never raises for a refused build or connect: the refusal is on the report, and
-its exit code is 1. A UR on the `ik` planner and a KUKA are refused by the robot verbs, because
+its exit code is 1. A UR on the `ik` planner is refused by the robot verbs, because
 nothing plans their motions against the camera world or judges their paths.
 
 ## Status
@@ -355,7 +378,6 @@ nothing plans their motions against the camera world or judges their paths.
 | `run_task` with a pose place, a camera place, the stops and the put-back | the offline suite on doubles and the real service with fake perception (`tests/test_a_task_*.py`); the console's task on `console_dummy` |
 | A task on a controller: three cycles with 2 DO0 edges each, halt in the approach and the carry, the way back | measured against real controller software: URSim CB3 (`scripts/ursim/probe_console_task.py`) |
 | A task, a camera place or `teach_one` on a physical arm | never touched hardware |
-| The KUKA driver behind the same nouns | never touched hardware |
 
 The default pick is open-loop: perceive, rank, gate, move, log. The decision gate,
 recovery, fusion and the learned layers ship `enabled: false`, and a pick report's
@@ -369,17 +391,19 @@ a pick.
 | `robot.py` | `Robot`, `LockKeyRequired` |
 | `motion.py`, `handling.py` | the motion verbs and the hand verbs `Robot` delegates to, and their reports; `move_joints_on_the_line`, the straight joint line and nothing else, refused under a `without_camera_world` decline |
 | `cell.py` | `Cell`, `CellNotBuilt` |
+| `abilities.py` | `Cell.abilities()` and `Robot.abilities()`: before anything moves, which operator functions a cell can perform, one `AbilityRow` per `Ability` (move, hand, handle, pick, calibrate, calibrate by hand, teach, io bench, planner start, acknowledge fault), available, refused with the sentence the function itself refuses with, or bench for what only the cell shows; `CellAbilities`, `DECLARATIONS` (P0i i2) |
 | `pick_run.py` | `PickRun`, `PickRunReport`, `PassRule`, `Recording`, `PickAttempt`, `PickOutcome`, `configured_looks_of` |
 | `looks.py` | where a camera looks from before a pick: the joints a program declares, the cell profile's, or home, and the move there, none where the arm already stands there |
 | `generated_view.py` | the one view a wrist pick generates and its move back (`go_to_generated_view`, `move_back_to_look`): straight joint lines only, run only against the planner world that holds every frame of the pick; with no live world, no wrist camera in it, a `without_camera_world` decline, or a camera world that reads `DECLINED`, `MISSING` or `UNPLANNED`, no view is generated and the move back is refused |
 | `record_views.py` | the `.npz` layout `PickRun(record_views=True)` and `Locator.look_around(record_views=True)` write under `logs/robot/views`: format 1, and format 2 where the camera records for research (`realsense.record_for_research`: infrared images, raw depth, every mask, box, label, score, SAM2's IoUs and target per look) |
 | `lifecycle.py` | connecting and taking down a cell as one transaction, `NoRealGripper`, `TeardownReport` |
 | `cell_lock.py` | `CellLock`, `CellBusy`: one owner per controller, shared with the operator console |
-| `robot_parts.py` | the arm and the hand a robot section describes, with the readiness gate and every substitution |
+| `robot_parts.py` | the arm and the hand a robot section describes, with the readiness gate and every substitution; what a hand needs of the arm and how it is built are its driver's spec (`grippers/spec.py`), looked up by vendor |
 | `camera_world_wiring.py` | which cameras feed a cell's live planner world, `CameraWorldRequired` |
 | `camera_fusion.py` | `CameraFusionPlan`: which cameras a cell fuses into each object's cloud before it grasps, or what it is missing to |
 | `wrist_bodies.py` | the wrist cameras an arm carries, `WristBodyRequired` |
 | `planner_start.py` | `PlannerStart`: a cuRobo planner started and stopped at a desk, the configured looks screened on it (`PlannerStartReport.looks`) |
+| `io_bench/` | the I/O bench, `python -m src.robot.execution.io_bench` (`__main__.py`), the `Bench` noun (`bench.py`) and the gate-free functions under it (`pins.py`) |
 | `hand_eye.py`, `calibration.py` | `HandEyeCalibration`, and the `CalibrationRoutine` that sweeps and solves `AX=XB` |
 | `hand_guiding.py` | the console, the stillness gate, the payload question and the red boundaries of a hand-guided arm, `HandGuidingRefused` |
 | `teach.py` | `teach_poses`: joint poses taught by guiding the arm by hand, each screened once held, printed to paste and kept in `logs/taught_poses.json`; `teach_one`, `ProfilePoseStore`, `StillnessGate`, `teach_refusal`: the console's one pose, written into the cell's own layer |

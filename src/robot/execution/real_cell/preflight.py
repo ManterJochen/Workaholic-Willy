@@ -23,8 +23,10 @@ from src.contracts import UNSET, Maybe, chosen
 from src.robot.safety.planning import curobo_env_available
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.robot.grippers.spec import Row
     from src.config.schema import CameraConfig
-    from src.config.schema.robot import RobotConfig
+    from src.config.schema.arms.arm_schema import ArmFlangeSpec
+    from src.config.schema.robot import ArmSelection, RobotConfig
     from src.robot.safety.planning._hand_placement import HandPlacement
     from src.robot.safety.planning.hand import PlannerHand
 
@@ -131,6 +133,18 @@ class PreflightReport:
         return "\n".join(lines)
 
 
+def _planner_phrase(selected: "ArmSelection") -> str:
+    """How a row names this cell's planner, where a driver that keeps its own states none at all.
+
+    The key is loadable on every tree, and :class:`~src.config.schema.robot.ArmSelection` answers ``""`` for a vendor
+    whose driver does not read it (the Isaac driver today). Spelling that ``None`` reads as a broken tree, so the row
+    names the driver whose choice it is.
+    """
+    if not selected.planner:
+        return f"the {selected.vendor} driver does not read robot.motion.planner"
+    return f"robot.motion.planner is {selected.planner!r}"
+
+
 def _exact_mesh_engine_row(robot_cfg: "RobotConfig", collision_engine: "Maybe[str | None]") -> PreflightCheck:
     """Whether this cell could judge a path at all, in the path gate's own words.
 
@@ -141,12 +155,13 @@ def _exact_mesh_engine_row(robot_cfg: "RobotConfig", collision_engine: "Maybe[st
     from src.robot.safety.planning.environment import import_collision_engine
     from src.robot.safety.preflight import exact_mesh_path_refusal, no_path_guard_refusal
 
-    plans = str(getattr(robot_cfg.ur, "motion_planner", "ik")) == "curobo"
+    selected = robot_cfg.arm
+    plans = selected.planner == "curobo"
     refused = CheckStatus.BLOCK if plans else CheckStatus.WARN
     fix = (
-        "set safety.self_collision.backend: fcl, install Coal (or python-fcl) and bake this arm's mesh bundle "
-        "(scripts/isaac/bake_ur_collision_meshes.py). Until then no path on this cell is judged on the geometry it "
-        "actually has"
+        "set safety.self_collision.backend: fcl, install Coal (or python-fcl) and bake this arm's mesh bundle from "
+        "Universal Robots' own collision STLs (scripts/arms/bake.py). Until then no path on this "
+        "cell is judged on the geometry it actually has"
     )
 
     self_collision = robot_cfg.safety.self_collision
@@ -157,7 +172,18 @@ def _exact_mesh_engine_row(robot_cfg: "RobotConfig", collision_engine: "Maybe[st
         return PreflightCheck("exact mesh engine", refused, exact_mesh_path_refusal(), fix)
 
     engine = collision_engine if chosen(collision_engine) else import_collision_engine()[1]
-    model = getattr(self_collision, "kinematics_model", None) or getattr(robot_cfg.ur, "model", "")
+    # The selected arm's model, not the UR block every tree carries: on a tree naming another vendor that block's model
+    # is a default nobody chose, and this row would judge the cell against another robot's meshes. It is the model the
+    # arm reports, which is what the guard judges it as (P0d D5).
+    model = selected.model
+    if not str(model):
+        return PreflightCheck(
+            "exact mesh engine", refused,
+            f"this cell names no arm model, so the exact mesh guard has no geometry to judge a path against: the "
+            f"{selected.vendor} block declares none",
+            "name the arm's model in this vendor's own block; a vendor with no such block cannot have its paths "
+            "judged by the exact mesh guard yet",
+        )
     hand = getattr(getattr(robot_cfg, "gripper", None), "model", None)
     token = mesh_backend_status(str(model), getattr(self_collision, "mesh_dir", None), hand)
     if engine is None or token != "ok":
@@ -168,7 +194,7 @@ def _exact_mesh_engine_row(robot_cfg: "RobotConfig", collision_engine: "Maybe[st
             fix = _STATUS_HINTS[token].replace("{hand}", str(hand))
         elif token == "no_bundle":
             fix = ("bake this arm's bundle from Universal Robots' own collision STLs with "
-                   "scripts/isaac/bake_ur_meshes_from_urdf.py. Until then no path on this cell is judged on the geometry "
+                   "scripts/arms/bake.py. Until then no path on this cell is judged on the geometry "
                    "it actually has")
         return PreflightCheck("exact mesh engine", refused, exact_mesh_path_refusal(),
                               f"{fix} (engine {engine or 'none'}, bundle {token})")
@@ -233,13 +259,14 @@ def _planner_margin_row(
     from src.robot.safety.planning.margin import declared_planner_margin
 
     sc = robot_cfg.safety.self_collision
-    if str(getattr(robot_cfg.ur, "motion_planner", "ik")) != "curobo":
+    selected = robot_cfg.arm
+    if selected.planner != "curobo":
         return PreflightCheck(
             "planner margin", CheckStatus.WARN,
             "no planner runs on this cell, so there is no planner model to hold against the guard: the exact "
             f"mesh guard alone decides every motion, keeping {float(sc.min_distance_mm):g} mm clear",
-            "set robot.ur.motion_planner: curobo for a cell whose paths should be planned around what it "
-            "carries, and measure its combination with scripts/curobo/matrix_gate.py",
+            "set robot.motion.planner: curobo for a cell whose paths should be planned around what it "
+            "carries, and measure its combination with scripts/arms/gate.py",
         )
     declared = declared_planner_margin(sc)
     if not chosen(declared):
@@ -256,7 +283,7 @@ def _planner_margin_row(
     if refused is not None or evidence is None:
         return PreflightCheck(
             "planner margin", CheckStatus.BLOCK, refused or "no evidence admits this cell",
-            "run the scripts/curobo/matrix_gate.py command the detail ends with, on a box with the cuRobo environment, and commit the file it "
+            "run the scripts/arms/gate.py command the detail ends with, on a box with the cuRobo environment, and commit the file it "
             "writes; a cell does not start a planner nobody measured",
         )
     measured = evidence.measured
@@ -282,7 +309,8 @@ def _camera_world_row(robot_cfg: "RobotConfig", camera: "Maybe[CameraConfig]") -
     from src.robot.execution.camera_world_wiring import CameraWorldPlan
 
     name = "camera world"
-    planner = getattr(getattr(robot_cfg, "ur", None), "motion_planner", None)
+    selected = robot_cfg.arm
+    planner = selected.planner or None
     if not chosen(camera):
         return PreflightCheck(
             name, CheckStatus.BLOCK,
@@ -293,7 +321,7 @@ def _camera_world_row(robot_cfg: "RobotConfig", camera: "Maybe[CameraConfig]") -
     if planner != "curobo":
         return PreflightCheck(
             name, CheckStatus.WARN,
-            f"robot.ur.motion_planner is {planner!r}, so no planner reads a camera world; the cuRobo environment row "
+            f"{_planner_phrase(selected)}, so no planner reads a camera world; the cuRobo environment row "
             "says what such a cell gives up",
         )
     section = camera.cameras
@@ -386,18 +414,76 @@ def _grasp_centre_row(robot_cfg: "RobotConfig", hand: "PlannerHand", placement: 
     )
 
 
+def _controller_address_row(robot_cfg: "RobotConfig") -> PreflightCheck:
+    """Where this cell's controller is, which nothing else can supply (aurora's P0c, 2026-10-13).
+
+    There is no placeholder any more. Until this row existed the key defaulted to ``192.168.1.100``, so an
+    uncommissioned cell named a controller it had never been pointed at: the connect went to that address, and the cell
+    lock held the cell by it.
+    """
+    selected = robot_cfg.arm
+    if not selected.owns_a_controller:
+        return PreflightCheck(
+            "controller address", CheckStatus.OK,
+            f"robot.vendor is {selected.vendor!r}, which drives no controller of its own",
+        )
+    if not selected.controller:
+        return PreflightCheck(
+            "controller address", CheckStatus.BLOCK,
+            f"this cell drives a {selected.vendor} controller and no address is declared for it, so there is nothing "
+            f"to connect to and nothing for the cell lock to hold it by",
+            "declare the controller address in this cell's own tree (for a UR, robot.ur.ip)",
+        )
+    return PreflightCheck(
+        "controller address", CheckStatus.OK,
+        f"robot.vendor {selected.vendor!r} drives the controller at {selected.controller}, which is also the name the "
+        f"cell lock holds this cell by",
+    )
+
+
 def _gripper_driver_row(robot_cfg: "RobotConfig") -> PreflightCheck:
-    """The driver the build constructs for this gripper on the UR arm the config builds.
+    """The driver the build constructs for this gripper on the arm the config builds.
 
     Asked of :func:`~src.robot.execution.robot_parts.gripper_driver_verdict`, the function the build
-    asks, with the facts of that arm: the UR driver reports vendor ``ur``, switches digital I/O and
-    keeps its tree's address. So it blocks exactly where the build would substitute a
-    ``NullGripper``, in the build's own words.
+    asks, with the facts of the arm this tree builds, constructed and never connected, read as the build
+    reads them off its handle (:func:`~src.robot.execution.robot_parts.arm_facts`, P0i i1). So it blocks
+    exactly where the build would substitute a ``NullGripper``, in the build's own words.
     """
-    from src.robot.core import GripperVendor
-    from src.robot.execution.robot_parts import gripper_driver_verdict
+    from src.robot.execution.robot_parts import (
+        arm_facts,
+        construct_arm,
+        driverless_verdict,
+        gripper_driver_verdict,
+    )
+    from src.robot.grippers import gripper_driver
 
-    verdict = gripper_driver_verdict(robot_cfg, arm_vendor="ur", arm_has_digital_io=True, arm_ip=robot_cfg.ur.ip)
+    selected = robot_cfg.arm
+    if selected.owns_a_controller and not selected.controller:
+        # One cause, one row. The Robotiq is reached over a socket on this cell's controller, so with no address it
+        # cannot be built either; but that is the address row's fact, and a second BLOCK for the same cause reads as two
+        # things to fix.
+        return PreflightCheck(
+            "gripper driver", CheckStatus.WARN,
+            "the hand on this flange is reached over this cell's controller, and the controller address row says this "
+            "cell declares none, so which driver it gets cannot be decided yet",
+            "declare the controller address (for a UR, robot.ur.ip); this row answers once it is there",
+        )
+    # A vendor with no driver is refused whatever the arm is: a cause of its own, stated even where the arm does not build.
+    verdict = driverless_verdict(robot_cfg)
+    if verdict is None:
+        try:
+            facts = arm_facts(construct_arm(robot_cfg))
+        except Exception as exc:  # noqa: BLE001 - an arm that does not build is this row's answer, not a crash
+            # ONE CAUSE, ONE ROW, as above: the build refuses before the driver is chosen, and the refusal names its
+            # own cause, which is another row's fact.
+            return PreflightCheck(
+                "gripper driver", CheckStatus.WARN,
+                "which driver the hand on this flange gets is decided on the arm this tree builds, and that arm does "
+                f"not build: {type(exc).__name__}: {exc}",
+                "fix what the refusal names; this row answers once the arm builds",
+            )
+        verdict = gripper_driver_verdict(robot_cfg, arm_vendor=facts.vendor,
+                                         arm_has_digital_io=facts.has_digital_io, arm_ip=facts.controller)
     hand = robot_cfg.gripper.model
     named = f" for {hand}" if hand else ""
     if verdict.reason is not None:
@@ -406,8 +492,9 @@ def _gripper_driver_row(robot_cfg: "RobotConfig") -> PreflightCheck:
             f"the build would put a NullGripper on this arm{named}, and the connect refuses it: {verdict.detail}",
             verdict.fix,
         )
-    if verdict.vendor in (GripperVendor.NONE, GripperVendor.DUMMY):
-        what = "nothing" if verdict.vendor is GripperVendor.NONE else "a stand-in that actuates nothing"
+    driver = gripper_driver(verdict.vendor)
+    what = driver.actuates_nothing if driver is not None else None
+    if what is not None:
         return PreflightCheck(
             "gripper driver", CheckStatus.WARN,
             f"robot.gripper.vendor is {verdict.vendor.value!r}{named}: this real arm is built with {what} on its flange, "
@@ -420,54 +507,25 @@ def _gripper_driver_row(robot_cfg: "RobotConfig") -> PreflightCheck:
     )
 
 
+def _spec_row(name: str, row: "Row") -> PreflightCheck:
+    """A row a gripper driver's spec states, in this desk's terms."""
+    status = {"ok": CheckStatus.OK, "warn": CheckStatus.WARN, "bench": CheckStatus.BENCH}[row.status]
+    return PreflightCheck(name, status, row.detail, row.fix)
+
+
 def _end_effector_wiring_row(robot_cfg: "RobotConfig") -> PreflightCheck:
-    """What to confirm physically for the configured gripper driver, which no API reports."""
+    """What to confirm physically for the configured gripper driver, which no API reports.
+
+    The driver's own words, from its spec (P0g slice 8); a vendor whose driver actuates nothing, or that has no driver
+    here, says so.
+    """
+    from src.robot.grippers import gripper_driver
+
     gripper = robot_cfg.gripper
     vendor = str(getattr(gripper.vendor, "value", gripper.vendor)).lower()
-    if vendor == "robotiq":
-        return PreflightCheck(
-            "end-effector wiring", CheckStatus.BENCH,
-            "the Robotiq URCap on the controller (it opens port 63352, not any pip package)",
-            "confirm physically; a missing URCap looks like a gripper that never answers",
-        )
-    if vendor == "vacuum":
-        vac = gripper.vacuum
-        extra = "".join((
-            f", blow off on output {vac.blow_off_output_pin}" if vac.blow_off_output_pin is not None else "",
-            f", vacuum switch on input {vac.vacuum_ok_input_pin}" if vac.vacuum_ok_input_pin is not None else "",
-        ))
-        return PreflightCheck(
-            "end-effector wiring", CheckStatus.BENCH,
-            f"the vacuum ejector on {vac.io_port} output {vac.vacuum_output_pin}{extra}, and the solenoid's 24 V supply",
-            "confirm physically, pin by pin; an ejector with no supply looks like a cup that never seals",
-        )
-    if vendor == "jaw_io":
-        jaw = gripper.jaw_io
-        fix = "confirm physically, pin by pin; a swapped pair opens the jaws on a grip command"
-        if jaw.open_output_pin is not None:
-            opens = f"open output {jaw.open_output_pin}"
-        elif jaw.actuation == "single_toggle":
-            opens = f"open by the next change of close output {jaw.close_output_pin}"
-            # Nothing is read back: the program counts its own changes from a person's answer at connect.
-            fix = ("confirm physically: each change of the output, switched on or off, moves the jaws once and "
-                   "nothing reads them back, so every program asks at its connect, before anything moves, whether "
-                   "they stand open, and counts its own changes from the answer; run it from a terminal, and look at "
-                   "the jaws before you answer")
-        else:
-            opens = f"open by dropping close output {jaw.close_output_pin}"
-        return PreflightCheck(
-            "end-effector wiring", CheckStatus.BENCH,
-            f"the jaw solenoid ({jaw.actuation}) on {jaw.io_port} close output {jaw.close_output_pin}, {opens}, "
-            f"and its 24 V supply",
-            fix,
-        )
-    if vendor == "onrobot":
-        rg = gripper.onrobot
-        return PreflightCheck(
-            "end-effector wiring", CheckStatus.BENCH,
-            f"the OnRobot Compute Box at {rg.host}:{rg.port}, unit {rg.unit_id}, a separate device on the network",
-            "confirm the box answers on that address; it is not the arm's controller",
-        )
+    driver = gripper_driver(vendor)
+    if driver is not None and driver.wiring is not None:
+        return _spec_row("end-effector wiring", driver.wiring(robot_cfg))
     return PreflightCheck(
         "end-effector wiring", CheckStatus.BENCH,
         f"robot.gripper.vendor is {vendor!r}, so no end-effector is actuated through this cell",
@@ -476,33 +534,17 @@ def _end_effector_wiring_row(robot_cfg: "RobotConfig") -> PreflightCheck:
 
 
 def _jaw_travel_time_row(robot_cfg: "RobotConfig") -> PreflightCheck | None:
-    """Whether a jaw_io hand's travel time was measured where it is the only wait the driver has; None for other hands.
+    """Whether a hand's travel time was measured where it is the only wait its driver has; None for other hands.
 
-    With no feedback a close waits ``close_settle_s`` and nothing else, and with no open switch so does an open, which
-    a place backs out on a line right after; a toggle, which reads nothing, waits it after every change. The schema
-    default, 0.3 s, is a small cylinder's stroke: a Hand-E on its I/O coupling takes up to about 2 s, so a default
-    left standing lifts before the jaws have met the part and drags the part a place has just set down.
+    A jaw_io hand with no open switch waits ``close_settle_s`` and nothing else; its spec says so, and whether the
+    schema default still stands (P0g slice 8).
     """
+    from src.robot.grippers import gripper_driver
+
     gripper = robot_cfg.gripper
-    if str(getattr(gripper.vendor, "value", gripper.vendor)).lower() != "jaw_io":
-        return None
-    jaw = gripper.jaw_io
-    settle = float(jaw.close_settle_s)
-    name = "jaw travel time"
-    if jaw.open_confirm_input_pin is None:
-        ways = "both ways: a close and an open each wait it and nothing else"
-    else:
-        return PreflightCheck(name, CheckStatus.OK, (
-            f"close_settle_s {settle:.1f} s; the open switch says when the jaws stand open"))
-    if settle != type(jaw).model_fields["close_settle_s"].default:
-        return PreflightCheck(name, CheckStatus.OK, f"close_settle_s {settle:.1f} s, the only wait {ways}")
-    return PreflightCheck(
-        name, CheckStatus.WARN,
-        f"robot.gripper.jaw_io.close_settle_s is the schema default {settle:.1f} s, and the settle time is the only "
-        f"wait {ways}. The arm moves on that long after the command, whether the jaws have arrived or not",
-        "time the full stroke, open and closed, at the coupling's preset, by stopwatch or video (a Hand-E can take "
-        "about 2 s), and set close_settle_s to the longer with a margin; it must cover the stroke",
-    )
+    driver = gripper_driver(str(getattr(gripper.vendor, "value", gripper.vendor)).lower())
+    row = driver.travel_time(robot_cfg) if driver is not None else None
+    return _spec_row("jaw travel time", row) if row is not None else None
 
 
 def _carried_part_row(robot_cfg: "RobotConfig", *, is_real: bool) -> PreflightCheck:
@@ -515,13 +557,14 @@ def _carried_part_row(robot_cfg: "RobotConfig", *, is_real: bool) -> PreflightCh
     from src.robot.safety.planning.reservation import PlannerReservation
 
     name = "carried part"
-    planner = str(getattr(getattr(robot_cfg, "ur", None), "motion_planner", ""))
+    selected = robot_cfg.arm
+    planner = selected.planner
     payload = robot_cfg.safety.planning_world.payload
     if planner != "curobo":
         return PreflightCheck(name, CheckStatus.WARN, (
-            f"robot.ur.motion_planner is {planner!r}: no planner carries a part, so a lift or a transit after a grasp "
+            f"{_planner_phrase(selected)}: no planner carries a part, so a lift or a transit after a grasp "
             "is judged as if the hand were empty"),
-            "set robot.ur.motion_planner to curobo and declare safety.planning_world.payload.length_mm, where a "
+            "set robot.motion.planner to curobo and declare safety.planning_world.payload.length_mm, where a "
             "carried part should be modelled")
     if not payload.enabled:
         return PreflightCheck(name, CheckStatus.WARN, (
@@ -548,23 +591,25 @@ def _joint_window_row(robot_cfg: "RobotConfig") -> "PreflightCheck | None":
     """The controller's own joint limits that hold the half-turn window about home, or ``None`` where it is off.
 
     Read off the config, as the arm builds its guard: the table with no margin off, narrowed to half a turn either
-    side of ``robot.home_joint_positions`` (the UR driver's default where that is unset). Those are the numbers for the
+    side of ``robot.home_joint_positions`` (the home the arm's description states where that is unset). Those are the numbers for the
     pendant; the guard keeps ``margin_deg`` inside them, so a move this software commands never reaches them, and
     the controller then holds the window against anything else. BENCH, because only the pendant can say they are set.
     """
-    from src.robot.constants import HOME_JOINTS_DEFAULT
+    from src.config.arms import described_home
     from src.robot.safety.joint_limits import half_turn_about_home_deg, half_turn_axes, resolve_joint_limits_deg
 
     jl = robot_cfg.safety.joint_limits
     if not bool(getattr(jl, "within_half_turn_of_home", False)) or not jl.enforce:
         return None
     vendor = _vendor(robot_cfg)
-    model = str(robot_cfg.ur.model) if vendor == "ur" else None
+    # The model the selected arm reports, which the guard resolves its envelope and its UR elbow from (P0d D5).
+    selected = robot_cfg.arm
+    model = selected.model or None
     declared = robot_cfg.home_joint_positions
-    home = tuple(float(v) for v in (declared if declared is not None else HOME_JOINTS_DEFAULT))
+    home = tuple(float(v) for v in (declared if declared is not None else (described_home(model) or ())))
     source = ("robot.home_joint_positions" if declared is not None
-              else "the driver's default home, robot.home_joint_positions being unset")
-    table = resolve_joint_limits_deg(jl, vendor=vendor, model=model)
+              else "the home the arm's description states, robot.home_joint_positions being unset")
+    table = resolve_joint_limits_deg(jl, model=model)
     if table is None or len(table[0]) != len(home):
         return PreflightCheck(
             "joint window", CheckStatus.BLOCK,
@@ -573,8 +618,8 @@ def _joint_window_row(robot_cfg: "RobotConfig") -> "PreflightCheck | None":
                else f"the home has {len(home)} joints where the joint-limit table has {len(table[0])}"),
             "the arm refuses to build like this; give the table (min_deg, max_deg) or a home of one entry per axis",
         )
-    lower, upper = half_turn_about_home_deg(table[0], table[1], home, vendor=vendor)
-    narrowed = half_turn_axes(table[0], table[1], vendor=vendor)
+    lower, upper = half_turn_about_home_deg(table[0], table[1], home, model=model)
+    narrowed = half_turn_axes(table[0], table[1], model=model)
     margin = float(jl.margin_deg)
     names = _POLYSCOPE_JOINTS if vendor == "ur" and len(lower) == len(_POLYSCOPE_JOINTS) else tuple(
         f"axis {i}" for i in range(len(lower)))
@@ -644,7 +689,7 @@ def _looks_row(robot_cfg: "RobotConfig") -> "PreflightCheck | None":
             "looks", CheckStatus.WARN,
             f"{key}: look {which} reads as radians, every joint within {_LOOK_READS_AS_RADIANS:g} of zero; the key is "
             "in degrees, so the arm would be sent a few degrees from zero on every joint",
-            "write each look in degrees, as the pendant shows the joints and `python -m src.robot.drivers.ur --where` "
+            "write each look in degrees, as the pendant shows the joints and `python -m src.robot.execution.io_bench --where` "
             "prints them",
         )
     return PreflightCheck(
@@ -657,6 +702,19 @@ def _looks_row(robot_cfg: "RobotConfig") -> "PreflightCheck | None":
 def _vendor(robot_cfg: "RobotConfig") -> str:
     v = getattr(robot_cfg, "vendor", "")
     return str(getattr(v, "value", v)).lower()
+
+
+def _flange_of(model: str) -> "ArmFlangeSpec | None":
+    """The flange the arm description of ``model`` states, or ``None`` for a model the registry does not describe."""
+    from src.config.arms import load_arm  # noqa: PLC0415
+    from src.config.loader import ConfigError  # noqa: PLC0415
+
+    if not model:
+        return None
+    try:
+        return load_arm(model).flange
+    except ConfigError:
+        return None
 
 
 def run_config_preflight(
@@ -690,7 +748,10 @@ def run_config_preflight(
     """
     checks: list[PreflightCheck] = []
     vendor = _vendor(robot_cfg)
-    is_real = vendor not in ("sim", "dummy")
+    selected = robot_cfg.arm
+    # A real arm drives a controller of its own, which a simulator and a desk dummy do not: the selection's fact, not a
+    # list of vendor names (P0i i1).
+    is_real = selected.owns_a_controller
 
     checks.append(PreflightCheck(
         "vendor", CheckStatus.OK if is_real else CheckStatus.WARN,
@@ -707,7 +768,7 @@ def run_config_preflight(
             "sits on the flange",
             "measure the coupling + gripper and set gripper.tool_frame.offset_mm + "
             "rotation_quat_xyzw, then source: 'willy' (this driver composes it, controller runs a "
-            "bare flange) or 'polyscope' (the pendant holds it and we only verify)",
+            "bare flange) or 'controller' (the pendant holds it and we only verify)",
         ))
     else:
         checks.append(PreflightCheck(
@@ -747,9 +808,10 @@ def run_config_preflight(
         ))
 
     # ---- the carried part ------------------------------------------------------------------------
-    # A cuRobo UR models the part it carries, and its length is the cell's to declare: none is
-    # implied. Read off the tree, starting nothing.
-    if vendor == "ur":
+    # A cuRobo cell models the part it carries, and its length is the cell's to declare: none is
+    # implied. Read off the tree, starting nothing. A row for an arm whose driver reads robot.motion.planner,
+    # which the selection says by naming a planner (P0i i1): the part is the planner's to model.
+    if selected.planner:
         checks.append(_carried_part_row(robot_cfg, is_real=is_real))
 
     # ---- the camera -> base frame ---------------------------------------------------------------
@@ -784,11 +846,12 @@ def run_config_preflight(
             ))
 
     # ---- the camera world ----------------------------------------------------------------------
-    # On a cuRobo UR cell every motion needs a live camera world or a decline, and the pick service
+    # On a cuRobo cell every motion needs a live camera world or a decline, and the pick service
     # declines nothing, so a cell whose cameras give no world refuses every pick motion. Read off the
-    # plan, opening nothing. A UR row only, because the schema defaults motion_planner to curobo for
-    # every vendor.
-    if vendor == "ur":
+    # plan, opening nothing. A row for an arm whose driver reads robot.motion.planner: the key defaults to
+    # curobo whichever vendor a tree names, and the selection names no planner where the driver does not read
+    # it (P0i i1).
+    if selected.planner:
         checks.append(_camera_world_row(robot_cfg, camera))
 
     # ---- the exact mesh engine -----------------------------------------------------------------
@@ -807,26 +870,28 @@ def run_config_preflight(
     if is_real:
         checks.append(_planner_margin_row(robot_cfg, evidence_dir, data_dir))
 
-    # ---- the gripper driver the build constructs ----------------------------------------------------
-    # `robot.gripper.model` selects no driver, so a cell that names a customer hand and leaves
-    # `gripper.vendor` alone gets the Robotiq socket driver aimed at it, and a vendor with no driver
-    # is otherwise refused only at connect.
-    if vendor == "ur":
+    # ---- where the controller is ------------------------------------------------------------------------
+    if is_real:
+        checks.append(_controller_address_row(robot_cfg))
+        # `robot.gripper.model` selects no driver, so a cell that names a customer hand and leaves
+        # `gripper.vendor` alone gets the Robotiq socket driver aimed at it, and a vendor with no driver
+        # is otherwise refused only at connect. Asked of every arm that drives a controller of its own (P0i i1).
         checks.append(_gripper_driver_row(robot_cfg))
 
     # ---- the cuRobo environment -----------------------------------------------------------------
     # Only a real arm has this row. A sim cell reaches cuRobo through its own driver and a dummy
     # plans nothing, so a missing environment there is not a fact about this checklist.
     if is_real:
-        planner = getattr(getattr(robot_cfg, "ur", None), "motion_planner", None)
+        selected = robot_cfg.arm
+        planner = selected.planner or None
         here = curobo_available if chosen(curobo_available) else curobo_env_available()
         if planner == "curobo" and not here:
             checks.append(PreflightCheck(
                 "cuRobo environment", CheckStatus.BLOCK,
-                "robot.ur.motion_planner is 'curobo' and the cuRobo environment is not on this box",
+                "robot.motion.planner is 'curobo' and the cuRobo environment is not on this box",
                 "every motion on this cell is planned or path checked, and both go through the "
                 "sidecar, so the cell would connect and then refuse the first move. Install the "
-                "environment (see ext_deps/README.md) or set robot.ur.motion_planner: ik, and run "
+                "environment (see ext_deps/README.md) or set robot.motion.planner: ik, and run "
                 "`python -m src.robot.safety.planning --doctor` afterwards: a `--check` "
                 "that exits 0 says the config is sound, not that cuRobo runs here",
             ))
@@ -838,26 +903,47 @@ def run_config_preflight(
         else:
             checks.append(PreflightCheck(
                 "cuRobo environment", CheckStatus.WARN,
-                f"robot.ur.motion_planner is {planner!r}, so no planner plans this cell's motions",
+                f"{_planner_phrase(selected)}, so no planner plans this cell's motions",
                 "an interpolated move has no path anybody can judge and no camera world behind it: "
                 "the guards see where each move ends and nothing in between. Set "
-                "robot.ur.motion_planner: curobo for a cell that should be protected the whole way",
+                "robot.motion.planner: curobo for a cell that should be protected the whole way",
             ))
 
     # ---- self-collision ------------------------------------------------------------------------
+    # The arm the guard judges is the one the selected block names, because that is the model its arm reports (P0d D5):
+    # this row says which, and where it came from, so an operator sees the one name that decides the link lengths.
+    from src.robot.safety._ur_kinematics import described_ur_model
+
+    selected = robot_cfg.arm
     sc = robot_cfg.safety.self_collision
-    if getattr(sc, "kinematics_model", None) is None:
+    backend = getattr(sc, "backend", "?")
+    if vendor == "dummy":
         checks.append(PreflightCheck(
             "self-collision", CheckStatus.WARN,
-            "safety.self_collision.kinematics_model is unset; the guard falls back to the arm's "
-            "capability model",
-            "set it explicitly so a wrong ur.model cannot silently drive one arm's link lengths "
-            "against another's",
+            "the dummy arm carries no safety preflight, so no guard judges its motions for self collision",
+            "a cell whose motions should be judged runs on the arm it drives, not on the dummy",
         ))
-    else:
+    elif not getattr(sc, "enforce", True):
+        checks.append(PreflightCheck(
+            "self-collision", CheckStatus.WARN,
+            "the self collision guard is stood down (safety.self_collision.enforce: false), so no motion is judged "
+            "for self collision",
+            "set safety.self_collision.enforce: true",
+        ))
+    elif described_ur_model(selected.model) is not None:
         checks.append(PreflightCheck(
             "self-collision", CheckStatus.OK,
-            f"kinematics_model={sc.kinematics_model!r}, backend={getattr(sc, 'backend', '?')!r}",
+            f"the guard judges the {selected.model} arm (robot.{selected.vendor} block) against its DH chain, "
+            f"backend={backend!r}",
+        ))
+    else:
+        named = f"the {selected.model} arm" if selected.model else "this cell's arm, which the tree does not name,"
+        checks.append(PreflightCheck(
+            "self-collision", CheckStatus.WARN,
+            f"{named} is no UR the arm registry describes, so the guard checks tool against base and fixtures "
+            f"only, with no arm-against-arm check, backend={backend!r}",
+            "arm-against-arm checks exist only for a UR the arm registry describes (vendor: ur, with DH rows, in "
+            "config/arms); any other arm is judged on tool, base and fixtures until a chain for it is written",
         ))
 
     # ---- the joint window about home -----------------------------------------------------------
@@ -888,7 +974,7 @@ def run_config_preflight(
         unset_hand_refusal,
     )
 
-    reads = hand_geometry_model(sc, robot_cfg.ur.model if vendor == "ur" else UNSET)
+    reads = hand_geometry_model(sc, selected.model or UNSET)
     try:
         hand = planner_hand(robot_cfg, data_dir=data_dir)
     except ConfigError as exc:
@@ -916,21 +1002,25 @@ def run_config_preflight(
                         f"declares it, declared and not measured on this flange")
                 if placement.residual_deg > 1e-3:
                     axis += f", {placement.residual_deg:.3g} degrees from the declared frame, which snaps to it"
-            from src.robot.drivers.sim.robot_models import curobo_arm_descriptor
+            from src.config.arms import curobo_descriptor_name
 
             descriptor = (
-                f"cuRobo descriptor {curobo_arm_descriptor(str(robot_cfg.ur.model))} with the hand added as a body link"
-                if vendor == "ur" else "no UR descriptor on this vendor"
+                f"cuRobo descriptor {curobo_descriptor_name(selected.model)} with the hand added as a body link"
+                if selected.model else "no arm model named, so no cuRobo descriptor"
             )
             detail = (
                 f"{hand.model}: sphere map {hand.sphere_map.name}, origin {hand.origin}, coupling "
                 f"{hand.coupling_mm:g} mm, guard bundle {bundle}, {descriptor}, {axis}"
             )
-            if vendor == "ur" and declared and placement.approach == "+Y":
+            flange = _flange_of(selected.model)
+            if (selected.owns_a_controller and declared and flange is not None
+                    and placement.approach != flange.approach):
+                isaac = (", and +Y is the axis the Isaac UR asset mounts its hand along"
+                         if placement.approach == "+Y" else "")
                 checks.append(PreflightCheck(
                     "hand", CheckStatus.WARN,
-                    f"{detail}. +Y is the axis the Isaac UR asset mounts its hand along, and a hand "
-                    f"bolted to a real UR flange approaches along +Z by the UR convention",
+                    f"{detail}. A hand bolted to this arm's flange approaches along {flange.approach}, as its "
+                    f"description {selected.model}.yaml states it (flange.approach){isaac}",
                     "measure which way the hand approaches on this cell's flange and declare that; a +Y frame builds, "
                     "and its planner starts only with its own committed evidence file",
                 ))
@@ -972,7 +1062,8 @@ def run_config_preflight(
     from src.robot.safety.planning.world import PlanningWorldError, build_planner_cuboids
 
     world_cfg = getattr(robot_cfg.safety, "planning_world", None)
-    planner_in_use = str(getattr(robot_cfg.ur, "motion_planner", "ik")) == "curobo"
+    selected = robot_cfg.arm
+    planner_in_use = selected.planner == "curobo"
     reservation: PlannerReservation | None = None
     try:
         # The slot count comes from the reservation the arm starts its planner with, so this row and
@@ -989,8 +1080,8 @@ def run_config_preflight(
             checks.append(PreflightCheck(
                 "planning world", CheckStatus.OK,
                 f"{len(cuboids)} box(es): " + ", ".join(str(c["name"]) for c in cuboids),
-                "" if planner_in_use else "declared, but robot.ur.motion_planner is 'ik', so no "
-                "planner reads it; set 'curobo' for these obstacles to shape a path",
+                "" if planner_in_use else f"declared, but {_planner_phrase(selected)}, so no "
+                "planner reads it; set robot.motion.planner: curobo for these obstacles to shape a path",
             ))
         else:
             checks.append(PreflightCheck(

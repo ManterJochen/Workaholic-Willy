@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 from src.robot.core import Gripper
 
@@ -144,3 +145,38 @@ class NullGripper:
 assert isinstance(NullGripper(), Gripper), (
     "NullGripper does not satisfy the Gripper Protocol"
 )
+
+
+# ---- the driver as the stack reads it (P0g slice 8, grippers/spec.py) -----------------------------------------------
+def _build_none(robot_cfg: Any, arm: Any, facts: Any) -> Gripper:
+    from src.robot.core import GripperVendor
+
+    from .registry import create_gripper
+
+    gripper_cfg = robot_cfg.gripper
+    return create_gripper(GripperVendor.NONE, min_width_mm=gripper_cfg.min_width_mm,
+                          max_width_mm=gripper_cfg.max_width_mm)
+
+
+def build_substitute(robot_cfg: Any, substitution: GripperSubstitution) -> Gripper:
+    """The ``NullGripper`` a build puts on the flange in place of a driver it cannot build, carrying why."""
+    from src.robot.core import GripperVendor
+
+    from .registry import create_gripper
+
+    gripper_cfg = robot_cfg.gripper
+    return create_gripper(GripperVendor.NONE, min_width_mm=gripper_cfg.min_width_mm,
+                          max_width_mm=gripper_cfg.max_width_mm, substitution=substitution)
+
+
+def _driver() -> Any:
+    from src.robot.core import GripperVendor
+
+    from .spec import GripperDriver
+
+    # NONE is a cell that genuinely has no end-effector, a legitimate configuration.
+    return GripperDriver(vendor=GripperVendor.NONE, refuse=lambda _cfg, _facts: None, build=_build_none,
+                         actuates_nothing="nothing")
+
+
+DRIVER = _driver()

@@ -101,8 +101,8 @@ class GraspFailureReason(StrEnum):
     # Measured against URSim: with a real protective stop active, three commanded motions
     # came back as "RobotMotionRejected: Driver reported moveJ() failure", a message that
     # collapses to `execution_failed` and reads exactly like a bad grasp. The driver knew,
-    # because get_robot_status reported stopped=True and raise_if_stopped raised, and
-    # nothing in the pick path asked.
+    # because get_robot_status reported stopped=True and the driver's own stop check (then
+    # raise_if_stopped, deleted in P0e) raised, and nothing in the pick path asked.
     #
     # Its recovery mapping is deliberately empty. A stopped cell needs a person rather
     # than a retry, and certainly not a motion.

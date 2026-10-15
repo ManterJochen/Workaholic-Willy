@@ -5,7 +5,7 @@ is not there, clears a configuration the exact mesh guard then refuses, and on a
 where the arm actually is. REACH past the body is a false collide: picks and reachable workspace lost, nothing worse.
 
 The claim "the refit is better than the vendor's map" is a claim about two maps, and it is worth nothing unless one
-ruler measured both. So the ruler lives on its own (``scripts/curobo/_mesh_body.py``), the fitter measures its own work
+ruler measured both. So the ruler lives on its own (``scripts/arms/_mesh_body.py``), the fitter measures its own work
 with it, and the comparison CLI measures anybody's work with it.
 
 What is tested here is the ruler against bodies whose answer is exact arithmetic rather than a mesh library's opinion:
@@ -35,7 +35,7 @@ _GAP_MM = (_CIRCUMSCRIBED - _HALF) * 1000.0
 
 
 def _load(name: str):
-    path = _ROOT / "scripts" / "curobo" / f"{name}.py"
+    path = _ROOT / "scripts" / "arms" / f"{name}.py"
     spec = importlib.util.spec_from_file_location(f"{name}_under_test", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

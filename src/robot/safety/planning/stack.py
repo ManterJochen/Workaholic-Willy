@@ -54,17 +54,20 @@ class ModelSource(StrEnum):
     more thing to translate.
     """
 
-    #: The self-collision guard's own model. Authoritative when set, because it is the value the
-    #: guard keys its mesh bundle on.
-    SELF_COLLISION = "robot.safety.self_collision.kinematics_model"
-    #: The vendor block's model, the fallback when the guard declares none.
-    VENDOR_BLOCK = "robot.ur.model"
+    #: A UR cell's arm, the model the UR driver reports and the guard keys its mesh bundle on.
+    UR_BLOCK = "robot.ur.model"
+    #: A sim cell's arm, the UR the Isaac arm drives and reports (P0d D5).
+    SIM_BLOCK = "robot.sim.robot_model"
     #: The caller said so. It is named for the CLI flag, because that is the same lever
     #: seen from the terminal and a reader comparing a transcript against a script should
     #: not have to translate.
     CALLER = "--model"
     #: Nothing declared one. `detail` says which of the three ways that happened.
     FALLBACK = "default"
+
+
+#: The key each vendor's arm model is written under, which is what a reading names as its source.
+_BLOCK_SOURCES: dict[str, ModelSource] = {"ur": ModelSource.UR_BLOCK, "sim": ModelSource.SIM_BLOCK}
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,10 +259,9 @@ class MotionStack:
     ) -> "MotionStack":
         """The robot this validated config describes.
 
-        The ladder runs in the order the guard itself uses: the `kinematics_model` of
-        the self-collision guard where it is set explicitly, because that is the value
-        the guard keys its mesh bundle on; then the model in the vendor block; then the
-        fallback, which says so.
+        The ladder: the model of the block `vendor` selects, which is the arm the guard
+        keys its mesh bundle on because it is the model that arm reports (P0d D5), named by
+        the key it came from; then the fallback, which says so.
 
         It takes a validated schema object and never a path it loads. A factory that
         loaded would give this class a second way to fail and would hide the profile
@@ -270,12 +272,11 @@ class MotionStack:
             hand = str(named) if named else UNSET
         if chosen(model):
             return cls.from_model(model=model, hand=hand, cell=robot_config)
-        declared = getattr(getattr(robot_config.safety, "self_collision", None), "kinematics_model", None)
-        if declared:
-            return cls.from_model(model=str(declared), source=ModelSource.SELF_COLLISION, hand=hand, cell=robot_config)
-        vendor_model = getattr(getattr(robot_config, "ur", None), "model", None)
-        if vendor_model:
-            return cls.from_model(model=str(vendor_model), source=ModelSource.VENDOR_BLOCK, hand=hand, cell=robot_config)
+        selected = robot_config.arm
+        vendor_model = selected.model or None
+        source = _BLOCK_SOURCES.get(selected.vendor)
+        if vendor_model and source is not None:
+            return cls.from_model(model=str(vendor_model), source=source, hand=hand, cell=robot_config)
         return cls.from_model(
             model=FALLBACK_MODEL,
             source=ModelSource.FALLBACK,
@@ -341,17 +342,18 @@ class MotionStack:
 
     def probe(self) -> MotionStackReport:
         """Ask both engines whether they are present for this model. Spawn-free."""
-        from src.robot.drivers.sim.robot_models import NO_DESCRIPTOR, curobo_arm_descriptor
+        from src.config import ConfigError
+        from src.config.arms import NO_DESCRIPTOR, curobo_descriptor_name
 
         descriptor = NO_DESCRIPTOR
         if chosen(self.hand):
             try:
                 # The arm's descriptor; the hand is added to it as a body link when the planner starts.
-                descriptor = curobo_arm_descriptor(self.model)
-            except ValueError as exc:
+                descriptor = curobo_descriptor_name(self.model)
+            except ConfigError as exc:
                 # A model nobody built a descriptor for is named as such, not as a file.
                 descriptor = f"<none: {exc}>"
         return MotionStackReport(
             stack=self,
-            environment=probe_planning_environment(robot_config=descriptor, kinematics_model=self.model),
+            environment=probe_planning_environment(robot_config=descriptor, arm_model=self.model),
         )

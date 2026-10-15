@@ -82,7 +82,7 @@ typing-only annotation of `Extrinsics` in `adapters/matrix.py`.
 | [`closing_axis.py`](closing_axis.py) | the one reader of a closing axis: `ClosingAxis`, `closing_axis_of` (a name or an orientation), `natural_closing_axis_of` (a config's `robot.natural_closing_axis`), `NO_HEADING_WITHIN_DEG_OF_VERTICAL`. It imports NumPy and this package only, so reading a config loads no grasping package |
 | [`transform.py`](transform.py) | `Transform`, an immutable rigid transform between two frames |
 | [`quaternion.py`](quaternion.py) | XYZW algebra, and axis-angle, Euler, rotation vector and matrix conversions |
-| [`matrix.py`](matrix.py) | homogeneous 4x4 helpers for boundary code and inner loops; no frames |
+| [`matrix.py`](matrix.py) | homogeneous 4x4 helpers for boundary code and inner loops, and the flange-to-TCP comparison (`compare_tool_frames`); no frames |
 | [`validation.py`](validation.py) | shape, finiteness, rotation and frame checks, and the three tolerances |
 | [`serialization.py`](serialization.py) | the versioned dict form of `Pose` and `Transform` |
 | [`conversions.py`](conversions.py), [`adapters/`](adapters/) | the only modules that know raw 4x4 arrays, axis-angle vectors and `Extrinsics` |

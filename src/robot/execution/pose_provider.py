@@ -28,9 +28,11 @@ joints are what runs, and it is never read as a pose.
 
 A joint station is checked when the file is read, with no hardware: one unit
 key and no pose keys beside it, six finite numbers, and units that can be what
-they say. A ``joints_rad`` value beyond one full turn (2*pi) is refused as
-probably degrees, a ``joints_deg`` value beyond 360 as beyond any joint, and a
-``joints_deg`` record whose every value lies within 2*pi as probably radians.
+they say. A value past the range the arm's description rates its joint for
+(``limit_deg``, read by :func:`rated_joints_deg`; a full turn either way on
+every UR, and where the reader names no arm) is refused, in ``joints_rad`` as
+probably degrees and in ``joints_deg`` as a place the joint does not reach, and
+a ``joints_deg`` record whose every value lies within 2*pi as probably radians.
 Nothing rewrites a value: a station runs as written, or is refused, and the arm
 itself turns each joint onto the full turn nearest where it stands inside its
 joint window when it moves.
@@ -53,11 +55,12 @@ from typing import Any, TypeAlias
 
 import numpy as np
 
+from src.contracts import UNSET, Maybe, chosen
 from src.geometry import Frame, Pose
 from src.geometry.exceptions import GeometryError
+from src.geometry.quaternion import from_axis_angle
 from src.geometry.serialization import pose_from_dict
 from src.robot.core.joint_positions import JointPositions
-from src.robot.drivers.ur.pose_adapter import urpose_to_pose
 from src.robot.safety.workspace import WorkspaceGuard
 from src.utility.io import load_json
 
@@ -67,6 +70,7 @@ __all__ = [
     "Station",
     "StationScreen",
     "load_stations",
+    "rated_joints_deg",
     "station_record",
     "write_stations",
 ]
@@ -75,10 +79,14 @@ __all__ = [
 JOINT_NAMES: tuple[str, ...] = ("base", "shoulder", "elbow", "wrist 1", "wrist 2", "wrist 3")
 #: The keys that make a record a pose. A joint station carries none of them.
 _POSE_KEYS = frozenset({"x", "y", "z", "rx", "ry", "rz", "position_mm", "quaternion_xyzw"})
-#: One full turn, the furthest any joint of the arms this reads goes either way.
+#: One full turn in radians: a ``joints_deg`` record with every value inside it reads as radians.
 _FULL_TURN_RAD = 2.0 * math.pi
-#: Rounding slack at a full turn: 360 degrees converts to 2*pi and must not be refused for the last bit.
+#: One full turn either way, in degrees: what every UR's description rates each of its joints for (``limit_deg``),
+#: and what a file is read against when its reader names no arm (:func:`load_stations`).
+_FULL_TURN_DEG = 360.0
+#: Rounding slack at a rated bound: 360 degrees converts to 2*pi and must not be refused for the last bit.
 _TURN_SLACK_RAD = 1e-9
+_TURN_SLACK_DEG = 1e-9
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,8 +98,11 @@ class JointStation:
     at these joints before it does. ``written_as`` is the key the file used (``joints_deg`` or
     ``joints_rad``), empty for a station built in code.
 
-    Every value lies within one full turn: a value beyond it is refused here, because no joint of
-    the arms this drives reaches it, and in a file it is how degrees written as radians read.
+    It holds what it is given. The arm judges each value against the range its description rates the
+    joint for when it moves (a value past it reads as degrees there, ``PlannedArm._read_as_degrees``),
+    and a file is read against that same range (:func:`load_stations`). A full turn is no bound of a
+    station's own: an arm may rate a joint past one (the owner, 2026-09-25, where 85f082b's bound was a
+    full turn on every arm).
     """
 
     joints: JointPositions
@@ -101,11 +112,6 @@ class JointStation:
     def __post_init__(self) -> None:
         if not isinstance(self.joints, JointPositions):
             raise TypeError(f"JointStation.joints is a JointPositions, not {type(self.joints).__name__}")
-        beyond = [float(v) for v in self.joints.values if abs(float(v)) > _FULL_TURN_RAD + _TURN_SLACK_RAD]
-        if beyond:
-            raise ValueError(
-                f"JointStation {self.label or '<unlabeled>'!r}: {beyond[0]:.4g} rad is beyond one full turn "
-                "(2*pi), which no joint reaches; joint angles are radians")
 
     @property
     def degrees(self) -> tuple[float, ...]:
@@ -120,20 +126,17 @@ Station: TypeAlias = Pose | JointStation
 def _record_to_pose(record: dict, *, default_label: str = "") -> Pose:
     """Convert one JSON record into a :class:`Pose` (Frame.BASE)."""
     if isinstance(record, dict) and {"rx", "ry", "rz"} <= record.keys():
-        # URPose-shaped record. Coerce via URPose to Pose to reuse the
-        # canonical conversion path (axis-angle rad to quaternion).
-        from src.robot.drivers.ur.pose import URPose
-
-        urpose = URPose(
-            x=float(record["x"]),
-            y=float(record["y"]),
-            z=float(record["z"]),
-            rx=float(record["rx"]),
-            ry=float(record["ry"]),
-            rz=float(record["rz"]),
-            label=str(record.get("label", default_label)),
+        # A record in the shape the UR controller's poses were written in: millimetres and an axis-angle vector in
+        # radians. Read here with the geometry numerics, not through the UR driver's own types: a file format is not a
+        # vendor, and reading one through a driver made the UR package a dependency of loading a calibration file.
+        label = str(record.get("label", default_label))
+        return Pose(
+            position_mm=np.array([float(record["x"]), float(record["y"]), float(record["z"])], dtype=np.float64),
+            quaternion_xyzw=from_axis_angle(
+                np.array([float(record["rx"]), float(record["ry"]), float(record["rz"])], dtype=np.float64)),
+            frame=Frame.BASE,
+            label=label or None,
         )
-        return urpose_to_pose(urpose, frame=Frame.BASE, label=urpose.label or None)
     if isinstance(record, dict) and "position_mm" in record and "quaternion_xyzw" in record:
         return pose_from_dict(record)
     raise ValueError(
@@ -144,7 +147,26 @@ def _record_to_pose(record: dict, *, default_label: str = "") -> Pose:
     )
 
 
-def _record_to_joint_station(record: dict, *, default_label: str) -> JointStation:
+def rated_joints_deg(model: str) -> "Maybe[tuple[tuple[float, float], ...]]":
+    """The range the description of arm ``model`` rates each joint for, ``(low, high)`` in degrees in joint order, or
+    ``UNSET`` for an arm with no description to read (the dummy arm, a vendor not described yet).
+
+    It is the description's ``limit_deg``, the bound the planned arm reads a joint target against
+    (``PlannedArm._read_as_degrees``), and what a reader that knows its arm reads a stations file against
+    (:func:`load_stations`).
+    """
+    from src.config.arms import load_arm
+    from src.config.loader import ConfigError
+
+    try:
+        return tuple((float(joint.limit_deg[0]), float(joint.limit_deg[1])) for joint in load_arm(str(model)).joints)
+    except ConfigError:
+        return UNSET
+
+
+def _record_to_joint_station(
+    record: dict, *, default_label: str, rated_deg: "Maybe[Sequence[tuple[float, float]]]" = UNSET,
+) -> JointStation:
     """One joint-station record, checked for its keys, its count, its numbers and its units."""
     units = [key for key in ("joints_deg", "joints_rad") if key in record]
     if len(units) > 1:
@@ -165,18 +187,23 @@ def _record_to_joint_station(record: dict, *, default_label: str) -> JointStatio
         if not math.isfinite(float(value)):
             raise ValueError(f"{key} gives {name} as {value!r}, which is not a finite number")
         values.append(float(value))
+    if chosen(rated_deg):
+        rated, whose = tuple(rated_deg), "the range the arm's description rates the joint for"
+    else:
+        rated = ((-_FULL_TURN_DEG, _FULL_TURN_DEG),) * len(JOINT_NAMES)
+        whose = "one full turn either way, the range every UR's description rates the joint for"
     if key == "joints_rad":
-        for name, value in zip(JOINT_NAMES, values):
-            if abs(value) > _FULL_TURN_RAD + _TURN_SLACK_RAD:
+        for name, value, (low, high) in zip(JOINT_NAMES, values, rated):
+            if not math.radians(low) - _TURN_SLACK_RAD <= value <= math.radians(high) + _TURN_SLACK_RAD:
                 raise ValueError(
-                    f"joints_rad gives {name} as {value:g}, beyond one full turn (2*pi) in radians, which no joint "
-                    "reaches and which reads as degrees; write the record as joints_deg if it is")
+                    f"joints_rad gives {name} as {value:g}, past {low:g} to {high:g} deg, {whose}, which it does not "
+                    "reach in radians, so the record reads as degrees; write it as joints_deg if it is")
         radians = values
     else:
-        for name, value in zip(JOINT_NAMES, values):
-            if abs(value) > 360.0:
-                raise ValueError(f"joints_deg gives {name} as {value:g}, beyond one full turn (360), which no "
-                                 "joint reaches")
+        for name, value, (low, high) in zip(JOINT_NAMES, values, rated):
+            if not low - _TURN_SLACK_DEG <= value <= high + _TURN_SLACK_DEG:
+                raise ValueError(f"joints_deg gives {name} as {value:g}, past {low:g} to {high:g} deg, {whose}, "
+                                 "which the joint does not reach")
         if max(abs(value) for value in values) > 0.0 and all(abs(value) <= _FULL_TURN_RAD for value in values):
             raise ValueError(
                 f"joints_deg holds {values}, every value within 2*pi, which reads as radians: a station with every "
@@ -188,23 +215,27 @@ def _record_to_joint_station(record: dict, *, default_label: str) -> JointStatio
                         written_as=key)
 
 
-def _record_to_station(record: Any, *, default_label: str) -> Station:
+def _record_to_station(
+    record: Any, *, default_label: str, rated_deg: "Maybe[Sequence[tuple[float, float]]]" = UNSET,
+) -> Station:
     """One record of a stations file: a joint station when it names joints, a pose in BASE otherwise."""
     if isinstance(record, dict) and ({"joints_deg", "joints_rad"} & record.keys()):
-        return _record_to_joint_station(record, default_label=default_label)
+        return _record_to_joint_station(record, default_label=default_label, rated_deg=rated_deg)
     pose = _record_to_pose(record, default_label=default_label)
     if pose.frame is not Frame.BASE:
         raise ValueError(f"is a pose in {pose.frame.value!r}; a station is in the robot's base frame")
     return pose
 
 
-def load_stations(path: str | Path) -> list[Station]:
+def load_stations(path: str | Path, *, rated_deg: "Maybe[Sequence[tuple[float, float]]]" = UNSET) -> list[Station]:
     """Every record of a stations file, in file order, as a :class:`Pose` or a :class:`JointStation`.
 
     Reads the file and checks each record, and filters nothing: the box and the diversity rule
     are the sweep's (:meth:`PoseProvider.screen`), because a joint station's grasp centre is known
     only from the arm's forward kinematics. A record's label defaults to ``pose_<i>``, its 0-based
-    place in the file.
+    place in the file. ``rated_deg`` is the range the arm that runs the sweep rates each joint for,
+    in degrees (:func:`rated_joints_deg`); unset, a joint is read against one full turn either way,
+    which is every UR's.
 
     Raises ``ValueError`` naming the record for a file that is not a list, is empty, or holds a
     record that is neither shape or fails its checks, and ``OSError`` for a file that cannot be read.
@@ -220,7 +251,7 @@ def load_stations(path: str | Path) -> list[Station]:
     for index, record in enumerate(records):
         default = f"pose_{index}"
         try:
-            stations.append(_record_to_station(record, default_label=default))
+            stations.append(_record_to_station(record, default_label=default, rated_deg=rated_deg))
         except (ValueError, TypeError, KeyError, GeometryError) as exc:
             named = record.get("label", default) if isinstance(record, dict) else default
             raise ValueError(f"Pose JSON at '{path}', record {index} ({str(named)!r}): {exc}") from None

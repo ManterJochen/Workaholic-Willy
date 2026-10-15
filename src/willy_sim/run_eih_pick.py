@@ -298,7 +298,6 @@ def build_service(
         camera_world=camera_world,
     )
     arm, gripper, handles, cfg, sim = cell.arm, cell.gripper, cell.handles, cell.cfg, cell.sim
-    _dwell = cell.dwell  # steady-state dwell gate
     # Opt-in natural-aim IK seed + continuous collision-avoidance guard (default-off byte-identical). When a
     # bin is wired, its walls become the guard fixtures so an in-motion approach into a wall is caught too.
     from src.robot.safety.planning.hand import planner_hand
@@ -316,7 +315,9 @@ def build_service(
 
         _bin_sc = cell.robot.safety.self_collision.model_copy(update={"fixtures": _fixtures})
         _safety = cell.robot.safety.model_copy(update={"self_collision": _bin_sc})
-        arm._preflight = SafetyPreflight.from_safety_config(_safety, cell.robot.workspace_limits, hand=_guard_hand)
+        arm._preflight = SafetyPreflight.from_safety_config(
+            _safety, cell.robot.workspace_limits, hand=_guard_hand, arm_model=cell.robot.arm.model or None,
+        )
         if curobo_bin_world:
             _cuboids = [
                 planner_cuboid(
@@ -484,9 +485,6 @@ def build_service(
         arm=arm, gripper=gripper, standoff_mm=standoff_mm, retreat_mm=retreat_mm,
         pre_open_width_mm=pre_open_width_mm, close_width_mm=close_width_mm,
         require_base_frame_grasp=True,
-        # Gate every commanded move on the dwell steady-state config; the sim arm settles fast.
-        require_steady_before_motion=(_dwell.require_steady_before_motion if _dwell else False),
-        steady_timeout_s=(_dwell.steady_timeout_s if _dwell else 5.0),
     )
     # One mode knob, resolved through harness/modes.py. Easy is the deterministic open-loop path.
     # Auto must be built in auto mode, because the per-call override guard refuses

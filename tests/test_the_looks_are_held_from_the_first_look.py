@@ -59,7 +59,7 @@ class ThePickLoopHoldsFromItsFirstLookTests(unittest.TestCase):
         """⛔ Before, the pick held from where it started: the first look's motion grabbed the start pose's frame."""
         arm = LookingArm(_poses())
         world = _Where(arm)
-        arm.live_planner_world = world  # type: ignore[attr-defined]
+        arm.set_live_planner_world(world)
         start = joints_key(arm.get_joint_positions())
         self.assertNotEqual(start, joints_key(LOOK_PLUS_X))
 
@@ -74,7 +74,7 @@ class ThePickLoopHoldsFromItsFirstLookTests(unittest.TestCase):
     def test_a_first_look_refused_before_anything_was_sent_does_not_start_it(self) -> None:
         arm = LookingArm(_poses(), refuse=(LOOK_PLUS_X,))
         world = _Where(arm)
-        arm.live_planner_world = world  # type: ignore[attr-defined]
+        arm.set_live_planner_world(world)
 
         _Cell(looks=(LOOK_PLUS_X, LOOK_MINUS_X), arm=arm, grasps_on=(1,)).run()
 
@@ -85,7 +85,7 @@ class ThePickLoopHoldsFromItsFirstLookTests(unittest.TestCase):
     def test_a_pick_that_reaches_no_look_holds_nothing(self) -> None:
         arm = LookingArm(_poses(), refuse=(LOOK_PLUS_X, LOOK_MINUS_X))
         world = _Where(arm)
-        arm.live_planner_world = world  # type: ignore[attr-defined]
+        arm.set_live_planner_world(world)
 
         _Cell(looks=(LOOK_PLUS_X, LOOK_MINUS_X), arm=arm, grasps_on=(1,)).run()
 
@@ -97,7 +97,7 @@ class TheLocatorHoldsFromItsFirstLookTests(unittest.TestCase):
         """⛔ Before, the look around held from where the arm stood when it was asked."""
         built = _locator_arm(EAST, WEST)
         world = _Where(built)
-        built.live_planner_world = world
+        built.set_live_planner_world(world)
         _locator(_Wrist(built)).look_around("a part", [EAST.joints, WEST.joints], robot=_robot(built))
 
         holds = [call for call in world.calls if call[0] == "hold"]
@@ -108,7 +108,7 @@ class TheLocatorHoldsFromItsFirstLookTests(unittest.TestCase):
     def test_a_new_look_around_lets_go_of_the_last_before_it_moves(self) -> None:
         built = _locator_arm(EAST, WEST)
         world = _Where(built, holding=True)
-        built.live_planner_world = world
+        built.set_live_planner_world(world)
         _locator(_Wrist(built)).look_around("a part", [WEST.joints, EAST.joints], robot=_robot(built))
 
         self.assertEqual([what for what, _, _ in world.calls][:2], ["forget", "hold"], world.calls)
@@ -118,7 +118,7 @@ class TheLocatorHoldsFromItsFirstLookTests(unittest.TestCase):
     def test_a_look_around_that_reaches_no_look_holds_nothing(self) -> None:
         built = _locator_arm(EAST, WEST, refuse=(EAST.joints, WEST.joints))
         world = _Where(built)
-        built.live_planner_world = world
+        built.set_live_planner_world(world)
         located = _locator(_Wrist(built)).look_around("a part", [EAST.joints, WEST.joints], robot=_robot(built))
 
         self.assertIn("reached none of the looks", located.refused)

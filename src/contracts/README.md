@@ -89,7 +89,7 @@ def chain(profile: Maybe[str | None] = UNSET) -> str:
 | Class | `render()` | `to_dict()` |
 |---|:---:|:---:|
 | `KeyExplanation` ([`src/config/explain.py`](../config/explain.py)) | yes | no |
-| `IOSnapshot`, `TransitionResult` ([`src/robot/drivers/ur/io_bench.py`](../robot/drivers/ur/io_bench.py)) | yes | no |
+| `IOSnapshot`, `TransitionResult` ([`src/robot/execution/io_bench/pins.py`](../robot/execution/io_bench/pins.py)) | yes | no |
 | `TrainingRunReport` ([`src/robot/grasping/deep/train/report.py`](../robot/grasping/deep/train/report.py)) | yes | no |
 | `DecisionReport` ([`src/robot/grasping/decision.py`](../robot/grasping/decision.py)) | no | yes |
 | `PreflightReport` ([`src/robot/execution/real_cell/preflight.py`](../robot/execution/real_cell/preflight.py)) | yes | yes |

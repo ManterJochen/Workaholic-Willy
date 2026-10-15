@@ -29,11 +29,11 @@ from unittest.mock import patch
 
 import numpy as np
 
+from src.config.arms import load_arm
 from src.geometry import Pose
 from src.robot.core.arm_capabilities import HoldsItsWorld
 from src.robot.core.camera_world import CameraWorldUse
-from src.robot.drivers.ur import curobo_motion
-from src.robot.drivers.ur.curobo_motion import UR_ARM_JOINT_NAMES
+from src.robot.drivers.planned import curobo_motion
 from src.robot.grasping.motion.execution_policy import PolicyOutcome
 from tests.test_a_grasp_judges_its_lift_carrying_before_it_closes import (
     _HELD,
@@ -49,6 +49,9 @@ from tests.test_every_verb_meets_the_camera_world import _Camera as _BenchCamera
 from tests.test_every_verb_meets_the_camera_world import _Client, _mesh_backend_available, _ur
 from tests.test_every_verb_meets_the_camera_world import _world as _bench_world
 from tests.test_the_goal_keeps_its_jaws_clear import _expected_at, _regions
+
+#: The controller's joint order as the ur5e description states it; the planner is handed it since P0e E4.
+_UR_JOINT_NAMES = tuple(joint.name for joint in load_arm("ur5e").joints)
 
 
 class _HoldingArm(_JudgingArm):
@@ -143,7 +146,7 @@ class TheUrDriverTests(unittest.TestCase):
             self.skipTest("no exact mesh backend on this box")
 
     def _arm(self) -> Any:
-        return _ur(_bench_world(_BenchCamera(silent=False)), _Client(joint_names=UR_ARM_JOINT_NAMES), [])
+        return _ur(_bench_world(_BenchCamera(silent=False)), _Client(joint_names=_UR_JOINT_NAMES), [])
 
     def _region_of(self, arm: Any, goal: Pose) -> np.ndarray:
         with patch.object(curobo_motion, "refresh_planner_world", wraps=curobo_motion.refresh_planner_world) as refresh:
@@ -171,13 +174,13 @@ class TheUrDriverTests(unittest.TestCase):
         arm = self._arm()
         start = arm.get_tcp_pose()
         arm.move(_shifted(start, -30.0), linear=True)  # the line down: its refresh builds the world
-        built = arm._curobo_ur_planner().last_world_refresh
+        built = arm._curobo_planner().last_world_refresh
         self.assertIsNotNone(built)
         with patch.object(curobo_motion, "refresh_planner_world", wraps=curobo_motion.refresh_planner_world) as refresh:
             with arm.held_world("the way back up from the part"):
                 held = arm.move(start, linear=True)
         self.assertEqual(0, refresh.call_count, "a line inside the held world refreshed its world")
-        self.assertIs(built, arm._curobo_ur_planner().last_world_refresh)
+        self.assertIs(built, arm._curobo_planner().last_world_refresh)
         self.assertTrue(held.ok, held.message)
         self.assertIs(CameraWorldUse.PLANNED, held.camera_world.use)
         with patch.object(curobo_motion, "refresh_planner_world", wraps=curobo_motion.refresh_planner_world) as refresh:
@@ -186,7 +189,7 @@ class TheUrDriverTests(unittest.TestCase):
 
     def test_a_held_world_with_no_world_built_yet_refreshes_as_ever(self) -> None:
         arm = self._arm()
-        self.assertIsNone(arm._curobo_ur_planner().last_world_refresh)
+        self.assertIsNone(arm._curobo_planner().last_world_refresh)
         with patch.object(curobo_motion, "refresh_planner_world", wraps=curobo_motion.refresh_planner_world) as refresh:
             with arm.held_world("the way back up from the part"):
                 arm.move(_shifted(arm.get_tcp_pose(), -30.0), linear=True)

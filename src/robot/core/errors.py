@@ -11,7 +11,7 @@ Hierarchy::
         +-- RobotKinematicsError    (FK / IK failure, unreachable target)
         +-- RobotMotionRejected     (workspace guard / safety pre-check denied)
         |       `-- RobotSingularityRisk   (target too close to a singularity)
-        +-- RobotEmergencyStop      (e-stop / protective stop active)
+        +-- ArmFault                (the cell cannot move until a person acts; ArmFaultClass says which fault)
         +-- CameraWorldUnavailable  (a camera could not vouch for the cell after its attempts)
         +-- PerceptionFrameMoved    (a wrist camera took no still pick frame after its attempts)
         `-- IsaacNotAvailableError  (sim/SDK backend not installed on this host)
@@ -19,11 +19,14 @@ Hierarchy::
 
 from __future__ import annotations
 
+from enum import StrEnum
+
 __all__ = [
+    "ArmFault",
+    "ArmFaultClass",
     "CameraWorldUnavailable",
     "IsaacNotAvailableError",
     "RobotConnectionError",
-    "RobotEmergencyStop",
     "RobotError",
     "RobotKinematicsError",
     "RobotMotionRejected",
@@ -70,8 +73,142 @@ class RobotSingularityRisk(RobotMotionRejected):
     """Raised when a target is rejected because singularity risk is too high."""
 
 
-class RobotEmergencyStop(RobotError):
-    """Raised when the controller reports an active e-stop or protective stop."""
+class ArmFaultClass(StrEnum):
+    """What kind of fault a cell is in, in words every vendor maps its controller into.
+
+    The vocabulary is closed on purpose: a cell reports the class and what to do about it, and a class nobody can name
+    is a class nobody can act on. What produces each one today is stated, because a member nothing produces is a
+    promise, not a feature.
+    """
+
+    #: A safety stop a person can clear at the cell. Produced by :meth:`ArmFault.from_status`.
+    PROTECTIVE_STOP = "protective_stop"
+    #: The emergency button. Produced by :meth:`ArmFault.from_status`; never cleared from software.
+    EMERGENCY_STOP = "emergency_stop"
+    #: Powered off, in a fault mode, or otherwise not able to run. Produced by :meth:`ArmFault.from_status`.
+    CONTROLLER_FAULT = "controller_fault"
+    #: The pendant holds control, so the cell may not command it. Nothing produces it yet: the UR connect says local
+    #: mode as a refused connection.
+    NO_REMOTE_CONTROL = "no_remote_control"
+    #: The link to the controller is gone. Nothing produces it yet.
+    LINK_LOST = "link_lost"
+    #: The controller latched a limit (joint, speed, force) and will not move until it is released. Nothing produces it
+    #: yet; a vendor whose controller reports one maps it here rather than inventing a seventh word.
+    LIMIT_REACHED = "limit_reached"
+    #: The controller is ready, and the program on it that takes the cell's commands does not run (on a UR the RTDE
+    #: control script, which a singular IK request and a protective stop both end, measured on URSim 2026-09-22).
+    #: Produced by :meth:`ArmFault.from_status` from ``RobotStatus.program_running`` (P0e E13).
+    PROGRAM_STOPPED = "program_stopped"
+
+
+#: Which classes a person can acknowledge from software at all. An emergency stop is a physical button and a lost link
+#: is not a state to acknowledge, so a cell that offered to clear them would be wrong about what it can do.
+_ACKNOWLEDGEABLE: dict[ArmFaultClass, bool] = {
+    ArmFaultClass.PROTECTIVE_STOP: True,
+    ArmFaultClass.EMERGENCY_STOP: False,
+    ArmFaultClass.CONTROLLER_FAULT: False,
+    ArmFaultClass.NO_REMOTE_CONTROL: False,
+    ArmFaultClass.LINK_LOST: False,
+    ArmFaultClass.LIMIT_REACHED: True,
+    ArmFaultClass.PROGRAM_STOPPED: False,
+}
+
+#: What a person does about each class, because the answer is never "retry".
+_WHAT_TO_DO: dict[ArmFaultClass, str] = {
+    ArmFaultClass.PROTECTIVE_STOP: "clear the stop where the arm is visible, then start the run again",
+    ArmFaultClass.EMERGENCY_STOP: "release the emergency button at the cell, then start the run again",
+    ArmFaultClass.CONTROLLER_FAULT: "power the controller back on and bring it to RUNNING, then start the run again",
+    ArmFaultClass.NO_REMOTE_CONTROL: "give the controller back to remote control at the pendant",
+    ArmFaultClass.LINK_LOST: "check the cable and the address, then start the run again",
+    ArmFaultClass.LIMIT_REACHED: "release the latched limit at the controller, then start the run again",
+    ArmFaultClass.PROGRAM_STOPPED: "connect the arm again, which starts the controller program anew, then start the "
+                                   "run again",
+}
+
+
+class ArmFault(RobotError):
+    """A fault of the cell, not of the grasp: this arm cannot move until a person acts.
+
+    Nothing is wrong with the scene, the target or the plan, so no retry and no new look changes it. A campaign stops on
+    it: as the report's ``fault`` where it was raised, and as the report's ``controller_stopped`` where a pick ended its
+    attempt on it (owner-cell audit, 2026-09-23).
+
+    Recovery is never automatic (the owner, 2026-09-19). Only a person acknowledges a fault, through
+    ``SupportsRobotStatus.acknowledge_fault`` from a script run at the cell, and :attr:`acknowledgeable` says whether
+    that is possible at all: an emergency button is not released by software.
+
+    A halt is not one of these. It is the arm's own latch (``SupportsHalt``), set and cleared at the console by a person
+    who confirms the cell is clear, and :meth:`from_status` leaves it aside.
+
+    It replaced ``RobotEmergencyStop`` on 2026-10-13, which named one class and carried no evidence.
+    """
+
+    def __init__(self, kind: ArmFaultClass, message: str = "", *, status: object = None,
+                 acknowledgeable: bool | None = None) -> None:
+        #: Which fault this is, from the closed vocabulary.
+        self.kind = kind
+        #: The controller's own text, where it gave one.
+        self.message = str(message or "")
+        #: The reading this was derived from, or ``None``. Typed as ``object`` for the import rule of this module.
+        self.status = status
+        #: Whether a person can acknowledge this from software at all.
+        self.acknowledgeable = _ACKNOWLEDGEABLE[kind] if acknowledgeable is None else bool(acknowledgeable)
+        super().__init__(self.render())
+
+    @classmethod
+    def from_status(cls, status: object) -> "ArmFault | None":
+        """The fault a ``RobotStatus`` describes, or ``None`` where the controller can move.
+
+        The criterion is the controller's own answer (``controller_operational``), not ``is_stopped``, and that was
+        measured: a controller powered off mid-session reported every stop flag as ``False``, correctly, while being
+        exactly as unable to move. The halt latch is left aside: a halted arm on a healthy controller is no fault of the
+        cell. A stopped program is named only on a controller that is otherwise ready, so a stop that ended the program
+        as well is still named as the stop, which is what a person clears first.
+
+        Args:
+            status (object): A ``RobotStatus``, or anything with its fields.
+
+        Returns:
+            ArmFault | None: The classified fault, or ``None`` where the controller says it can move.
+        """
+        if getattr(status, "controller_operational", False):
+            return None
+        message = str(getattr(status, "message", "") or "")
+        if getattr(status, "controller_ready", False) and getattr(status, "program_running", True) is False:
+            return cls(ArmFaultClass.PROGRAM_STOPPED, message, status=status)
+        if getattr(status, "emergency_stopped", False):
+            return cls(ArmFaultClass.EMERGENCY_STOP, message, status=status)
+        if getattr(status, "protective_stopped", False):
+            return cls(ArmFaultClass.PROTECTIVE_STOP, message, status=status)
+        if getattr(getattr(status, "safety_mode", None), "is_stopped", False):
+            return cls(ArmFaultClass.PROTECTIVE_STOP, message, status=status)
+        return cls(ArmFaultClass.CONTROLLER_FAULT, message, status=status)
+
+    def what_to_do(self) -> str:
+        """What a person does about this fault. Never "retry".
+
+        Returns:
+            str: One clause, ASCII.
+        """
+        return _WHAT_TO_DO[self.kind]
+
+    def render(self) -> str:
+        """Describe this to a person.
+
+        Returns:
+            str: One line, ASCII, no trailing newline: the class, the controller's text, the reading, what to do.
+        """
+        detail = f": {self.message}" if self.message else ""
+        evidence = ""
+        status = self.status
+        if status is not None:
+            evidence = (f" (robot_mode={getattr(getattr(status, 'robot_mode', None), 'value', '?')}, "
+                        f"safety_mode={getattr(getattr(status, 'safety_mode', None), 'value', '?')}, "
+                        f"protective_stop={getattr(status, 'protective_stopped', '?')}, "
+                        f"emergency_stop={getattr(status, 'emergency_stopped', '?')}"
+                        f"{', program_running=False' if getattr(status, 'program_running', True) is False else ''})")
+        return (f"the cell is in {self.kind.value}{detail}{evidence}. Nothing is wrong with the scene or the grasp, and "
+                f"no retry changes it: {self.what_to_do()}")
 
 
 class CameraWorldUnavailable(RobotError):

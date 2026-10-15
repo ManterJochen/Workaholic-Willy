@@ -132,7 +132,7 @@ def _cell(answers: dict[int, str], *, arm: "LookingArm | None" = None, count: in
                              on_execute=wiring.get("on_execute"))  # type: ignore[assignment]
     cell.orchestrator.policy = cell.policy  # type: ignore[assignment]
     world = _Watching()
-    cell.arm.live_planner_world = world  # type: ignore[attr-defined]
+    cell.arm.set_live_planner_world(world)
     return cell
 
 
@@ -224,7 +224,7 @@ class NothingMovesBackAfterTests(unittest.TestCase):
 
         def stop(_rank: int) -> None:
             arm.status = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.PROTECTIVE_STOP,
-                                     protective_stopped=True, emergency_stopped=False)
+                                     protective_stopped=True, emergency_stopped=False, program_running=True)
 
         cell = _cell({0: LINE_IN_REFUSED}, arm=arm, on_execute=stop)
 

@@ -1,7 +1,7 @@
 """What the repository's registries share: how a file is found, and how a description is compared and shown.
 
-Two registries hold one YAML file per model: ``grippers/`` (:mod:`src.config.grippers`) and ``cameras/``
-(:mod:`src.config.cameras`). Both find their files the same way on every platform, both compare a deployment
+Three registries hold one YAML file per model: ``grippers/`` (:mod:`src.config.grippers`), ``cameras/``
+(:mod:`src.config.cameras`) and ``arms/`` (:mod:`src.config.arms`). Both find their files the same way on every platform, both compare a deployment
 tree's copy with the repository's key by key, and both name a registry file to a person the same way, so those three
 live here once and each registry keeps its own sentences.
 """
@@ -40,12 +40,26 @@ def registry_files(directory: Path, *, noun: str) -> list[Path]:
 
 
 def flat(value: object, prefix: str = "") -> dict[str, object]:
-    """A nested description as dotted keys, so two descriptions compare key by key."""
+    """A nested description as dotted keys, so two descriptions compare key by key.
+
+    A list is indexed, not printed. Until 2026-10-13 only mappings were walked, so a difference inside a list compared
+    as one key holding the whole list, and the refusal printed both sides in full: on an arm description, one wrong
+    digit in one DH length made a sentence of two six-row tables (2137 characters, measured in aurora). Indexed, the
+    same difference is one key, ``joints.2.a_m``, and the sentence names it. A hand's ``coupling_plates`` and
+    ``aliases`` and a camera's vectors are compared the same way.
+    """
     if isinstance(value, dict):
         out: dict[str, object] = {}
         for key, item in value.items():
             out.update(flat(item, f"{prefix}.{key}" if prefix else str(key)))
         return out
+    if isinstance(value, (list, tuple)):
+        indexed: dict[str, object] = {}
+        for index, item in enumerate(value):
+            indexed.update(flat(item, f"{prefix}.{index}" if prefix else str(index)))
+        # An empty list has no member to name, and comparing nothing against nothing would call two descriptions
+        # equal where one holds a list and the other does not.
+        return indexed or {prefix: value}
     return {prefix: value}
 
 

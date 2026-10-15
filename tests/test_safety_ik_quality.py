@@ -39,10 +39,9 @@ class _IdentityFkArm:
     def __init__(self, vendor: str = "sim", model: str = "stub", dof: int = 6) -> None:
         self.capabilities = RobotCapabilities(
             vendor=vendor, model=model, dof=dof,
-            supports_joint_move=True, supports_linear_move=True,
-            supports_async_move=False,
-            has_native_fk=True, has_native_ik=False, has_force_control=False,
+            has_native_fk=True,
             is_simulated=True,
+            controller=None, owns_a_controller=vendor not in ("sim", "dummy"),
         )
 
     def fk(self, joints: JointPositions) -> Pose:
@@ -178,8 +177,8 @@ class IKQualityGuardTests(unittest.TestCase):
         ``RobotKinematicsError`` and ``RobotConnectionError`` subclass ``RobotError`` ONLY -- and those
         are exactly what ``URRobotArm.fk()`` raises (drivers/ur/arm.py:463-471) when the connection is
         closed or the controller refuses the solve. With ``ik_quality.enforce: true`` shipped
-        (robot.yaml:111) and the probe running on every gated move, a real cell would take an unhandled
-        traceback mid-pick instead of a typed safety verdict. The test above passes either way, which
+        (``safety.ik_quality`` in robot.yaml) and the probe running on every gated move, a real cell
+        would take an unhandled traceback mid-pick instead of a typed safety verdict. The test above passes either way, which
         is precisely why it did not catch this: it raises the one type that is NOT the real one.
         """
         from src.robot.core.errors import (
@@ -208,12 +207,12 @@ class IKQualityGuardTests(unittest.TestCase):
 class IKQualityWiringTests(unittest.TestCase):
     def test_enforce_true_registers_guard(self) -> None:
         cfg = RobotSafetyConfig.model_validate({"ik_quality": {"enforce": True}})
-        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig())
+        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig(), arm_model=None)
         self.assertIn("ik_quality", pf.guard_names)
 
     def test_enforce_false_omits_guard(self) -> None:
         cfg = RobotSafetyConfig.model_validate({"ik_quality": {"enforce": False}})
-        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig())
+        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig(), arm_model=None)
         self.assertNotIn("ik_quality", pf.guard_names)
 
 

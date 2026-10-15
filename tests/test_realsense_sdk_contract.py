@@ -61,9 +61,11 @@ except Exception as exc:  # pragma: no cover - exercised only where the wheel is
     _HAS_RS = False
     # ASCII only: a skip reason is printed by CI consoles that are not UTF-8, and an em-dash
     # arrives there as a replacement character.
+    # The loader's own reason: on Linux an installed wheel fails on libusb-1.0.so.0 (P0h h6), which "not installed"
+    # misnamed.
     _SKIP = (
-        f"pyrealsense2 not installed ({exc.__class__.__name__}) -- "
-        "pip install -r requirements.txt"
+        f"pyrealsense2 cannot be imported ({exc.__class__.__name__}: {exc}), "
+        "pip install -r requirements.txt, and on Linux sudo apt install libusb-1.0-0"
     )
 
 _DRIVER = Path(__file__).resolve().parents[1] / "src/camera/setup/image_taking/rgbd.py"

@@ -321,15 +321,14 @@ def owner_like_arm() -> "object":
 
     return URRobotArm(RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": "ur10", "motion_planner": "curobo"},
+        "ur": {"model": "ur10"}, "motion": {"planner": "curobo"},
         # Where the owner's looks put the tool is the cell's box to say, and this file is about the pairs.
         "workspace_limits": OPEN_WORKSPACE,
         "gripper": {"model": "robotiq_hande", "coupling_plates": [{"name": "adapter", "thickness_mm": 20.0}],
                     "tool_frame": {"source": "willy", "offset_mm": [0.0, 0.0, 155.75],
                                    "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
         "safety": {"payload": {"enforce": False},
-                   "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "kinematics_model": "ur10",
-                                      "planner_margin_mm": 4.0}},
+                   "self_collision": {"backend": "fcl", "min_distance_mm": 10.0, "planner_margin_mm": 4.0}},
     }))
 
 
@@ -394,11 +393,11 @@ class TheComposedConfigIsTheOneTheEvidenceMeasuredTests(unittest.TestCase):
             self.skipTest(f"no installed cuRobo descriptor at {descriptor}")
         arm: Any = owner_like_arm()
         hand = arm.safety_preflight.planner_hand(arm)
-        link = HandLink.from_hand(hand)
+        link = HandLink.from_hand(hand, arm="ur10")
         default_q = read_retract("ur10", hand.model, float(hand.coupling_mm), 4.0,
                                  placement=f"{link.placement.approach}{link.placement.closing}")
         _, evidence, _, _, _ = compose_for_cell(
-            yaml.safe_load(descriptor.read_text(encoding="utf-8")), bodies=[link.to_dict(), *coupling_bodies(hand)],
+            yaml.safe_load(descriptor.read_text(encoding="utf-8")), bodies=[link.to_dict(), *coupling_bodies(hand, arm="ur10")],
             margin_mm=4.0, attach_spheres=0, default_q=default_q)
         committed = json.loads((EVIDENCE_DIR / "ur10_robotiq_hande_c20mm_+Z+X_m4mm_a0.json").read_text(encoding="utf-8"))
         self.assertEqual(canonical_sha256(evidence), committed["composed_sha256"])

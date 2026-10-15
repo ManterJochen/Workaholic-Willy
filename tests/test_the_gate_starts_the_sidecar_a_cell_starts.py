@@ -16,13 +16,13 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-_CUROBO = Path(__file__).resolve().parents[1] / "scripts" / "curobo"
+_ARMS = Path(__file__).resolve().parents[1] / "scripts" / "arms"
 
 
 def _gate() -> Any:
-    if str(_CUROBO) not in sys.path:
-        sys.path.insert(0, str(_CUROBO))
-    spec = importlib.util.spec_from_file_location("_gate_for_the_sidecar", _CUROBO / "matrix_gate.py")
+    if str(_ARMS) not in sys.path:
+        sys.path.insert(0, str(_ARMS))
+    spec = importlib.util.spec_from_file_location("_gate_for_the_sidecar", _ARMS / "gate.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -70,7 +70,7 @@ class APlateWithACrossSectionTests(unittest.TestCase):
         cell = planner_hand(RobotConfig.model_validate({
             "vendor": "ur", "ur": {"model": "ur5e"},
             "gripper": {"model": "robotiq_hande", "coupling_plates": self._PLATE,
-                        "tool_frame": {"source": "polyscope", "offset_mm": [0.0, 0.0, 155.75],
+                        "tool_frame": {"source": "controller", "offset_mm": [0.0, 0.0, 155.75],
                                        "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
         }))
         self.assertTrue(cell.coupling_boxes)

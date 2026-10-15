@@ -303,6 +303,6 @@ those lists: it is the YAML tree, and the Python that reads it lives in `src/con
 - [`src/robot/grasping/`](../src/robot/grasping/README.md), the grasp stack, its modes and what each
   one requires.
 - [`src/robot/README.md`](../src/robot/README.md), the driver contract, and
-  [`src/robot/drivers/`](../src/robot/drivers/README.md) for UR, KUKA, Isaac and the dummy.
+  [`src/robot/drivers/`](../src/robot/drivers/README.md) for UR, Isaac and the dummy.
 - [`src/config/`](../src/config/README.md), the loader and the schemas, and [`config/`](../config/),
   the YAML you edit.

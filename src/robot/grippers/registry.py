@@ -19,12 +19,16 @@ Public surface
 * :func:`available_gripper_vendors` snapshots the registered vendors.
 * :func:`is_gripper_vendor_registered` and :func:`unregister_gripper_driver` inspect
   and undo a registration.
+* :func:`gripper_driver` and :func:`gripper_drivers` read the spec each driver states
+  at the end of its module (:class:`~src.robot.grippers.spec.GripperDriver`), and
+  :data:`SUBSTITUTE_VENDOR` is what a build falls back to.
 """
 
 from __future__ import annotations
 
 import threading
 from collections.abc import Callable
+from typing import Any
 
 from src.robot.constants import GRIPPER_REGISTRY_LOG_FILE, create_robot_logger
 from src.robot.core import (
@@ -34,11 +38,15 @@ from src.robot.core import (
 )
 
 __all__ = [
+    "SUBSTITUTE_VENDOR",
     "GripperDriverFactory",
     "available_gripper_vendors",
     "create_gripper",
+    "gripper_driver",
+    "gripper_drivers",
     "is_gripper_vendor_registered",
     "register_gripper_driver",
+    "register_gripper_spec",
     "unregister_gripper_driver",
 ]
 
@@ -158,3 +166,35 @@ def create_gripper(vendor: GripperVendor | str, **kwargs) -> Gripper:
             "Gripper Protocol."
         )
     return gripper
+
+
+# ---- the specs: what the stack knows about each driver, beside it (P0g slice 8) ----------------------------------
+
+#: The vendor a build falls back to when it cannot build the one a tree names: a ``NullGripper`` carrying why.
+SUBSTITUTE_VENDOR = GripperVendor.NONE
+
+_SPECS: dict[GripperVendor, Any] = {}
+
+
+def register_gripper_spec(driver: Any) -> None:
+    """Hold ``driver`` (a :class:`~src.robot.grippers.spec.GripperDriver`) as its vendor's spec."""
+    with _LOCK:
+        if driver.vendor in _SPECS:
+            raise ValueError(f"register_gripper_spec: vendor {driver.vendor.value!r} already has a spec")
+        _SPECS[driver.vendor] = driver
+
+
+def gripper_driver(vendor: GripperVendor | str) -> Any:
+    """The spec of ``vendor``'s driver, or ``None`` for a name with no driver here (a reserved or unknown one)."""
+    try:
+        key = _coerce(vendor)
+    except ValueError:
+        return None
+    with _LOCK:
+        return _SPECS.get(key)
+
+
+def gripper_drivers() -> tuple[Any, ...]:
+    """Every spec, in the vendor enum's order."""
+    with _LOCK:
+        return tuple(_SPECS[v] for v in GripperVendor if v in _SPECS)

@@ -10,8 +10,8 @@ refresh. The refresh used to run inside the planner's check, after the guard had
 path, so the guard judged every path against the obstacles of the motion before. The refresh now runs
 first and once, and both authorities judge the same cell.
 
-The sim joint verbs are held here as well (owner, Q11): `move_joint`, and `move_home` through it, judge
-the whole line on a cuRobo sim as the UR does, where they checked the destination alone.
+The sim joint verbs are held here as well (owner, Q11): `move_to_joints`, and `move_home` through the same
+judge, check the whole line on a cuRobo sim as the UR does, where they checked the destination alone.
 
 And the stamp (owner, Q9): a move on a world its own refresh vouched for says PLANNED, naming the cameras
 and the capture time of the oldest image, and a move no refresh vouched for keeps saying UNSTATED.
@@ -34,12 +34,12 @@ from src.config.schema.robot import RobotConfig
 from src.geometry import Frame, Pose
 from src.robot.core import JointPositions, MotionCommand, MotionResult, MotionStatus
 from src.robot.core.camera_world import CameraWorldUse
-from src.robot.core.errors import CameraWorldUnavailable, RobotMotionRejected
+from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.drivers.sim.arm import IsaacRobotArm
 from src.robot.drivers.sim.config import SimRobotConfig
-from src.robot.drivers.ur import curobo_motion
+from src.robot.drivers.planned import curobo_motion
+from src.robot.drivers.planned.arm import PlannedArm
 from src.robot.drivers.ur.arm import URRobotArm
-from src.robot.drivers.ur.curobo_motion import UR_ARM_JOINT_NAMES
 from src.robot.drivers.ur.pose import URPose
 from src.robot.safety._fcl_self_collision import mesh_backend_status
 from src.robot.safety._ur_kinematics import ur_link_origins_mm
@@ -49,12 +49,17 @@ from src.robot.safety.planning.perceived import LinkCapsule, SelfEnvelope
 from src.robot.safety.planning.perceived import WorldBuildLimits
 from src.robot.safety.planning.world import planner_cuboid
 
+from src.config.arms import load_arm
+
+#: The controller's joint order as the ur5e description states it; the planner is handed it since P0e.
+_UR_JOINT_NAMES = tuple(joint.name for joint in load_arm("ur5e").joints)
+
 #: The decline these path tests run under: they read the planner and the guard, and no camera world is wired.
 _PATH_ONLY = "unit double: this test reads the path judge, and no camera world is wired to the arm"
 
 #: Clear, and where the fake controller says the arm is standing.
 _HERE = (0.0, -1.5, 1.5, 0.0, 0.0, 0.0)
-#: Clear, a short joint move away (tests/test_ur_checked_joint_verbs.py measured both).
+#: Clear, a short joint move away (tests/test_a_joint_move_is_judged_as_a_path.py measured both).
 _THERE = (0.2, -1.5, 1.5, 0.0, 0.0, 0.0)
 _LIMITS = WorldBuildLimits(
     x_mm=(-400.0, 400.0), y_mm=(-400.0, 400.0), z_mm=(-50.0, 900.0), support_plane_top_mm=0.0
@@ -157,15 +162,27 @@ def _recording(call, label: str, events: list[str]):  # noqa: ANN001, ANN202
     return recorded
 
 
+def _planned(world: LivePlannerWorld | None, client: _Client, events: list[str]) -> PlannedArm:
+    """A cuRobo planned arm over the fake transport, its planner on ``client``, its real guard recording the order
+    (``tests/_arm_kit.live_arm``, P0g slice 13: the UR driver this file built until then is not what it tests)."""
+    from tests._arm_kit import live_arm
+
+    return live_arm(world, client, events, here=_HERE, there=_THERE)
+
+
 def _ur(world: LivePlannerWorld, client: _Client, events: list[str]) -> URRobotArm:
     """A cuRobo UR on a fake controller, its planner on `client`, its real guard recording the order.
+
+    This file's own tests stand on the kit's planned arm since P0g slice 13 (`_planned`). The tests of a route judged
+    ahead (`tests/test_a_grasp_judged_ahead_runs_as_it_was_judged.py` and six more) read the UR's wire and still build
+    their arm here, counted in `tests/test_the_tests_that_build_a_ur_arm_only_shrink.py`.
 
     The guard is the one the config builds. Three of its calls are wrapped rather than replaced, so
     `events` says when the perceived world reached it and when each path gate ran.
     """
     config = RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"motion_planner": "curobo"},
+        "motion": {"planner": "curobo"},
         "safety": {"payload": {"enforce": False}, "ik_quality": {"enforce": False},
                    # The margin every UR cuRobo cell must declare (B1 S17). A stub client skips the factory that refuses an undeclared one,
                    # so this used to pass without it; the evidence check reads the margin to find its file (S22), and meets it here.
@@ -174,7 +191,7 @@ def _ur(world: LivePlannerWorld, client: _Client, events: list[str]) -> URRobotA
         # flange's +Z refused to build, which is why this fixture carries +Y; for this tool-down pose it puts the
         # flange where the +Z frame did, which is what the near-point assertions read.
         "gripper": {"model": "robotiq_2f85", "tool_frame": {
-            "source": "polyscope",
+            "source": "controller",
             "offset_mm": (0.0, 132.0, 0.0),
             "rotation_quat_xyzw": (-0.7071067811865476, 0.0, 0.0, 0.7071067811865476),
         }},
@@ -187,7 +204,6 @@ def _ur(world: LivePlannerWorld, client: _Client, events: list[str]) -> URRobotA
     arm._conn.moveJ.return_value = True
     arm._motion = MagicMock()
     arm._motion.move_to.return_value = True
-    arm._motion._clamp.return_value = (0.5, 0.5)
     arm._motion.get_current_pose.return_value = URPose.from_ur_list([0.3, 0.0, 0.3, 0.0, 3.14159265, 0.0])
     arm.ik = lambda pose, *, seed=None: JointPositions(_HERE)  # type: ignore[method-assign]
     arm._home_joints = list(_THERE)
@@ -205,6 +221,14 @@ def _ur(world: LivePlannerWorld, client: _Client, events: list[str]) -> URRobotA
         setattr(guard, name, _recording(getattr(guard, name), label, events))
     arm.set_live_planner_world(world)
     return arm
+
+
+def _assert_nothing_driven(case: unittest.TestCase, arm: PlannedArm) -> None:
+    """No joint path and no Cartesian move reached the controller, and the tape recorded something, so its silence
+    about both is a reading and not a transport that stopped recording."""
+    asked = [call.verb for call in arm._transport.tape]  # type: ignore[attr-defined]
+    case.assertTrue(asked, "the transport recorded nothing at all")
+    case.assertEqual([], [verb for verb in asked if verb in ("run_trajectory", "move_pose")])
 
 
 def _sim(*, client: _Client, world: LivePlannerWorld | None = None) -> IsaacRobotArm:
@@ -243,32 +267,29 @@ def _calls(guard: MagicMock) -> list[str]:
     return [name for name, _, _ in guard.mock_calls]
 
 
-class EveryUrVerbRaisesTests(unittest.TestCase):
+class EveryPlannedVerbRaisesTests(unittest.TestCase):
     def setUp(self) -> None:
         if not _mesh_backend_available():
             self.skipTest("no exact mesh backend on this box")
 
-    def test_every_ur_verb_raises_on_a_camera_that_stays_silent(self) -> None:
+    def test_every_planned_verb_raises_on_a_camera_that_stays_silent(self) -> None:
         verbs = {
             "move": lambda arm: arm.move(_pose()),
             "move, linear": lambda arm: arm.move(_pose(), linear=True),
-            "move_to": lambda arm: arm.move_to(_pose()),
             "move_linear": lambda arm: arm.move_linear(_pose()),
             "move_to_joints": lambda arm: arm.move_to_joints(JointPositions(_THERE)),
-            "move_joint": lambda arm: arm.move_joint(JointPositions(_THERE)),
             "move_home": lambda arm: arm.move_home(),
         }
         for label, verb in verbs.items():
             with self.subTest(label):
                 camera = _Camera(silent=True)
-                arm = _ur(_world(camera), _Client(joint_names=UR_ARM_JOINT_NAMES), [])
+                arm = _planned(_world(camera), _Client(joint_names=_UR_JOINT_NAMES), [])
 
                 with self.assertRaises(CameraWorldUnavailable):
                     verb(arm)
 
                 self.assertEqual(camera.grabs, 2, "the first reading and its one fresh-frame attempt")
-                _mock(arm._conn).moveJ.assert_not_called()
-                _mock(arm._motion).move_to.assert_not_called()
+                _assert_nothing_driven(self, arm)
 
     def test_a_partial_registration_is_still_an_ordinary_refusal(self) -> None:
         """The control, green before and after: a sidecar that confirms one box fewer refuses, no raise."""
@@ -278,26 +299,26 @@ class EveryUrVerbRaisesTests(unittest.TestCase):
         }
         for label, verb in verbs.items():
             with self.subTest(label):
-                arm = _ur(
+                arm = _planned(
                     _world(_Camera(silent=False)),
-                    _Client(joint_names=UR_ARM_JOINT_NAMES, confirm_all=False),
+                    _Client(joint_names=_UR_JOINT_NAMES, confirm_all=False),
                     [],
                 )
 
                 result = verb(arm)
 
                 self.assertIs(result.status, MotionStatus.CONTROLLER_REJECTED, result.message)
-                _mock(arm._conn).moveJ.assert_not_called()
+                _assert_nothing_driven(self, arm)
 
 
-class TheUrPathGuardSeesTheRefreshedWorldTests(unittest.TestCase):
+class ThePlannedPathGuardSeesTheRefreshedWorldTests(unittest.TestCase):
     def setUp(self) -> None:
         if not _mesh_backend_available():
             self.skipTest("no exact mesh backend on this box")
 
     def test_a_joint_move_refreshes_once_before_the_path_gate_near_the_goal_flange(self) -> None:
         events: list[str] = []
-        arm = _ur(_world(_Camera(silent=False)), _Client(joint_names=UR_ARM_JOINT_NAMES), events)
+        arm = _planned(_world(_Camera(silent=False)), _Client(joint_names=_UR_JOINT_NAMES), events)
 
         with patch.object(
             curobo_motion, "refresh_planner_world", wraps=curobo_motion.refresh_planner_world
@@ -316,7 +337,7 @@ class TheUrPathGuardSeesTheRefreshedWorldTests(unittest.TestCase):
         down, the start of a lift (the grasp bench, 2026-10-06: about the flange of a lift's end, the boxes beside the
         part it started from merged and the housing stood inside one)."""
         events: list[str] = []
-        arm = _ur(_world(_Camera(silent=False)), _Client(joint_names=UR_ARM_JOINT_NAMES), events)
+        arm = _planned(_world(_Camera(silent=False)), _Client(joint_names=_UR_JOINT_NAMES), events)
 
         with patch.object(
             curobo_motion, "refresh_planner_world", wraps=curobo_motion.refresh_planner_world
@@ -331,10 +352,10 @@ class TheUrPathGuardSeesTheRefreshedWorldTests(unittest.TestCase):
         np.testing.assert_allclose(refresh.call_args.kwargs["near_point_mm"], low, atol=1e-6)
 
     def test_a_line_judged_from_a_lower_start_is_built_about_its_start(self) -> None:
-        arm = _ur(_world(_Camera(silent=False)), _Client(joint_names=UR_ARM_JOINT_NAMES), [])
+        arm = _planned(_world(_Camera(silent=False)), _Client(joint_names=_UR_JOINT_NAMES), [])
         start = _pose(x=400.0)
         up = Pose(position_mm=np.array([400.0, 0.0, 380.0]), quaternion_xyzw=start.quaternion_xyzw, frame=Frame.BASE)
-        seed = [float(v) for v in arm._conn.get_joint_positions()]
+        seed = [float(v) for v in arm.get_joint_positions()]
 
         with patch.object(
             curobo_motion, "refresh_planner_world", wraps=curobo_motion.refresh_planner_world
@@ -350,7 +371,6 @@ class TheSimVerbsTests(unittest.TestCase):
             "move": lambda arm: arm.move(_pose()),
             "move, linear": lambda arm: arm.move(_pose(), linear=True),
             "move_to_joints": lambda arm: arm.move_to_joints(JointPositions(_THERE)),
-            "move_joint": lambda arm: arm.move_joint(JointPositions(_THERE)),
             "move_home": lambda arm: arm.move_home(),
         }
         for label, verb in verbs.items():
@@ -403,7 +423,7 @@ class TheSimVerbsTests(unittest.TestCase):
         self.assertIsNone(arm._self_envelope())
 
 
-class TheSimMoveJointIsPathCheckedTests(unittest.TestCase):
+class TheSimJointVerbIsPathCheckedTests(unittest.TestCase):
     """Owner, Q11: the public sim joint verb judges the line, not the destination alone.
 
     These arms plan with cuRobo and hold no world, so each test declines: without it the move is refused before the
@@ -417,29 +437,30 @@ class TheSimMoveJointIsPathCheckedTests(unittest.TestCase):
             target_joints=JointPositions(_THERE), message="forearm|lfinger: mesh distance 0.367 mm",
         )
 
-    def test_the_sim_move_joint_is_path_checked(self) -> None:
+    def test_the_sim_joint_verb_is_path_checked(self) -> None:
         client = _Client()
         arm = _sim(client=client)
         self.enterContext(arm.without_camera_world(_PATH_ONLY))
 
-        arm.move_joint(JointPositions(_THERE))
+        result = arm.move_to_joints(JointPositions(_THERE))
 
+        self.assertIs(result.status, MotionStatus.EXECUTED, result.message)
         _mock(arm._preflight).gate_planned_path.assert_called_once()
         self.assertEqual(len(client.checked), 1, "the planner judged the line once")
         np.testing.assert_allclose(client.checked[0][0], _HERE, atol=1e-9)
         np.testing.assert_allclose(client.checked[0][-1], _THERE, atol=1e-9)
         _mock(arm._drive_joints).assert_called_once()
 
-    def test_a_refused_path_raises_with_the_typed_refusal_and_drives_nothing(self) -> None:
+    def test_a_refused_path_returns_the_typed_refusal_and_drives_nothing(self) -> None:
         arm = _sim(client=_Client())
         self.enterContext(arm.without_camera_world(_PATH_ONLY))
         refusal = self._refusal()
         _mock(arm._preflight).gate_planned_path.return_value = refusal
 
-        with self.assertRaises(RobotMotionRejected) as caught:
-            arm.move_joint(JointPositions(_THERE))
+        result = arm.move_to_joints(JointPositions(_THERE))
 
-        self.assertIs(caught.exception.result, refusal)
+        self.assertIs(result.status, refusal.status)
+        self.assertEqual(result.message, refusal.message)
         _mock(arm._drive_joints).assert_not_called()
 
     def test_move_home_reports_a_refused_path_rather_than_raising(self) -> None:
@@ -454,10 +475,10 @@ class TheSimMoveJointIsPathCheckedTests(unittest.TestCase):
 class AMoveOnAVouchedWorldSaysPlannedTests(unittest.TestCase):
     """Owner, Q9: PLANNED names the cameras and the capture time of the refresh this motion made."""
 
-    def test_a_ur_move_on_a_vouched_world_says_planned(self) -> None:
+    def test_a_planned_move_on_a_vouched_world_says_planned(self) -> None:
         if not _mesh_backend_available():
             self.skipTest("no exact mesh backend on this box")
-        arm = _ur(_world(_Camera(silent=False)), _Client(joint_names=UR_ARM_JOINT_NAMES), [])
+        arm = _planned(_world(_Camera(silent=False)), _Client(joint_names=_UR_JOINT_NAMES), [])
         asked = time.time()
 
         result = arm.move(_pose())
@@ -473,7 +494,7 @@ class AMoveOnAVouchedWorldSaysPlannedTests(unittest.TestCase):
     def test_a_later_move_that_refreshed_nothing_does_not_borrow_the_stamp(self) -> None:
         if not _mesh_backend_available():
             self.skipTest("no exact mesh backend on this box")
-        arm = _ur(_world(_Camera(silent=False)), _Client(joint_names=UR_ARM_JOINT_NAMES), [])
+        arm = _planned(_world(_Camera(silent=False)), _Client(joint_names=_UR_JOINT_NAMES), [])
         self.assertIs(arm.move(_pose()).camera_world.use, CameraWorldUse.PLANNED)
         elsewhere = Pose(
             position_mm=np.array([400.0, 0.0, 300.0]), quaternion_xyzw=np.array([0.0, 1.0, 0.0, 0.0]),
@@ -487,8 +508,8 @@ class AMoveOnAVouchedWorldSaysPlannedTests(unittest.TestCase):
 
     def test_a_refused_refresh_vouches_for_nothing(self) -> None:
         """The control, green before and after: a refresh that refused never stamps PLANNED."""
-        arm = _ur(
-            _world(_Camera(silent=False)), _Client(joint_names=UR_ARM_JOINT_NAMES, confirm_all=False), []
+        arm = _planned(
+            _world(_Camera(silent=False)), _Client(joint_names=_UR_JOINT_NAMES, confirm_all=False), []
         )
 
         result = arm.move(_pose())
@@ -524,10 +545,10 @@ class AMoveOnAVouchedWorldSaysPlannedTests(unittest.TestCase):
         self.assertIs(result.status, MotionStatus.CONTROLLER_REJECTED, result.message)
         self.assertIsNot(result.camera_world.use, CameraWorldUse.PLANNED)
 
-    def test_a_ur_joint_move_on_a_vouched_world_says_planned(self) -> None:
+    def test_a_planned_joint_move_on_a_vouched_world_says_planned(self) -> None:
         if not _mesh_backend_available():
             self.skipTest("no exact mesh backend on this box")
-        arm = _ur(_world(_Camera(silent=False)), _Client(joint_names=UR_ARM_JOINT_NAMES), [])
+        arm = _planned(_world(_Camera(silent=False)), _Client(joint_names=_UR_JOINT_NAMES), [])
 
         result = arm.move_to_joints(JointPositions(_THERE))
 
@@ -557,7 +578,7 @@ class AKeepOutScopeDoesNotLoosenADeclineTests(unittest.TestCase):
         from src.robot.core.keep_out import SegmentationOffer, keeping_out
 
         world = _world(_Camera(silent=False))
-        arm = _ur(world, _Client(joint_names=UR_ARM_JOINT_NAMES), [])
+        arm = _planned(world, _Client(joint_names=_UR_JOINT_NAMES), [])
         offer = SegmentationOffer(captured_at_s=time.time(), target_points_base_mm=np.array([[0.0, 0.0, 100.0]]))
         with keeping_out(arm, offer):
             result = arm.move(_pose(x=300.0), camera_world=CameraWorldDecline("a declined move inside a pick"))

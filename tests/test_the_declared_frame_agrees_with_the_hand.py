@@ -16,6 +16,9 @@ What the checklist says, as the owner decided it (2026-09-16):
   measured: the first real cell measures approach, clocking and plate at bring up (UM7);
 * a real UR cell declaring the Isaac +Y frame reads WARN and names +Y as the Isaac asset's axis; it builds;
 * a frame that places no hand reads BLOCK, with the refusal sentence and the placements that are admitted.
+
+The arms are the kit's since P0g slice 13 (``tests/_arm_kit.planned_arm``), on UR trees: the kit builds from a tree what
+the UR driver builds, and refuses what it refuses (``tests/test_the_kit_builds_what_the_ur_driver_builds.py``).
 """
 
 from __future__ import annotations
@@ -24,8 +27,6 @@ import math
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
-
 import numpy as np
 
 from src.config import ConfigError, load_robot_config
@@ -105,9 +106,9 @@ class AUrDeclaringItsOwnFlangeAxisBuildsTests(unittest.TestCase):
     """⭐ S23. Refused from Step 4g until B2 could place a hand; the placement is derived, so the refusal is gone."""
 
     def test_a_ur_declaring_the_real_flange_axis_builds(self) -> None:
-        from src.robot.drivers.ur.arm import URRobotArm
+        from tests._arm_kit import planned_arm
 
-        URRobotArm(_ur(_REAL_UR))
+        planned_arm(_ur(_REAL_UR))
 
     def test_its_hand_is_placed_along_z(self) -> None:
         from src.robot.safety.planning.hand import planner_hand
@@ -117,18 +118,18 @@ class AUrDeclaringItsOwnFlangeAxisBuildsTests(unittest.TestCase):
         self.assertIsNone(hand.placement_refusal)
 
     def test_the_ursim_bed_builds(self) -> None:
-        from src.robot.drivers.ur.arm import URRobotArm
+        from tests._arm_kit import planned_arm
 
-        URRobotArm(load_robot_config(profile="ursim"))
+        planned_arm(load_robot_config(profile="ursim"))
 
     def test_its_self_filter_describes_the_hand_along_z(self) -> None:
         """Until S23 a +Z cell had no self envelope at all, so a camera world refused. Its hand now lies along the
         flange's +Z: the farthest sphere is far out along z and near the axis, where a +Y model would put it along y."""
-        from src.robot.drivers.ur.arm import URRobotArm
+        from tests._arm_kit import planned_arm
 
-        arm = URRobotArm(_ur(_REAL_UR))
-        arm._conn = MagicMock()
-        arm._conn.get_joint_positions.return_value = list(_HERE)
+        from tests._fake_transport import fake_transport
+
+        arm = planned_arm(_ur(_REAL_UR), transport=fake_transport(joints=list(_HERE)))
         envelope = arm._self_envelope()
         self.assertIsNotNone(envelope, "a +Z UR cell must describe its own body")
         assert envelope is not None
@@ -153,13 +154,13 @@ class TheChecklistSaysWhatWasDeclaredTests(unittest.TestCase):
 
     def test_a_real_ur_declaring_the_isaac_frame_is_warned_and_builds(self) -> None:
         """Owner, 2026-09-16: WARN, not BLOCK, and construction unchanged."""
-        from src.robot.drivers.ur.arm import URRobotArm
+        from tests._arm_kit import planned_arm
 
         row = _hand_row(_ur(_ISAAC))
         self.assertEqual(row.status, CheckStatus.WARN, row.detail)
         for part in ("approach +Y", "Isaac", "+Z"):
             self.assertIn(part, row.detail + " " + row.fix)
-        URRobotArm(_ur(_ISAAC))
+        planned_arm(_ur(_ISAAC))
 
     def test_a_snapped_residual_is_said(self) -> None:
         row = _hand_row(_ur(_HALF_A_DEGREE))
@@ -176,11 +177,11 @@ class WhatTheDerivationRefusesStillRefusesTests(unittest.TestCase):
     _REFUSED = {"-Z": (_INTO_THE_WRIST, "-Z"), "oblique": (_OBLIQUE, "30 degrees")}
 
     def test_a_refused_placement_refuses_at_build_with_its_sentence(self) -> None:
-        from src.robot.drivers.ur.arm import URRobotArm
+        from tests._arm_kit import planned_arm
 
         for name, (frame, said) in self._REFUSED.items():
             with self.subTest(frame=name), self.assertRaises(ConfigError) as caught:
-                URRobotArm(_ur(frame))
+                planned_arm(_ur(frame))
             self.assertIn("robot.gripper.tool_frame places no hand model", str(caught.exception))
             self.assertIn(said, str(caught.exception))
 
@@ -211,9 +212,9 @@ class WhatReadsNoHandOrNoFlangeTests(unittest.TestCase):
         sim_safety_preflight(load_sim_config())
 
     def test_an_undeclared_frame_builds(self) -> None:
-        from src.robot.drivers.ur.arm import URRobotArm
+        from tests._arm_kit import planned_arm
 
-        URRobotArm(_ur(None))
+        planned_arm(_ur(None))
 
     def test_an_undeclared_frame_is_the_hand_models_own_axes(self) -> None:
         from src.robot.safety.planning.hand import planner_hand

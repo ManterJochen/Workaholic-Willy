@@ -104,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def reset() -> float:
         gripper.open()
-        arm.move_joint(JointPositions(home_q))
+        arm.move_to_joints(JointPositions(home_q)).raise_unless_executed()
         return reset_object_to_home_z0(obj, home_pos, home_quat, arm.session, settle_steps=30)
 
     report: dict[str, Any] = {

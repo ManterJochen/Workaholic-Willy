@@ -35,6 +35,7 @@ from src.robot.core import (
     MotionStatus,
     RobotArm,
     RobotVendor,
+    SupportsForceTorque,
 )
 from src.robot.drivers import available_vendors, create_arm
 from src.robot.drivers.sim import (
@@ -71,7 +72,7 @@ class _TypedArm:
     """Test double exposing the Phase N typed :meth:`move` surface.
 
     Used in Stage 2 tests so we can prove the policy:
-    1. prefers ``arm.move`` over legacy ``arm.move_to``,
+    1. commands every waypoint through ``arm.move``,
     2. surfaces :class:`MotionStatus` on :class:`PolicyReport`,
     3. routes typed failures to :attr:`PolicyOutcome.MOTION_FAILED`
        without raising.
@@ -80,7 +81,6 @@ class _TypedArm:
     def __init__(self, fail_at: int | None = None,
                  fail_status: MotionStatus = MotionStatus.WORKSPACE_REJECTED) -> None:
         self.move_calls: list[Pose] = []
-        self.move_to_calls: list[Pose] = []
         self.fail_at = fail_at
         self.fail_status = fail_status
 
@@ -103,11 +103,6 @@ class _TypedArm:
         self.move_calls.append(pose)
         return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
 
-    def move_to(self, pose: Pose, **_: object) -> None:
-        # Should be unreachable when ``move`` is implemented \u2014 asserted
-        # in :class:`PolicyTypedMoveTests` below.
-        self.move_to_calls.append(pose)
-
 
 def _grasp() -> GraspPoint:
     return GraspPoint(
@@ -127,16 +122,13 @@ def _grasp() -> GraspPoint:
 
 
 class PolicyTypedMoveTests(unittest.TestCase):
-    def test_policy_prefers_typed_move_over_legacy_move_to(self) -> None:
+    def test_policy_commands_every_waypoint_through_the_typed_move(self) -> None:
         arm = _TypedArm()
         policy = GraspExecutionPolicy(arm=arm, gripper=None, approach_steps=4)
 
         report = policy.execute(_grasp())
 
         self.assertIs(report.outcome, PolicyOutcome.EXECUTED)
-        # Legacy bool path MUST stay untouched when the typed surface
-        # is present \u2014 this is the core Phase N migration assertion.
-        self.assertEqual(arm.move_to_calls, [])
         # 4 approach + 1 retreat = 5 commanded moves.
         self.assertEqual(len(arm.move_calls), 5)
 
@@ -180,38 +172,6 @@ class PolicyTypedMoveTests(unittest.TestCase):
         self.assertIs(report.motion_status, MotionStatus.CONTROLLER_REJECTED)
         # First two approach waypoints landed before the rejection.
         self.assertEqual(len(report.waypoints), 2)
-
-    def test_legacy_move_to_fake_still_works(self) -> None:
-        """Drivers without ``move()`` must continue to function.
-
-        Stage 2 keeps Q1 (coexist): the policy falls back to the bool
-        ``move_to`` path when the typed contract is not implemented on
-        the supplied arm. ``motion_status`` is ``None`` in that case
-        because no typed information was produced.
-        """
-
-        class _LegacyArm:
-            def __init__(self) -> None:
-                self.calls: list[Pose] = []
-
-            def get_tcp_pose(self) -> Pose:
-                return Pose(
-                    position_mm=np.zeros(3),
-                    quaternion_xyzw=np.array([0.0, 0.0, 0.0, 1.0]),
-                    frame=Frame.BASE,
-                )
-
-            def move_to(self, pose: Pose, **_: object) -> None:
-                self.calls.append(pose)
-
-        arm = _LegacyArm()
-        policy = GraspExecutionPolicy(arm=arm, gripper=None)
-        report = policy.execute(_grasp())
-
-        self.assertIs(report.outcome, PolicyOutcome.EXECUTED)
-        self.assertIsNone(report.motion_status)
-        self.assertEqual(report.motion_message, "")
-        self.assertGreater(len(arm.calls), 0)
 
 
 class _LineArm(_TypedArm):
@@ -440,9 +400,8 @@ class SimDriverSkeletonTests(unittest.TestCase):
         caps = arm.capabilities
         self.assertEqual(caps.vendor, "sim")
         self.assertTrue(caps.is_simulated)
-        # The skeleton MUST NOT overclaim features it has not built.
-        self.assertFalse(caps.has_force_control)
-        self.assertFalse(caps.supports_async_move)
+        # The skeleton MUST NOT overclaim features it has not built: it reads no forces.
+        self.assertNotIsInstance(arm, SupportsForceTorque)
         # Capability surface is shared with the module-level constant
         # so consumers can introspect either.
         self.assertEqual(arm.capabilities, ISAAC_CAPABILITIES)
@@ -576,12 +535,12 @@ class SimMockModeTests(unittest.TestCase):
         result = arm.move(bad)
         self.assertIs(result.status, MotionStatus.INVALID_TARGET)
 
-    def test_mock_mode_move_to_and_move_home_track_state(self) -> None:
+    def test_mock_mode_move_and_move_home_track_state(self) -> None:
         arm = IsaacRobotArm(self._config())
         arm.connect()
         home_tcp = arm.get_tcp_pose()
         target = self._pose(x=720.0)
-        self.assertTrue(arm.move_to(target))
+        self.assertTrue(arm.move(target).ok)
         np.testing.assert_allclose(
             arm.get_tcp_pose().position_mm, target.position_mm
         )
@@ -598,14 +557,14 @@ class SimMockModeTests(unittest.TestCase):
         arm.stop()  # must not raise
         self.assertTrue(arm.is_inside_workspace(self._pose(x=400.0)))
 
-    def test_mock_mode_move_joint_updates_joints_not_tcp(self) -> None:
+    def test_mock_mode_joint_move_updates_joints_not_tcp(self) -> None:
         arm = IsaacRobotArm(self._config())
         arm.connect()
         tcp_before = arm.get_tcp_pose().position_mm.copy()
         new_joints = JointPositions(
             np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6], dtype=np.float64)
         )
-        arm.move_joint(new_joints)  # must NOT raise
+        self.assertTrue(arm.move_to_joints(new_joints).ok)
         np.testing.assert_allclose(arm.get_joint_positions().values, new_joints.values)
         # Identity-kinematics contract: joint move does not move TCP.
         np.testing.assert_allclose(arm.get_tcp_pose().position_mm, tcp_before)

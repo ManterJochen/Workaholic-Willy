@@ -37,7 +37,7 @@ def _arm(*, safety: bool = True) -> IsaacRobotArm:
         # The sim profile declares the table itself, as every non-UR cell must (robot.sim.yaml).
         cell = RobotConfig.model_validate({"vendor": "sim", "ur": {"model": "ur5e"}, "safety": {"joint_limits": {
             "min_deg": [-360.0] * 6, "max_deg": [360.0] * 6}}})
-        arm._preflight = SafetyPreflight.from_safety_config(cell.safety, cell.workspace_limits)
+        arm._preflight = SafetyPreflight.from_safety_config(cell.safety, cell.workspace_limits, arm_model=None)
     else:
         arm._preflight = None
     return arm
@@ -93,7 +93,7 @@ class ASolvedConfigurationStaysInsideTheJointLimitsTests(unittest.TestCase):
 
         self.assertAlmostEqual(0.014, math.degrees(float(answer.values[5])), places=3)
         guard = next(g for g in arm._preflight.guards if g.name == "joint_limit")  # type: ignore[union-attr]
-        limits = guard.limits_for(vendor="sim", model="ur5e")
+        limits = guard.limits_for(model="ur5e")
         assert limits is not None
         low, high = limits
         for axis, value in enumerate(answer.values):

@@ -7,8 +7,8 @@
 # link lengths (a2/a3 -243.55/-213.2 mm against -425/-392.2 mm) is what setting it here
 # prevents. `_verify_tool_frame` derives the controller's active tool frame from that same
 # DH table, so pointing the UR5e chain at a UR3e controller makes the driver refuse to
-# connect. Where `safety.self_collision.kinematics_model` is set, it is cross-validated
-# against this key at config load and the two must name the same model.
+# connect. It is the only name the cell gives its arm: the self-collision guard judges the
+# model the arm reports, which is this one (P0d D5).
 #
 # Start the matching container on the UR3 image first, and fresh (`URSIM_FRESH=1`), with
 # the URSim helper under `scripts/ursim/`. Every container start comes up in local mode,

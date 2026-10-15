@@ -44,6 +44,7 @@ from src.robot.execution.generated_view import (
     refused_before_sending,
 )
 from src.robot.grasping.multiview.unseen_side import ORBIT_MAX_MOTIONS, JawFace, away_from_views, orbit_target
+from tests._helpers import HoldsAWorld
 from tests._wrist_views import CUBE_CENTRE, HEIGHT, WIDTH, K, camera_looking_at, joints_key, tool_for
 
 _LOGGER = "src.robot.execution.generated_view"
@@ -89,7 +90,7 @@ def _base_turned(pose: Pose) -> JointPositions:
     return JointPositions.deg(_HERE_DEG[0] + _azimuth(pose), *_HERE_DEG[1:])
 
 
-class _Arm(DummyRobotArm):
+class _Arm(HoldsAWorld, DummyRobotArm):
     """A desk arm that names a configuration for every pose and drives the joint lines it is asked to.
 
     ``configure`` names the configuration of a pose (the base joint turned by the orbit, by default); ``unreachable``
@@ -409,7 +410,7 @@ class TheGeneratedViewTests(unittest.TestCase):
             with self.subTest(name):
                 arm = _Arm(self)
                 if world is not None:
-                    arm.live_planner_world = world  # type: ignore[attr-defined]
+                    arm.set_live_planner_world(world)
 
                 view = _go(arm, holding=False)
 

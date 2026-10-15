@@ -84,7 +84,13 @@ A box without the cuRobo environment or without Coal blocks on two more rows, `c
 and `exact mesh engine`: they are facts about the machine the checklist runs on, and they clear
 when the `ext_deps` install is on the box.
 
-Four more items are reported as warnings and never block: an unset self-collision kinematics model,
+The `controller address` row does not block on the shipped tree, because the base tree names the
+owner's UR10 cell (`robot.ur.ip`). A cell built from another tree names its own controller there: the
+key has no default since 2026-10-13, `connect()` refuses a tree that drives a UR and names none, and
+the address is also the name the cell lock holds the cell by (`ur@<address>`). Until then the key
+defaulted to `192.168.1.100`, so a tree nobody had commissioned still named a controller.
+
+Four more items are reported as warnings and never block: an arm the guard has no chain for,
 no declared fixtures, no declared planning world, and no record log path.
 
 Two rows are reported `[bench]` and never block, because no interface answers them:
@@ -122,6 +128,13 @@ refuses the connect is the driver's own preflight, not this checklist.
 `config/robot/robot.ur5e.yaml` is the worked example for a real bench. It leaves the first three of
 those items unset on purpose and writes them out as commented blocks saying what to measure, so the
 shipped refusals stay armed.
+
+After the rows, `--check` prints `=== ABILITIES ===`: what each operator function can do on this
+cell, asked of the arm the tree builds without connecting it. A row is `ok`, `no` with the sentence
+the function itself refuses with, or `bench` where only the cell answers, and none changes the exit
+code. On the shipped tree every row reads "as move", because the arm does not build without a hand;
+name the hand and they separate. A `no` you did not expect, such as a calibration by hand on an arm
+with no hand guiding or an I/O bench on an arm with no I/O, is cheaper to read here than at the bench.
 
 ### 3. Does the whole software path work, with no hardware?
 
@@ -209,7 +222,7 @@ fuses it (Mitigate 4).
 
 ### 6. Can the planner actually plan for this robot?
 
-Only relevant while `robot.ur.motion_planner` is `curobo`, which is the shipped value.
+Only relevant while `robot.motion.planner` is `curobo`, which is the shipped value.
 
 ```bash
 python -m src.robot.safety.planning --check --model ur3e --hand robotiq_2f85    # exit 0 means fully anchored
@@ -235,7 +248,7 @@ To list what descriptors exist by hand, in the cuRobo environment:
   print(sorted(os.path.basename(p) for p in glob.glob(d + '/willy_ur*.yml')))"
 ```
 
-If your model is missing, build it with `scripts/curobo/build_ur_config.py`, on the box and against
+If your model is missing, build it with `scripts/arms/descriptor.py`, on the box and against
 the installed cuRobo version. **`"ik"` is no way round it.** `Robot.move`, `move_joints`, `home`,
 `pick` and `place` refuse a UR on the ik planner before any command, because nothing plans its paths
 against the camera world or judges them, and a wrist camera's looks go through the same verbs.
@@ -374,7 +387,7 @@ flowchart LR
 ```
 
 * **Joints in degrees, as the pendant shows them.** Jog the arm to where the camera sees the work and
-  read the six joints off with `python -m src.robot.drivers.ur --profile <cell> --where`, or guide it
+  read the six joints off with `python -m src.robot.execution.io_bench --profile <cell> --where`, or guide it
   there by hand with example 11. The arm arrives in exactly that configuration, the IK branch, the
   cable window and the camera's roll included, and a person has seen it there. A program writes
   `JointPositions.deg(...)`: a bare list of numbers is refused, because its unit cannot be told. The
@@ -796,7 +809,7 @@ one session, because three of them share the same setup.
      object axis, and hand-eye calibration cannot catch it, because it solves for whatever frame
      `get_tcp_pose()` reports and returns an excellent residual either way;
    * `source`, either `"willy"`, where this driver composes flange to TCP and the controller runs a
-     bare flange, or `"polyscope"`, where an operator set the TCP on the pendant and the driver only
+     bare flange, or `"controller"`, where an operator set the TCP on the pendant and the driver only
      verifies it. Either way `connect()` derives what the controller is actually running and refuses
      a mismatch. The schema also rejects a declared source left at identity, so half a declaration
      does not pass either.
@@ -820,7 +833,9 @@ one session, because three of them share the same setup.
    5.5), and a fixture declared under the parts with `include_fixtures` on needs `min_distance_mm` 10.
 6. **Set `grasping.record_log_path`.** A bring-up with no telemetry cannot be diagnosed afterwards,
    and it gives the soak, KPI and offline learning tooling nothing to read.
-7. **Set `safety.self_collision.kinematics_model`** explicitly to the arm you are holding.
+7. **Check `ur.model` against the arm you are holding.** It is the one name the self-collision guard, the
+   mesh bundle and the planner take the arm from; `safety.self_collision.kinematics_model` was removed in
+   P0d D5, and a tree that still writes it is refused at load.
 8. **Teach the looks** of a wrist camera in the same session: jog or guide the arm to each, read the
    joints with `--where`, and write them into `robot.look_joint_positions_deg` (Diagnose 8). A clear look,
    and a band look whose line names a nearby pose, need nothing. Re-teach an `ERROR` look at the
@@ -838,8 +853,8 @@ one session, because three of them share the same setup.
     measured for this cell's composition at its guard distance. Every committed file was measured at 10 mm
     but one: the owner's UR10 with the Hand-E on a 23 mm plate, `+Z-Y`, planner margin 4 mm, measured at
     5 mm with its retract on a development GPU (2026-10-02: 1,482 poses, no false clear), which the doctor
-    confirms by its hashes. Another cell that keeps `min_distance_mm` 5 runs the `matrix_gate.py` command
-    the doctor names, with `--guard-margin-mm 5`, and `choose_ur_retract.py` where it asks: about two
+    confirms by its hashes. Another cell that keeps `min_distance_mm` 5 runs the `scripts/arms/gate.py` command
+    the doctor names, with `--guard-margin-mm 5`, and `scripts/arms/retract.py` where it asks: about two
     minutes on the cell PC, and the evidence it writes stays on that PC.
 
 ---
@@ -896,6 +911,10 @@ rule; 3 a fault of the cell ended a pick, raised or reported.
 ## Rollback
 
 * **Stop motion**: the physical emergency stop. Nothing in software outranks it.
+* **After a protective stop**: a person at the cell finds why it stopped, then runs
+  `python -m src.robot.faults acknowledge --profile <your cell>`. It names the fault the controller
+  describes, sends nothing for an emergency button or a controller powered off, and asks before it
+  acknowledges. Nothing in the stack or the console clears a stop.
 * **Back out a configuration change**: every value above is a configuration key, so revert the YAML
   and re-run `--check`. Nothing here writes to the controller except `setPayload`, and that is gated
   on `safety.payload.enforce`.

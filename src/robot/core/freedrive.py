@@ -9,6 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+#: What every motion verb of an arm answers while a freedrive session is open.
+HAND_GUIDED_MESSAGE = "the arm is hand-guided: a freedrive session is open"
+
 
 @dataclass(frozen=True)
 class FreedriveSample:

@@ -23,11 +23,17 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[1]
-_LOCK = _REPO / "ext_deps" / "locks" / "curobo_env.win-64.lock"
+_LOCKS = _REPO / "ext_deps" / "locks"
+#: Every platform the installer has locks for (P0h h5 added Linux's).
+_PLATFORMS = ("win-64", "linux-64")
+#: The platform of this box, as the installer names it: the environment on disk was built from its lock.
+_HERE = "win-64" if sys.platform == "win32" else "linux-64"
 _ENV = _REPO / "ext_deps" / "curobo_env"
 
 #: Windows refuses a path longer than this unless LongPathsEnabled is set, which needs admin. The
@@ -47,16 +53,26 @@ _MAX_PATH = 260
 #: mean touching something the build actually reads.
 _ROOT_BUDGET = 39
 
-#: Where the compile actually looks. ``build_compiled_backend.bat`` sets CUDA_HOME and LIB to
-#: ``<env>/Library``, so a header or import library the build reads is one directly under
-#: ``Library/include`` or ``Library/lib``. Anything deeper that merely happens to contain a directory
-#: called ``lib`` belongs to somebody else's layout: a looser version of this pattern matched
-#: ``libnvvp/plugins/.../lib/ant.jar`` and reported a Java profiler as a build dependency.
-_BUILD_READS = re.compile(r"^Library/(include|lib)/")
+#: Where the compile actually looks, per platform. ``build_compiled_backend.bat`` sets CUDA_HOME and
+#: LIB to ``<env>/Library``, so a header or import library the Windows build reads is one directly
+#: under ``Library/include`` or ``Library/lib``. Anything deeper that merely happens to contain a
+#: directory called ``lib`` belongs to somebody else's layout: a looser version of this pattern
+#: matched ``libnvvp/plugins/.../lib/ant.jar`` and reported a Java profiler as a build dependency.
+#: On Linux, measured on the build of 2026-09-26 (P0h h5): torch passes ``-I<env>/include``,
+#: ``build_compiled_backend.sh`` sets CPATH to ``<env>/targets/x86_64-linux/include`` where
+#: conda-forge keeps the CUDA headers, and the link takes ``-L<env>/lib``, the libraries directly in it.
+_BUILD_READS = {
+    "win-64": re.compile(r"^Library/(include|lib)/"),
+    "linux-64": re.compile(r"^(include|targets/x86_64-linux/include)/|^lib/[^/]+$"),
+}
 
 
-def _lock_packages() -> list[str]:
-    text = _LOCK.read_text(encoding="utf-8-sig")
+def _lock(platform: str, name: str = "curobo_env") -> Path:
+    return _LOCKS / f"{name}.{platform}.lock"
+
+
+def _lock_packages(platform: str = _HERE) -> list[str]:
+    text = _lock(platform).read_text(encoding="utf-8-sig")
     return [
         line.rsplit("/", 1)[-1].split(".conda")[0].split(".tar.bz2")[0]
         for line in text.splitlines()
@@ -65,20 +81,30 @@ def _lock_packages() -> list[str]:
 
 
 class TheLockIsSafeToEditByLineTests(unittest.TestCase):
-    def test_the_lock_is_explicit_so_a_removed_line_removes_only_that_package(self) -> None:
+    def test_every_lock_is_explicit_so_a_removed_line_removes_only_that_package(self) -> None:
         """This is why eight lines could be deleted without re-locking. An ``@EXPLICIT`` lock is a
         literal list of URLs that conda installs as given, with no solve, so removing one entry
         cannot change what any other entry resolves to. Re-locking would re-pin all of them, and
         every re-pin is a new binary whose reputation an application-control policy has not yet
-        formed, which is the risk ``docs/code-integrity.md`` exists to avoid."""
-        head = _LOCK.read_text(encoding="utf-8-sig").splitlines()[:6]
-        self.assertIn("@EXPLICIT", head)
+        formed, which is the risk ``docs/code-integrity.md`` exists to avoid. The same holds for
+        every environment on every platform, since the installer creates each one from its lock."""
+        for platform in _PLATFORMS:
+            for name in ("coal_env", "curobo_env"):
+                with self.subTest(lock=_lock(platform, name).name):
+                    head = _lock(platform, name).read_text(encoding="utf-8-sig").splitlines()[:6]
+                    self.assertIn("@EXPLICIT", head)
+                    self.assertIn(f"# platform: {platform}", head)
 
-    def test_the_lock_keeps_its_byte_order_mark(self) -> None:
-        """The house re-lock recipe pipes through ``Out-File -Encoding utf8``, which writes a BOM on
-        PowerShell 5.1. A reader that opens this file with plain ``utf-8`` gets a stray character on
-        the first line, so anything that rewrites it has to put the BOM back."""
-        self.assertTrue(_LOCK.read_bytes().startswith(b"\xef\xbb\xbf"))
+    def test_a_windows_lock_keeps_its_byte_order_mark_and_a_linux_lock_has_none(self) -> None:
+        """The house re-lock recipe on Windows pipes through ``Out-File -Encoding utf8``, which writes
+        a BOM on PowerShell 5.1. A reader that opens such a file with plain ``utf-8`` gets a stray
+        character on the first line, so anything that rewrites it has to put the BOM back. The Linux
+        recipe is a shell redirect, which writes none (``docs/code-integrity.md``)."""
+        for platform in _PLATFORMS:
+            for name in ("coal_env", "curobo_env"):
+                with self.subTest(lock=_lock(platform, name).name):
+                    has_bom = _lock(platform, name).read_bytes().startswith(b"\xef\xbb\xbf")
+                    self.assertEqual(has_bom, platform == "win-64")
 
 
 class NothingTheBuildNeedsWasRemovedTests(unittest.TestCase):
@@ -94,7 +120,7 @@ class NothingTheBuildNeedsWasRemovedTests(unittest.TestCase):
     def _installed(self) -> dict[str, list[str]]:
         meta = _ENV / "conda-meta"
         if not meta.is_dir():
-            self.skipTest(f"no environment at {_ENV}; run scripts/ext_deps/install.ps1")
+            self.skipTest(f"no environment at {_ENV}; run scripts/ext_deps/install.py")
         out: dict[str, list[str]] = {}
         for path in meta.glob("*.json"):
             payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
@@ -107,7 +133,7 @@ class NothingTheBuildNeedsWasRemovedTests(unittest.TestCase):
         locked = {p.rsplit("-", 2)[0] for p in _lock_packages()}
         needed = {
             name for name, files in self._installed().items()
-            if any(_BUILD_READS.match(f) for f in files)
+            if any(_BUILD_READS[_HERE].match(f) for f in files)
         }
         self.assertTrue(needed, "no package appears to provide headers or import libraries")
         self.assertEqual(
@@ -129,17 +155,22 @@ class NothingTheBuildNeedsWasRemovedTests(unittest.TestCase):
             self.skipTest("this environment predates the trim, or was built from the trimmed lock")
         for name in present:
             with self.subTest(package=name):
-                stray = [f for f in installed[name] if _BUILD_READS.match(f)]
+                files = installed[name]
+                stray = [f for f in files if _BUILD_READS[_HERE].match(f)]
                 self.assertEqual(stray, [], f"{name} puts files where the build looks")
 
-    def test_none_of_them_is_named_in_the_lock_any_more(self) -> None:
-        names = {p.rsplit("-", 2)[0] for p in _lock_packages()}
-        for gone in ("cuda-nvvp", "nsight-compute", "cuda-toolkit"):
-            with self.subTest(package=gone):
-                self.assertNotIn(gone, names)
+    def test_none_of_them_is_named_in_either_platforms_lock(self) -> None:
+        """The Linux lock was made without them (P0h h5 asked for the toolkit's parts one by one, never
+        the ``cuda-toolkit`` metapackage that pulls the profilers), and it has to stay that way."""
+        for platform in _PLATFORMS:
+            names = {p.rsplit("-", 2)[0] for p in _lock_packages(platform)}
+            for gone in ("cuda-nvvp", "nsight-compute", "cuda-toolkit"):
+                with self.subTest(platform=platform, package=gone):
+                    self.assertNotIn(gone, names)
 
 
 class TheDeepestPathFitsWithoutTheAdminKeyTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "win32", "MAX_PATH is Windows' limit")
     def test_the_installed_tree_stays_under_max_path_for_a_plausible_root(self) -> None:
         """The gate nobody predicts. Over MAX_PATH the install fails with an error that names a file
         rather than the limit, and the remedy is a registry key under HKLM.
@@ -173,13 +204,23 @@ class TheEmergencyFallbackIsNamedAsOneTests(unittest.TestCase):
     to say which is which. A missing toolchain must not fail the install, and a failed build must."""
 
     def _script(self) -> str:
-        return (_REPO / "scripts" / "ext_deps" / "install.ps1").read_text(encoding="utf-8")
+        """The installer since P0h h3; install.ps1 is a shim that runs it."""
+        return (_REPO / "scripts" / "ext_deps" / "install.py").read_text(encoding="utf-8")
 
     def test_a_missing_toolchain_continues_and_a_failed_build_does_not(self) -> None:
         text = self._script()
-        self.assertIn("$rc -eq 2", text, "exit 2 from the build script is the no-toolchain case")
+        self.assertIn("emergency=(2,)", text, "exit 2 from the build script is the no-toolchain case")
         self.assertIn("EMERGENCY FALLBACK", text)
-        self.assertIn('throw "compiled backend build failed', text)
+        self.assertIn('fails="compiled backend build failed"', text)
+
+    def test_the_build_scripts_point_at_documents_that_exist(self) -> None:
+        """P0h h8: the .bat's two refusals sent a person to docs\\curobo-setup.md, which does not exist."""
+        for script in ("build_compiled_backend.bat", "build_compiled_backend.sh"):
+            text = (_REPO / "scripts" / "curobo" / script).read_text(encoding="utf-8")
+            named = re.findall(r"([\w./\\-]+\.md)\b", text)
+            for document in named:
+                with self.subTest(script=script, document=document):
+                    self.assertTrue((_REPO / document.replace("\\", "/")).is_file(), f"{script} names {document}")
 
     def test_the_build_script_accepts_an_already_active_x64_toolchain(self) -> None:
         """The value and not the presence. A plain Developer Command Prompt sets this to x86, and
@@ -192,9 +233,14 @@ class TheEmergencyFallbackIsNamedAsOneTests(unittest.TestCase):
     def test_the_script_writes_no_cache_outside_the_tree(self) -> None:
         """``git lfs install`` wrote the user's global .gitconfig and pip cached wheels in the user
         profile, 607 MB of it, both of which outlive a deleted ext_deps/."""
-        text = self._script()
-        self.assertIn("PIP_CACHE_DIR", text)
-        self.assertNotIn("git lfs install |", text)
+        self.assertIn("PIP_CACHE_DIR", self._script())
+        for platform in ("win-64", "linux-64"):
+            with self.subTest(platform):
+                plan = subprocess.run([sys.executable, str(_REPO / "scripts" / "ext_deps" / "install.py"), "--plan",
+                                       "--from-nothing", "--platform", platform],
+                                      capture_output=True, text=True, check=True).stdout
+                self.assertIn("env PIP_CACHE_DIR=<ext_deps>/pip-cache", plan)
+                self.assertNotIn("lfs install", plan)
 
 
 if __name__ == "__main__":  # pragma: no cover

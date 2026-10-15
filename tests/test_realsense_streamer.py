@@ -342,5 +342,6 @@ def test_import_error_when_sdk_missing() -> None:
     # rs_module=None forces the real deferred import; block it to hit the guard.
     streamer = RealSenseRGBDStreamer(_rig())
     with patch.dict(sys.modules, {"pyrealsense2": None}):
-        with pytest.raises(ImportError, match="pyrealsense2 is not installed"):
+        # "could not be imported", not "is not installed": on Linux an installed wheel fails on libusb (P0h h6).
+        with pytest.raises(ImportError, match="pyrealsense2 could not be imported"):
             streamer._import_rs()

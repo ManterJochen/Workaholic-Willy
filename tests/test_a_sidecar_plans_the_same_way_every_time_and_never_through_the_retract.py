@@ -106,6 +106,12 @@ class TheSidecarSourceTests(unittest.TestCase):
         self.plan_js = "\n".join(_block(self.source, 'if cmd == "plan_js":'))
         self.check_js = "\n".join(_block(self.source, 'if cmd == "check_js":'))
 
+    def test_the_seed_is_reset_before_every_pose_plan_too(self) -> None:
+        """The pose branch is the Isaac sim's; it starts from the same seed for the same reason."""
+        pose = self.source[self.source.index("goal = GoalToolPose("):]
+        reset, plan = pose.find("_planner.reset_seed()"), pose.find("_planner.plan_pose(")
+        self.assertTrue(0 <= reset < plan, "the pose plan plans without resetting the seed first")
+
     def test_the_planner_is_built_on_the_graph_config_without_the_retract(self) -> None:
         self.assertIn("from _curobo_plan_policy import", self.source)
         built = self.source[self.source.index("_graph = graph_planner_without_retract("):

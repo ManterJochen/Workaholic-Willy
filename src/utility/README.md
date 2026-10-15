@@ -34,6 +34,7 @@ unit other than `mm`, `cm` or `m`.
 | [`paths.py`](paths.py) | `project_root`, `logs_dir`, `debug_dir`, `ensure_dir`, `rotate_files`, `weights_root`, `fence_model_downloads` |
 | [`io.py`](io.py) | `load_json`, `dump_json`, `atomic_write_text`, `atomic_write_bytes` |
 | [`device.py`](device.py) | `get_device`, `is_cuda`, `resolve_torch_dtype`, `move_inputs_to_device` |
+| [`interpreters.py`](interpreters.py) | `Interpreter`, `interpreter_command`, `conda_interpreter_parts`, `is_windows`: the interpreter a printed command names on this platform, `.venv/Scripts/python.exe`, `ext_deps/curobo_env/python.exe` and Isaac's `python.bat` on Windows, `bin/python` and `python.sh` elsewhere (P0h h2); standard library only |
 | [`log_cfg.py`](log_cfg.py) | `create_logger`, and the one place `WILLY_LOG_DIR` reaches the logs |
 | [`constants.py`](constants.py) | the package log directory, its log file names, and the lazy `utility_logger` |
 | [`timing.py`](timing.py) | `now_ms` and the `timed` context manager |

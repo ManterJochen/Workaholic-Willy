@@ -44,6 +44,7 @@ from src.robot.safety.planning.perceived import (
     WorldBuildTuning,
     build_perceived_boxes,
 )
+from tests._helpers import HoldsAWorld
 from tests.test_the_camera_world_lets_the_owners_pick_finish import (
     _BENCH,
     _CUBE,
@@ -812,7 +813,7 @@ class HoldingViewsTests(unittest.TestCase):
         from src.robot.core.keep_out import holding_views
 
         world, camera = _world()
-        arm = SimpleNamespace(live_planner_world=world)
+        arm = HoldsAWorld(world)
 
         with holding_views(arm) as holding:
             self.assertTrue(holding)
@@ -832,8 +833,7 @@ class HoldingViewsTests(unittest.TestCase):
     def test_an_arm_whose_world_cannot_hold_opens_an_empty_scope(self) -> None:
         from src.robot.core.keep_out import holding_views
 
-        for arm in (SimpleNamespace(), SimpleNamespace(live_planner_world=None),
-                    SimpleNamespace(live_planner_world=object())):
+        for arm in (SimpleNamespace(), HoldsAWorld(None), HoldsAWorld(object())):
             with self.subTest(arm=arm), holding_views(arm) as holding:
                 self.assertFalse(holding)
 
@@ -846,7 +846,7 @@ class HoldingViewsTests(unittest.TestCase):
             declared=_BENCH, limits=_LIMITS, tuning=WorldBuildTuning(max_boxes=8),
         )
 
-        with holding_views(SimpleNamespace(live_planner_world=world)) as holding:
+        with holding_views(HoldsAWorld(world)) as holding:
             self.assertFalse(holding)
         self.assertIs(False, world.hold_pick_views())
         self.assertIs(True, _world()[0].hold_pick_views())

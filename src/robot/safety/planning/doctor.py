@@ -42,6 +42,7 @@ from typing import Any
 
 from src.contracts import UNSET, chosen
 from src.robot.constants import PLANNING_DOCTOR_LOG_FILE, create_robot_logger
+from src.utility.interpreters import is_windows
 
 from .environment import (
     ENV_COAL_PREFIX,
@@ -312,10 +313,42 @@ def _probe_mesh_bundle(model: str) -> Probe:
     )
 
 
+#: Run by the probe below in a fresh interpreter per backend, with the backend's name as its argument.
+#:
+#: One interpreter per backend, because cuRobo keeps the first one. Measured 2026-09-26 at 8e734f3, on Windows and
+#: in Ubuntu-24.04: asked ``cuda_core`` and then ``pybind`` in one process, ``get_backend_name()`` answered
+#: ``cuda_core`` twice, and in the other order ``pybind`` twice. Asked in one process, as this probe did until then,
+#: the second backend could never be seen, and the doctor warned "1 of 2" on every box, with both built.
+_ASK_ONE_BACKEND = """
+import json, sys
+name, out = sys.argv[1], {}
+try:
+    import torch  # noqa: F401 - first: the compiled extensions link against torch's libraries
+    import curobo._src.runtime as rt
+    from curobo._src.curobolib.backends import get_backend_name
+    rt.kernel_backend = name
+    out["got"] = get_backend_name()
+    if out["got"] != name:
+        # cuRobo falls back rather than raising, so "asked for X, got Y" is the failure. Importing the backing
+        # module recovers the reason, which tells "not installed" from "the OS refused it".
+        try:
+            if name == "cuda_core":
+                import cuda.core.experimental  # noqa: F401
+            else:
+                import curobo._src.curobolib.backends.pybind.geometry  # noqa: F401
+            out["reason"] = "resolved to %s instead" % out["got"]
+        except Exception as inner:
+            out["reason"] = "%s: %s" % (type(inner).__name__, inner)
+except Exception as exc:
+    out["reason"] = "%s: %s" % (type(exc).__name__, exc)
+print(json.dumps(out))
+"""
+
 #: Run inside the sidecar own interpreter. It reports what resolved there, including
 #: whether a second kernel backend exists. A single backend is a single point of
 #: failure that takes the planner down when a policy refuses it, so the doctor says so
-#: out loud.
+#: out loud. Each backend is asked in an interpreter of its own (:data:`_ASK_ONE_BACKEND`, handed over as
+#: ``sys.argv[1]``).
 _CUROBO_PROBE = """
 import json, os, sys
 out = {"python": sys.executable}
@@ -335,24 +368,20 @@ except Exception as exc:
     out["error"] = "curobo: %s: %s" % (type(exc).__name__, exc)
     print(json.dumps(out)); raise SystemExit(0)
 backends, failures = [], {}
-import curobo._src.runtime as rt
+import subprocess
 for name in ("cuda_core", "pybind"):
     try:
-        rt.kernel_backend = name
-        if get_backend_name() == name:
+        asked = subprocess.run([sys.executable, "-c", sys.argv[1], name], capture_output=True, timeout=120,
+                               env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+        answer = {}
+        for line in asked.stdout.decode("utf-8", "replace").splitlines():
+            if line.startswith("{"):
+                answer = json.loads(line)
+        if answer.get("got") == name:
             backends.append(name)
         else:
-            # cuRobo silently falls back rather than raising, so "asked for X, got Y" IS the failure.
-            # Re-import the backing package to recover the REASON, which is what tells an operator
-            # whether this is "not installed" or "the OS refused it".
-            try:
-                if name == "cuda_core":
-                    import cuda.core.experimental  # noqa: F401
-                else:
-                    import curobo._src.curobolib.geom_cu  # noqa: F401
-                failures[name] = "resolved to %s instead" % get_backend_name()
-            except Exception as inner:
-                failures[name] = "%s: %s" % (type(inner).__name__, inner)
+            failures[name] = answer.get("reason") or asked.stderr.decode("utf-8", "replace").strip()[-200:] or (
+                "no answer (exit %s)" % asked.returncode)
     except Exception as exc:
         failures[name] = "%s: %s" % (type(exc).__name__, exc)
 out["backends"] = backends
@@ -368,13 +397,19 @@ print(json.dumps(out))
 """
 
 
-#: cuRobo's two kernel backends and what each one costs to obtain, for the remedy text.
-_BACKEND_REMEDY = {
-    "cuda_core": "install the JIT backend: pip install 'cuda-core[cu12]' into the cuRobo env "
-                 "(ext_deps/README.md 2a)",
-    "pybind": "build the compiled backend: scripts/curobo/build_compiled_backend.bat "
-              "(ext_deps/README.md 2b)",
-}
+def _backend_remedy() -> dict[str, str]:
+    """cuRobo's two kernel backends and what each one costs to obtain on this platform, for the remedy text.
+
+    The compiled backend is built by ``build_compiled_backend.bat`` on Windows and by its twin
+    ``build_compiled_backend.sh`` elsewhere (P0h h5), each alone, without reinstalling the environment.
+    """
+    compiled = ("scripts/curobo/build_compiled_backend.bat" if is_windows()
+                else "bash scripts/curobo/build_compiled_backend.sh")
+    return {
+        "cuda_core": "install the JIT backend: pip install 'cuda-core[cu12]' into the cuRobo env "
+                     "(ext_deps/README.md 2a)",
+        "pybind": f"build the compiled backend: {compiled} (ext_deps/README.md 2b)",
+    }
 
 
 def _kernel_backend_probe(payload: dict[str, object], blocks: tuple[str, ...]) -> Probe:
@@ -389,7 +424,8 @@ def _kernel_backend_probe(payload: dict[str, object], blocks: tuple[str, ...]) -
     It never fails the exit code. One working backend plans exactly as well as two, and
     what it lacks is a spare. The value is in naming which one is gone and whether a
     policy took it, rather than telling an operator to build a backend that is already
-    built.
+    built. Until 2026-09-26 it did tell an operator so, on every box with both built, because it
+    asked both backends in one interpreter (:data:`_ASK_ONE_BACKEND`).
     """
     # The payload crossed a subprocess boundary as JSON, so nothing about its shape is
     # guaranteed. Narrow both fields by type rather than trusting them.
@@ -404,7 +440,7 @@ def _kernel_backend_probe(payload: dict[str, object], blocks: tuple[str, ...]) -
     if not backends:
         return Probe("cuRobo kernel backends", ProbeStatus.BROKEN,
                      f"none resolved ({'; '.join(f'{k}: {v}' for k, v in failures.items()) or 'no detail'})"[:200],
-                     "; ".join(_BACKEND_REMEDY.values()))
+                     "; ".join(_backend_remedy().values()))
 
     working = backends[0]
     absent = [name for name in ("cuda_core", "pybind") if name != working]
@@ -421,7 +457,7 @@ def _kernel_backend_probe(payload: dict[str, object], blocks: tuple[str, ...]) -
     return Probe(
         "cuRobo kernel backends", ProbeStatus.WARN,
         f"1 of 2, only '{working}' resolves ({missing}: {reason})"[:200],
-        _BACKEND_REMEDY.get(missing, "see ext_deps/README.md"),
+        _backend_remedy().get(missing, "see ext_deps/README.md"),
     )
 
 
@@ -445,7 +481,7 @@ def _probe_curobo(blocks: tuple[str, ...], robot_config: str, *, gripper: str | 
     # it is doing.
     logger.info("spawning the cuRobo sidecar interpreter %s (robot config %s, timeout 300s)", python, robot_config)
     try:
-        done = subprocess.run([python, "-c", _CUROBO_PROBE], capture_output=True, text=True,
+        done = subprocess.run([python, "-c", _CUROBO_PROBE, _ASK_ONE_BACKEND], capture_output=True, text=True,
                               timeout=300, check=False, env=env)
     except (OSError, subprocess.SubprocessError) as exc:
         return (Probe("cuRobo planner sidecar", ProbeStatus.BROKEN,
@@ -479,7 +515,7 @@ def _probe_curobo(blocks: tuple[str, ...], robot_config: str, *, gripper: str | 
 
     probes.append(_kernel_backend_probe(payload, blocks))
 
-    from src.robot.drivers.sim.robot_models import NO_DESCRIPTOR
+    from src.config.arms import NO_DESCRIPTOR
 
     if robot_config.startswith("<none"):
         probes.append(Probe(
@@ -615,7 +651,8 @@ def _probe_planner_combination(
             "run the doctor with --profile NAME, NAME being your cell's profile chain, so it reads the cell's "
             "placement, plates and margins",
         ),)
-    if str(getattr(getattr(cell, "ur", None), "motion_planner", "")) != "curobo":
+    selected = cell.arm
+    if selected.planner != "curobo":
         said = "no planner starts on this cell, so no retract row and no evidence file is looked up"
         return (Probe("retract row", ProbeStatus.OK, said), Probe("combination evidence", ProbeStatus.OK, said))
 
@@ -625,7 +662,7 @@ def _probe_planner_combination(
     from .robot.retract_table import RetractMissing, read_retract
 
     self_collision = cell.safety.self_collision
-    arm = str(getattr(self_collision, "kinematics_model", None) or cell.ur.model)
+    arm = str(selected.model)
     margin = declared_planner_margin(self_collision)
     row: Probe
     try:
@@ -646,11 +683,11 @@ def _probe_planner_combination(
                             f"{float(margin):g} mm planner margin")
             except RetractMissing as exc:
                 row = Probe("retract row", ProbeStatus.MISSING, str(exc),
-                            "run the choose_ur_retract.py command the detail ends with, then commit the table")
+                            "run the scripts/arms/retract.py command the detail ends with, then commit the table")
     refused, evidence = desk_evidence_refusal(cell, data_dir=data_dir)
     if refused is not None or evidence is None:
         combination = Probe("combination evidence", ProbeStatus.MISSING, refused or "no evidence admits this cell",
-                            "run the matrix_gate.py command the detail ends with, then commit the file it writes")
+                            "run the scripts/arms/gate.py command the detail ends with, then commit the file it writes")
     else:
         combination = Probe("combination evidence", ProbeStatus.OK, f"{evidence.path.name}: {evidence.render()}")
     return (row, combination)

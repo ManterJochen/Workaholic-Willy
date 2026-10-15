@@ -24,6 +24,7 @@ from src.robot.core.capabilities import RobotCapabilities
 from src.robot.drivers.dummy.arm import DummyRobotArm
 from src.robot.execution.looks import ALREADY_THERE, HOME, move_to_look
 from src.robot.execution.motion import MotionOutcome, MotionVerb
+from tests._helpers import PlansItsMotions
 from tests._task_fakes import HOME_JOINTS, ScriptedLocator, TaskArm, bin_object, motions, run
 
 
@@ -213,12 +214,12 @@ class TheSurveyAndARestartTests(unittest.TestCase):
 # A pick from the look the arm stands at
 # ---------------------------------------------------------------------------------------------------------------------
 
-_CONTROLLER = RobotCapabilities(vendor="ur", model="ur10", dof=6, supports_joint_move=True, supports_linear_move=True,
-                                supports_async_move=False, has_native_fk=True, has_native_ik=True,
-                                has_force_control=False, is_simulated=False)
+_CONTROLLER = RobotCapabilities(vendor="ur", model="ur10", dof=6,
+                                has_native_fk=True,
+                                is_simulated=False, controller=None, owns_a_controller=True)
 
 
-class _ControllerArm(DummyRobotArm):
+class _ControllerArm(PlansItsMotions, DummyRobotArm):
     """A UR as a wrist pick meets it: a controller's arm, its motions planned and judged, its joints and its tool kept
     together (a joint move puts the tool where ``table`` says, a Cartesian move leaves every look), every motion
     written on ``events``."""

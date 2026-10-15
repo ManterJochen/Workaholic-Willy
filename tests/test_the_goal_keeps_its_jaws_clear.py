@@ -12,7 +12,6 @@ stamp built with no region is today's stamp.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import unittest
 from unittest.mock import MagicMock, patch
@@ -25,10 +24,9 @@ from src.robot.core.camera_world import CameraWorldStamp, CameraWorldUse
 from src.robot.drivers.sim import arm as sim_arm_module
 from src.robot.drivers.sim.arm import IsaacRobotArm
 from src.robot.drivers.sim.config import SimRobotConfig
-from src.robot.drivers.ur import curobo_motion
-from src.robot.drivers.ur.arm import URRobotArm
-from src.robot.drivers.ur.curobo_motion import UR_ARM_JOINT_NAMES
-from src.robot.drivers.ur.tool_frame import tool_frame_matrix
+from src.robot.drivers.planned import curobo_motion
+from src.robot.drivers.planned.arm import PlannedArm
+from src.geometry.matrix import position_quaternion_to_matrix
 from src.robot.safety._ur_kinematics import ur_link_transforms_mm
 from src.robot.safety.planning.hand import planner_hand
 from src.robot.safety.planning.live_world import DepthSnapshot, refresh_planner_world
@@ -41,8 +39,8 @@ from tests.test_every_verb_meets_the_camera_world import (
     _Camera as _BenchCamera,
     _Client,
     _mesh_backend_available,
+    _planned,
     _pose,
-    _ur,
 )
 from tests.test_every_verb_meets_the_camera_world import _world as _bench_world
 from tests.test_live_planner_world import (
@@ -59,6 +57,11 @@ from tests.test_live_planner_world import (
     _scene_with_a_block,
     _world,
 )
+
+from src.config.arms import load_arm
+
+#: The controller's joint order as the ur5e description states it; the planner is handed it since P0e.
+_UR_JOINT_NAMES = tuple(joint.name for joint in load_arm("ur5e").joints)
 
 #: The 2F-85's registry jaw (config/grippers/robotiq_2f85.yaml).
 _JAW_2F85 = {"aperture_mm": 85.0, "finger_width_mm": 27.0, "pad_ahead_mm": 23.61, "pad_behind_mm": 14.39}
@@ -257,7 +260,7 @@ class TheRegionAHandBuildsTests(unittest.TestCase):
                 config = _declared(model, declared, bolted_to_the_flange=bolted)
                 hand = planner_hand(config)
                 self.assertAlmostEqual(registry, float(hand.jaw.grasp_centre_mm) + float(hand.coupling_mm))
-                tcp = tool_frame_matrix(config.gripper.tool_frame.offset_mm,
+                tcp = position_quaternion_to_matrix(config.gripper.tool_frame.offset_mm,
                                         config.gripper.tool_frame.rotation_quat_xyzw)
 
                 goal = _goal_keep_out(_PlacedHand(hand), None, tcp)
@@ -362,21 +365,17 @@ class EveryUrVerbHandsTheWorldItsGoalTests(unittest.TestCase):
         if not _mesh_backend_available():
             self.skipTest("no exact mesh backend on this box")
 
-    def _arm(self) -> URRobotArm:
-        return _ur(_bench_world(_BenchCamera(silent=False)), _Client(joint_names=UR_ARM_JOINT_NAMES), [])
+    def _arm(self) -> PlannedArm:
+        return _planned(_bench_world(_BenchCamera(silent=False)), _Client(joint_names=_UR_JOINT_NAMES), [])
 
     def test_every_ur_verb_hands_the_world_its_goal(self) -> None:
         pose_goal = _pose()
         verbs = {
             "move": (lambda arm: arm.move(pose_goal), "pose"),
-            "move_to": (lambda arm: arm.move_to(pose_goal), "pose"),
-            "amove_to": (lambda arm: asyncio.run(arm.amove_to(pose_goal)), "pose"),
             "move, linear": (lambda arm: arm.move(pose_goal, linear=True), "pose"),
             "move_linear": (lambda arm: arm.move_linear(pose_goal), "pose"),
             "move_to_joints": (lambda arm: arm.move_to_joints(JointPositions(_THERE)), "joints"),
-            "move_joint": (lambda arm: arm.move_joint(JointPositions(_THERE)), "joints"),
             "move_home": (lambda arm: arm.move_home(), "joints"),
-            "amove_home": (lambda arm: asyncio.run(arm.amove_home()), "joints"),
         }
         for label, (verb, kind) in verbs.items():
             with self.subTest(label):
@@ -395,11 +394,11 @@ class EveryUrVerbHandsTheWorldItsGoalTests(unittest.TestCase):
                     np.testing.assert_allclose(goal.region.matrix(), expected, atol=1e-6)  # type: ignore[attr-defined]
 
     @staticmethod
-    def _joint_tcp(arm: URRobotArm, joints: tuple[float, ...]) -> np.ndarray:
+    def _joint_tcp(arm: PlannedArm, joints: tuple[float, ...]) -> np.ndarray:
         frames = ur_link_transforms_mm(str(arm.config.ur.model), np.asarray(joints, dtype=np.float64))
         assert frames is not None
         tf = arm.config.gripper.tool_frame
-        return frames[-1] @ tool_frame_matrix(tf.offset_mm, tf.rotation_quat_xyzw)
+        return frames[-1] @ position_quaternion_to_matrix(tf.offset_mm, tf.rotation_quat_xyzw)
 
     def test_a_ur_joint_goal_region_sits_at_the_flange_times_the_declared_frame(self) -> None:
         arm = self._arm()
@@ -416,7 +415,7 @@ class EveryUrVerbHandsTheWorldItsGoalTests(unittest.TestCase):
         np.testing.assert_allclose(box[:3, 2], flange[-1][:3, 1], atol=1e-9)
         shift = (_JAW_2F85["pad_ahead_mm"] - _JAW_2F85["pad_behind_mm"]) / 2.0
         np.testing.assert_allclose(box[:3, 3], flange[-1][:3, 3] + flange[-1][:3, 1] * (132.0 + shift), atol=1e-6)
-        record = arm._curobo_ur_planner().last_world_refresh
+        record = arm._curobo_planner().last_world_refresh
         assert record is not None and record.keep_out is not None
         self.assertIsNotNone(record.keep_out.goal_points)
 
@@ -426,11 +425,11 @@ class EveryUrVerbHandsTheWorldItsGoalTests(unittest.TestCase):
 
         refused = arm._refresh_before_the_path_gate(
             near_point_mm=None, command=MotionCommand.MOVE_JOINTS, target_joints=JointPositions(_THERE),
-            goal_tcp_mm=arm._tcp_at_joints_mm(JointPositions(_THERE)),
+            goal_tcp_mm=arm.tcp_at_joints_mm(JointPositions(_THERE)),
         )
 
         self.assertIsNone(refused)
-        record = arm._curobo_ur_planner().last_world_refresh
+        record = arm._curobo_planner().last_world_refresh
         assert record is not None and record.keep_out is not None
         self.assertIsNone(record.keep_out.goal_points)
         self.assertIn("robot.gripper.tool_frame is undeclared", record.keep_out.goal_reason)
@@ -475,7 +474,7 @@ class EverySimVerbHandsTheWorldItsGoalTests(unittest.TestCase):
     def _joint_tcp(joints: tuple[float, ...]) -> np.ndarray:
         frames = yawed_link_transforms_mm("ur5e", np.asarray(joints, dtype=np.float64), 180.0)
         assert frames is not None
-        return frames[-1] @ tool_frame_matrix((0.0, 132.0, 0.0), _SIM_ROTATION)
+        return frames[-1] @ position_quaternion_to_matrix((0.0, 132.0, 0.0), _SIM_ROTATION)
 
     def test_every_sim_verb_hands_the_world_its_goal(self) -> None:
         pose_goal = _pose(x=400.0)
@@ -483,7 +482,6 @@ class EverySimVerbHandsTheWorldItsGoalTests(unittest.TestCase):
             "move": (lambda arm: arm.move(pose_goal), "pose"),
             "move, linear": (lambda arm: arm.move(pose_goal, linear=True), "pose"),
             "move_to_joints": (lambda arm: arm.move_to_joints(JointPositions(_THERE)), "joints"),
-            "move_joint": (lambda arm: arm.move_joint(JointPositions(_THERE)), "joints"),
             "move_home": (lambda arm: arm.move_home(), "joints"),
             "the planned joint path": (
                 lambda arm: arm._plan_joint_path(np.asarray(_HERE), np.asarray(_THERE)), "joints"),

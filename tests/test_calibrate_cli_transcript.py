@@ -7,9 +7,10 @@ of it: not the banners, not the order of the build lines, not the blank line aft
 Everything below the arm-vendor gate is a double: the gate, the arm factory (a dummy arm), the camera noun
 (a handle with a fixed repr) and, for the sweep, the routine's ``run_from_json``.
 
-Since the owner deleted every automatic station generator (2026-09-24) a sweep names its stations: the transcripts
-run ``--fixed-poses`` over a file of 22 stations, and a fourth pins ``--freedrive`` on an arm a person cannot guide,
-which the build refuses before the camera opens.
+Since the owner deleted every automatic station generator (2026-09-24) a sweep names its stations: the
+transcripts run ``--fixed-poses`` over a file of 22 stations, and a fourth pins ``--freedrive`` on an arm a person
+cannot guide, which the config stage refuses before anything is built (P0i i3: the build refused it until the
+check asked the desk's hand guiding row).
 """
 
 from __future__ import annotations
@@ -137,15 +138,15 @@ class TheCalibrateCliPrintsWhatItPrintedTests(unittest.TestCase):
                          + "\n--dry-run: built cleanly and the camera answered. Stopping before any motion.\n")
         self.assertEqual(self.handle.released, 1)
 
-    def test_freedrive_on_an_arm_nobody_can_guide_is_refused_at_the_build(self) -> None:
+    def test_freedrive_on_an_arm_nobody_can_guide_is_refused_at_the_config(self) -> None:
+        """Changes behaviour on purpose (P0i i3): a build refusal, after the config block, until the check asked."""
         code, printed = self._main("--freedrive", stations=False)
         self.assertEqual(code, calibrate._EXIT_CONFIG)
         self.assertEqual(printed, (
-            _CONFIG.format(out="calibration/real", poses="15 guided by hand")
-            + "\n=== 2. BUILD === the arm alone, and one camera\n"
-            "[build] REFUSED: HandGuidingRefused: freedrive guides the arm to every pose by hand, and DummyRobotArm "
-            "offers no hand guiding (SupportsFreedrive; the UR teach mode is one). This arm has fixed stations only: "
-            "run them without adjust (--fixed-poses PATH)\n"))
+            "=== 1. CONFIG ===\n"
+            "[config] REFUSED: DummyRobotArm offers no hand guiding (SupportsFreedrive; the UR teach mode is one), and "
+            "a calibration by hand, --freedrive or --adjust, hands the arm to a person. This arm has fixed stations "
+            "only: run them with --fixed-poses PATH, without --freedrive or --adjust\n"))
         self.assertEqual(self.handle.released, 0, "the camera was opened for an arm nobody can guide")
 
     def test_a_sweep_that_writes_its_artifact(self) -> None:

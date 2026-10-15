@@ -55,7 +55,7 @@ names what is gone. Every verdict is a frozen `SafetyDecision` with a `SafetyRea
 
 | Refusal | When | What to do |
 | --- | --- | --- |
-| `JointLimitTableMissing` from `create_arm` | the joint-limit guard is wired and no table resolves (KUKA, the sim) | set `robot.safety.joint_limits.min_deg` and `max_deg` |
+| `JointLimitTableMissing` from `create_arm` | the joint-limit guard is wired and no table resolves (the sim) | set `robot.safety.joint_limits.min_deg` and `max_deg` |
 | `ConfigError` when the gate is built | an exact-mesh guard reads hand geometry and `robot.gripper.model` names no hand | name the hand the flange carries |
 | `ConfigError` when the gate is built | the declared tool frame places no hand model (a mirror, an oblique axis) | declare the tool frame the hand model admits |
 | a config refused at load | `self_collision.perceived_min_distance_mm` plus `planning_world.perceived.margin_mm` falls short of `self_collision.min_distance_mm`, the step every path is sampled at | raise either of the first two until they reach the step |
@@ -72,10 +72,12 @@ absent.
 
 The meshes ship in `data/`: an arm bundle `{model}_collision_meshes.npz` for `ur3`, `ur3e`, `ur5`,
 `ur5e`, `ur10`, `ur10e` and `ur16e`, and a hand bundle `{hand}_hand_meshes.npz` for `robotiq_2f85`,
-`robotiq_hande` and `schunk_egu50`, composed onto the arm when the guard loads. `bundles.json` records
-each bundle's source and a hash of its arrays. With `mesh_dir: null` the guard loads its own model's
-bundle from `data/`; `mesh_dir` names a directory of bundles you baked. A model with no bundle runs the
-capsule proxy.
+`robotiq_hande` and `schunk_egu50`, composed onto the arm when the guard loads. Every arm bundle is
+baked in its links' DH frames from Universal Robots' own collision STL files, through the rendered
+description, by `scripts/arms/bake.py`. `bundles.json` records each bundle's
+source and a hash of its arrays. With `mesh_dir: null` the guard loads its own model's bundle from
+`data/`; `mesh_dir` names a directory of bundles you baked. A model with no bundle runs the capsule
+proxy.
 
 **What the exact guard judges.** Every pair of parts more than one DH frame apart, a wrist camera's parts
 also against wrist_2: `MeshSelfCollisionBackend.checks(part_a, part_b)` is that rule asked of one pair, and
@@ -117,18 +119,22 @@ A refusal's detail says where the box stood: `fixture` (`seen` or `declared`), `
 
 - **Workspace.** A margin that would invert an axis raises. A joint-only command carries no pose and
   passes here; the joint and self-collision guards judge it.
-- **Joint limits.** `min_deg` and `max_deg` from config win; otherwise the built-in `UR_JOINT_LIMITS_DEG`
-  table (plus or minus 360 degrees per axis, `ur3` to `ur20`); otherwise `UNAVAILABLE`. The table is the
-  manufacturer envelope, not the installation limits set on the controller, which the controller
+- **Joint limits.** `min_deg` and `max_deg` from config win; otherwise the envelope the arm registry
+  describes for the model the arm reports, `capabilities.model` (`config/arms/<model>.yaml`, plus or minus
+  360 degrees per axis, `ur3` to `ur20`), whatever its vendor; otherwise `UNAVAILABLE`. The Isaac arm
+  reports the UR it drives and resolves that UR's envelope. That envelope is the manufacturer's, not the installation limits set on the controller, which the controller
   enforces itself as a protective stop.
 - **IK quality.** Limit proximity is skipped when no envelope resolves. The singularity probe runs only
   on an arm with `has_native_fk`, and a probe that fails is `UNAVAILABLE`.
 - **Self collision.** The base column, a tool shape at the TCP, the arm links, the boxes under
-  `self_collision.fixtures` and the boxes the cameras saw. Arm links need a UR arm or an explicit
-  `kinematics_model`; without one only the base, the tool and the fixtures are checked. `tool_model: finger`
+  `self_collision.fixtures` and the boxes the cameras saw. Arm links need an arm whose `capabilities.model`
+  the arm registry describes as a UR (`described_ur_model`), whatever its vendor: a real UR reports
+  `ur.model`, the Isaac arm `sim.robot_model`. Any other arm gets only the base, the tool and the fixtures.
+  Until P0d D5 the Isaac arm reported `isaac-sim` and needed `self_collision.kinematics_model` to opt in;
+  that key is removed and a tree that still writes it is refused at load. `tool_model: finger`
   models descending two-finger jaws.
 - **Payload.** The UR driver pushes mass and centre of gravity to the controller at connect while
-  `enforce` is true, and drops the connection if the push fails. KUKA payload is config only.
+  `enforce` is true, and drops the connection if the push fails.
 - **Motion continuity.** Caps the joint, TCP and orientation step against the last accepted target. The
   first command after `reset()` passes.
 - **A planned move.** Both drivers skip `ik_quality` and `motion_continuity` on the planner's final

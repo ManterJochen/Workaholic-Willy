@@ -1,0 +1,933 @@
+"""cuRobo-planned motion for a real UR arm: plan in safety.planning, execute over ur_rtde.
+
+It is the real-hardware counterpart of the cuRobo path in the Isaac sim driver,
+:meth:`src.robot.drivers.sim.arm.IsaacRobotArm._drive_curobo`. It asks the
+process-isolated cuRobo planner, :class:`~src.robot.safety.planning.CuroboPlanClient`,
+for a global collision-free joint trajectory to a joint configuration
+(:meth:`CuroboPlanner.plan_joint`), judges joint paths against the world the planner holds
+(:meth:`CuroboPlanner.check_joint_path`), and executes a list of joint waypoints on the UR
+controller as one blocking ``ur_rtde`` ``moveJ`` per waypoint. Every pose reaches the planner
+through :class:`.planner_frame.PlannerFrameClient`, because the planner is rooted half a turn
+about Z from the controller's base.
+
+Where the arm goes is the arm's decision, not this module's and never cuRobo's: the arm
+chooses the goal configuration (the nearest one on the branch it holds, for a Cartesian goal),
+runs the straight joint line there where that line is clear, and asks for a plan only where it
+is not. There is no Cartesian plan here, so cuRobo is never left to choose a goal.
+
+Which list runs is the arm's decision too. cuRobo samples a plan every 25 ms (21 to 281
+waypoints a move, measured on a UR10), and a ``moveJ`` starts from rest and stops at its target,
+so running every sample stopped the arm at every one. The arm shortens the plan to a subset of
+its own waypoints (:func:`~src.robot.safety.path_samples.simplify_joint_path`), has both
+authorities judge the legs of that list, and hands :meth:`CuroboPlanner.execute` exactly the
+list that passed, or the plan as cuRobo returned it where the shortened one was refused.
+
+It is fail-closed. Where the cuRobo environment or service is unavailable, or no
+collision-free plan exists, nothing falls back to blind IK: :meth:`CuroboPlanner.plan_joint`
+raises or returns ``None``, and the UR arm turns that into a typed failure,
+:attr:`MotionStatus.CONTROLLER_REJECTED` or :attr:`MotionStatus.TIMEOUT`, so a real cell
+never moves on an unplanned path.
+
+The scope is honest. The cuRobo round-trip against a real robot and a real cuRobo GPU
+environment is bucket 3, because neither exists here. The planning and execution logic,
+meaning the goal conversion, the joint-order remap, the waypoint execution and the
+fail-closed branches, is exercised through an injected planner and transport. Planner
+collision-awareness is not a certified functional-safety stop, and a real cell still
+needs the vendor safety-rated stop.
+"""
+
+from __future__ import annotations
+
+import inspect
+import math
+import threading
+from collections.abc import Callable, Sequence
+from typing import TYPE_CHECKING, Any, cast
+
+from src.contracts import UNSET, Maybe
+from src.robot.constants import CUROBO_PLANNER_LOG_FILE, create_robot_logger
+from src.robot.core import MotionCommand, MotionResult, MotionSent, MotionStatus
+from src.robot.core.arm_capabilities import HaltState, MoveEnd, halted_refusal
+from src.robot.core.errors import CameraWorldUnavailable
+from src.robot.safety.planning import (
+    CuroboPlanClient,
+    CuroboUnavailableError,
+    JointCheckVerdict,
+)
+from src.robot.safety.planning.curobo_client import PathJudgement, SidecarIdentity, StateRefusal, StateWhere
+from src.robot.safety.planning.live_world import WorldRefresh, refresh_planner_world
+from src.robot.safety.planning.world import merge_planner_worlds
+
+from .planner_frame import PlannerFrameClient
+
+if TYPE_CHECKING:  # pragma: no cover (typing only)
+    from src.geometry import Pose
+    from src.robot.core import JointPositions
+    from src.robot.core.keep_out import GoalKeepOut
+    from src.robot.core.transport import ArmTransport
+    from src.robot.safety.planning.reservation import PlannerReservation
+    from src.robot.safety.planning.live_world import LivePlannerWorld
+    from src.robot.safety.planning.perceived import SelfEnvelope
+
+__all__ = ["CuroboPlanner", "planner_envelope_rad"]
+
+
+def planner_envelope_rad(model: str) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """The joint window cuRobo plans ``model`` in, ``(lower, upper)`` in radians and the controller's joint order.
+
+    Read from the arm's description, the numbers its descriptor is built from: each joint's ``planner_limit_deg``,
+    narrowed at each end by ``planner.position_limit_clip_rad``, which cuRobo takes off when it loads the descriptor
+    (``scripts/arms/_planner_limits.planner_envelope_rad`` computes the same from the same file, and a test holds the
+    two equal). On a UR that is +-(2 pi - 0.1) on every joint and +-(pi - 0.1) on the elbow. The arm turns a goal it
+    chooses into this window, so the planner is never handed a goal it would refuse for its limits; a descriptor built
+    narrower still refuses such a goal, which is the planner's answer and not a guess.
+    """
+    from src.config.arms import load_arm  # noqa: PLC0415 (the config layer is below this one; lazy for import cost)
+
+    description = load_arm(model)
+    clip = float(description.planner.position_limit_clip_rad)
+    return (tuple(math.radians(float(joint.planner_limit_deg[0])) + clip for joint in description.joints),
+            tuple(math.radians(float(joint.planner_limit_deg[1])) - clip for joint in description.joints))
+
+
+def _halt_on(transport: object) -> HaltState | None:
+    """The halt latch of ``transport`` while it is set, else ``None``; a link with no latch is never halted.
+
+    A latch that cannot be read is no latch here: the connection's own ``moveJ`` refuses on its latch regardless.
+    """
+    read = getattr(transport, "halt_state", None)
+    try:
+        state = read() if callable(read) else None
+    except Exception:  # noqa: BLE001 (a double whose latch raises; the connection refuses on its own latch)
+        return None
+    return state if isinstance(state, HaltState) else None
+
+
+#: How the halt ended a move, by the connection's own word for it.
+_HALT_ENDED = {MoveEnd.REFUSED_HALTED: "refused", MoveEnd.BRAKED: "braked", MoveEnd.BRAKE_UNCONFIRMED: "unconfirmed"}
+
+
+def _halt_end_of(transport: object) -> str:
+    """How the halt ended the move ``transport`` was last asked for: ``refused``, ``braked``, ``unconfirmed``, or ``""``."""
+    end = getattr(transport, "last_move_end", None)
+    return _HALT_ENDED.get(end, "") if isinstance(end, MoveEnd) else ""
+
+
+def _halt_requests_of(transport: object) -> int | None:
+    """How many times ``transport``'s latch was set, or ``None`` for a link that does not count them."""
+    count = getattr(transport, "halt_requests", None)
+    return count if isinstance(count, int) and not isinstance(count, bool) else None
+
+
+#: What a planner the arm shut down answers every ask that would start a sidecar.
+_RETIRED = ("the planner was shut down by a disconnect or stop_planner, so nothing is planned on it any more: the arm "
+            "starts a fresh one with the next start_planner, or with the next move on a connected arm")
+
+
+class _KeptClient:
+    """The started planner client as the glue keeps it and hands it out: no call of it overlaps a retire, none follows.
+
+    ``CuroboPlanClient`` starts its sidecar again on any call once it was closed. A thread that took the client before
+    the glue was retired (a move whose route refresh was reading the camera while Disconnect was pressed) would then
+    start a sidecar the glue no longer holds. So each method call runs under the glue's start lock: a retire waits for
+    the call in flight, which the client's own timeouts bound, and every call after it is refused. Whatever is not a
+    method (the joint names, the identity, the last refusal) is the client's own, read as it is.
+    """
+
+    def __init__(self, client: Any, glue: CuroboPlanner) -> None:
+        self._kept = client
+        self._glue = glue
+
+    def __getattr__(self, name: str) -> Any:
+        if name in ("_kept", "_glue"):  # not set yet (a copy in the making): never recurse into itself
+            raise AttributeError(name)
+        attribute = getattr(self._kept, name)
+        if not (inspect.ismethod(attribute) or inspect.isfunction(attribute)):
+            return attribute
+        glue = self._glue
+
+        def call(*args: Any, **kwargs: Any) -> Any:
+            with glue._start_lock:
+                if glue._retired and name != "close":
+                    raise CuroboUnavailableError(glue._retired_because)
+                return attribute(*args, **kwargs)
+
+        return call
+
+
+class CuroboPlanner:
+    """Plan a UR joint trajectory with cuRobo and execute it over ``ur_rtde``, fail-closed.
+
+    Parameters
+    ----------
+    transport
+        The arm's transport (:class:`~src.robot.core.transport.ArmTransport`): the planner reads the joints it
+        plans from with ``read_joints``, sends each waypoint with ``run_trajectory`` and reads the halt latch
+        before each where the transport keeps one (``HoldsAHaltLatch``, P0e E7).
+    joint_names
+        The controller's joint order, from the arm's description (base to wrist 3 on a UR): the order
+        ``ur_rtde`` reports from ``getActualQ`` and expects for ``moveJ``. A planner that reports its joints
+        in another order is remapped onto it.
+    client_factory
+        Builds the :class:`CuroboPlanClient`. It is the injection seam for the planner.
+    vel / acc
+        The default joint speed and acceleration for each executed ``moveJ`` waypoint.
+    controller_state
+        Asked, best effort, after a ``moveJ`` was sent and failed, for a sentence naming the
+        controller's robot and safety state. The arm passes its own; ``None`` adds nothing.
+    world_cuboids
+        The static obstacles of the cell, from
+        :func:`~src.robot.safety.planning.world.build_planner_cuboids`. They are
+        registered once, the first time the planner is reached. The default of none
+        leaves the planner with the world it booted with, which is its own robot model
+        plus a generic table and nothing of this cell.
+    require_registration
+        With a world declared and this true, the default, a registration the planner
+        does not confirm in full raises :class:`CuroboUnavailableError` instead of
+        planning. The client returns 0 and logs that planning continues against the
+        previous world, and an obstacle the planner never received is one it will route
+        straight through.
+    world_meshes
+        The declared meshes of the cell, from
+        :func:`~src.robot.safety.planning.world.build_planner_meshes`, registered with the
+        boxes, so a tote declared as a mesh reaches the planner without a live world.
+    reservation
+        What the sidecar allocates when it starts, handed to the client before ``start``
+        whichever factory built it.
+    """
+
+    def __init__(
+        self,
+        transport: ArmTransport,
+        *,
+        joint_names: Sequence[str],
+        controller_yaw_deg: int,
+        client_factory: Callable[[], CuroboPlanClient] = CuroboPlanClient,
+        vel: float | None = None,
+        acc: float | None = None,
+        world_cuboids: Sequence[dict[str, object]] | None = None,
+        world_meshes: Sequence[dict[str, object]] | None = None,
+        require_registration: bool = True,
+        live_world: "LivePlannerWorld | None" = None,
+        self_envelope: "Callable[[], SelfEnvelope | None] | None" = None,
+        on_perceived_obstacles: "Callable[[Sequence[Any]], object] | None" = None,
+        reservation: "PlannerReservation | None" = None,
+        descriptor_check: "Callable[[SidecarIdentity], str | None] | None" = None,
+        controller_state: "Callable[[], str] | None" = None,
+    ) -> None:
+        self._transport = transport
+        #: The controller's joint order, from the arm's description (P0e E4), the order ``ur_rtde`` reports from
+        #: ``getActualQ`` and expects for ``moveJ``; a planner reporting another order is remapped onto it.
+        self._joint_names = tuple(joint_names)
+        #: The turn about z from the planner's root, the description's base link, to the controller's base, where every
+        #: pose this glue is handed lives (P0f F9c): the description's ``base.controller_yaw_deg``.
+        if controller_yaw_deg not in (0, 180):
+            raise ValueError(
+                f"controller_yaw_deg {controller_yaw_deg!r}: the planner is seen through half a turn or through none, "
+                "as an arm description states it"
+            )
+        self._controller_yaw_deg = int(controller_yaw_deg)
+        self._client_factory = client_factory
+        self._vel = vel
+        self._acc = acc
+        self._client: CuroboPlanClient | None = None
+        self._world_cuboids = [dict(c) for c in (world_cuboids or ())]
+        self._world_meshes = [dict(m) for m in (world_meshes or ())]
+        self._require_registration = bool(require_registration)
+        self._world_registered = False
+        #: The cell as the cameras see it, asked immediately before every plan. `None` is the
+        #: unchanged path: the declared world is registered once and never revisited.
+        self._live_world = live_world
+        #: This arm's own body now, so the camera's view of the robot can be taken back out.
+        self._self_envelope = self_envelope
+        #: The last refresh, for a report and for an operator asking why a move was refused.
+        self._last_refresh: "WorldRefresh | None" = None
+        #: Where the perceived obstacles go besides the planner. The path guard lives on the arm
+        #: rather than here, and the two have to be looking at the same cell. Whatever it returns is
+        #: ignored: the preflight answers how many guards took the boxes, which is a number for a
+        #: report rather than a decision to make here.
+        self._on_perceived_obstacles = on_perceived_obstacles
+        #: Collision-sphere slots the sidecar reserves for a carried payload. At 0 the
+        #: sidecar robot config is untouched and `attach_payload` refuses, which is the
+        #: unchanged path.
+        self._attach_spheres = 0
+        #: Whether this sidecar may hold a carried part: set as an attach is handed to it, whatever it answers,
+        #: and cleared by a detach it confirmed or by closing it. `detach_payload` asks nothing while it is clear.
+        self._payload_handed = False
+        #: The names of the boxes the camera saw that the planner holds now, as the last refresh it confirmed
+        #: handed them over; `()` while it holds none, and `None` where nobody can say: a refused refresh, a
+        #: world set by hand, a restarted sidecar. Only these are ever asked to be set aside
+        #: (:meth:`judge_joint_path`).
+        self._seen_held: "tuple[str, ...] | None" = ()
+        #: The names of the boxes the camera saw that the same refresh handed the guard: the planner's own, but near
+        #: the motion's goal, where the guard holds the fine world (``fine_world``); `None` alike.
+        self._guard_held: "tuple[str, ...] | None" = ()
+        #: What the sidecar allocates when it starts, told to the client before `start`. None leaves
+        #: the client as its factory built it.
+        self._reservation = reservation
+        #: Asked of the descriptor the sidecar reports once it is ready: a sentence refuses the
+        #: planner. ``None`` asks nothing, which is what a caller that injects its own client gets.
+        self._descriptor_check = descriptor_check
+        #: A sentence about the controller's state after a sent moveJ failed; `None` adds nothing.
+        self._controller_state = controller_state
+        #: Held while a sidecar starts and while one closes, so a close waits for a start in progress and closes what
+        #: it started: closed half way, the started client would be kept by nobody, a sidecar orphaned.
+        self._start_lock = threading.RLock()
+        #: Whether a sidecar is being started now; read without the lock, for :attr:`state`.
+        self._starting = False
+        #: Set by :meth:`retire`, under the start lock: this glue starts no sidecar again, so a thread still holding it
+        #: after the arm dropped it (a move judging its route across a disconnect) spawns none nobody would close.
+        self._retired = False
+        self._retired_because = _RETIRED
+        self.logger = create_robot_logger("CuroboPlanner", CUROBO_PLANNER_LOG_FILE)
+
+    @property
+    def state(self) -> str:
+        """``off``, ``starting`` or ``ready``: whether this glue holds a started sidecar. Never waits, never raises."""
+        if self._starting:
+            return "starting"
+        return "ready" if self._client is not None else "off"
+
+    def enable_payload(self, sphere_slots: int) -> None:
+        """Reserve collision spheres for a carried part. It is called before the planner starts."""
+        self._attach_spheres = max(0, int(sphere_slots))
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    def _client_or_start(self) -> CuroboPlanClient:
+        """Spawn and JIT-warm the cuRobo server lazily, raising where the environment is missing.
+
+        The declared world is registered here rather than at construction, because
+        construction happens on a cell that may never plan and starting the sidecar
+        costs a JIT warm-up. It is sent once and then kept: the sidecar holds its world
+        between plans, so re-sending an unchanged world on every move would pay that cost
+        for nothing. A cell with a live world refreshes it separately, before each plan,
+        which is a different thing from this and deliberately not free.
+        """
+        # Registration is retried until it succeeds rather than attempted once when the
+        # client is built. Hanging it off the construction meant a refused registration was
+        # never tried again: the second move found a built client, skipped registration
+        # entirely, and planned against the very world the first refusal was about.
+        # `_register_world` returns immediately once the planner has confirmed the world in
+        # full, so the retry costs nothing on the normal path.
+        client = self._client
+        if client is not None:
+            self._register_world(client)
+            return client
+        # A start holds the lock until its client is kept, so a close waits for it (see `close`).
+        with self._start_lock:
+            return self._start_locked()
+
+    def _start_locked(self) -> CuroboPlanClient:
+        """The body of :meth:`_client_or_start`'s start, under the start lock. A retired glue starts nothing."""
+        if self._retired:
+            raise CuroboUnavailableError(self._retired_because)
+        if self._client is not None:
+            self._register_world(self._client)
+            return self._client
+        self._starting = True
+        try:
+            # The planner's base is not always the controller's. Every pose this glue hands the planner is in the
+            # controller's base, and the planner is rooted at the description's base link; on a UR the two are half a
+            # turn apart, so the client is seen through the turn from here on: goals, boxes, meshes and the live scene
+            # go in turned, and a pose the planner reports comes back turned. Joints are the same numbers in both. An
+            # arm whose description says 0 is handed the client as it is (P0f F9c).
+            made = self._client_factory()
+            client = cast("CuroboPlanClient", PlannerFrameClient(made)) if self._controller_yaw_deg == 180 else made
+            if self._reservation is not None:
+                # For the same reason as the spheres below, and first: the slots have to be in the
+                # sidecar environment before it spawns, and an injected factory never sees the config.
+                reserve = getattr(client, "reserve_world", None)
+                if callable(reserve):
+                    reserve(self._reservation)
+            if self._attach_spheres > 0:
+                # The sphere budget has to be in the sidecar environment before it
+                # spawns, because it decides which robot config gets built. It is set
+                # here rather than in the factory, so a caller that injects its own
+                # factory still gets the behaviour.
+                setter = getattr(client, "reserve_attach_spheres", None)
+                if callable(setter):
+                    setter(self._attach_spheres)
+            client.start()
+            refusal = (
+                self._descriptor_check(SidecarIdentity.from_client(client))
+                if self._descriptor_check is not None else None
+            )
+            if refusal is not None:
+                # Closed rather than kept: the next move would find a started client and plan with it.
+                client.close()
+                self.logger.error("cuRobo planner refused: %s", refusal)
+                raise CuroboUnavailableError(refusal)
+            kept = cast("CuroboPlanClient", _KeptClient(client, self))
+            self._client = kept
+        finally:
+            self._starting = False
+        self._register_world(kept)
+        return kept
+
+    def _register_world(self, client: CuroboPlanClient) -> None:
+        """Hand the cell's obstacles to the planner, or refuse to plan at all.
+
+        The latch is set only after the planner confirmed the world in full. Set before the
+        refusal is raised, it refuses the first move and lets every later one find the client
+        already built, skip this entirely, and plan against the partial world the refusal was
+        about. A guard that fires once and then waves everything through afterwards is worse
+        than either answer.
+        """
+        if self._world_registered or not (self._world_cuboids or self._world_meshes):
+            return
+        expected = len(self._world_cuboids) + len(self._world_meshes)
+        # Meshes are named only when there are some: a client from before meshes existed takes one
+        # argument, and a cell that declares none should not need a newer one.
+        count = (
+            client.set_world(list(self._world_cuboids), [dict(m) for m in self._world_meshes])
+            if self._world_meshes else client.set_world(list(self._world_cuboids))
+        )
+        if count == expected:
+            self._world_registered = True
+            # The declared world alone: whatever the camera saw before is gone from the planner.
+            self._seen_held = self._guard_held = ()
+            self.logger.info("registered %d cell obstacle(s) with the planner", count)
+            return
+        message = (
+            f"the planner confirmed {count} of {expected} declared cell obstacle(s). "
+            "It is now planning against a world that is missing some of your cell, and an obstacle it "
+            "never received is one it will route straight through."
+        )
+        if self._require_registration:
+            raise CuroboUnavailableError(
+                message + " Refusing to plan. Set safety.planning_world.require_registration false to "
+                "plan anyway, deliberately."
+            )
+        self.logger.error("%s Planning anyway: require_registration is off.", message)
+
+    def set_live_world(self, world: "LivePlannerWorld | None") -> None:
+        """Point this planner at a different live world, or at none.
+
+        `None` restores the behaviour of registering the declared world once and planning
+        against it for the life of the cell, which is what a planner built without one does.
+        """
+        self._live_world = world
+
+    def _refresh_world(
+        self, *, near_point_mm: "Sequence[float] | None" = None, goal_keep_out: "Maybe[GoalKeepOut]" = UNSET,
+    ) -> None:
+        """Hand the planner the cell as the cameras see it, or refuse to plan.
+
+        Called immediately before every plan rather than once at startup. A world
+        registered once is a photograph, and everything that arrived in the cell afterwards
+        is invisible to the planner while looking exactly like empty space in every log
+        there is.
+
+        Without a live world configured this does nothing at all, and the declared world
+        registered at startup is what the planner keeps.
+
+        Raises
+        ------
+        CuroboUnavailableError
+            Where the world cannot be vouched for: no camera answered, the frame is older
+            than the cell allows, or the planner confirmed fewer boxes than it was sent.
+            Refusing is the safety layer's rule everywhere else, and the alternative here is
+            driving against a world that had time to go out of date.
+        """
+        if self._live_world is None:
+            return
+        envelope = self._self_envelope() if self._self_envelope is not None else None
+        client = self._client_or_start()
+        # Until this refresh says what the planner holds, nobody can say which of the camera's boxes it does.
+        self._seen_held = self._guard_held = None
+        try:
+            refresh = refresh_planner_world(
+                source=self._live_world,
+                client=client,
+                self_envelope=envelope,
+                near_point_mm=near_point_mm,
+                require_registration=self._require_registration,
+                goal_keep_out=goal_keep_out,
+            )
+        except CameraWorldUnavailable as exc:
+            # Raised on, not refused: a camera that stayed silent, blind or stale through its attempts
+            # is a fault of the cell. The guard is emptied as on any refused refresh, and the fault is
+            # written down once, here, where the camera and the attempts are known.
+            if self._on_perceived_obstacles is not None:
+                self._on_perceived_obstacles(())
+            self.logger.error("%s", exc)
+            raise
+        self._last_refresh = refresh
+        # The camera's boxes the planner now holds, and those the guard was handed of the same world, where the
+        # planner confirmed it: the same boxes, but near the motion's goal, where the guard holds the fine world. After
+        # a refused refresh nobody can say what the planner holds of them.
+        self._seen_held = tuple(refresh.planner_seen) if refresh.ok else None
+        self._guard_held = tuple(str(box.name) for box in refresh.guard_boxes) if refresh.ok else None
+        # Including the empty list on a refusal: a guard left holding boxes from a refused
+        # refresh is checking a cell that no longer exists.
+        if self._on_perceived_obstacles is not None:
+            self._on_perceived_obstacles(refresh.guard_boxes)
+        if not refresh.ok:
+            # Logged here, once: the caller turns the raise into CONTROLLER_REJECTED, and this line
+            # is the only place a person reads why the move was refused.
+            self.logger.error("%s", refresh.render())
+            raise CuroboUnavailableError(
+                f"the planner world could not be refreshed, so this move is refused. "
+                f"{refresh.render()}"
+            )
+        self.logger.info("%s", refresh.render())
+
+    def refresh_world(
+        self, *, near_point_mm: "Sequence[float] | None" = None, goal_keep_out: "Maybe[GoalKeepOut]" = UNSET,
+    ) -> None:
+        """Refresh the planner world now, for a caller that judges its own path before asking the planner.
+
+        The arm's path guard learns the perceived obstacles from this refresh, so the arm calls it
+        before that guard runs and then asks :meth:`check_joint_path` with ``refresh=False``: one
+        camera reading per motion, and both authorities judging the same cell. Raises what
+        :meth:`_refresh_world` raises.
+        """
+        self._refresh_world(near_point_mm=near_point_mm, goal_keep_out=goal_keep_out)
+
+    @property
+    def last_world_refresh(self) -> "WorldRefresh | None":
+        """What the most recent refresh did, for a report and for an operator asking why."""
+        return self._last_refresh
+
+    def attach_payload(
+        self, joints: "Sequence[float]", dims_mm: "Sequence[float]", centre_mm: "Sequence[float]"
+    ) -> bool:
+        """Tell the planner the gripper is carrying a box, so later plans route the box around too.
+
+        ``dims_mm`` are the sides of the box along the tool0 axes and ``centre_mm`` is its
+        centre in tool0, as ``self_envelope.carried_part_box`` places them, along the hand's placed
+        approach. A distance along tool0 +Z alone would not follow a hand that approaches along
+        another axis, as the Isaac cell's hand does. It
+        returns ``False`` where the planner could not attach, including a sidecar
+        started with no sphere budget: a cell that cannot model its payload carries on
+        and says so rather than stopping mid-pick.
+        """
+        dims_m = [float(d) / 1000.0 for d in dims_mm]
+        pose = [*(float(c) / 1000.0 for c in centre_mm), 1.0, 0.0, 0.0, 0.0]
+        try:
+            client = self._client_or_start()
+            # From here the sidecar may hold the part whatever it answers: a False is a refusal or a reply that
+            # never came, and the attach behind a timeout can still land.
+            self._payload_handed = True
+            return client.attach_payload(list(joints), dims_m, pose)
+        except CuroboUnavailableError as exc:
+            # The client logs that it is planning as if the gripper were empty when the
+            # sidecar answers with a refusal. Where the sidecar is gone the exception
+            # flies past that line, so without this the one case in which nothing is
+            # modelled would be the one case nobody is told about.
+            self.logger.error("payload NOT attached (%s); the planner is routing as if the gripper were "
+                         "empty", exc)
+            return False
+
+    def detach_payload(self) -> bool:
+        """Take the carried box off the planner's model; ``True`` without asking where none was handed to it.
+
+        A sidecar that was never handed a part since it last confirmed a detach holds none, and it is not
+        asked: one started with no sphere budget has no attachment link, and cuRobo's detach raises on it
+        (measured 2026-09-23 on the UR10 descriptor and this project's GPU: ``ValueError: attached_object not
+        found in spheres``, answered as ``detached: false``). Asked anyway, a place after a grasp that modelled
+        nothing reported DETACH_FAILED. Wherever an attach was handed over, confirmed or not, the sidecar is
+        asked and its answer is the answer: a detach it does not confirm, or a sidecar that is gone, is
+        ``False``, and the next detach asks again.
+        """
+        if self._client is None or not self._payload_handed:
+            return True
+        try:
+            detached = bool(self._client.detach_payload())
+        except CuroboUnavailableError as exc:
+            self.logger.error("payload NOT detached (%s); the planner will keep routing around a part "
+                         "the gripper no longer holds", exc)
+            return False
+        if detached:
+            self._payload_handed = False
+        return detached
+
+    def set_world(self, cuboids: list[dict]) -> int:
+        """Register scene obstacles into the cuRobo collision world, or 0 where the planner is away.
+
+        The declared world goes underneath. Registration replaces the planner's world
+        rather than extending it, so without the merge a caller sending its own boxes
+        deletes the bench, the bin and every fixture this cell declared, with nothing
+        logged and nothing to notice it by. The simulator driver merges the same way, and
+        this is the side whose arm can hurt someone.
+        """
+        merged = merge_planner_worlds(self._world_cuboids, cuboids)
+        # A world set by hand is no refresh's: whatever of it the camera saw, the guard was not handed it.
+        self._seen_held = self._guard_held = None
+        try:
+            count = self._client_or_start().set_world(merged)
+            if count == len(merged):
+                self._world_registered = True
+            return count
+        except CuroboUnavailableError as exc:
+            # The client line about planning continuing against the previous world sits
+            # after the call, so an unavailable sidecar skips it and the scene obstacles
+            # would vanish quietly.
+            self.logger.error("collision world NOT set, %d cuboid(s) dropped (%s); the planner is "
+                         "routing against whatever world it last had", len(merged), exc)
+            return 0
+
+    def start(self) -> SidecarIdentity:
+        """Start the planning server the way the first planned move does, and say what it loaded.
+
+        Every refusal that move meets on the way is raised here as it would be there, a
+        ``CuroboUnavailableError`` naming it: the client factory's (margin, hand, retract row), the
+        descriptor and evidence check, and the world registration. A started server is kept, so a move
+        after this plans on it.
+        """
+        return SidecarIdentity.from_client(self._client_or_start())
+
+    def close(self) -> None:
+        """Shut down the planning server (idempotent). A closed server holds no part, and the next one starts empty.
+
+        A start in progress is waited for, and the server it started is closed: a close in the middle of it would find
+        no client yet, and the start would then keep one nobody holds.
+        """
+        with self._start_lock:
+            if self._client is not None:
+                self._client.close()
+                self._client = None
+            self._payload_handed = False
+            self._seen_held = self._guard_held = None
+
+    def retire(self, why: str = _RETIRED) -> None:
+        """Shut the planning server down for good: this glue never starts another (idempotent).
+
+        What the arm's disconnect and ``stop_planner`` do, where :meth:`close` alone would let the next ask start a
+        fresh sidecar on this glue. A move judging its route holds the glue it took at its start, and every check, plan
+        and refresh of that route starts the sidecar where none runs; after the arm dropped the glue, such a sidecar
+        would be held by nobody. A retired glue refuses those asks with ``why`` (``CuroboUnavailableError``), so the
+        move fails closed. A start in progress is waited for, and what it started is closed.
+        """
+        with self._start_lock:
+            if not self._retired:
+                self._retired, self._retired_because = True, str(why)
+            self.close()
+
+    # ------------------------------------------------------------------
+    # Planning + execution
+    # ------------------------------------------------------------------
+
+    def plan_joint(
+        self,
+        goal_ur: "Sequence[float]",
+        *,
+        start_ur: "Sequence[float] | None" = None,
+        refresh: bool = True,
+        near_point_mm: "Sequence[float] | None" = None,
+        goal_keep_out: "Maybe[GoalKeepOut]" = UNSET,
+    ) -> list[list[float]] | None:
+        """Plan from the joints the arm stands at to ``goal_ur`` in joint space, returning the trajectory in UR order.
+
+        The start is read off the controller, the world is refreshed before the plan, and the joints
+        are remapped into the planner's order and back. ``None`` where cuRobo found no plan, with the
+        typed reason on :attr:`last_refusal`. Joints are the same numbers in the planner's base as in
+        the controller's, so nothing is turned.
+
+        ``start_ur`` is a start other than where the arm stands, in UR order: the end of a straight escape leg the
+        arm judged out of a pose the planner's padded spheres refuse (``planning.band``), which cuRobo cannot plan
+        out of. The controller is then not read, and the leg to that start is the arm's to judge and run first.
+
+        ``refresh=False`` skips the refresh, for a caller that refreshed the world itself before
+        judging the goal against it; ``near_point_mm`` and ``goal_keep_out`` are what that refresh
+        is handed otherwise: the flange at the goal, where the slot budget keeps its obstacles, and
+        the space between the jaws there, which the refresh leaves out.
+
+        Raises
+        ------
+        CuroboUnavailableError
+            If the cuRobo environment or service cannot be brought up, and the caller then fails
+            closed.
+        """
+        goal = [float(v) for v in goal_ur]
+        current_ur = ([float(v) for v in self._transport.read_joints()] if start_ur is None
+                      else [float(v) for v in start_ur])
+        client = self._client_or_start()
+        if refresh:
+            self._refresh_world(
+                near_point_mm=None if near_point_mm is None else [float(v) for v in near_point_mm],
+                goal_keep_out=goal_keep_out,
+            )
+        start = self._to_client_order(current_ur, client.joint_names)
+        traj = client.plan_joint(start, self._to_client_order(goal, client.joint_names))
+        if not traj:
+            refusal = self.last_refusal
+            if refusal is not None:
+                # Named by where it was: a refused start is not a goal the planner could not reach (research,
+                # 2026-09-30: the line read "this joint goal" for the start the arm stood in).
+                what = ("the start of this joint move" if getattr(refusal, "where", None) == StateWhere.START
+                        else "this joint goal")
+                self.logger.warning("cuRobo refused %s. %s", what, refusal.render())
+            return None
+        return [self._to_ur_order(list(wp), client.joint_names) for wp in traj]
+
+    def judge_joint_path(
+        self, samples_ur: "Sequence[Sequence[float]]", *, clearance_mm: float = 0.0, name_pairs: bool = True,
+        ignore_perceived: "Sequence[str] | None" = None,
+    ) -> "PathJudgement":
+        """Every configuration of a joint path the planner refuses, with the three terms apart and every pair it found.
+
+        The report :meth:`check_joint_path`'s verdict rests on (``CuroboPlanClient.judge_joints``), in UR joint order,
+        against the world the planner holds: nothing is refreshed, because the arm asks this only right after it judged
+        the same samples against a refreshed world. It is what lets the arm leave the self pairs the exact guard judges
+        to that guard (``planning.band``).
+
+        ``ignore_perceived`` asks the same with the boxes the camera saw set aside, by name: the arm asks it where only
+        those boxes may refuse the planner's world, and the exact guard, which holds the same boxes, decides them (the
+        owner's Option 1). The names have to be exactly the camera boxes the last refresh this glue confirmed handed the
+        planner (:meth:`perceived_in_world`), none of them a declared fixture's, and no part may be carried
+        (:attr:`carries_part`); anything else raises before the sidecar is asked. ``None``, the default, asks as this
+        method always did.
+
+        Raises ``CuroboUnavailableError`` where the planner cannot be reached or its client reports no refused samples,
+        and where the camera's boxes cannot be set aside as above: no report is ever made up, and the arm's refusal then
+        stands.
+        """
+        configs = [[float(v) for v in sample] for sample in samples_ur]
+        client = self._client_or_start()
+        judge = getattr(client, "judge_joints", None)
+        if not callable(judge):
+            raise CuroboUnavailableError(
+                "this planner client reports no refused samples (it has no judge_joints), so no pair can be left to "
+                "the exact guard"
+            )
+        ordered = [self._to_client_order(list(c), client.joint_names) for c in configs]
+        if ignore_perceived is None:
+            return cast("PathJudgement", judge(ordered, clearance_mm=float(clearance_mm), name_pairs=bool(name_pairs)))
+        names = tuple(sorted(str(name) for name in ignore_perceived))
+        refused = self._set_aside_refusal(names)
+        if refused is not None:
+            self.logger.warning("no box the camera saw is set aside: %s", refused)
+            raise CuroboUnavailableError(refused)
+        return cast("PathJudgement", judge(ordered, clearance_mm=float(clearance_mm), name_pairs=bool(name_pairs),
+                                           ignore_perceived=names))
+
+    def perceived_in_world(self) -> "tuple[str, ...] | None":
+        """The names of the boxes the camera saw that the planner holds now, as the last refresh it confirmed handed them
+        over; ``()`` where it holds none, ``None`` where nobody can say (a refused refresh, a world set by hand, a
+        sidecar closed since)."""
+        return self._seen_held
+
+    def guard_held_in_world(self) -> "tuple[str, ...] | None":
+        """The names of the boxes the camera saw that the same refresh handed the guard: :meth:`perceived_in_world`'s,
+        but near the motion's goal, where the guard holds the fine world (``fine_world``); ``None`` alike."""
+        return self._guard_held
+
+    @property
+    def carries_part(self) -> bool:
+        """Whether this planner may hold a carried part: an attach was handed to it and no detach it confirmed since."""
+        return self._payload_handed
+
+    def _set_aside_refusal(self, names: "tuple[str, ...]") -> "str | None":
+        """Why the camera boxes ``names`` cannot be set aside in the planner's world, or ``None`` where they can."""
+        declared = sorted({str(box.get("name")) for box in self._world_cuboids} & set(names))
+        if declared:
+            return (f"the declared fixtures {declared} carry the names of boxes the camera saw, and a declared fixture is "
+                    "never set aside: give them names of their own")
+        if self._payload_handed:
+            return ("a part may be carried, which only the planner models, so no box the camera saw is set aside while "
+                    "it may be")
+        held = self._seen_held
+        if held is None:
+            return ("nobody can say which boxes the camera saw the planner holds now: its world is no refresh it "
+                    "confirmed (a refused refresh, a world set by hand, or a sidecar started since)")
+        if sorted(held) != list(names):
+            return (f"the planner was handed the boxes the camera saw {sorted(held)} by its last refresh, and was asked "
+                    f"to set aside {list(names)}: the guard and the planner do not hold the same boxes")
+        return None
+
+    @property
+    def last_refusal(self) -> "StateRefusal | None":
+        """Why the sidecar refused what it was last asked, or ``None``.
+
+        A client that does not carry the typed reason has none.
+        """
+        return getattr(self._client, "last_refusal", None)
+
+    def check_joint_path(
+        self, samples_ur: "Sequence[Sequence[float]]", *, refresh: bool = True, clearance_mm: float = 0.0,
+    ) -> JointCheckVerdict:
+        """Ask cuRobo whether every configuration of a joint path is admissible, in UR joint order.
+
+        The same planner, the same world and the same attached payload a plan gets, so a joint
+        path is judged against the cell the planner actually holds rather than against a second
+        model that agreed with it when somebody last looked. The world is refreshed first for the
+        reason :meth:`_refresh_world` gives: a world registered once is a photograph.
+
+        ``clearance_mm`` above 0 refuses a configuration closer than that to the planner's world
+        (:meth:`CuroboPlanClient.check_joints`); the arm asks it of a straight line it would run
+        instead of a plan. 0, the default, is the check every planned path gets, and the client is
+        then asked exactly as it always was.
+
+        Judged in one request. Returning after the first refused sample would cost a round
+        trip per configuration, and the sidecar already answers with the index it stopped at.
+
+        ``refresh=False`` skips the refresh, for a caller that ran :meth:`refresh_world` itself
+        before its own path guard judged the same samples. The arm does, so that guard is not
+        judging against the obstacles of the motion before.
+
+        Raises
+        ------
+        CuroboUnavailableError
+            If the cuRobo env cannot be brought up or the world cannot be vouched for. Fail
+            closed: the caller gets no verdict rather than an invented one.
+        """
+        configs = [[float(v) for v in sample] for sample in samples_ur]
+        if not configs:
+            return JointCheckVerdict(
+                valid=True, first_invalid=None, checked=0,
+                reason="an empty path has nothing to refuse",
+            )
+        client = self._client_or_start()
+        if refresh:
+            # The goal decides which obstacles matter when the slot budget bites, and the goal of
+            # a joint path is its last configuration. Its flange position is not known here
+            # without FK, so this refresh runs without a near point and without a goal region. The
+            # arm refreshes near the goal flange itself, with the region at the goal's TCP, and asks
+            # with `refresh=False`.
+            self._refresh_world()
+        ordered = [self._to_client_order(list(c), client.joint_names) for c in configs]
+        if clearance_mm > 0.0:
+            return client.check_joints(ordered, clearance_mm=float(clearance_mm))
+        return client.check_joints(ordered)
+
+    def execute(
+        self,
+        traj_ur: "Sequence[Sequence[float]]",
+        pose: "Pose | None" = None,
+        *,
+        command: MotionCommand = MotionCommand.MOVE_TO,
+        target_joints: "JointPositions | None" = None,
+        vel: float | None = None,
+        acc: float | None = None,
+    ) -> MotionResult:
+        """Run a UR-order list of joint waypoints as one blocking ``moveJ`` per waypoint, in order.
+
+        Each ``moveJ`` runs the joint-space line from where the arm stands to the next waypoint, and
+        stops there. So the legs this runs are the legs between neighbouring entries of ``traj_ur``,
+        and the list the arm hands over is the list whose legs it had judged: nothing here drops,
+        adds or moves a waypoint. ``vel`` and ``acc`` arrive clamped by the arm; ``None`` takes the
+        defaults this planner was built with. The result names ``command`` and what it was
+        commanded to, ``pose`` for a Cartesian move and ``target_joints`` for a joint move.
+
+        A failure says how far the list got. A waypoint ``ur_rtde`` refuses before sending it (a
+        speed or acceleration outside its range raises ``ValueError``) is INVALID_TARGET. A ``moveJ``
+        that was sent and raised is CONNECTION_ERROR, and one that was sent and returned ``False`` is
+        CONTROLLER_REJECTED; after either the arm may have moved part of the way, and the message
+        carries the controller's state where it can be read.
+
+        The halt latch ends the list where it is (CANCELLED, naming the waypoint): it is read before every waypoint,
+        and a halted connection sends none. With ``robot.ur.brake_on_halt`` a halt brakes the leg in flight and no
+        later waypoint follows; without it the leg in flight runs to its end and the next one is not sent. A halt
+        that came after the path began ends it even where it was cleared before the leg in flight ended: the latch's
+        count of halts (``halt_requests``) is taken before the first waypoint and read before each.
+        """
+        v = vel if vel is not None else self._vel
+        a = acc if acc is not None else self._acc
+        total = len(traj_ur)
+        commanded: dict[str, Any] = {"target_pose": pose, "target_joints": target_joints}
+        halts_before = _halt_requests_of(self._transport)
+        for index, waypoint in enumerate(traj_ur):
+            halted = _halt_on(self._transport)
+            if halted is not None or (halts_before is not None and _halt_requests_of(self._transport) != halts_before):
+                return self._cancelled_at(index, total, halted, "", command, commanded)
+            try:
+                # One waypoint a call, so the halt is read before each and a failure names its waypoint.
+                ok = self._transport.run_trajectory([list(waypoint)], vel=v, acc=a)
+            except ValueError as exc:
+                done = f"the {index} before it ran" if index else "nothing had moved"
+                return MotionResult.failed(
+                    MotionStatus.INVALID_TARGET, command, **commanded,
+                    message=(f"ur_rtde refused waypoint {index + 1} of {total} of the judged path before "
+                             f"sending it ({exc}), so that moveJ was not sent and {done}"),
+                    exception=exc,
+                    sent=MotionSent.SENT if index else MotionSent.NOTHING,
+                )
+            except (RuntimeError, OSError) as exc:
+                return MotionResult.failed(
+                    MotionStatus.CONNECTION_ERROR, command, **commanded,
+                    message=(f"UR moveJ raised executing waypoint {index + 1} of {total} of the judged path: "
+                             f"{exc}. moveJ was sent, so the arm may have moved part of the way."
+                             f"{self._state_text()}"),
+                    exception=exc,
+                    sent=MotionSent.SENT,
+                )
+            if not ok:
+                ended = _halt_end_of(self._transport)
+                if ended:
+                    return self._cancelled_at(index, total, _halt_on(self._transport), ended, command, commanded)
+                return MotionResult.failed(
+                    MotionStatus.CONTROLLER_REJECTED, command, **commanded,
+                    message=(f"UR moveJ rejected waypoint {index + 1} of {total} of the judged path. moveJ "
+                             f"was sent and the controller did not complete it, so the arm may have moved part "
+                             f"of the way.{self._state_text()}"),
+                    sent=MotionSent.SENT,
+                )
+        self.logger.info("judged path executed on UR: %d moveJ", total)
+        return MotionResult.executed(command, **commanded, message="curobo")
+
+    def _cancelled_at(self, index: int, total: int, halted: HaltState | None, ended: str, command: MotionCommand,
+                      commanded: "dict[str, Any]") -> MotionResult:
+        """The CANCELLED result of a path the halt ended at waypoint ``index`` (0-based): what ran, what did not.
+
+        ``halted`` is ``None`` where the latch was cleared between the end of the leg and this answer.
+        """
+        done = f"the {index} before it ran" if index else "nothing had moved"
+        if ended == "braked":
+            what = (f"waypoint {index + 1} of {total} of the judged path was braked under control in flight, and no "
+                    f"later waypoint was sent; the arm stands where the brake stopped it")
+        elif ended == "unconfirmed":
+            what = (f"waypoint {index + 1} of {total} of the judged path was braked in flight and the arm was not seen "
+                    f"to stand still: if it still moves, press the emergency stop; no later waypoint was sent")
+        else:
+            what = f"waypoint {index + 1} of {total} of the judged path was not sent, nor any after it, and {done}"
+        self.logger.warning("judged path ended by the halt: %s", what)
+        reason = halted.reason if halted is not None else "a halt that has been cleared since"
+        return MotionResult.failed(MotionStatus.CANCELLED, command, **commanded, message=halted_refusal(reason, what))
+
+    def _state_text(self) -> str:
+        """The controller's state as a sentence after a sent moveJ failed, or ``""``. Never a second fault."""
+        if self._controller_state is None:
+            return ""
+        try:
+            text = self._controller_state()
+        except Exception:  # noqa: BLE001 (best effort after a failure: no state is not a new fault)
+            return ""
+        return text if isinstance(text, str) else ""
+
+    # ------------------------------------------------------------------
+    # Joint-order remap between the planner and UR
+    # ------------------------------------------------------------------
+
+    def _require_the_same_joints(self, client_names: list[str]) -> None:
+        """Refuse a planner whose joints are not this arm's, before anything is planned or checked (P0e E12).
+
+        The remap fell back to the identity here until P0e: a sidecar started on another arm's descriptor was handed
+        this arm's joint vector position by position, and a path for other links came back to be sent.
+        """
+        if not client_names:
+            raise CuroboUnavailableError(
+                f"the planner names no joints, so its joint order cannot be mapped onto this arm's "
+                f"{list(self._joint_names)!r}: nothing is planned or checked. Start the sidecar on this arm's descriptor."
+            )
+        if set(client_names) != set(self._joint_names):
+            raise CuroboUnavailableError(
+                f"the planner names the joints {list(client_names)!r} and this arm's description names "
+                f"{list(self._joint_names)!r}: no joint order maps one onto the other, so nothing is planned or "
+                f"checked. Start the sidecar on this arm's descriptor."
+            )
+
+    def _to_client_order(self, ur_joints: list[float], client_names: list[str]) -> list[float]:
+        """Reorder controller-order joints into the planner's joint order; refused where the two name other joints."""
+        self._require_the_same_joints(client_names)
+        idx = {name: i for i, name in enumerate(self._joint_names)}
+        return [float(ur_joints[idx[name]]) for name in client_names]
+
+    def _to_ur_order(self, client_joints: list[float], client_names: list[str]) -> list[float]:
+        """Reorder planner-order joints back into the controller's joint order; refused as :meth:`_to_client_order`."""
+        self._require_the_same_joints(client_names)
+        pos = {name: i for i, name in enumerate(client_names)}
+        return [float(client_joints[pos[name]]) for name in self._joint_names]

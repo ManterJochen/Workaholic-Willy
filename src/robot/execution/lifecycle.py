@@ -28,6 +28,7 @@ from types import TracebackType
 from typing import Any, Callable
 
 from src.robot.constants import ROBOT_LOG_FILE, create_robot_logger
+from src.robot.core.camera_world import live_planner_world_of
 
 __all__ = [
     "ConnectedCell",
@@ -36,6 +37,7 @@ __all__ = [
     "NoRealGripper",
     "StepOutcome",
     "TeardownReport",
+    "WatchedRobot",
     "connect_cell",
     "disconnect_cell",
     "no_real_gripper_reason",
@@ -244,8 +246,10 @@ def connect_cell(
     ``from_robot_config`` never connects the arm (the caller owns the lifecycle), so the reverse
     order commands the vacuum line with no arm to command it through.
 
-    A gripper that refuses rolls the arm back. Leaving a half-connected cell means a UR controller's
-    single control script is held by a process that has already reported a failure.
+    A gripper that refuses rolls the arm back, and so does any failure after the arm came up, an announce
+    that raises included; one after the gripper came up takes the gripper down first. Leaving a
+    half-connected cell means a UR controller's single control script is held by a process that has
+    already reported a failure.
 
     A cell whose end-effector could not be built does not come up at all. Measured on this tree:
     ``real_cell --rehearse --runs 3`` on the shipped ``robot.yaml`` printed ``gripper  NullGripper``
@@ -280,20 +284,38 @@ def connect_cell(
                      getattr(substitution, "reason", ""), getattr(substitution, "detail", ""))
         raise NoRealGripper(no_real_gripper_reason(substitution))
     arm.connect()
-    say(ConnectStage.ARM_CONNECTED)
     hand_to = getattr(arm, "set_hand", None)
-    if gripper is None:
-        if callable(hand_to):
-            hand_to(None)
-        return
+    # Every announce is inside the transaction. One that ran before the `try` and raised (a bench `print` on a closed
+    # pipe, or any hook a library caller passes) left the arm connected and its control script held, and one that
+    # raised after the gripper came up rolled back the arm alone.
+    gripper_asked = gripper_up = False
     try:
+        say(ConnectStage.ARM_CONNECTED)
+        if gripper is None:
+            if callable(hand_to):
+                hand_to(None)
+            return
         say(ConnectStage.GRIPPER_MOVING)
+        gripper_asked = True
         gripper.connect()
+        gripper_up = True
         say(ConnectStage.GRIPPER_CONNECTED)
         if callable(hand_to):
             hand_to(gripper)
     except BaseException:
-        logger.error("Gripper connect failed; rolling the arm back to disconnected.")
+        if gripper_up:
+            # Gripper first, the order a cell comes down in: a vacuum cup's disconnect releases its output, and it
+            # reaches the I/O only while the arm is still up.
+            logger.error("Connect failed after the gripper came up; rolling the gripper back, then the arm.")
+            try:
+                gripper.disconnect()
+            except Exception as rollback:  # noqa: BLE001 (must not mask the refusal being reported)
+                logger.error("Rollback of the gripper also failed, its output may still be asserted: %s: %s",
+                             type(rollback).__name__, rollback)
+        elif gripper_asked:
+            logger.error("Gripper connect failed; rolling the arm back to disconnected.")
+        else:
+            logger.error("Connect failed after the arm came up; rolling the arm back to disconnected.")
         try:
             arm.disconnect()
         except Exception as rollback:  # noqa: BLE001 (must not mask the refusal being reported)
@@ -360,7 +382,7 @@ def let_go_of_held_views(arm: Any) -> None:
     cell comes down, so a reconnect in the same process starts with no frames of a look around it did not take. Never
     raises: a pick's report and a teardown are what the caller reads, and a world that would not let go is logged.
     """
-    world = getattr(arm, "live_planner_world", None)
+    world = live_planner_world_of(arm)
     forget = getattr(world, "forget_pick_views", None)
     if not callable(forget):
         return
@@ -461,3 +483,56 @@ class ConnectedRobot:
         tb: TracebackType | None,
     ) -> None:
         _take_down(self, None)
+
+
+@dataclass
+class WatchedRobot:
+    """An arm watched, not connected, for the duration of a ``with`` block (P0i, owner 2026-09-26).
+
+        with WatchedRobot(arm, lock=cell_lock):
+            status = arm.get_robot_status()
+
+    The door a person clears a fault through: the cell lock first, as :class:`ConnectedRobot` takes it, then
+    ``SupportsWatching.watch()``, a link that reads the controller's state and releases a protective stop and never
+    starts a control program, so it opens on the stopped controller a full connect is refused by (measured on URSim,
+    2026-09-26). Every motion verb of the arm refuses meanwhile, since it is not connected. On the way out, on every way
+    out, the arm is disconnected and the lock given back. An arm that cannot be watched is refused before the lock is
+    taken.
+    """
+
+    arm: Any
+    #: Acquired before the watch opens and released after it is closed. ``None`` for an arm that owns no controller.
+    lock: Any = None
+
+    def __enter__(self) -> "WatchedRobot":
+        from src.robot.core import SupportsWatching
+
+        watched = self.arm
+        if not isinstance(watched, SupportsWatching):
+            raise TypeError(
+                f"{type(watched).__name__} cannot be watched without being driven (SupportsWatching): its status "
+                "and its release need a connection, which a stopped controller refuses")
+        if self.lock is not None:
+            self.lock.acquire()
+        try:
+            watched.watch()
+        except BaseException:
+            try:
+                self.arm.disconnect()
+            finally:
+                if self.lock is not None:
+                    self.lock.release()
+            raise
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        try:
+            self.arm.disconnect()
+        finally:
+            if self.lock is not None:
+                self.lock.release()

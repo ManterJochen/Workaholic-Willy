@@ -26,6 +26,7 @@ import cv2 as cv
 import numpy as np
 
 from src.config.schema.camera import RGBDDeviceRigConfig
+from src.camera.setup.capture_backend import refuse_a_backend_this_platform_lacks
 from src.camera.setup.image_taking.frames import CameraFacts, ResearchCapture, RGBDFrame
 from src.camera.setup.quality import configure_camera_for_quality
 from src.utility.log_cfg import create_logger
@@ -196,6 +197,7 @@ class OpenCvRGBDStreamer:
     """
 
     def __init__(self, config: RGBDDeviceRigConfig):
+        refuse_a_backend_this_platform_lacks(config)
         self.cfg = config
         self.logger = logging.getLogger(f"{__name__}.{config.rig_id}")
 
@@ -401,10 +403,13 @@ class RealSenseRGBDStreamer:
             return self._rs
         try:
             import pyrealsense2 as rs  # type: ignore[import-not-found]
-        except ImportError as exc:  # pragma: no cover (exercised only on bare envs)
+        except ImportError as exc:
+            # The loader's own reason, because "not installed" is one of two causes: measured in Ubuntu-24.04 (P0h
+            # h6), the installed wheel failed on libusb-1.0.so.0, a system library pip does not bring.
             raise ImportError(
-                "pyrealsense2 is not installed. It is pinned in requirements.txt, so "
-                "`pip install -r requirements.txt` supplies it, or pass a custom rs_module."
+                f"pyrealsense2 could not be imported ({exc}). If it is not installed, it is pinned in "
+                "requirements.txt: `pip install -r requirements.txt`; on Linux the wheel also needs the system "
+                "library libusb-1.0 (`sudo apt install libusb-1.0-0`). Or pass a custom rs_module."
             ) from exc
         self._rs = rs
         return rs

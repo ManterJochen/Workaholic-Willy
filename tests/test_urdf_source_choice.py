@@ -1,18 +1,15 @@
-"""Where a descriptor's URDF comes from is a choice the builder makes out loud (B5, S9).
+"""Where a descriptor's URDF comes from is said out loud, and there is one answer (B5 S9, P0f F5).
 
-Until now it was not a choice at all: the builder scanned Isaac's motion policy folder, took the first file that
+Until B5 it was not a choice at all: the builder scanned Isaac's motion policy folder, took the first file that
 described a body, repaired a stray parenthesis in it, and grafted a tool frame onto it from a sibling when it had
-none. That works, and it means a customer box cannot build a descriptor without a simulator installed, and that ur10
-was built from an asset whose frames are a different family from the vendor's own (measured: its links sit up to
-65 mm from where UR's description puts them).
+none. That meant a customer box could not build a descriptor without a simulator installed, and that ur10 was built
+from an asset whose frames are a different family from the vendor's own (measured: its links sit up to 65 mm from
+where UR's description puts them).
 
-``_urdf_source.choose`` names the two sources and what each promises.
-
-* ``isaac`` is exactly what the builder did: a file on Isaac's disk, whatever it says.
-* ``ur`` renders Universal Robots' own description, pinned to one upstream commit. It has a tool frame, complete
-  inertia and an elbow already inside UR's planning limit, so nothing is repaired and nothing is grafted. What it
-  cannot supply is REFUSED rather than transcribed from a neighbour: a tool frame written from somewhere else is how
-  a hand ends up pointing where it is not.
+``_urdf_source.choose`` renders Universal Robots' own description, pinned to one upstream commit. It has a tool frame,
+complete inertia and an elbow already inside UR's planning limit, so nothing is repaired and nothing is grafted. What it
+cannot supply is REFUSED rather than transcribed from a neighbour. The ``isaac`` source, a file on a simulator's disk,
+was retired in P0f F5, every arm having been built from ``ur`` since B6; it is refused by name.
 """
 
 from __future__ import annotations
@@ -23,7 +20,7 @@ import unittest
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
-_SCRIPTS = _ROOT / "scripts" / "curobo"
+_SCRIPTS = _ROOT / "scripts" / "arms"
 
 
 def _load(name: str):
@@ -52,13 +49,13 @@ class TheSourceIsNamedTests(unittest.TestCase):
         self.assertEqual(chosen.provenance["urdf_from"], "ur")
         self.assertEqual(chosen.provenance["description_commit"], self.description._commit())  # noqa: SLF001
         self.assertEqual(len(chosen.provenance["urdf_sha256"]), 64)
-        self.assertIsNone(chosen.path, "a rendered description was read from a file")
 
     def test_ur_needs_no_isaac_at_all(self) -> None:
-        """⭐ THE POINT OF THE STEP. A customer box has no simulator, and this path must not look for one."""
-        chosen = self.source.choose("ur10", source="ur", isaac_dir=Path("D:/there-is-no-isaac-here"))
+        """⭐ THE POINT OF THE STEP. A customer box has no simulator, and nothing here looks for one."""
+        chosen = self.source.choose("ur10", source="ur")
         self.assertIn("tool0", chosen.text)
-        self.assertEqual(chosen.provenance["urdf_from"], "ur")
+        self.assertEqual(("ur",), self.source.SOURCES)
+        self.assertFalse(hasattr(self.source, "isaac_root"), "the chooser still knows where Isaac lives")
 
     def test_every_model_renders_a_body_the_builder_can_use(self) -> None:
         for model in ("ur3", "ur3e", "ur5", "ur5e", "ur10", "ur10e", "ur16e"):
@@ -68,9 +65,9 @@ class TheSourceIsNamedTests(unittest.TestCase):
                 self.assertIn('<link name="base_link_inertia"', chosen.text)
 
     def test_a_render_without_a_tool_frame_is_refused_and_never_grafted(self) -> None:
-        """⭐ THE CONTROL. Under ``isaac`` a missing tool0 is transcribed from a sibling description, because that
-        generation of ur_description has none. Under ``ur`` there is no sibling to ask and no reason to: a rendered
-        description that cannot name its own tool frame is broken, and the answer is to say so."""
+        """⭐ THE CONTROL. The retired isaac path transcribed a missing tool0 from a sibling description. Here there is
+        no sibling to ask and no reason to: a rendered description that cannot name its own tool frame is broken, and
+        the answer is to say so."""
         original = self.source.render_urdf
         try:
             self.source.render_urdf = lambda model: original(model).replace('<link name="tool0"/>', "")
@@ -84,32 +81,29 @@ class TheSourceIsNamedTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             self.source.choose("ur5e", source="whatever-the-shell-said")
 
-    def test_the_builder_defaults_to_the_vendors_description_and_names_every_exception(self) -> None:
+    def test_the_retired_isaac_source_is_refused_by_name(self) -> None:
+        with self.assertRaises(SystemExit) as caught:
+            self.source.choose("ur5e", source="isaac")
+        self.assertIn("retired in P0f F5", str(caught.exception))
+
+    def test_the_builder_defaults_to_the_vendors_description_and_the_install_asks_for_it(self) -> None:
         """B5 S10. A default is what a customer box gets, so it is the vendor's own description.
 
-        ur10 is the one exception and it is passed explicitly: its arm sphere map is Isaac's and lives in Isaac's
-        link frames, so rendering that arm from UR's description puts the map 75.9 mm off its own upper arm and the
-        builder refuses. Measured 2026-09-16. B6 fits those spheres to the committed bundle and the exception goes.
+        ur10 was the one exception until B6: its arm sphere map was Isaac's and lived in Isaac's link frames, so
+        rendering that arm from UR's description put the map 75.9 mm off its own upper arm (measured 2026-09-16).
+        B6 fitted every arm's spheres to its committed bundle, and the install passes ``ur`` for all seven since.
         """
-        builder = (_SCRIPTS / "build_ur_config.py").read_text(encoding="utf-8")
+        builder = (_SCRIPTS / "descriptor.py").read_text(encoding="utf-8")
         self.assertIn('URDF_FROM = "ur"', builder, "the builder still defaults to a simulator's copy")
 
-        install = (_ROOT / "scripts" / "ext_deps" / "install.ps1").read_text(encoding="utf-8")
-        self.assertIn("--urdf-from", install, "the install never states a source, so the default is all there is")
-        self.assertIn("ur10", install)
+        import subprocess
 
-    def test_isaac_reads_the_file_it_names(self) -> None:
-        """The other half, unchanged: whatever Isaac's disk holds, with its path recorded."""
-        isaac = self.source.isaac_root("ur5e")
-        if isaac is None or not isaac.is_dir():
-            self.skipTest("no Isaac motion policy configs on this box")
-        assets = _ROOT / "ext_deps" / "curobo" / "curobo" / "content" / "assets" / "robot" / "ur_description"
-        if not assets.is_dir():
-            self.skipTest("no cuRobo asset root on this box, so Isaac's mesh references cannot resolve")
-        chosen = self.source.choose("ur5e", source="isaac", isaac_dir=isaac, asset_root=assets)
-        self.assertEqual(chosen.provenance["urdf_from"], "isaac")
-        self.assertTrue(str(chosen.path).endswith(".urdf"))
-        self.assertEqual(chosen.text, Path(chosen.path).read_text(encoding="utf-8"))
+        plan = subprocess.run([sys.executable, str(_ROOT / "scripts" / "ext_deps" / "install.py"), "--plan",
+                               "--from-nothing", "--platform", "win-64"], capture_output=True, text=True,
+                              check=True).stdout
+        self.assertIn("--urdf-from", plan, "the install never states a source, so the default is all there is")
+        self.assertIn("--urdf-from ur", plan)
+        self.assertNotIn("--urdf-from isaac", plan, "an arm still takes a simulator's description")
 
 
 if __name__ == "__main__":

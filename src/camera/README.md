@@ -158,6 +158,7 @@ they were.
 | `CameraRefused`, `reason="unknown"` | the section has no rig with that id | name a rig from `camera.cameras.rigs` |
 | `CameraRefused`, `reason="disabled"` | the rig says `enabled: false` | switch it on, or name a rig that is on |
 | `CameraRefused`, `reason="not_rgbd"` | the rig has no depth channel of its own, a stereo pair | name an RGB-D rig; the message lists them |
+| `CameraRefused`, `reason="backend"` | on Linux, an OpenCV rig whose `backend` is 700 (DirectShow) or 1400 (Media Foundation), which only OpenCV's Windows builds have; the tree still loads | write 0 (CAP_ANY) or 200 (CAP_V4L2); a RealSense rig never reads the key |
 | `CameraBusy` | another owner in this process holds the same device; the message names it | release that owner, or give the rigs distinct device ids |
 | `CameraNotOpen` | a grab or a lens read before `open()` | use a `with` block, or call `open()` first |
 | `RigNotCalibrated` | `calibration()` on a rig with no `extrinsics` block | calibrate the camera and paste the block the sweep prints |

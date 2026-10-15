@@ -52,15 +52,15 @@ class TheDoctorLooksUpWhatAStartLooksUpTests(unittest.TestCase):
         report = _doctor(_ursim(planner_margin_mm=6.0))
         row, evidence = _probe(report, "retract row"), _probe(report, "combination evidence")
         self.assertEqual(str(row.status), "missing")
-        self.assertIn("choose_ur_retract.py", row.detail + row.remedy)
+        self.assertIn("scripts/arms/retract.py", row.detail + row.remedy)
         self.assertEqual(str(evidence.status), "missing")
         self.assertIn("m6mm", evidence.detail)
-        self.assertIn("matrix_gate.py", evidence.detail + evidence.remedy)
+        self.assertIn("scripts/arms/gate.py", evidence.detail + evidence.remedy)
         self.assertEqual(report.exit_code, 1)
 
     def test_an_ik_cell_needs_neither(self) -> None:
         cell = _ursim()
-        cell = cell.model_copy(update={"ur": cell.ur.model_copy(update={"motion_planner": "ik"})})
+        cell = cell.model_copy(update={"motion": cell.motion.model_copy(update={"planner": "ik"})})
         report = _doctor(cell)
         for name in ("retract row", "combination evidence"):
             with self.subTest(probe=name):

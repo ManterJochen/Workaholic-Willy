@@ -1,9 +1,12 @@
 """The arm and the gripper a robot config describes, built without a pick service.
 
-Three functions:
+Five functions:
 
 * :func:`resolve_arm` runs the arm-vendor readiness gate and builds the arm ``robot.vendor`` names,
   or hands a supplied arm through;
+* :func:`construct_arm` builds that arm with no gate and connects nothing: what a desk asks of the arm a cell would
+  drive (P0i);
+* :func:`arm_facts` reads off an arm what a gripper driver needs of it, for the build and for the desk alike;
 * :func:`build_gripper` builds the end-effector ``robot.gripper`` names for the arm in hand, or a
   ``NullGripper`` that records why no real one could be built, from :func:`gripper_driver_verdict`,
   which the desk's ``gripper driver`` row asks too;
@@ -31,7 +34,7 @@ from src.robot.core import Gripper, RobotArm, RobotCapabilities, RobotVendor
 if TYPE_CHECKING:
     from src.config.schema.robot import RobotConfig
     from src.robot.core import GripperVendor
-    from src.robot.grippers import SubstitutionReason
+    from src.robot.grippers import ArmFacts, SubstitutionReason
     from src.config.schema.robot.sim_schema import SimConfig
     from src.config.schema.robot.tool_frame_schema import ToolFrameConfig
     from src.robot.drivers.sim.config import SimRobotConfig
@@ -40,7 +43,8 @@ if TYPE_CHECKING:
 
 _LOG = logging.getLogger(__name__)
 
-__all__ = ["GripperDriverVerdict", "build_gripper", "build_sim_driver_config", "gripper_driver_verdict", "resolve_arm"]
+__all__ = ["GripperDriverVerdict", "arm_facts", "build_gripper", "build_sim_driver_config", "construct_arm",
+           "driverless_verdict", "gripper_driver_verdict", "resolve_arm"]
 
 
 def resolve_arm(robot_cfg: "RobotConfig", *, arm: RobotArm | None) -> RobotArm:
@@ -51,8 +55,6 @@ def resolve_arm(robot_cfg: "RobotConfig", *, arm: RobotArm | None) -> RobotArm:
     in mock mode, the dummy, and a supplied arm that reports another vendor. Nothing is connected
     here.
     """
-
-    from src.robot.drivers import create_arm
 
     vendor = RobotVendor.from_string(robot_cfg.vendor)
 
@@ -88,25 +90,56 @@ def resolve_arm(robot_cfg: "RobotConfig", *, arm: RobotArm | None) -> RobotArm:
     )
 
     # --- Arm construction --------------------------------------------------
-    if arm is not None:
-        pass  # caller supplied a live handle; every other step still runs from config
-    elif vendor is RobotVendor.SIM:
+    # A supplied handle is used as it is; every other step still runs from config.
+    return arm if arm is not None else construct_arm(robot_cfg)
+
+
+def construct_arm(robot_cfg: "RobotConfig") -> RobotArm:
+    """The arm ``robot_cfg`` selects, constructed and never connected, with no readiness gate on its SDK.
+
+    What a desk asks of the arm a cell would drive (P0i, owner decision 2): every driver constructs without its SDK and
+    first needs its controller at ``connect``, so the arm built here answers its Protocols and commands nothing. A tree
+    its driver refuses raises as that driver raises. :func:`resolve_arm` runs the vendor's readiness gate, then this.
+    """
+    from src.robot.drivers import create_arm
+
+    vendor = RobotVendor.from_string(robot_cfg.vendor)
+    if vendor is RobotVendor.SIM:
         from src.robot.safety.planning.reservation import PlannerReservation
 
-        arm = create_arm(
+        return create_arm(
             RobotVendor.SIM,
             config=build_sim_driver_config(
                 robot_cfg.sim, robot_cfg.gripper.tool_frame,
                 planner_reservation=PlannerReservation.from_config(robot_cfg=robot_cfg),
             ),
         )
-    elif vendor is RobotVendor.DUMMY:
+    if vendor is RobotVendor.DUMMY:
         # Dummy arm ignores the config tree entirely.
-        arm = create_arm(RobotVendor.DUMMY)
-    else:
-        # UR, KUKA, etc. take the full schema config tree.
-        arm = create_arm(vendor, config=robot_cfg)
-    return arm
+        return create_arm(RobotVendor.DUMMY)
+    # UR, KUKA, etc. take the full schema config tree.
+    return create_arm(vendor, config=robot_cfg)
+
+
+def arm_facts(arm: object) -> "ArmFacts":
+    """What a gripper driver needs of ``arm``, read off it: the vendor it reports, whether it switches digital I/O
+    (``SupportsDigitalIO``) and the controller its identity names.
+
+    The build asks it of the handle in hand and the desk's ``gripper driver`` row of the arm the tree builds, so the two
+    decide on the same facts. Read through ``getattr`` rather than by importing the UR driver: the execution layer has
+    no import edge to a vendor driver and this must not add one.
+    """
+    from src.robot.core import SupportsDigitalIO
+    from src.robot.grippers import ArmFacts
+
+    return ArmFacts(vendor=_vendor_in_hand(arm), has_digital_io=isinstance(arm, SupportsDigitalIO),
+                    controller=_controller_of(arm))
+
+
+def _controller_of(arm: object) -> str | None:
+    """The controller address ``arm`` names in its own identity, or ``None`` where it names none or reports none."""
+    caps = getattr(arm, "capabilities", None)
+    return caps.controller if isinstance(caps, RobotCapabilities) else None
 
 
 def _vendor_in_hand(arm: object) -> str:
@@ -142,12 +175,38 @@ def gripper_driver_verdict(
 ) -> GripperDriverVerdict:
     """The driver ``robot_cfg.gripper`` gets on an arm that reports ``arm_vendor``, switches pins or not, at ``arm_ip``.
 
-    Pure: the facts about the arm are arguments, so the desk can ask it for the arm a config builds
-    (a UR driver keeps its tree's address and switches digital I/O) without building one, and the
-    build asks it with what it reads off the handle in hand.
+    Pure: the facts about the arm are arguments, read off an arm by :func:`arm_facts`, so the desk asks it with the facts
+    of the arm the tree builds and the build with those of the handle in hand. What each driver needs of the arm is its
+    own spec's to say (P0g slice 8): this asks the spec of the vendor the tree names, and says itself only what no spec
+    can, a name with no driver behind it (:func:`driverless_verdict`).
     """
     from src.robot.core import GripperVendor
-    from src.robot.grippers import SubstitutionReason
+    from src.robot.grippers import SUBSTITUTE_VENDOR, ArmFacts, gripper_driver
+
+    driverless = driverless_verdict(robot_cfg)
+    if driverless is not None:
+        return driverless
+    requested = str(robot_cfg.gripper.vendor)
+    gripper_vendor = GripperVendor.from_string(robot_cfg.gripper.vendor)
+    driver = gripper_driver(gripper_vendor)
+    if driver is None:  # pragma: no cover - driverless_verdict answers every vendor with no driver
+        raise RuntimeError(f"no driver for {gripper_vendor.value!r}, and driverless_verdict admitted it")
+    refusal = driver.refuse(robot_cfg, ArmFacts(vendor=arm_vendor, has_digital_io=arm_has_digital_io,
+                                                controller=arm_ip))
+    if refusal is not None:
+        return GripperDriverVerdict(SUBSTITUTE_VENDOR, requested, refusal.reason, refusal.detail, refusal.fix)
+    return GripperDriverVerdict(gripper_vendor, requested)
+
+
+def driverless_verdict(robot_cfg: "RobotConfig") -> "GripperDriverVerdict | None":
+    """The verdict for a ``robot.gripper.vendor`` no arm makes a driver of, or ``None`` where a driver exists.
+
+    A name this stack does not know, and a name it knows with no driver behind it, are decided by the tree alone, so a
+    desk states them whatever the arm is, even an arm that does not build (review of P0i i1). Where a driver exists,
+    what it needs of the arm is its spec's to say, and :func:`gripper_driver_verdict` asks it.
+    """
+    from src.robot.core import GripperVendor
+    from src.robot.grippers import SUBSTITUTE_VENDOR, SubstitutionReason, gripper_driver
 
     gripper_cfg = robot_cfg.gripper
     requested = str(gripper_cfg.vendor)
@@ -157,102 +216,30 @@ def gripper_driver_verdict(
         # An unrecognised gripper.vendor string is a misconfig; tolerate it as "no gripper" (the
         # facade stays usable) but warn instead of silently dropping the end-effector.
         return GripperDriverVerdict(
-            GripperVendor.NONE, requested, SubstitutionReason.UNKNOWN_VENDOR,
+            SUBSTITUTE_VENDOR, requested, SubstitutionReason.UNKNOWN_VENDOR,
             f"gripper.vendor={gripper_cfg.vendor!r} is not a gripper this stack knows.",
             "Set gripper.vendor to one of: none, dummy, robotiq, vacuum, jaw_io, onrobot.",
         )
+    driver = gripper_driver(gripper_vendor)
+    if driver is None:
+        # A recognised gripper vendor with no registered driver (FRANKA_HAND, schunk, future) falls
+        # back to NullGripper; warn so a config-only build is not silently gripper-less.
+        return GripperDriverVerdict(
+            SUBSTITUTE_VENDOR, requested, SubstitutionReason.NO_DRIVER,
+            f"gripper.vendor={gripper_vendor.value!r} is a recognised name with no driver in this "
+            f"repo.",
+            "Use robotiq, vacuum, jaw_io or onrobot, or write the driver and register it in "
+            "grippers/registry.py.",
+        )
+    return None
 
-    if gripper_vendor in (GripperVendor.NONE, GripperVendor.DUMMY, GripperVendor.ONROBOT):
-        # `GripperVendor.NONE` is a cell that genuinely has no end-effector, a legitimate
-        # configuration. `GripperVendor.ONROBOT` has no `SupportsDigitalIO` precondition, unlike the
-        # two I/O branches, and none is missing: a Compute Box is a separate device on its own
-        # network address, so this gripper has no dependency on the arm vendor at all.
-        return GripperDriverVerdict(gripper_vendor, requested)
-    if gripper_vendor is GripperVendor.ROBOTIQ:
-        # Robotiq lives on the UR controller's tool I/O, reached over a socket the URCap opens at
-        # that controller's address. Two separate facts have to hold.
-        #
-        # The arm in hand is asked (`arm_vendor`), not `robot_cfg.vendor`. A supplied handle
-        # replaces the arm construction step, so from that point the config does not describe the
-        # arm the cell runs on: asked instead, a `vendor: ur` tree beside a `DummyRobotArm` would
-        # yield a real Robotiq driver aimed at a real controller address, next to an arm holding no
-        # controller connection, and nothing on the built cell would say so. The two I/O branches
-        # below ask the handle too (`arm_has_digital_io`), for the same reason.
-        #
-        # The address comes off the arm as well, and that takes no config field of its own.
-        # `URRobotArm.__init__` keeps the tree it was built from (`self.config = config`), so
-        # `arm.config.ur.ip` is the controller this arm talks to. The tree is the wrong source for a
-        # supplied arm: a tree naming another vendor leaves `robot.ur.ip` at the schema default
-        # 192.168.1.100, a plausible address on a real subnet that nobody chose.
-        if arm_vendor != RobotVendor.UR.value:
-            # A config requesting Robotiq on a non-UR arm (notably the Isaac sim, whose `sim`
-            # profile sets gripper.vendor=robotiq + arm vendor=sim) cannot build a real gripper
-            # through from_robot_config. Warn instead of silently booting gripper-less; the sim
-            # builds its IsaacGripper via AutonomousGraspService.from_components (shared session).
-            return GripperDriverVerdict(
-                GripperVendor.NONE, requested, SubstitutionReason.ROBOTIQ_NEEDS_UR,
-                f"gripper.vendor='robotiq' but the arm in hand reports vendor {arm_vendor!r}, "
-                f"which is not a UR. A Robotiq lives on the UR controller's tool I/O, so an arm "
-                f"that is not on such a controller cannot reach one.",
-                "For the Isaac sim use AutonomousGraspService.from_components (the IsaacGripper "
-                "needs the shared session). On a real cell, set robot.vendor: ur and either let "
-                "this build the arm or hand in the UR arm you built yourself.",
-            )
-        if not arm_ip:
-            # The other half of the same refusal, and it is stated separately because an operator
-            # cannot act on the two the same way. Falling back to `robot_cfg.ur.ip` here is the
-            # thing that must not happen: on a tree that names no UR that value is the schema
-            # default, and pointing a real driver at an address nobody chose is exactly what this
-            # half of the refusal prevents.
-            return GripperDriverVerdict(
-                GripperVendor.NONE, requested, SubstitutionReason.ROBOTIQ_NEEDS_UR,
-                f"gripper.vendor='robotiq' and the arm in hand does report vendor "
-                f"{RobotVendor.UR.value!r}, but it exposes no controller address: reading "
-                f"arm.config.ur.ip off it found nothing. The Robotiq is reached over a socket on "
-                f"that arm's controller, and robot.ur.ip in this tree ({robot_cfg.ur.ip!r}) "
-                f"describes whatever the config names, not the arm that was handed in.",
-                "Hand in an arm built from a config tree (URRobotArm keeps the one it was "
-                "constructed with), or supply no arm at all and set robot.vendor: ur so this "
-                "builds the arm from this tree and both halves come from the same place.",
-            )
-        return GripperDriverVerdict(gripper_vendor, requested)
-    if gripper_vendor is GripperVendor.VACUUM:
-        # Suction over the arm's digital I/O: no SDK, so it builds from config. The arm must satisfy
-        # SupportsDigitalIO (the real UR driver does); anything else falls back to NullGripper + warn,
-        # mirroring the Robotiq-on-non-UR branch above rather than crashing at connect.
-        if arm_has_digital_io:
-            return GripperDriverVerdict(gripper_vendor, requested)
-        return GripperDriverVerdict(
-            GripperVendor.NONE, requested, SubstitutionReason.VACUUM_NEEDS_DIGITAL_IO,
-            f"gripper.vendor='vacuum' but the arm in hand reports vendor "
-            f"{arm_vendor!r} and does not advertise SupportsDigitalIO. Suction "
-            f"switches the controller's digital I/O, which only the real UR driver exposes.",
-            "Set robot.vendor: ur for a real suction cell, or gripper.vendor: none.",
-        )
-    if gripper_vendor is GripperVendor.JAW_IO:
-        # Parallel jaws over the arm's digital I/O: same story as suction directly above, and the
-        # same fallback when the configured arm cannot switch a pin. This is the vendor for a
-        # gripper wired to the controller. A Robotiq is jaws too and is not this: it speaks a socket
-        # the URCap opens, which is why it has its own branch and its own failure mode.
-        if arm_has_digital_io:
-            return GripperDriverVerdict(gripper_vendor, requested)
-        return GripperDriverVerdict(
-            GripperVendor.NONE, requested, SubstitutionReason.JAW_IO_NEEDS_DIGITAL_IO,
-            f"gripper.vendor='jaw_io' but the arm in hand reports vendor "
-            f"{arm_vendor!r} and does not advertise SupportsDigitalIO. A solenoid "
-            f"jaw switches the controller's digital I/O, which only the real UR driver "
-            f"exposes.",
-            "Set robot.vendor: ur for a real I/O jaw cell, or gripper.vendor: none.",
-        )
-    # A recognised gripper vendor with no registered driver (FRANKA_HAND, schunk, future) falls
-    # back to NullGripper; warn so a config-only build is not silently gripper-less.
-    return GripperDriverVerdict(
-        GripperVendor.NONE, requested, SubstitutionReason.NO_DRIVER,
-        f"gripper.vendor={gripper_vendor.value!r} is a recognised name with no driver in this "
-        f"repo.",
-        "Use robotiq, vacuum, jaw_io or onrobot, or write the driver and register it in "
-        "grippers/registry.py.",
-    )
+
+def drives_jaws_over_io(robot_cfg: "RobotConfig") -> bool:
+    """Whether the configured hand's driver drives jaws over the arm's digital I/O, which the bench's jaw verbs drive."""
+    from src.robot.grippers import gripper_driver
+
+    driver = gripper_driver(str(robot_cfg.gripper.vendor))
+    return bool(driver is not None and driver.drives_jaws_over_io)
 
 
 def build_gripper(robot_cfg: "RobotConfig", *, arm: RobotArm) -> Gripper:
@@ -263,14 +250,12 @@ def build_gripper(robot_cfg: "RobotConfig", *, arm: RobotArm) -> Gripper:
     off the object. Nothing is connected here: the caller connects the arm before the gripper.
 
     Which driver is built is :func:`gripper_driver_verdict`, asked with what the handle in hand
-    reports, and the desk asks the same function for the arm a config builds.
+    reports, and the desk asks the same function for the arm a config builds. How it is built is that
+    driver's spec (P0g slice 8).
     """
 
-    from src.robot.core import GripperVendor, SupportsDigitalIO
-    from src.robot.grippers import GripperSubstitution, create_gripper
+    from src.robot.grippers import GripperSubstitution, build_substitute, gripper_driver
 
-    # --- Gripper construction ----------------------------------------------
-    #
     # Five config combinations cannot produce a real end-effector, one per `SubstitutionReason`
     # member. Resolving them to a working NullGripper and a log line is the most dangerous silent
     # state in this build path: the cell connects, every pick reports success, the jaws close on
@@ -278,103 +263,24 @@ def build_gripper(robot_cfg: "RobotConfig", *, arm: RobotArm) -> Gripper:
     # and records the reason on the object, so a caller sees it without parsing logs. A sixth case
     # goes through it too. The arm is read through `getattr` rather than by importing the UR
     # driver: the execution layer has no import edge to a vendor driver and this must not add one.
-    gripper_cfg = robot_cfg.gripper
+    # The arm's facts are `arm_facts`, which the desk's row asks too.
+    facts = arm_facts(arm)
     verdict = gripper_driver_verdict(
         robot_cfg,
-        arm_vendor=_vendor_in_hand(arm),
-        arm_has_digital_io=isinstance(arm, SupportsDigitalIO),
-        arm_ip=getattr(getattr(getattr(arm, "config", None), "ur", None), "ip", None),
+        arm_vendor=facts.vendor,
+        arm_has_digital_io=facts.has_digital_io,
+        arm_ip=facts.controller,
     )
     if verdict.reason is not None:
         _LOG.warning("build_gripper: %s Built a NullGripper (no real end-effector). %s",
                      verdict.detail, verdict.fix)
-        return create_gripper(
-            GripperVendor.NONE,
-            min_width_mm=gripper_cfg.min_width_mm,
-            max_width_mm=gripper_cfg.max_width_mm,
-            substitution=GripperSubstitution(
-                reason=verdict.reason, requested=verdict.requested, detail=verdict.detail, fix=verdict.fix,
-            ),
-        )
-
-    vendor = verdict.vendor
-    if vendor in (GripperVendor.NONE, GripperVendor.DUMMY):
-        return create_gripper(
-            vendor,
-            min_width_mm=gripper_cfg.min_width_mm,
-            max_width_mm=gripper_cfg.max_width_mm,
-        )
-    if vendor is GripperVendor.ROBOTIQ:
-        # When `resolve_arm` built the arm itself the two sources are the same object
-        # (`create_arm(RobotVendor.UR, config=robot_cfg)` hands `robot_cfg` straight to
-        # `URRobotArm`), so the shipped no-handle UR cell reads the address it always read.
-        arm_ip = getattr(getattr(getattr(arm, "config", None), "ur", None), "ip", None)
-        return create_gripper(GripperVendor.ROBOTIQ, config=gripper_cfg, ip=str(arm_ip))
-    if vendor is GripperVendor.VACUUM:
-        # Lifecycle contract: VacuumGripper.connect() immediately drives set_digital_output, and
-        # from_robot_config does not call arm.connect() (the caller owns the lifecycle). So a real
-        # cell must call arm.connect() before gripper.connect(), or the vacuum connect raises with no
-        # I/O behind it.
-        vac = gripper_cfg.vacuum
-        return create_gripper(
-            GripperVendor.VACUUM,
-            io=arm,
-            config=gripper_cfg,
-            vacuum_output_pin=vac.vacuum_output_pin,
-            blow_off_output_pin=vac.blow_off_output_pin,
-            vacuum_ok_input_pin=vac.vacuum_ok_input_pin,
-            io_port=vac.io_port,
-            engage_timeout_s=vac.engage_timeout_s,
-            blow_off_s=vac.blow_off_s,
-            vacuum_on_below_mm=vac.vacuum_on_below_mm,
-            min_width_mm=gripper_cfg.min_width_mm,
-            max_width_mm=gripper_cfg.max_width_mm,
-        )
-    if vendor is GripperVendor.JAW_IO:
-        # Same lifecycle contract as suction: arm.connect() before gripper.connect(), because the
-        # driver touches the controller's I/O as soon as it connects.
-        jaw = gripper_cfg.jaw_io
-        return create_gripper(
-            GripperVendor.JAW_IO,
-            io=arm,
-            config=gripper_cfg,
-            actuation=jaw.actuation,
-            close_output_pin=jaw.close_output_pin,
-            open_output_pin=jaw.open_output_pin,
-            pulse_s=jaw.pulse_s,
-            part_present_input_pin=jaw.part_present_input_pin,
-            closed_confirm_input_pin=jaw.closed_confirm_input_pin,
-            open_confirm_input_pin=jaw.open_confirm_input_pin,
-            io_port=jaw.io_port,
-            close_timeout_s=jaw.close_timeout_s,
-            close_settle_s=jaw.close_settle_s,
-            closed_below_mm=jaw.closed_below_mm,
-            open_on_connect_without_feedback=jaw.open_on_connect_without_feedback,
-            # A toggle asks at connect where its jaws stand, at the terminal the program runs in; with none, the
-            # connect is refused (owner's decision, 2026-09-24).
-            confirm_open_at_start=jaw.confirm_open_at_start,
-            min_width_mm=gripper_cfg.min_width_mm,
-            max_width_mm=gripper_cfg.max_width_mm,
-        )
-    # OnRobot, the one vendor left with a driver.
-    #
-    # Without this branch a configured OnRobot cell would substitute a NullGripper, connect, report
-    # every pick a success and hold nothing. The verdict names every vendor with no driver, so
-    # reaching here with another one is a verdict that forgot a branch, and it raises rather than
-    # building the wrong driver. `host` comes from the gripper's own config and not from
-    # `robot.ur.ip` the way the Robotiq branch does.
-    if vendor is not GripperVendor.ONROBOT:  # pragma: no cover (a verdict and its builder out of step)
-        raise RuntimeError(f"gripper_driver_verdict admitted {vendor.value!r} and build_gripper has no branch for it")
-    rg = gripper_cfg.onrobot
-    return create_gripper(
-        GripperVendor.ONROBOT,
-        config=gripper_cfg,
-        host=rg.host,
-        port=rg.port,
-        unit=rg.unit_id,
-        default_force_n=rg.default_force_n,
-        use_fingertip_offset=rg.use_fingertip_offset,
-    )
+        return build_substitute(robot_cfg, GripperSubstitution(
+            reason=verdict.reason, requested=verdict.requested, detail=verdict.detail, fix=verdict.fix,
+        ))
+    driver = gripper_driver(verdict.vendor)
+    if driver is None:  # pragma: no cover (a verdict and its specs out of step)
+        raise RuntimeError(f"gripper_driver_verdict admitted {verdict.vendor.value!r} and no spec builds it")
+    return driver.build(robot_cfg, arm, facts)
 
 
 def build_sim_driver_config(

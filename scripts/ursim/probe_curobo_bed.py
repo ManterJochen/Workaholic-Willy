@@ -21,6 +21,12 @@ box (82 mm above the base, measured), and then the checked line is refused befor
 WILLY_BED_START_JOINTS, six radians separated by commas, is a configuration the bed drives to first,
 through the checked joint move, before it measures anything:
     WILLY_BED_START_JOINTS=-2.0,-1.9,1.9,-1.5708,-1.5708,0.0 python scripts/ursim/probe_curobo_bed.py
+
+A fresh UR3e cannot even drive there. Its container starts at [-1.6007, -1.7271, -2.2030, -0.8080, 1.5951, -0.0310],
+where the planner refuses the start of every move (16.4 mm into the world it holds, measured in aurora 2026-09-24),
+so the drive to the start is refused and the checked joint move raises. Jog it out first through the ik route, which
+judges the joint target by the destination guards and sends one moveJ: build the arm with WILLY_PROFILE=ursim,ursim_ur3
+and call move_to_joints on the start above, then run the bed with the same WILLY_BED_START_JOINTS.
 """
 
 from __future__ import annotations
@@ -54,12 +60,16 @@ def _timed(label: str, call):
 
 
 config = load_robot_config()
-record["planner"] = config.ur.motion_planner
-record["model"] = config.ur.model
-if config.ur.motion_planner != "curobo":
+# The arm the tree selects, as the driver reads it (`RobotConfig.arm`). Until the port of 2026-10-13 this read
+# `config.ur.motion_planner`, which P0c removed (`robot.motion.planner`): the bed stopped at this line and nothing
+# noticed, because no rule scanned scripts/ and mypy saw the lazily served config as Any.
+selected = config.arm
+record["planner"] = selected.planner
+record["model"] = selected.model
+if selected.planner != "curobo":
     raise SystemExit(
         f"this bed needs the planner on; {os.environ['WILLY_PROFILE']} resolves to "
-        f"motion_planner={config.ur.motion_planner!r}. Use WILLY_PROFILE=ursim,ursim_curobo."
+        f"robot.motion.planner={selected.planner!r}. Use WILLY_PROFILE=ursim,ursim_curobo."
     )
 
 # The factory answers the vendor neutral `RobotArm`; this bed is about a UR, and the two verbs
@@ -82,7 +92,7 @@ with arm.without_camera_world(reason="URSim bed: the container has no camera"):
     #    cheap and long enough that there is a line to judge.
     goal = list(here.tolist())
     goal[4] += 0.3
-    _timed("checked_move_joint", lambda: arm.move_joint(JointPositions(goal)))
+    _timed("checked_move_joint", lambda: arm.move_to_joints(JointPositions(goal)).raise_unless_executed())
     record["after_move_joint"] = [round(float(v), 5) for v in arm.get_joint_positions().tolist()]
 
     # 2. A checked linear move of 50 mm, which is where the seeded controller IK per sample is paid.

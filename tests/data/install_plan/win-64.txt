@@ -1,0 +1,31 @@
+# What scripts/ext_deps/install.ps1 runs on Windows with nothing under ext_deps/ yet, in order, as of 2026-09-26
+# (`-Component all`, no -Clean, no -SkipCompiledBackend, no -SslNoRevoke, a .venv present to run the doctor with).
+# Derived by reading install.ps1 line by line before the switch to install.py (P0h h3); `install.py --plan
+# --from-nothing --platform win-64` printed exactly these lines, and since P0h h4 prints one more, the pip lock
+# after torch, which the test that reads this file inserts there. <repo> is the repository root,
+# <ext_deps> the ext_deps folder, and every path is written with forward slashes.
+env MAMBA_ROOT_PREFIX=<ext_deps>/micromamba/root
+env PIP_CACHE_DIR=<ext_deps>/pip-cache
+require git
+require tar
+download https://micro.mamba.pm/api/micromamba/win-64/latest -> <ext_deps>/micromamba/micromamba.tar.bz2
+run tar -xf <ext_deps>/micromamba/micromamba.tar.bz2 -C <ext_deps>/micromamba
+run <ext_deps>/micromamba/Library/bin/micromamba.exe create -y -p <ext_deps>/coal_env --file <ext_deps>/locks/coal_env.win-64.lock -c conda-forge
+run <ext_deps>/micromamba/Library/bin/micromamba.exe create -y -p <ext_deps>/curobo_env --file <ext_deps>/locks/curobo_env.win-64.lock -c conda-forge
+run <ext_deps>/curobo_env/python.exe -m pip install --quiet torch==2.7.0 --index-url https://download.pytorch.org/whl/cu128
+run git clone https://github.com/NVlabs/curobo.git <ext_deps>/curobo
+in <ext_deps>/curobo: run git fetch --quiet origin
+in <ext_deps>/curobo: run git checkout --quiet 8e734f3
+run <ext_deps>/curobo_env/python.exe -m pip install --quiet -e <ext_deps>/curobo[cu12] --no-build-isolation
+run <ext_deps>/curobo_env/python.exe -m pip install --quiet cuda-core==1.1.0
+run <ext_deps>/curobo_env/python.exe -m pip install --quiet warp-lang==1.16.0
+run cmd /c "<repo>/scripts/curobo/build_compiled_backend.bat"
+run <ext_deps>/curobo_env/python.exe <repo>/scripts/arms/fetch.py
+run <ext_deps>/curobo_env/python.exe <repo>/scripts/arms/descriptor.py ur3 --urdf-from ur
+run <ext_deps>/curobo_env/python.exe <repo>/scripts/arms/descriptor.py ur3e --urdf-from ur
+run <ext_deps>/curobo_env/python.exe <repo>/scripts/arms/descriptor.py ur5 --urdf-from ur
+run <ext_deps>/curobo_env/python.exe <repo>/scripts/arms/descriptor.py ur5e --urdf-from ur
+run <ext_deps>/curobo_env/python.exe <repo>/scripts/arms/descriptor.py ur10 --urdf-from ur
+run <ext_deps>/curobo_env/python.exe <repo>/scripts/arms/descriptor.py ur10e --urdf-from ur
+run <ext_deps>/curobo_env/python.exe <repo>/scripts/arms/descriptor.py ur16e --urdf-from ur
+in <repo>: run <repo>/.venv/Scripts/python.exe -m src.robot.safety.planning --doctor

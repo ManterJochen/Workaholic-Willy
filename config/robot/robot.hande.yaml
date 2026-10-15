@@ -65,8 +65,8 @@ robot:
     #
     # Measured, as the half of the answer that does not depend on the cell: the gripper's own mounting
     # face to its grasp centre is 135.75 mm, along the approach. Add the coupling plate to get
-    # `offset_mm`. The same plate thickness is what `build_ur_config.py --coupling-mm` wants, so take it
-    # once.
+    # `offset_mm`. The same plate thickness is what `robot.gripper.coupling_plates` and
+    # `scripts/arms/gate.py --coupling-mm` want, so take it once.
     tool_frame:
       source: "undeclared"
 

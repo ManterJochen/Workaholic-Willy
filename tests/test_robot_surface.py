@@ -25,7 +25,7 @@ from src.robot.drivers.dummy.arm import DummyRobotArm
 from src.robot.execution.real_cell.preflight import CheckStatus, run_config_preflight
 from src.robot.execution.robot import Robot
 from src.robot.grippers.dummy import DummyGripper
-from tests.test_camera_world_on_every_driver import _ur_ik
+from tests._arm_kit import ik_arm
 from tests.test_robot_parts import _loaded_after
 
 
@@ -71,7 +71,7 @@ class AMotionResultDescribesItselfTests(unittest.TestCase):
         self.assertEqual({
             "status": "executed", "command": "move_joints", "ok": True, "target_pose": None,
             "target_joints": [0.0, -1.5, 1.5, 0.0, 1.5, 0.0], "message": "move_to_joints", "exception": None,
-            "camera_world": declined.to_dict(),
+            "camera_world": declined.to_dict(), "sent": "unstated",
         }, data)
         self.assertIn("target joints  [0.0000, -1.5000, 1.5000, 0.0000, 1.5000, 0.0000] rad", result.render())
 
@@ -85,6 +85,23 @@ class AMotionResultDescribesItselfTests(unittest.TestCase):
         self.assertIs(exc, result.exception)
         self.assertEqual(result, MotionResult.failed(MotionStatus.CONNECTION_ERROR, MotionCommand.MOVE_TO,
                                                      message="link down"), "equality still ignores the exception")
+
+    def test_a_failure_says_in_a_field_whether_anything_was_sent(self) -> None:
+        """P0g R2: whether a failed motion had reached the controller was only in its message, and the calibration
+        sweep read it with a regex on driver wording. It is a typed field now, UNSTATED unless a driver says."""
+        from src.robot.core import MotionSent
+
+        unstated = MotionResult.failed(MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, message="no")
+        self.assertIs(MotionSent.UNSTATED, unstated.sent)
+        self.assertNotIn("sent=", repr(unstated), "an unstated field prints what the result printed before it")
+        sent = MotionResult.failed(MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, message="no",
+                                   sent=MotionSent.SENT)
+        self.assertEqual("sent", sent.to_dict()["sent"])
+        self.assertIn("sent=<MotionSent.SENT", repr(sent))
+        self.assertIn("  sent  the command reached the controller", sent.render())
+        self.assertNotEqual(unstated, sent, "two motions that did and did not reach the arm are not the same")
+        with self.assertRaises(TypeError):
+            MotionResult.failed(MotionStatus.CONTROLLER_REJECTED, MotionCommand.MOVE_TO, sent="sent")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -194,8 +211,8 @@ class ARobotDescribesItselfTests(unittest.TestCase):
                          data["wrist_bodies"])
         self.assertEqual({"chain": "console_dummy", "root": str(tree.root)}, data["tree"])
 
-    def test_a_ur_on_ik_says_its_route_is_refused(self) -> None:
-        text = Robot.from_parts(arm=_ur_ik(), gripper=None, lock_key=None).render()
+    def test_a_planned_arm_on_ik_says_its_route_is_refused(self) -> None:
+        text = Robot.from_parts(arm=ik_arm(), gripper=None, lock_key=None).render()
 
         self.assertIn("planner  REFUSED: nothing plans", text)
         self.assertIn("'ik'", text)

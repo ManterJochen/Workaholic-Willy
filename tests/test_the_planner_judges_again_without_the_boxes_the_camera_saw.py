@@ -34,7 +34,12 @@ from typing import Any
 import numpy as np
 
 import src.robot.safety.planning.curobo_client as client_module
+from src.config.arms import load_arm
 from src.robot.safety.planning.curobo_client import CuroboPlanClient, CuroboUnavailableError
+from tests._ur_transport import over
+
+#: The controller's joint order as the ur5e description states it; the planner is handed it since P0e E4.
+_UR_JOINT_NAMES = tuple(joint.name for joint in load_arm("ur5e").joints)
 
 _ROOT = Path(__file__).resolve().parents[1]
 _TIMEOUT_S = 0.8
@@ -549,7 +554,7 @@ class _Conn:
 def _glue(*, fixtures: "tuple[dict[str, Any], ...]" = (), fine: bool = False) -> "tuple[Any, _Judging, Any]":
     """The UR glue with a live world of a bin beside the base, and the client it asks; with the guard's fine world about
     the goal where ``fine`` (``fine_world``, as a cell's wiring builds it)."""
-    from src.robot.drivers.ur.curobo_motion import CuroboUrPlanner
+    from src.robot.drivers.planned.curobo_motion import CuroboPlanner
     from src.robot.safety.planning.live_world import CameraView, DepthSnapshot, LivePlannerWorld
     from src.robot.safety.planning.perceived import SelfEnvelope, WorldBuildTuning
     from src.robot.safety.planning.self_envelope import arm_capsules, yawed_link_transforms_mm
@@ -577,7 +582,7 @@ def _glue(*, fixtures: "tuple[dict[str, Any], ...]" = (), fine: bool = False) ->
     envelope = SelfEnvelope(frames_mm=tuple(frames), capsules=capsules)
     client = _Judging()
     told: list[Any] = []
-    glue = CuroboUrPlanner(_Conn(), client_factory=lambda: client, world_cuboids=list(declared), live_world=world,
+    glue = CuroboPlanner(over(_Conn()), joint_names=_UR_JOINT_NAMES, controller_yaw_deg=180, client_factory=lambda: client, world_cuboids=list(declared), live_world=world,
                            self_envelope=lambda: envelope, on_perceived_obstacles=told.append)
     return glue, client, told
 
@@ -656,7 +661,7 @@ class TheGlueAsksOnlyWithWhatItsRefreshHandedThePlannerTests(unittest.TestCase):
         is refused before the sidecar hears of it."""
         from unittest import mock
 
-        import src.robot.drivers.ur.curobo_motion as glue_module
+        import src.robot.drivers.planned.curobo_motion as glue_module
         from src.robot.core.errors import CameraWorldUnavailable
 
         def by_hand(glue: Any, client: _Judging, held: "tuple[str, ...]") -> None:

@@ -30,6 +30,8 @@ import yaml
 from src.config.grippers import available_grippers, load_gripper, tree_hand_refusal
 from src.config.loader import ConfigError
 from src.contracts import UNSET, Maybe, chosen
+from src.robot.safety._ur_kinematics import described_ur_model
+from src.utility.interpreters import Interpreter, interpreter_command
 
 from ._curobo_body_links import HAND_LINK
 from ._declared_body import Box, stacked_boxes
@@ -41,6 +43,7 @@ from .robot.gripper_spheres import FLANGE, MOUNTING_FACE
 if TYPE_CHECKING:  # pragma: no cover (typing only)
     from src.config.schema.grippers.gripper_schema import ParallelJawSpec
     from src.config.schema.robot import RobotConfig, SelfCollisionSafetyConfig
+    from src.config.schema.robot.tool_frame_schema import ToolFrameConfig
 
     from .body_link import HandLink
     from .curobo_client import SidecarIdentity
@@ -116,7 +119,7 @@ class PlannerHand:
     #: The plates that hold the hand out and became no body, by name, so a reader can say which ones.
     coupling_undeclared: tuple[str, ...] = ()
     #: Every declared plate as the cell wrote it, flange first: (name, thickness_mm, cross_section_mm
-    #: or None). A refusal spells these as ``matrix_gate.py --plate`` so the command measures this
+    #: or None). A refusal spells these as ``scripts/arms/gate.py --plate`` so the command measures this
     #: cell's plates.
     plates: tuple[tuple[str, float, tuple[float, float] | None], ...] = ()
 
@@ -151,7 +154,12 @@ def declared_placement(robot_cfg: RobotConfig) -> tuple[Maybe[HandPlacement], st
     only refusal a declared frame meets: an approach along +Z, which a real UR flange declares, is
     placed rather than refused.
     """
-    frame = robot_cfg.gripper.tool_frame
+    return placement_of(robot_cfg.gripper.tool_frame)
+
+
+def placement_of(frame: "ToolFrameConfig") -> tuple[Maybe[HandPlacement], str | None]:
+    """Where ``frame`` puts the hand model on the flange, and why not where it puts it nowhere: the rule
+    :func:`declared_placement` applies to a cell's declared frame, for any frame (a mounted tool's, P0i i5)."""
     if frame.source == "undeclared":
         return HandPlacement.undeclared(), None
     try:
@@ -171,7 +179,7 @@ def descriptor_refusal(identity: "SidecarIdentity", link: "HandLink", *, arm: st
     carries. There is no fallback to another file. The plate and the placement are in the link the
     client sent, so nothing about them is compared here.
     """
-    build = f"Build the arm on the box: ext_deps/curobo_env/python.exe scripts/curobo/build_ur_config.py {arm}"
+    build = f"Build the arm on the box: {interpreter_command(Interpreter.CUROBO)} scripts/arms/descriptor.py {arm}"
     provenance = identity.provenance
     if not isinstance(provenance, dict):
         return (
@@ -210,18 +218,20 @@ def hand_geometry_model(
 ) -> str | None:
     """The arm model on which this guard would read hand geometry, or ``None`` where it reads none.
 
-    Hand geometry is read by the exact-mesh guard (``backend: fcl``) once a model resolves, and the
-    order is the guard's own (``SelfCollisionGuard.model_for``): ``kinematics_model`` first, then the
-    arm the driver knows it is. A stood-down guard, the capsule proxy, and a cell with no resolvable
-    arm read none.
+    Hand geometry is read by the exact-mesh guard (``backend: fcl``) on the arm the driver knows it
+    is, where the arm registry describes a UR by that name: the rule is the guard's own
+    (``SelfCollisionGuard.model_for`` asks the same ``described_ur_model`` of the model the arm
+    reports). The two agree wherever the builder passes the model its arm will report, which every
+    builder of an arm that exists does (the UR driver ``robot.ur.model``, the Isaac cell
+    ``robot.sim.robot_model``; ``tests/test_the_arm_says_what_it_is.py`` holds them to it). A
+    preflight names its arm always since P0e (``arm_model`` is required, ``None`` for an arm the
+    registry does not describe), and its guard refuses an arm that reports another UR, so the hand
+    this decided is the hand the guard judges (``SelfCollisionGuard.refusal_for``). A stood-down
+    guard, the capsule proxy, and a cell with no resolvable arm read none.
     """
     if not self_collision.enforce or self_collision.backend != "fcl":
         return None
-    if self_collision.kinematics_model is not None:
-        return str(self_collision.kinematics_model)
-    if chosen(arm_model):
-        return str(arm_model)
-    return None
+    return described_ur_model(str(arm_model)) if chosen(arm_model) else None
 
 
 def wrist_body_reader(robot_cfg: Any) -> str | None:
@@ -232,11 +242,13 @@ def wrist_body_reader(robot_cfg: Any) -> str | None:
     camera's parts beside the hand's. A cell that reads neither models no hand and so no camera, and
     resolves no wrist body.
     """
-    vendor = str(getattr(robot_cfg, "vendor", "") or "")
-    ur = getattr(robot_cfg, "ur", None)
-    if vendor == "ur" and getattr(ur, "motion_planner", None) == "curobo":
-        return "robot.ur.motion_planner is curobo"
-    arm_model: Maybe[str] = str(ur.model) if vendor == "ur" and ur is not None else UNSET
+    # The tree's selection, where there is one: a tree that is no robot tree (a stand-in) plans nothing.
+    selected = getattr(robot_cfg, "arm", None)
+    if selected is not None and selected.planner == "curobo":
+        return "robot.motion.planner is curobo"
+    # The arm the tree selects, as the preflight is built with it (`SafetyPreflight.from_tree`): a sim tree reads
+    # geometry on the UR it drives exactly as a UR tree does, and the registry rule decides, not the vendor (P0d D5).
+    arm_model: Maybe[str] = str(selected.model) if selected is not None and selected.model else UNSET
     self_collision = getattr(getattr(robot_cfg, "safety", None), "self_collision", None)
     if self_collision is None:
         return None
@@ -244,6 +256,28 @@ def wrist_body_reader(robot_cfg: Any) -> str | None:
     if model is not None:
         return f"the exact mesh guard reads hand geometry on the {model} arm"
     return None
+
+
+def guard_hand_refusal(
+    self_collision: SelfCollisionSafetyConfig, hand: "Maybe[PlannerHand]", arm_model: "str | None",
+) -> str | None:
+    """Why an exact mesh guard on ``arm_model`` may not model ``hand``, or ``None``: the build's refusal, one place.
+
+    ⛔ NO IMPLIED HAND (owner, Step 4 Q5). A guard that reads hand geometry and is named no hand would check the 2F-85
+    every arm bundle carries, which on a Hand-E cell that forgot its name passes by coincidence. ⛔ AND THE WHOLE
+    PLACEMENT (found by review, 2026-09-16): a declared frame that places no hand model (a mirror, oblique, into the
+    wrist, clocked by anything but a quarter turn) leaves the hand's placement UNSET, and a guard built on it would
+    measure the hand where its own model puts it rather than where this cell says it is. ``SafetyPreflight
+    .from_safety_config`` asks this when the guard is built and ``SelfCollisionGuard.mount`` when a tool is mounted
+    later (P0i i5), so a hand mounted after the build meets exactly the refusals the build gave.
+    """
+    reads = hand_geometry_model(self_collision, arm_model if arm_model else UNSET)
+    if reads is None:
+        return None
+    if not chosen(hand):
+        what, fix = unset_hand_refusal(reads)
+        return f"{what} {fix}"
+    return hand.placement_refusal
 
 
 def unset_hand_refusal(model: str) -> tuple[str, str]:
@@ -264,8 +298,10 @@ def unset_hand_refusal(model: str) -> tuple[str, str]:
     return what, fix
 
 
-#: What wrote every map the planner may read: the cover fit, which leaves no hole by construction.
-COVER_FIT_WRITER: Final = "scripts/curobo/fit_cover_spheres.py"
+#: What writes every map the planner may read: the cover fit, which leaves no hole by construction.
+COVER_FIT_WRITER: Final = "scripts/arms/fit.py"
+#: The same fit under the path it had until P0f F4 moved the build into scripts/arms: a map written then still reads.
+_COVER_FIT_WRITER_BEFORE_F4: Final = "scripts/curobo/fit_cover_spheres.py"
 
 
 def cover_fit_refusal(provenance: dict, model: str) -> str | None:
@@ -275,7 +311,7 @@ def cover_fit_refusal(provenance: dict, model: str) -> str | None:
     reaches the planner and the self filter of a cell that names it.
     """
     writer = provenance.get("generated_by")
-    if writer != COVER_FIT_WRITER:
+    if writer not in (COVER_FIT_WRITER, _COVER_FIT_WRITER_BEFORE_F4):
         return (
             f"was written by {writer!r}, not by the cover fit {COVER_FIT_WRITER}: a grid fit left every "
             f"shipped hand a hole of 16.5 to 19.0 mm, a pose the planner calls clear while the hand is there"
@@ -350,7 +386,8 @@ def planner_hand(robot_cfg: RobotConfig, *, data_dir: str | Path | None = None) 
     if not sphere_map.is_file():
         # Why this cell needs the file depends on its planner: a UR ik cell reads nothing of the map
         # after construction, and the build reads its origin to decide the plates.
-        if str(getattr(getattr(robot_cfg, "ur", None), "motion_planner", "")) == "curobo":
+        selected = robot_cfg.arm
+        if selected.planner == "curobo":
             why = ("its planner adds the hand as a body link from this map when it starts, and the build reads "
                    "the map's origin to decide whether robot.gripper.coupling_plates are required or refused")
         else:
@@ -388,7 +425,7 @@ def planner_hand(robot_cfg: RobotConfig, *, data_dir: str | Path | None = None) 
             f" This hand's body was written from its registry numbers as a flange hand: if its grasp_centre_mm "
             f"was measured from the hand's own mounting face, write it again with "
             f"scripts/grippers/write_hand_from_dimensions.py {spec.model} --origin mounting_face and refit its "
-            f"map with scripts/curobo/fit_cover_spheres.py --hand {spec.model} --write."
+            f"map with scripts/arms/fit.py --hand {spec.model} --write."
         ) if told is not None and told.from_dimensions else ""
         raise ConfigError(
             f"robot.gripper.model is {spec.model!r}, whose sphere map {sphere_map.name} already sits at the "

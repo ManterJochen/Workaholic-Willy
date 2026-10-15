@@ -1,8 +1,9 @@
 # Arm drivers (`src/robot/drivers`)
 
-One driver per arm vendor, each behind the `RobotArm` Protocol: UR over RTDE, KUKA over EthernetKRL,
-the Isaac Sim arm, and a dummy arm for a desk. `robot.vendor` in your config picks the driver and
-`Robot.from_tree` builds it; `franka` and `ros2` are reserved names with no driver behind them.
+One driver per arm vendor, each behind the `RobotArm` Protocol: UR over RTDE, the Isaac Sim arm, and
+a dummy arm for a desk. `robot.vendor` in your config picks the driver and `Robot.from_tree` builds it;
+`kuka`, `franka` and `ros2` are reserved names with no driver behind them (KUKA's EthernetKRL driver was
+deleted unrun on 2026-09-19; KUKA returns over ROS 2).
 
 ```python
 from willy import Robot, load_tree
@@ -39,13 +40,12 @@ ready, and 2 for a vendor name it does not know. The calls at a cell are in
 | `robot.vendor` | Driver | `create_arm` takes | Needs on this machine |
 |---|---|---|---|
 | `ur` | `URRobotArm`, [ur/](ur/README.md) | `config=` the robot section | `ur_rtde`, imported at `connect()` |
-| `kuka` | `KukaRobotArm`, [kuka/](kuka/README.md) | `config=` the robot section | nothing: plain TCP and XML |
 | `sim` | `IsaacRobotArm`, [sim/](sim/README.md) | `config=` a `SimRobotConfig`, which `Robot` builds from `robot.sim` | Isaac Sim at `connect()`, or `mock_mode` |
 | `dummy` | `DummyRobotArm`, [dummy/](dummy/README.md) | optional `dof` and `initial_pose`; a `config=` is discarded | nothing |
-| `franka`, `ros2` | none: [franka/](franka/README.md), [ros2/](ros2/README.md) | | |
+| `kuka`, `franka`, `ros2` | none; [franka/](franka/README.md) and [ros2/](ros2/README.md) are package slots | | |
 
 At this boundary poses are millimetres and XYZW quaternions tagged `Frame.BASE`, and joints are
-radians. A vendor's own units (UR axis-angle metres, KUKA degrees and ABC Euler) stay inside its
+radians. A vendor's own units (UR axis-angle metres) stay inside its
 subpackage, and so does its SDK import: importing this package works on a machine with neither
 `ur_rtde` nor Isaac installed.
 
@@ -57,15 +57,16 @@ IK, which sees nothing in the cell. Each driver's README says what else it refus
 
 | Refusal | When | What to do |
 |---|---|---|
-| `RobotConnectionError`, host not ready | `Robot.from_tree` on a vendor whose SDK does not import here, or on `franka` or `ros2` | Run the doctor; install `ur_rtde` from `requirements.txt` |
-| `RobotConnectionError`, no driver registered | `create_arm("franka")` or `create_arm("ros2")` | Use `ur`, `kuka`, `sim` or `dummy` |
-| `JointLimitTableMissing` | the arm enforces joint limits and no per-axis table resolves for it, as on every KUKA | Set `robot.safety.joint_limits.min_deg` and `max_deg`, or `enforce: false` |
+| `RobotConnectionError`, host not ready | `Robot.from_tree` on a vendor whose SDK does not import here, or on `kuka`, `franka` or `ros2` | Run the doctor; install `ur_rtde` from `requirements.txt` |
+| `RobotConnectionError`, no driver registered | `create_arm("kuka")`, `create_arm("franka")` or `create_arm("ros2")` | Use `ur`, `sim` or `dummy` |
+| `JointLimitTableMissing` | the arm enforces joint limits and no per-axis table resolves for it | Set `robot.safety.joint_limits.min_deg` and `max_deg`, or `enforce: false` |
 | `ValueError` | a vendor name that is not a `RobotVendor` | Use one of the names above |
 | `TypeError` | no `config=`, an unexpected keyword, or a sim config that is not a `SimRobotConfig` | Pass what the vendor table names |
 
 `create_arm` asks the joint-limit question of every arm it hands back, because an enforcing guard
 with no table would refuse every motion as `controller_rejected` and send you to the controller for a
-key missing from your YAML. Only UR models carry a built-in table. An arm that gates nothing, as the
+key missing from your YAML. Only an arm reporting a model the arm registry describes, every UR and the
+Isaac arm, carries a built-in table. An arm that gates nothing, as the
 dummy does, and a cell that set `joint_limits.enforce: false` pass this check; `robot.safety()` reports
 both.
 
@@ -95,8 +96,7 @@ because importing Isaac starts a renderer. A module that is installed and will n
 | UR over RTDE | run on a physical cell: a UR10 (CB3), connect, moves, cuRobo plans and home; measured against real controller software in URSim, see [ur/](ur/README.md) |
 | Isaac Sim arm | measured in simulation: the picks and calibrations in [willy_sim](../../willy_sim/README.md) |
 | Dummy arm | measured in simulation: every desk example and the rehearsal run on it |
-| KUKA over EthernetKRL | never touched hardware: no motion has run against a KRC4 or KRC5 |
-| Franka, ROS 2 | no driver |
+| KUKA, Franka, ROS 2 | no driver |
 
 The UR driver is the one in this package that has moved a physical arm.
 
@@ -124,7 +124,8 @@ Nothing above this package changes: everything past this boundary talks to the P
 | `__init__.py` | the four built-in factories, each importing its SDK inside the function body |
 | `doctor.py` | the readiness CLI and `require_arm_vendor_ready`, the gate a build runs first |
 | `host.py` | `Host` and `ReadinessReport`, the rows the CLI and the gate share |
-| `ur/`, `kuka/`, `sim/`, `dummy/` | the four drivers |
+| `ur/`, `sim/`, `dummy/` | the three drivers |
+| `planned/` | `PlannedArm`, the judging and planning half the UR arm stands on (P0e E8), with the cuRobo planner and the planner frame; [planned/](planned/README.md) |
 | `franka/`, `ros2/` | reserved package slots that register nothing |
 
 ## Details

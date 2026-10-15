@@ -56,7 +56,7 @@ def _arm_declaring(vendor: str) -> DummyRobotArm:
     the whole doctor module exists to avoid.
     """
     arm = DummyRobotArm()
-    arm._capabilities = RobotCapabilities(vendor=vendor, model="stand-in", is_simulated=True)
+    arm._capabilities = RobotCapabilities(vendor=vendor, model="stand-in", is_simulated=True, dof=6, controller=None, owns_a_controller=vendor not in ("sim", "dummy"))
     return arm
 
 

@@ -338,7 +338,7 @@ class Console:
             # One call, and the same one the CLI runner makes. Building the perception and grasp
             # side here and then calling `from_robot_config` separately is how a browser and a
             # terminal come to disagree about what "the cell" is.
-            service = (build_rehearsal_cell(robot, data_dir=self.root) if rehearse
+            service = (build_rehearsal_cell(robot, data_dir=self.root, app_config=app_cfg) if rehearse
                        else build_real_cell(robot, prompt=self.prompt, app_config=app_cfg, data_dir=self.root))
             try:
                 self._log_records_of(service, robot)
@@ -404,11 +404,14 @@ class Console:
                 "The config names no grasp record path; the console is logging its own to %s.",
                 self.record_log_path,
             )
+            # The arm this tree selects: read off the UR block whatever the vendor said, a dummy console cell
+            # stamped `robot_model: ur5e` on every record it wrote.
+            selected = robot.arm
             service.enable_record_logging(
                 self.record_log_path,
                 provenance={
                     "robot_vendor": str(robot.vendor),
-                    "robot_model": str(getattr(getattr(robot, "ur", None), "model", "") or ""),
+                    "robot_model": selected.model,
                     "written_by": "operator console",
                 },
             )

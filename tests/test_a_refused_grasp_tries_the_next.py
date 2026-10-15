@@ -173,12 +173,12 @@ class _StoppingArm(LookingArm):
     def __init__(self) -> None:
         super().__init__(_poses())
         self.status = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.NORMAL, protective_stopped=False,
-                                  emergency_stopped=False)
+                                  emergency_stopped=False, program_running=True)
 
     def get_robot_status(self) -> RobotStatus:
         return self.status
 
-    def recover_from_protective_stop(self) -> bool:
+    def acknowledge_fault(self, fault: object) -> bool:
         raise AssertionError("nothing clears a protective stop but a person")
 
 
@@ -190,7 +190,7 @@ class _Cell:
                  looks: tuple[JointPositions, ...] = (LOOK_PLUS_X,), arm: LookingArm | None = None,
                  on_execute: Callable[[int], None] | None = None, **wiring: Any) -> None:
         self.arm = arm if arm is not None else LookingArm(_poses())
-        self.arm.live_planner_world = _HeldWorld()  # type: ignore[attr-defined]
+        self.arm.set_live_planner_world(_HeldWorld())
         self.camera = WristCamera(self.arm)
         self.calculator = _Ranked(count)
         self.policy = _Answers(self.arm, self.calculator, answers, standoff_mm=standoff_mm, on_execute=on_execute)
@@ -333,7 +333,7 @@ class AStopWinsBetweenTwoGraspsTests(unittest.TestCase):
 
         def stop(_rank: int) -> None:
             arm.status = RobotStatus(robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.PROTECTIVE_STOP,
-                                     protective_stopped=True, emergency_stopped=False)
+                                     protective_stopped=True, emergency_stopped=False, program_running=True)
 
         cell = _Cell({0: LINE_IN_REFUSED}, arm=arm, on_execute=stop)
 
@@ -385,7 +385,7 @@ class AToggleHandAcrossTheTriesTests(unittest.TestCase):
         jaws._ask = nobody  # noqa: SLF001 (any question from here on fails the test)
         connected = len(events)
         arm = _RefusingArm()
-        arm.live_planner_world = _HeldWorld()  # type: ignore[attr-defined]
+        arm.set_live_planner_world(_HeldWorld())
         camera = WristCamera(arm)
         calculator = _Ranked(6)
         orchestrator = BinPickingOrchestrator(

@@ -135,15 +135,28 @@ class ErrorMessageTests(_Tree):
         msg = self._load_error()
         self.assertIn("rejected on purpose", msg)
 
-    def test_a_cross_field_failure_says_it_is_not_in_any_yaml(self) -> None:
-        """Some errors have no line to point at -- a default that failed a cross-field rule. Saying so
-        is more useful than pointing somewhere arbitrary."""
-        self._break("robot/robot.sim.yaml", 'kinematics_model: "ur5e"', 'kinematics_model: "ur10e"')
+    def test_a_rule_over_a_block_several_files_write_names_every_one_of_them(self) -> None:
+        """A rule over a whole block has no line of its own, and when several files write the block the index cannot
+        tell which of them holds the value the rule rejected. Every one of them is named, never the one whose name
+        sorts first: that file may not hold the value, and a location sends the operator to edit it (robot.sim.yaml
+        was named for a value written in robot.decision.yaml).
+
+        The rule broken here is ``RobotConfig._check_safe_pose_in_workspace``: the sim layer's safe pose moves
+        to x=50, outside its own x[100, 700] box. Pydantic reports a model rule at the model, ``robot``, which
+        robot.yaml and the sim layer both write."""
+        self._break("robot/robot.sim.yaml", "  safe_pose:\n    x: 450.0\n", "  safe_pose:\n    x: 50.0\n")
         msg = self._load_error("sim")
-        self.assertTrue(
-            "not written in any YAML" in msg or "robot.sim.yaml" in msg,
-            f"expected either a location or an explicit 'no location': {msg}",
-        )
+        self.assertIn("is outside workspace_limits", msg, "the rule this fixture breaks must be the one that fired")
+        self.assertIn("robot.sim.yaml:", msg)
+        self.assertRegex(msg, r"[\\/]robot\.yaml:\d+", "the base file writes the block too, so it is named")
+        self.assertNotIn("not written in any YAML", msg)
+
+    def test_a_rule_over_a_block_one_file_writes_names_that_file_alone(self) -> None:
+        """The control: with no layer only robot.yaml writes ``robot``, so the same rule has one place to name."""
+        self._break("robot/robot.yaml", "    z_min:  100.0", "    z_min:  590.0")
+        msg = self._load_error()
+        self.assertIn("is outside workspace_limits", msg, "the rule this fixture breaks must be the one that fired")
+        self.assertRegex(msg, r"\(a rule over the block written at \S*robot\.yaml:\d+\)")
 
     def test_a_valid_tree_still_loads(self) -> None:
         set_active_profile("sim,ur3e")

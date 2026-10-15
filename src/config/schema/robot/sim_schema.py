@@ -10,7 +10,6 @@ from pydantic import Field, field_validator, model_validator
 
 from .._base import StrictModel
 
-from ._ur_models import UR_MODEL_KEYS  # re-exported: the sim cell and the real UR cell share one list
 
 
 class SimCameraSchema(StrictModel):
@@ -114,9 +113,10 @@ class SimConfig(StrictModel):
     backend: Literal["isaac"] = "isaac"
     enabled: bool = False
     mock_mode: bool = False
-    # Which UR model this sim cell drives: "ur5e" (the default), "ur3e" or "ur10e". It selects the
-    # Lula config, the Isaac USD the scene builder references and the driver's cuRobo {key}.yml.
-    # The safety block's kinematics_model has to match it. See sim/robot_models.py.
+    # Which UR model this sim cell drives: "ur5e" (the default), or any arm the registry admits for a
+    # simulator. It selects the Lula config, the Isaac USD the scene builder references and the driver's
+    # cuRobo {key}.yml, and it is the model the Isaac arm reports, so it is the arm the self-collision
+    # guard judges (P0d D5). See sim/robot_models.py.
     robot_model: str = "ur5e"
     scene: str | None = None
     robot_prim_path: str | None = None
@@ -152,8 +152,14 @@ class SimConfig(StrictModel):
         ``ur_model_spec``, when the driver brings up the articulation (drivers/sim/arm.py) or the
         scene builder references the USD.
         """
-        if v not in UR_MODEL_KEYS:
-            raise ValueError(f"unknown robot_model {v!r}; supported: {list(UR_MODEL_KEYS)}")
+        from src.config.arms import admitted_arms  # noqa: PLC0415 (see ur_schema: lazy, read at validation)
+
+        admitted = admitted_arms(simulated=True)
+        if v not in admitted:
+            raise ValueError(
+                f"unknown robot_model {v!r}; supported: {admitted}. A sim cell may name an arm whose description in "
+                f"config/arms/ says admitted: true and carries a sim block"
+            )
         return v
 
     @model_validator(mode="after")

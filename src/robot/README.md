@@ -39,11 +39,12 @@ Every command and its exit codes: [docs/cli.md](../../docs/cli.md).
 | [`safety/`](safety/README.md) | `SafetyPreflight`, the ordered fail-closed guards, and the cuRobo planner binding | a `Robot`, whose driver runs them before every move |
 | [`grasping/`](grasping/README.md) | generating, scoring and choosing grasps, a wrist camera's looks, the motion and its hold check, recovery, and the attempt record | the pick service: `Cell`, `PickRun`, `run_task` |
 | [`perception/`](perception/README.md) | the live-camera source and the `Locator` of a real cell | `from willy import Locator` |
-| [`drivers/`](drivers/README.md) | the arm registry `create_arm`: `ur`, `kuka`, `sim`, `dummy` | `robot.vendor` in the tree |
+| [`drivers/`](drivers/README.md) | the arm registry `create_arm`: `ur`, `sim`, `dummy` | `robot.vendor` in the tree |
 | [`grippers/`](grippers/README.md) | the hand registry: `robotiq`, `onrobot`, `vacuum`, `jaw_io`, `dummy`, `none` | `robot.gripper.vendor` in the tree |
 | [`core/`](core/README.md) | the `RobotArm` and `Gripper` Protocols, `MotionResult`, the vendor enums, the errors | a driver of your own |
+| [`faults/`](faults/README.md) | a person acknowledging a fault at the cell, the one door to `SupportsRobotStatus.acknowledge_fault`; never automatic, never from the console | `python -m src.robot.faults acknowledge` |
 
-Beside them, `constants.py` holds the log file names and `HOME_JOINTS_DEFAULT`, and `events.py` the
+Beside them, `constants.py` holds the log file names, and `events.py` the
 calibration and watchdog events with their listener Protocols. `src.robot` resolves its UR-bound names
 lazily, so importing it loads no UR driver.
 
@@ -100,7 +101,7 @@ run before. Every formula the guards evaluate is in [docs/safety-math.md](../../
 | --- | --- |
 | UR-Robot | Measured against UR-Robot |
 | Franka | Currently under development |
-| KUKA | Currently under development |
+| KUKA | Currently under development, over ROS 2 |
 | FANUC | Currently under development |
 | ABB | Currently under development |
 | The Isaac Sim driver with a UR5e and a 2F-85, and the pick path on it | measured in simulation |

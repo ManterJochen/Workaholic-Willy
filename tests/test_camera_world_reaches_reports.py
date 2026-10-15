@@ -42,7 +42,6 @@ from tests.test_grasp_execution_policy import _FakeArm, _grasp
 from tests.test_runtime_pick import (
     _empty_perception_frame,
     _FakePerception,
-    _LegacyFakeArm,
     _perception_frame,
     _rescan_only_result,
     _ScriptedCalculator,
@@ -54,11 +53,11 @@ _PLANNED = tuple(
     for second in range(1, 6)
 )
 _MISSING = CameraWorldStamp.missing(
-    "robot.ur.motion_planner is 'curobo' and no live camera world is wired to this arm")
+    "robot.motion.planner is 'curobo' and no live camera world is wired to this arm")
 _DECLINED = CameraWorldStamp.declined(CameraWorldDecline("bench check, no cameras mounted"))
 _UNPLANNED = CameraWorldStamp.unplanned("DummyRobotArm has no planner")
 
-_CAPS = RobotCapabilities(vendor="dummy", model="double", is_simulated=True)
+_CAPS = RobotCapabilities(vendor="dummy", model="double", is_simulated=True, dof=6, controller=None, owns_a_controller=False)
 
 
 class _StampingArm:
@@ -111,10 +110,11 @@ class ThePolicyCarriesOneStampPerMotionTests(unittest.TestCase):
         report = GraspExecutionPolicy(arm=_StampingArm(_PLANNED), approach_steps=4).execute(_grasp())
         self.assertEqual(report.camera_world, _PLANNED[4])
 
-    def test_a_legacy_arm_carries_no_stamp(self) -> None:
+    def test_an_arm_that_states_no_camera_world_reads_unstated(self) -> None:
+        """A result built without a stamp says UNSTATED, one per motion, and the report reads it."""
         report = GraspExecutionPolicy(arm=_FakeArm(), approach_steps=4).execute(_grasp())
-        self.assertEqual(report.camera_worlds, ())
-        self.assertIsNone(report.camera_world)
+        self.assertEqual(report.camera_worlds, (CameraWorldStamp.unstated(),) * 5)
+        self.assertEqual(report.camera_world, CameraWorldStamp.unstated())
 
     def test_a_failure_mid_approach_carries_the_stamp_of_the_motion_that_failed(self) -> None:
         stamps = (_UNPLANNED, _UNPLANNED, _DECLINED, _UNPLANNED, _UNPLANNED)
@@ -194,15 +194,11 @@ class TheSessionReportCarriesThePolicyStampsTests(unittest.TestCase):
                          service.orchestrator._last_policy_report.camera_worlds)  # noqa: SLF001
         self.assertEqual(report.camera_world, _UNPLANNED)
 
-    def test_a_legacy_arm_and_a_pick_that_never_moved_carry_no_stamp(self) -> None:
-        legacy = _service(_LegacyFakeArm(), frame=_perception_frame(), result=_success_result())
-        blind = _service(_StampingArm(()), frame=_empty_perception_frame(),
-                         result=_rescan_only_result())
-        for label, service in (("legacy", legacy), ("no perception", blind)):
-            with self.subTest(label):
-                report = service.run_attempt()
-                self.assertEqual(report.camera_worlds, ())
-                self.assertIsNone(report.camera_world)
+    def test_a_pick_that_never_moved_carries_no_stamp(self) -> None:
+        blind = _service(_StampingArm(()), frame=_empty_perception_frame(), result=_rescan_only_result())
+        report = blind.run_attempt()
+        self.assertEqual(report.camera_worlds, ())
+        self.assertIsNone(report.camera_world)
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -320,7 +316,7 @@ class ThePickReportTests(unittest.TestCase):
              "  camera     0 of 5 motion(s) vouched; camera world  UNPLANNED  DummyRobotArm has no "
              "planner"),
             ("mixed", _report(_pick((_PLANNED[0], _MISSING, _PLANNED[1]))),
-             "  camera     2 of 3 motion(s) vouched; camera world  MISSING  robot.ur.motion_planner is "
+             "  camera     2 of 3 motion(s) vouched; camera world  MISSING  robot.motion.planner is "
              "'curobo' and no live camera world is wired to this arm"),
             ("no typed motion", _report(_pick(())), "  camera     no typed motion was commanded"),
             ("no pick", _report(None), "  camera     no typed motion was commanded"),

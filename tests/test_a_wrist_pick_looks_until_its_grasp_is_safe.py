@@ -46,6 +46,7 @@ from src.robot.core import (
     RobotStatus,
     SafetyMode,
 )
+from src.robot.core.camera_world import live_planner_world_of
 from src.robot.core.errors import CameraWorldUnavailable, RobotConnectionError, RobotKinematicsError
 from src.robot.execution import motion
 from src.robot.grasping.collision.gripper_model import ParallelJawGripperModel
@@ -132,7 +133,7 @@ class _Policy:
         self.executed.append(grasp)
         if self.arm is not None:
             self.joints_at.append(self.arm.get_joint_positions())
-            world = getattr(self.arm, "live_planner_world", None)
+            world = live_planner_world_of(self.arm)
             self.held_at.append(world.holding if world is not None else None)
         return PolicyReport(outcome=PolicyOutcome.EXECUTED)
 
@@ -296,7 +297,7 @@ class _LineArm(LookingArm):
         self.blocked: set[tuple[float, ...]] = set()
         self.answers: dict[tuple[float, ...], tuple[MotionStatus, str]] = {}
         if not bare:
-            self.live_planner_world = world if world is not None else _World()
+            self.set_live_planner_world(world if world is not None else _World())
 
     def move_to_joints_on_the_line(self, joints: JointPositions) -> MotionResult:
         key = joints_key(joints)
@@ -533,9 +534,9 @@ class ARefusedLookTests(unittest.TestCase):
         class _StoppedArm(LookingArm):
             def get_robot_status(self) -> RobotStatus:
                 return RobotStatus(RobotMode.RUNNING, SafetyMode.PROTECTIVE_STOP, protective_stopped=True,
-                                   emergency_stopped=False)
+                                   emergency_stopped=False, program_running=True)
 
-            def recover_from_protective_stop(self) -> bool:
+            def acknowledge_fault(self, fault: object) -> bool:
                 return False
 
         arm = _StoppedArm(_poses(), refuse=(LOOK_PLUS_X,))
@@ -1596,7 +1597,7 @@ class ThePlannerWorldOfAPickTests(unittest.TestCase):
                 arm = _LineArm(self, world=world)
                 if case.pop("answers", False):
                     arm = _FailingLookArm(fail_at=LOOK_MINUS_X, answer=(MotionStatus.TIMEOUT, "moveJ ran out of time"))
-                    arm.live_planner_world = world  # type: ignore[attr-defined]
+                    arm.set_live_planner_world(world)
                     case["uncertain_on"] = (0,)
                 cell = _Cell(looks=(LOOK_PLUS_X, LOOK_MINUS_X), arm=arm, **case)
 
@@ -1610,7 +1611,7 @@ class ThePlannerWorldOfAPickTests(unittest.TestCase):
     def test_a_pick_that_raises_lets_its_frames_go(self) -> None:
         world = _World()
         arm = LookingArm(_poses(), unvouched=(LOOK_MINUS_X,))
-        arm.live_planner_world = world  # type: ignore[attr-defined]
+        arm.set_live_planner_world(world)
         cell = _Cell(looks=(LOOK_PLUS_X, LOOK_MINUS_X), arm=arm, uncertain_on=(0,))
 
         with self.assertRaises(CameraWorldUnavailable):
@@ -1622,7 +1623,7 @@ class ThePlannerWorldOfAPickTests(unittest.TestCase):
         """The public look around, as the service's decision path calls it: its frames go when it raises."""
         world = _World()
         arm = LookingArm(_poses(), unvouched=(LOOK_MINUS_X,))
-        arm.live_planner_world = world  # type: ignore[attr-defined]
+        arm.set_live_planner_world(world)
         cell = _Cell(looks=(LOOK_PLUS_X, LOOK_MINUS_X), arm=arm, uncertain_on=(0,))
 
         with self.assertRaises(CameraWorldUnavailable):

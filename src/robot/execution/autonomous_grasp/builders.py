@@ -758,10 +758,8 @@ def build_runtime(
             raise ValueError(refusal)
     else:
         # The one policy, built on the arm and hand this cell resolved, with every guard, whether the
-        # caller chose a motion or not: the base frame guard only when a resolver is wired; the dwell
-        # steady gate from robot_cfg.safety.dwell, independent of the resolver (duck-typed via getattr,
-        # so the execution layer stays free of config-schema imports); and the jaws opened to the
-        # hand's width before the approach. Without the pre-open the arm descends with the jaws
+        # caller chose a motion or not: the base frame guard only when a resolver is wired (the steady
+        # gate is the arm's own since P0e); and the jaws opened to the hand's width before the approach. Without the pre-open the arm descends with the jaws
         # wherever the previous close left them, and a close onto a wider part reaches the gripper as
         # an opening. The width is the hand's own, not a constant: the 2F-85 opens 85 mm and the
         # Hand-E 49.99.
@@ -769,7 +767,6 @@ def build_runtime(
             motion if chosen(motion) else GraspMotion(),
             arm=orchestrator.arm, gripper=orchestrator.gripper, standoff_mm=standoff_mm, retreat_mm=retreat_mm,
             base_frame_required=frame_resolver is not None,
-            dwell=getattr(getattr(robot_cfg, "safety", None), "dwell", None),
         )
     policy_built = runtime.orchestrator.policy
     pre_open = getattr(policy_built, "pre_open_width_mm", None) if policy_built is not None else None

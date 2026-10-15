@@ -6,10 +6,10 @@ another to keep calibration and sampling diverse.
 
 Numerics contract
 -----------------
-* A public method accepts a vendor-neutral :class:`Pose`, which is preferred and is in
-  :attr:`Frame.BASE` with millimetres and an XYZW quaternion, or a vendor
-  :class:`URPose`, in millimetres and axis-angle radians. A URPose is coerced at the
-  boundary, and the internal state is always :class:`Pose`.
+* A public method accepts a vendor-neutral :class:`Pose` in :attr:`Frame.BASE`, with
+  millimetres and an XYZW quaternion, and refuses anything else. A vendor's own pose type
+  converts at its driver's boundary; the UR ``URPose`` did so here until P0e. The internal
+  state is always :class:`Pose`.
 * Translation distance is millimetres.
 * Orientation distance is degrees, the geodesic angle between quaternions.
 
@@ -28,38 +28,23 @@ from src.robot.constants import SAFETY_WORKSPACE_LOG_FILE, create_robot_logger
 __all__ = ["WorkspaceGuard"]
 
 
-PoseLike = Pose | object
+def _coerce_pose(pose: Pose) -> Pose:
+    """``pose`` as the box judges it: a :class:`Pose` in :attr:`Frame.BASE`, anything else refused.
 
-
-def _coerce_pose(pose: PoseLike) -> Pose:
-    """Normalise a :class:`Pose` or :class:`URPose` input to :class:`Pose`.
-
-    A ``URPose`` is converted through
-    :func:`src.geometry.conversions.urpose_to_pose`, which keeps the label and switches
-    millimetres and axis-angle to millimetres and an XYZW quaternion.
-
-    A :class:`Pose` whose frame is not :attr:`Frame.BASE` is rejected.
+    The guard speaks the vendor-neutral type only. Until P0e it also took a UR ``URPose`` and converted it here,
+    importing the UR driver from the safety layer; each vendor now converts at its own boundary (the UR driver through
+    ``drivers/ur/pose_adapter.urpose_to_pose``, the conversion this function made).
     """
-    if isinstance(pose, Pose):
-        if pose.frame is not Frame.BASE:
-            raise FrameMismatchError(
-                f"WorkspaceGuard requires Frame.BASE; got {pose.frame!r}."
-            )
-        return pose
-    # A vendor adapter, such as the UR URPose, converts to ``Pose`` at the boundary,
-    # because the safety guard speaks vendor-neutral types only. The canonical UR
-    # adapter is ``src.robot.drivers.ur.pose_adapter``.
-    try:
-        from src.robot.drivers.ur.pose import URPose
-        from src.robot.drivers.ur.pose_adapter import urpose_to_pose
-    except ImportError:  # pragma: no cover (exercised when UR driver absent)
-        URPose = None  # type: ignore[misc,assignment]
-        urpose_to_pose = None  # type: ignore[assignment]
-    if URPose is not None and isinstance(pose, URPose):
-        return urpose_to_pose(pose, frame=Frame.BASE, label=pose.label or None)
-    raise TypeError(
-        f"WorkspaceGuard expects Pose or URPose; got {type(pose).__name__}."
-    )
+    if not isinstance(pose, Pose):
+        raise TypeError(
+            f"WorkspaceGuard expects a Pose in Frame.BASE; got {type(pose).__name__}. A vendor's own pose "
+            f"type converts at its driver's boundary."
+        )
+    if pose.frame is not Frame.BASE:
+        raise FrameMismatchError(
+            f"WorkspaceGuard requires Frame.BASE; got {pose.frame!r}."
+        )
+    return pose
 
 
 def _label_of(pose: Pose) -> str:
@@ -102,7 +87,7 @@ class WorkspaceGuard:
     # Workspace-box check
     # ------------------------------------------------------------------
 
-    def is_inside_workspace(self, pose: PoseLike) -> bool:
+    def is_inside_workspace(self, pose: Pose) -> bool:
         """Check whether the TCP position falls inside the allowed box."""
         p = _coerce_pose(pose)
         x, y, z = p.position_mm
@@ -126,7 +111,7 @@ class WorkspaceGuard:
     # Diversity check
     # ------------------------------------------------------------------
 
-    def is_diverse_enough(self, pose: PoseLike) -> bool:
+    def is_diverse_enough(self, pose: Pose) -> bool:
         """Check that ``pose`` differs enough from the accepted poses.
 
         A pose is rejected where some previously accepted pose is within both
@@ -157,7 +142,7 @@ class WorkspaceGuard:
     # Combined validation + bookkeeping
     # ------------------------------------------------------------------
 
-    def validate(self, pose: PoseLike) -> bool:
+    def validate(self, pose: Pose) -> bool:
         """Full validation, meaning the workspace limits and the diversity check."""
         if not self.is_inside_workspace(pose):
             return False
@@ -165,7 +150,7 @@ class WorkspaceGuard:
             return False
         return True
 
-    def accept(self, pose: PoseLike) -> None:
+    def accept(self, pose: Pose) -> None:
         """Register a pose as used for future diversity checks."""
         p = _coerce_pose(pose)
         self._accepted.append(p)

@@ -38,10 +38,9 @@ def _ur_arm():
         {
             "capabilities": RobotCapabilities(
                 vendor="ur", model="ur5e", dof=6,
-                supports_joint_move=True, supports_linear_move=True,
-                supports_async_move=False,
-                has_native_fk=True, has_native_ik=True,
-                has_force_control=False, is_simulated=False,
+                has_native_fk=True,
+                is_simulated=False,
+                                         controller=None, owns_a_controller=True,
             ),
         },
     )()
@@ -54,30 +53,33 @@ def _kuka_arm():
         {
             "capabilities": RobotCapabilities(
                 vendor="kuka", model="kr6-r900", dof=6,
-                supports_joint_move=True, supports_linear_move=True,
-                supports_async_move=False,
-                has_native_fk=True, has_native_ik=True,
-                has_force_control=False, is_simulated=False,
+                has_native_fk=True,
+                is_simulated=False,
+                                         controller=None, owns_a_controller=True,
+            ),
+        },
+    )()
+
+
+def _reporting(vendor: str, model: str, *, simulated: bool = True):
+    """An arm that reports ``vendor`` and ``model`` and nothing else."""
+    return type(
+        "Arm",
+        (),
+        {
+            "capabilities": RobotCapabilities(
+                vendor=vendor, model=model, dof=6,
+                has_native_fk=True,
+                is_simulated=simulated,
+                                         controller=None, owns_a_controller=vendor not in ("sim", "dummy"),
             ),
         },
     )()
 
 
 def _sim_arm():
-    # Physically a UR5e, but reports vendor='sim' / model='isaac-sim' (like IsaacRobotArm).
-    return type(
-        "Arm",
-        (),
-        {
-            "capabilities": RobotCapabilities(
-                vendor="sim", model="isaac-sim", dof=6,
-                supports_joint_move=True, supports_linear_move=True,
-                supports_async_move=False,
-                has_native_fk=True, has_native_ik=True,
-                has_force_control=False, is_simulated=True,
-            ),
-        },
-    )()
+    # What IsaacRobotArm reports since P0d D5: vendor 'sim' and the UR it drives.
+    return _reporting("sim", "ur5e")
 
 
 def _pose(x_mm: float = 400.0, y_mm: float = 0.0, z_mm: float = 300.0) -> Pose:
@@ -368,30 +370,51 @@ class SelfCollisionGuardTests(unittest.TestCase):
         self.assertFalse(d.accepted)
         self.assertIs(d.reason, SafetyReason.SELF_COLLISION)
 
-    def test_sim_without_kinematics_model_has_no_arm_capsules(self) -> None:
-        # A non-UR vendor gets NO arm-vs-arm capsules by default (only base+tool+fixture).
+    def test_an_arm_reporting_a_model_nobody_describes_has_no_arm_capsules(self) -> None:
+        # Only base + tool + fixture: the Isaac arm's old answer, a KUKA's model, the dummy's.
         guard = SelfCollisionGuard(SelfCollisionSafetyConfig())
-        ctx = self._ctx(pose=_pose(), joints=JointPositions([0.0] * 6), arm=_sim_arm())
-        self.assertIsNone(guard._ur_arm_capsules(ctx))
+        for arm in (_reporting("sim", "isaac-sim"), _kuka_arm(), _reporting("dummy", "dummy-6dof")):
+            with self.subTest(model=arm.capabilities.model):
+                ctx = self._ctx(pose=_pose(), joints=JointPositions([0.0] * 6), arm=arm)
+                self.assertIsNone(guard._ur_arm_capsules(ctx))
+                self.assertIsNone(guard.model_for(arm))
 
-    def test_sim_with_kinematics_model_gets_ur_arm_capsules(self) -> None:
-        # kinematics_model='ur5e' lets the sim (a UR5e) opt into the UR DH -> real arm-vs-arm.
-        guard = SelfCollisionGuard(SelfCollisionSafetyConfig(kinematics_model="ur5e"))
+    def test_a_sim_arm_reporting_the_ur_it_drives_gets_ur_arm_capsules(self) -> None:
+        # No key since P0d D5: the Isaac arm names its UR and the guard takes the chain from that.
+        guard = SelfCollisionGuard(SelfCollisionSafetyConfig())
         ctx = self._ctx(pose=_pose(), joints=JointPositions([0.0] * 6), arm=_sim_arm())
         caps = guard._ur_arm_capsules(ctx)
         self.assertIsNotNone(caps)
         assert caps is not None  # for type-checkers
         self.assertGreaterEqual(len(caps), 5)  # UR5e -> 6 link capsules from 7 origins
+        self.assertEqual("ur5e", guard.model_for(_sim_arm()))
+
+    def test_the_vendor_does_not_enter_the_rule(self) -> None:
+        """The owner's choice, pinned both ways (in aurora, 2026-09-22): the model decides, through the arm registry.
+
+        A UR driven by another vendor's transport (ROS 2, later) is judged as the UR it reports, and a vendor 'ur'
+        double reporting a model nobody describes gets nothing: the vendor string is in neither answer.
+        """
+        guard = SelfCollisionGuard(SelfCollisionSafetyConfig())
+        self.assertEqual("ur3e", guard.model_for(_reporting("ros2", "ur3e", simulated=False)))
+        self.assertIsNone(guard.model_for(_reporting("ur", "isaac-sim", simulated=False)))
+
+    def test_one_guard_judges_one_arm(self) -> None:
+        """The exact meshes are cached per guard, and the model now comes from each arm: a second one is refused."""
+        guard = SelfCollisionGuard(SelfCollisionSafetyConfig(backend="fcl"))
+        guard._exact_mesh_backend("ur5e")
+        guard._exact_mesh_backend("ur5e")  # the same arm again is the cache, not a refusal
+        with self.assertRaises(RuntimeError) as caught:
+            guard._exact_mesh_backend("ur3e")
+        self.assertIn("one safety preflight per arm", str(caught.exception))
 
     def test_kinematics_base_yaw_rotates_arm_capsules(self) -> None:
         # The base-frame reconcile rotates the DH arm-link capsules about +Z. 180 deg -> [-x, -y, z]
         # (the measured Isaac-UR5e-USD-vs-official-UR-DH offset). Default 0.0 leaves the capsules untouched.
         joints = JointPositions([0.1, -1.2, 1.4, -1.7, -1.57, 0.0])
         ctx = self._ctx(pose=_pose(), joints=joints, arm=_sim_arm())
-        base = SelfCollisionGuard(SelfCollisionSafetyConfig(kinematics_model="ur5e"))
-        rot = SelfCollisionGuard(
-            SelfCollisionSafetyConfig(kinematics_model="ur5e", kinematics_base_yaw_deg=180.0)
-        )
+        base = SelfCollisionGuard(SelfCollisionSafetyConfig())
+        rot = SelfCollisionGuard(SelfCollisionSafetyConfig(kinematics_base_yaw_deg=180.0))
         caps0 = base._ur_arm_capsules(ctx)
         caps180 = rot._ur_arm_capsules(ctx)
         assert caps0 is not None and caps180 is not None  # for type-checkers
@@ -540,12 +563,12 @@ class SelfCollisionGuardTests(unittest.TestCase):
 class SelfCollisionWiringTests(unittest.TestCase):
     def test_enforce_true_registers_guard(self) -> None:
         cfg = RobotSafetyConfig.model_validate({"self_collision": {"enforce": True}})
-        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig())
+        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig(), arm_model=None)
         self.assertIn("self_collision", pf.guard_names)
 
     def test_enforce_false_omits_guard(self) -> None:
         cfg = RobotSafetyConfig.model_validate({"self_collision": {"enforce": False}})
-        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig())
+        pf = SafetyPreflight.from_safety_config(cfg, WorkspaceLimitsConfig(), arm_model=None)
         self.assertNotIn("self_collision", pf.guard_names)
 
 
@@ -573,10 +596,10 @@ class MeshBackendModelGateTests(unittest.TestCase):
         """
         import tempfile
 
-        from src.robot.safety._ur_kinematics import UR_DH_TABLES_M
+        from src.config.arms import available_arms
 
         folder = tempfile.mkdtemp()
-        return sorted(UR_DH_TABLES_M)[0], folder
+        return available_arms()[0], folder
 
     def test_status_distinguishes_unknown_model_from_missing_geometry(self) -> None:
         from src.robot.safety._fcl_self_collision import mesh_backend_status
@@ -594,9 +617,14 @@ class MeshBackendModelGateTests(unittest.TestCase):
         """A model with a committed bundle must never report unknown_model or no_bundle.
         (Whether the engine imports is host-dependent, so "ok" and "no_engine" are both acceptable.)"""
         from src.robot.safety._fcl_self_collision import mesh_backend_status
+        from src.config.arms import available_arms
+        from src.robot.safety.planning.environment import collision_mesh_bundle
 
-        for model in ("ur5e", "ur3e", "ur10e"):
-            self.assertIn(mesh_backend_status(model), {"ok", "no_engine"}, model)
+        committed = [m for m in available_arms() if collision_mesh_bundle(m).is_file()]
+        self.assertGreaterEqual(len(committed), 2, "a check over one bundle proves nothing")
+        for model in committed:
+            with self.subTest(model=model):
+                self.assertIn(mesh_backend_status(model), {"ok", "no_engine"})
 
     def test_make_backend_logs_and_degrades_for_a_model_without_geometry(self) -> None:
         from src.robot.safety import _fcl_self_collision as fcl

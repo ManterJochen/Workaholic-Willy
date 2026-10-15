@@ -659,8 +659,8 @@ class _CapableArm:
 
         return RobotCapabilities(
             vendor="ur", model="ur3e", dof=6,
-            supports_joint_move=True, supports_linear_move=True, supports_async_move=True,
-            has_native_fk=True, has_native_ik=True, has_force_control=True, is_simulated=False,
+            has_native_fk=True, is_simulated=False,
+                                                                            controller=None, owns_a_controller=True,
         )
 
     def get_tcp_pose(self):  # noqa: ANN201
@@ -687,11 +687,11 @@ class _CapableArm:
         self.calls.append("get_robot_status")
         return RobotStatus(
             robot_mode=RobotMode.RUNNING, safety_mode=SafetyMode.NORMAL,
-            protective_stopped=False, emergency_stopped=False, message="Normal",
+            protective_stopped=False, emergency_stopped=False, message="Normal", program_running=True,
         )
 
-    def recover_from_protective_stop(self) -> bool:  # pragma: no cover - never called by the panel
-        self.calls.append("recover_from_protective_stop")
+    def acknowledge_fault(self, fault: object) -> bool:  # pragma: no cover - never called by the panel
+        self.calls.append("acknowledge_fault")
         return True
 
 
@@ -741,14 +741,20 @@ class TelemetryCostTests(unittest.TestCase):
         self.assertEqual(snapshot.safety_mode, "normal")
         self.assertEqual(snapshot.controller_message, "Normal")
 
-    def test_the_panel_never_offers_to_clear_a_protective_stop(self) -> None:
+    def test_the_panel_never_offers_to_clear_a_fault(self) -> None:
         """Read-only in the strong sense -- the same reasoning as the missing E-stop button.
 
-        ``recover_from_protective_stop`` is on the very Protocol the panel reads from, one method away
-        from what it does call, and it drives the dashboard's closeSafetyPopup + unlockProtectiveStop.
-        Clearing a stop belongs where the arm is visible.
+        ``acknowledge_fault`` is on the very Protocol the panel reads from, one method away from what it
+        does call, and on a UR it drives the dashboard's closeSafetyPopup + unlockProtectiveStop. Clearing
+        a stop belongs where the arm is visible (the owner, 2026-09-20: at the cell, never the console).
+
+        Asserted by NAME and by CAPABILITY, because the name alone went hollow once: after the verb was
+        renamed, "recover_from_protective_stop" was absent from a call list nothing could have put it in.
         """
+        from src.robot.core import SupportsRobotStatus
         from api.telemetry import read_telemetry
 
+        self.assertIsInstance(self.arm, SupportsRobotStatus, "the double lost the capability it fences")
+        self.assertTrue(hasattr(self.arm, "acknowledge_fault"), "the verb this test fences was renamed")
         read_telemetry(self.arm, include_controller_state=True)
-        self.assertNotIn("recover_from_protective_stop", self.arm.calls)
+        self.assertNotIn("acknowledge_fault", self.arm.calls)

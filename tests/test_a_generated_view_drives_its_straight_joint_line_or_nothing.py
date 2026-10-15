@@ -28,7 +28,6 @@ from src.config.schema.robot import RobotConfig
 from src.robot.core import JointPositions, MotionCommand, MotionStatus, RobotArm
 from src.robot.core.arm_capabilities import DrivesJointLines
 from src.robot.drivers.dummy.arm import DummyRobotArm
-from src.robot.drivers.kuka.arm import KukaRobotArm
 from src.robot.drivers.sim.arm import IsaacRobotArm
 from src.robot.drivers.ur.arm import URRobotArm
 from src.robot.execution import motion
@@ -40,7 +39,7 @@ from tests._wrist_views import CUBE_CENTRE, HEIGHT, WIDTH, K, camera_looking_at,
 
 _DECLINED = "unit double: this file reads which line a joint target runs on, and no camera world is wired"
 
-#: Clear, and where the fake controller says the arm is standing (tests/test_ur_checked_joint_verbs.py).
+#: Clear, and where the fake controller says the arm is standing (tests/test_a_joint_move_is_judged_as_a_path.py).
 _HERE = [0.0, -1.5, 1.5, 0.0, 0.0, 0.0]
 #: Clear, a short joint move away.
 _THERE = [0.2, -1.5, 1.5, 0.0, 0.0, 0.0]
@@ -59,7 +58,7 @@ class _NeverPlans(RoutePlanner):
 
 def _arm(planner: RoutePlanner, *, motion_planner: str = "curobo") -> URRobotArm:
     arm = URRobotArm(RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": motion_planner},
+        "vendor": "ur", "ur": {"model": "ur5e"}, "motion": {"planner": motion_planner},
         "safety": {"payload": {"enforce": False}}, "gripper": {"model": "robotiq_2f85"},
         "workspace_limits": OPEN_WORKSPACE,
     }))
@@ -68,8 +67,8 @@ def _arm(planner: RoutePlanner, *, motion_planner: str = "curobo") -> URRobotArm
     arm._conn.get_joint_positions.return_value = list(planner.here)
     arm._conn.moveJ.return_value = True
     arm._conn.fk.return_value = [0.4, 0.0, 0.3, 0.0, 3.14159, 0.0]
-    arm._curobo_ur = planner  # type: ignore[assignment]
-    # The local path gate has its own tests (tests/test_ur_checked_joint_verbs.py); the destination guards stay real.
+    arm._curobo = planner  # type: ignore[assignment]
+    # The local path gate has its own tests (tests/test_a_joint_move_is_judged_as_a_path.py); the destination guards stay real.
     arm._preflight.gate_planned_path = lambda waypoints, *, arm=None, command=None: None  # type: ignore[method-assign]
     return arm
 
@@ -176,7 +175,7 @@ class TheStraightJointLineOnlyTests(unittest.TestCase):
 
     def test_only_the_ur_arm_says_it_drives_joint_lines(self) -> None:
         self.assertIsInstance(_arm(RoutePlanner(here=_HERE)), DrivesJointLines)
-        for driver in (KukaRobotArm, IsaacRobotArm, DummyRobotArm):
+        for driver in (IsaacRobotArm, DummyRobotArm):
             with self.subTest(driver=driver.__name__):
                 self.assertFalse(hasattr(driver, "move_to_joints_on_the_line"))
         self.assertFalse(hasattr(RobotArm, "move_to_joints_on_the_line"),

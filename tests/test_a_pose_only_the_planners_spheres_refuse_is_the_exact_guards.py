@@ -250,7 +250,7 @@ def _arm(planner: BandPlanner, *, here: "list[float]") -> Any:
     arm._conn.get_joint_positions.return_value = list(here)
     arm._conn.moveJ.return_value = True
     planner.here = list(here)
-    arm._curobo_ur = planner
+    arm._curobo = planner
     return arm
 
 
@@ -923,9 +923,9 @@ class TheScreenIsSaidWherePosesAreMetTests(unittest.TestCase):
         screen = _canned_screen([PoseScreen(PoseVerdict.BAND, "straight lines run.")])
         self.enterContext(mock.patch.object(URRobotArm, "screen_configuration", screen))
         cell = RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
+            "vendor": "ur", "ur": {"model": "ur5e"}, "motion": {"planner": "curobo"},
             "gripper": {"model": "robotiq_2f85", "tool_frame": _TOOL},
-            "safety": {"self_collision": {"kinematics_model": "ur5e", "planner_margin_mm": 4.0, "backend": "fcl"}},
+            "safety": {"self_collision": {"planner_margin_mm": 4.0, "backend": "fcl"}},
             "look_joint_positions_deg": [list(LOOK0_DEG)],
         })
         # The camera section of the same tree, as Cell.start_planner hands it: here no wrist camera hangs on the arm.

@@ -1,8 +1,10 @@
 """Vendor-specific gripper driver modules.
 
 Every driver implements :class:`src.robot.core.Gripper`. Adding a gripper means
-dropping a sibling module here that exposes one class satisfying the Protocol, with no
-pipeline changes.
+dropping a sibling module here that exposes one class satisfying the Protocol and ends
+in its :class:`~.spec.GripperDriver` (``DRIVER``), registered at the end of this file,
+with no pipeline changes: the build, the desk, the console, the bench and the doctor
+read the spec.
 
 Currently shipping:
 
@@ -40,6 +42,7 @@ Public surface
 * :func:`create_gripper` turns a vendor into a :class:`Gripper`.
 * :func:`available_gripper_vendors`, :func:`is_gripper_vendor_registered` and
   :func:`unregister_gripper_driver` inspect and undo a registration.
+* :func:`gripper_driver` and :func:`gripper_drivers` read the drivers' specs.
 
 Backwards compatibility
 -----------------------
@@ -56,14 +59,19 @@ from src.robot.core import Gripper, GripperVendor
 from .onrobot_modbus import ModbusError, OnRobotRG, RGStatus
 from .robotiq_socket import RobotiqSocket, RobotiqSocketError
 from .registry import (
+    SUBSTITUTE_VENDOR,
     GripperDriverFactory,
     available_gripper_vendors,
     create_gripper,
+    gripper_driver,
+    gripper_drivers,
     is_gripper_vendor_registered,
     register_gripper_driver,
+    register_gripper_spec,
     unregister_gripper_driver,
 )
-from .null import GripperSubstitution, SubstitutionReason
+from .null import GripperSubstitution, SubstitutionReason, build_substitute
+from .spec import ArmFacts, GripperDriver, Hazard, Refusal, Row
 from .robotiq import GripperController  # back-compat re-export
 
 __all__ = [
@@ -74,14 +82,24 @@ __all__ = [
     "RobotiqSocketError",
     "Gripper",
     "GripperController",
+    "ArmFacts",
+    "GripperDriver",
     "GripperDriverFactory",
     "GripperSubstitution",
     "GripperVendor",
+    "Hazard",
+    "Refusal",
+    "Row",
+    "SUBSTITUTE_VENDOR",
     "SubstitutionReason",
     "available_gripper_vendors",
+    "build_substitute",
     "create_gripper",
+    "gripper_driver",
+    "gripper_drivers",
     "is_gripper_vendor_registered",
     "register_gripper_driver",
+    "register_gripper_spec",
     "unregister_gripper_driver",
 ]
 
@@ -206,3 +224,18 @@ def _make_null(**kwargs) -> Gripper:
     """
     from .null import NullGripper
     return NullGripper(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# The specs (P0g slice 8): one per driver, stated beside it, read by every dispatch
+# ---------------------------------------------------------------------------
+
+
+def _register_specs() -> None:
+    from . import dummy, jaw_io, null, onrobot, robotiq, vacuum
+
+    for module in (null, dummy, robotiq, vacuum, jaw_io, onrobot):
+        register_gripper_spec(module.DRIVER)
+
+
+_register_specs()

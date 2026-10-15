@@ -86,7 +86,7 @@ class ABakeFromTheCommandLineTests(unittest.TestCase):
         self.assertEqual(row["source"], "standalone_usd")
         self.assertIn("acme.usd", row["note"])
         self.assertIn("scripts/grippers/measure_jaw_from_bundle.py", said)
-        self.assertIn("scripts/curobo/fit_cover_spheres.py --hand acme_2f --write", said)
+        self.assertIn("scripts/arms/fit.py --hand acme_2f --write", said)
         self.assertNotIn("build_gripper_spheres", said)
 
     def test_the_control_is_never_skipped_silently(self) -> None:
@@ -94,7 +94,7 @@ class ABakeFromTheCommandLineTests(unittest.TestCase):
         empty = self.folder / "no_assets"
         empty.mkdir()
         with mock.patch.dict("os.environ", {"WILLY_ISAAC_ASSETS": str(empty / "missing")}), \
-                mock.patch.object(self.baker, "_ASSET_HINTS", ()):
+                mock.patch.object(self.baker, "_WINDOWS_ASSET_GUESSES", ()):
             code, said = _run(self.baker, ["--usd", str(self.folder / "acme.usd"), "--hand", "acme_2f", *_HANDE_ARGS,
                                            "--out", str(out), "--write"])
         self.assertNotEqual(code, 0)

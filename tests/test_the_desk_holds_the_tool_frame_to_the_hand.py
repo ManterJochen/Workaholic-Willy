@@ -25,8 +25,8 @@ def _row(model: str, offset: tuple[float, float, float], rotation=_IDENTITY, pla
     if plates is not None:
         gripper["coupling_plates"] = plates
     cfg = RobotConfig.model_validate({
-        "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"}, "gripper": gripper,
-        "safety": {"self_collision": {"kinematics_model": "ur5e", "planner_margin_mm": 4.0, "backend": "fcl"}},
+        "vendor": "ur", "ur": {"model": "ur5e"}, "motion": {"planner": "curobo"}, "gripper": gripper,
+        "safety": {"self_collision": {"planner_margin_mm": 4.0, "backend": "fcl"}},
     })
     report = run_config_preflight(cfg, curobo_available=True, collision_engine="coal")
     rows = [check for check in report.checks if check.name == "grasp centre"]
@@ -67,9 +67,9 @@ class TheGraspCentreRowTests(unittest.TestCase):
         from src.robot.execution.real_cell.preflight import run_config_preflight
 
         cfg = RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
+            "vendor": "ur", "ur": {"model": "ur5e"}, "motion": {"planner": "curobo"},
             "gripper": {"model": "schunk_egu50", "tool_frame": {"source": "undeclared"}},
-            "safety": {"self_collision": {"kinematics_model": "ur5e", "planner_margin_mm": 4.0, "backend": "fcl"}},
+            "safety": {"self_collision": {"planner_margin_mm": 4.0, "backend": "fcl"}},
         })
         report = run_config_preflight(cfg, curobo_available=True, collision_engine="coal")
         self.assertEqual([check for check in report.checks if check.name == "grasp centre"], [])

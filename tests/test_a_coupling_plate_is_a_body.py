@@ -231,24 +231,21 @@ class ThePlannerAndTheGuardReadTheSamePlates(unittest.TestCase):
     """Both halves take the boxes from the resolved hand, so no second derivation can disagree with the first."""
 
     def test_a_cell_with_no_measured_plate_adds_no_body_to_the_planner(self) -> None:
-        from src.robot.safety.planning._curobo_body_links import coupling_body_link
+        from src.config.arms import load_arm
+        from src.robot.safety.planning._curobo_body_links import ArmLinks, coupling_body_link
 
-        self.assertIsNone(coupling_body_link(boxes=[], rotation=np.eye(3).tolist()))
+        self.assertIsNone(coupling_body_link(arm_links=ArmLinks.from_description(load_arm("ur5e")), boxes=[], rotation=np.eye(3).tolist()))
 
     def test_a_measured_plate_becomes_one_link_under_tool0(self) -> None:
-        from src.robot.safety.planning._curobo_body_links import (
-            COUPLING_LINK,
-            HAND_IGNORE,
-            HAND_PARENT,
-            coupling_body_link,
-        )
+        from src.config.arms import load_arm
+        from src.robot.safety.planning._curobo_body_links import COUPLING_LINK, ArmLinks, coupling_body_link
 
         boxes, _ = stacked_boxes([CHANGER], axis=APPROACH)
-        link = coupling_body_link(boxes=boxes, rotation=np.eye(3).tolist())
+        link = coupling_body_link(arm_links=ArmLinks.from_description(load_arm("ur5e")), boxes=boxes, rotation=np.eye(3).tolist())
         assert link is not None
         self.assertEqual(link["link"], COUPLING_LINK)
-        self.assertEqual(link["parent"], HAND_PARENT)
-        self.assertEqual(tuple(link["ignore"]), HAND_IGNORE)
+        self.assertEqual(link["parent"], "tool0")
+        self.assertEqual(link["ignore"], ["tool0", "wrist_3_link", "wrist_2_link"])
         self.assertEqual(link["fixed_transform"], [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
                          "a plate does not move relative to the flange, so only the placement turns it")
         self.assertTrue(link["spheres"])

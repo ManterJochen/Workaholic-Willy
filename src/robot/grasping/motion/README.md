@@ -75,8 +75,8 @@ still refuse it after the close, and the arm then holds the part where it stands
 (`Robot.release`).
 
 Three of the owner's switches (2026-10-09, each off as shipped) move a judgement to where the arm waits anyway and
-change nothing of what is judged. On an arm that gates its own sends (`safety.dwell.gate_at: send`) the policy asks
-for each move with no steady gate of its own: the arm judges first and waits right before it sends. Where the arm
+change nothing of what is judged. On an arm that gates its own sends (`safety.dwell.gate_at: send`) the arm judges
+first and waits right before it sends; the policy waits for nothing, the steady gate being the arm's own (P0e E9). Where the arm
 holds the world the grasp was judged in ahead (`safety.planning_world.hold.standoff`), the move to the standoff and
 the line down are judged in it, with no frame at the standoff (`holding_the_approach`). Where the arm judges the
 next leg (`robot.motion.judge_next_leg`), the close leaves the jaws' stroke to the policy where the hand can

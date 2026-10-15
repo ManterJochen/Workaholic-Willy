@@ -1,0 +1,149 @@
+# ur5: one arm, described.
+#
+# The registry file is the arm. Until 2026-09-20 this robot was ten rows in six modules -- a DH table, a
+# joint-limit table, an admitted-name tuple, a sim spec, a descriptor name, a shared home pose, a joint-name
+# tuple, a capability record and a dof default -- and a model present in one and absent from another degraded
+# without a word. Read src/config/schema/arms/arm_schema.py for what each key means.
+#
+# The derived half comes from Universal Robots' own description, vendored under
+# scripts/arms/ur_ros2_description, pinned by the upstream block below and held byte for byte by its
+# sha256 manifest. tests/test_arm_descriptions_are_urs_numbers.py proves every one of those numbers still
+# equals UR's, and names the two axes where this file differs from UR's file on purpose.
+#
+# The measured half is this repository's own, and each key below says who measured it and how.
+# CB-SERIES. A UR5 and a UR5e share a2 exactly and differ by 0.05 mm in a3 and by 73 mm in d1, so
+# the pair is the one this stack can confuse without anything noticing.
+
+arm:
+  vendor: "ur"
+  model: "ur5"
+  # A cell may name this arm. Admission is a decision per arm rather than something derived, and it lives
+  # here, beside the numbers it vouches for; tests/test_arm_registry.py holds that an admitted arm carries
+  # its committed collision bundle and sphere map.
+  admitted: true
+  source: >-
+    Universal Robots' pinned description, the upstream block below, for the joints, and this repository's own measurements for the reach, the payload and the simulator block, each named at the key it belongs to.
+  # The pin the joints were read from, as data. scripts/arms/fetch.py and its manifest hold the bytes, and
+  # tests/test_the_description_names_its_upstream.py holds this block to them for every arm.
+  upstream:
+    adapter: "ur"
+    repo: "https://github.com/UniversalRobots/Universal_Robots_ROS2_Description.git"
+    commit: "89bbe795f38a7ab00fb66fe8831dfff79dc99edf"
+    licence: "BSD-3-Clause"
+    manifest_rows_sha256: "5a45a27fe6148a8d5f31ae8a5a9e876d11c3e8b01bde14abf192624a51be65d3"
+  # The end the arm stands on, as flange is the end a hand hangs from. UR's ur_macro.xacro roots the robot at
+  # base_link (REP-103, X+ forward) and turns the frame the joints start in, base_link_inertia, half a turn about z:
+  # "the internal frames of the robot/controller have X+ pointing backwards". The DH chain starts there.
+  base:
+    link: "base_link"
+    chain_yaw_deg: 180
+    # The controller reports poses, and a cell declares its geometry, in UR's "Base", which the same macro puts at
+    # base_link turned half a turn about z (base_link-base_fixed_joint). Measured on URSim on 2026-09-18: the
+    # controller reports in the DH base, 917.6 mm from the unturned frame. drivers/planned/planner_frame.py turns
+    # every pose by exactly this.
+    controller_yaw_deg: 180
+  # The link a hand hangs from and the axis a hand bolted there approaches along, in that link's frame. UR's own
+  # description (ur_macro.xacro) puts tool0 on the flange as "Z+ front", and tool0 is the DH chain's last frame
+  # (tests/test_ur_urdf_renders_the_dh_chain.py). The planner hangs the hand here; the desk checklist warns on
+  # a declared tool frame that approaches along another axis.
+  flange:
+    link: "tool0"
+    approach: "+Z"
+  # Where the retract search starts (scripts/arms/retract.py): Isaac's Lula default_q for this arm, read
+  # 2026-09-15, the pose every descriptor carried before the rule. Each joint row below carries its value as
+  # retract_anchor_rad, 0.0 where Isaac writes -0.0, and every retract row of this arm records this text.
+  retract_anchor_source: "Isaac Lula default_q, motion_policy_configs/universal_robots/ur5/rmpflow/ur5_robot_description.yaml"
+  # Base to flange, one row per joint, in the order a joint vector arrives in, from this stack's own table, which the committed artefacts were measured through.
+  # Metres and radians: a millimetre round trip is not exact for every UR length, and the committed
+  # bundles were cut from these values (see the schema).
+  # Each joint also names the link it moves, as UR's rendered description spells it (the joint's child link), and
+  # that link's arrays in the arm's bundle, safety/data/<model>_collision_meshes.npz. The link is rigid with the
+  # joint's DH frame, which is the row's number, 1 to 6, so no frame is written; the flange, tool0, is frame 6.
+  joints:
+    - name: "shoulder_pan_joint"
+      link: "shoulder_link"
+      part: "shoulder"
+      a_m: 0.0
+      d_m: 0.089159
+      alpha_rad: 1.570796327
+      limit_deg: [-360.0, 360.0]
+      planner_limit_deg: [-360.0, 360.0]
+      home_rad: 0.0
+      retract_anchor_rad: 0.0
+    - name: "shoulder_lift_joint"
+      link: "upper_arm_link"
+      part: "upper_arm"
+      a_m: -0.425
+      d_m: 0.0
+      alpha_rad: 0.0
+      limit_deg: [-360.0, 360.0]
+      planner_limit_deg: [-360.0, 360.0]
+      home_rad: -1.5707963267948966
+      retract_anchor_rad: -1.0
+    - name: "elbow_joint"
+      link: "forearm_link"
+      part: "forearm"
+      a_m: -0.39225
+      d_m: 0.0
+      alpha_rad: 0.0
+      limit_deg: [-360.0, 360.0]
+      # UR's own planning limit (joint_limits.yaml): half the turn the arm makes, so the planner's search is not
+      # split in two. The guard keeps the arm's +/-360 above.
+      planner_limit_deg: [-180.0, 180.0]
+      home_rad: 0.0
+      retract_anchor_rad: 0.9
+    - name: "wrist_1_joint"
+      link: "wrist_1_link"
+      part: "wrist_1"
+      a_m: 0.0
+      d_m: 0.10915
+      alpha_rad: 1.570796327
+      limit_deg: [-360.0, 360.0]
+      planner_limit_deg: [-360.0, 360.0]
+      home_rad: -1.5707963267948966
+      retract_anchor_rad: 0.0
+    - name: "wrist_2_joint"
+      link: "wrist_2_link"
+      part: "wrist_2"
+      a_m: 0.0
+      d_m: 0.09465
+      alpha_rad: -1.570796327
+      limit_deg: [-360.0, 360.0]
+      planner_limit_deg: [-360.0, 360.0]
+      home_rad: 0.0
+      retract_anchor_rad: 0.0
+    - name: "wrist_3_joint"
+      link: "wrist_3_link"
+      part: "wrist_3"
+      a_m: 0.0
+      d_m: 0.0823
+      alpha_rad: 0.0
+      limit_deg: [-360.0, 360.0]
+      planner_limit_deg: [-360.0, 360.0]
+      home_rad: 0.0
+      retract_anchor_rad: 0.0
+  # cuRobo narrows every joint's planner_limit_deg by this at each end when it loads a descriptor. 0.1 rad is 5.73
+  # degrees, wider than the guard's default 5 degree margin: the reason the planner cannot offer what the guard refuses.
+  planner:
+    position_limit_clip_rad: 0.1
+  # UR's published working radius, the number on the datasheet. Not the sum of every link length and every
+  # offset, which bounds path sampling and is deliberately far larger: that sum is 1312 mm for a UR5e whose
+  # datasheet reach is 850, and 888 mm for a UR3 whose reach is 500.
+  reach_mm: 850.0
+  payload_kg: 5.0
+  # What Isaac needs to stand this arm up. Measured 2026-09-09 by opening each stage and listing its
+  # variant sets: no Gripper variant set at all, so the sim mounts the cell's hand standalone.
+  sim:
+    lula_key: "UR5"
+    usd_relpath: "/Isaac/Robots/UniversalRobots/ur5/ur5.usd"
+    # The link the wrist camera and the tool hang from. A wrong guess mounts the camera on the wrong body
+    # without erroring: the image just moves with something else.
+    wrist_link: "wrist_3_link"
+    baked_gripper_variant: null
+    baked_hand: null
+    # The patch of table a scene generator may place objects on, for a cell standing this arm.
+    # DERIVED: the same patch as the UR5e, because the reach is the same. Far corner 618.5 mm against
+    # 805.1 mm of horizontal radius, so 186.6 mm of margin. The CB shoulder is 73 mm lower, which is
+    # why the radius differs from the UR5e's despite the same reach.
+    workspace_center_mm: [450.0, 0.0]
+    workspace_half_extents_mm: [150.0, 150.0]

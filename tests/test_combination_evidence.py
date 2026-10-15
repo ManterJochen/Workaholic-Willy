@@ -167,7 +167,7 @@ class WhatARefusalRefuses(unittest.TestCase):
             said = self._asked(folder)
             assert said is not None
             self.assertIn(_SIM_KEY, said)
-            self.assertIn("matrix_gate.py", said)
+            self.assertIn("scripts/arms/gate.py", said)
 
     def test_a_config_that_is_not_the_one_measured_is_refused(self) -> None:
         with TemporaryDirectory() as folder:

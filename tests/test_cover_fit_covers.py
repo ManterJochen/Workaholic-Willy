@@ -27,7 +27,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 
 
 def _cover():
-    path = _ROOT / "scripts" / "curobo" / "_cover_fit.py"
+    path = _ROOT / "scripts" / "arms" / "_cover_fit.py"
     spec = importlib.util.spec_from_file_location("_cover_fit_under_test", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

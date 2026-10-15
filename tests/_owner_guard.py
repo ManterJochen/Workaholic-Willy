@@ -56,10 +56,10 @@ def owner_robot(*, whole: bool, fixtures: "list[dict[str, Any]] | None" = None) 
 
 def tool() -> np.ndarray:
     """The owner's tool frame, FLANGE to TCP, millimetres: 157 mm out and a quarter turn about the flange axis."""
-    from src.robot.drivers.ur.tool_frame import tool_frame_matrix
+    from src.geometry.matrix import position_quaternion_to_matrix
 
-    return np.asarray(tool_frame_matrix((0.0, 0.0, 157.0), (0.0, 0.0, -math.sqrt(0.5), math.sqrt(0.5))),
-                      dtype=np.float64)
+    return position_quaternion_to_matrix(np.array([0.0, 0.0, 157.0]),
+                                         np.array([0.0, 0.0, -math.sqrt(0.5), math.sqrt(0.5)]))
 
 
 @lru_cache(maxsize=1)
@@ -75,7 +75,7 @@ def camera_body() -> Any:
     camera_to_tool = Transform.from_matrix(np.linalg.inv(recorded["tool_to_base"]) @ recorded["camera_to_base"],
                                            from_frame=Frame.CAMERA, to_frame=Frame.TOOL)
     return WristBody.from_parts(rig_id="EIH_Cam", spec=load_camera("d415_enclosure"), bracket=None, margin_mm=3.0,
-                                camera_to_tool=camera_to_tool, flange_to_tcp=FlangeToTcp.from_matrix("polyscope", tool()))
+                                camera_to_tool=camera_to_tool, flange_to_tcp=FlangeToTcp.from_matrix("controller", tool()))
 
 
 class OwnerArm:
@@ -84,7 +84,7 @@ class OwnerArm:
     def __init__(self, config: Any) -> None:
         from src.robot.core.capabilities import RobotCapabilities
 
-        self.capabilities = RobotCapabilities(vendor="ur", model="ur10", has_native_fk=True)
+        self.capabilities = RobotCapabilities(vendor="ur", model="ur10", has_native_fk=True, dof=6, controller=None, owns_a_controller=True)
         self.config = config
         self.home_joint_positions = tuple(config.home_joint_positions)
 

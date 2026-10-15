@@ -4,7 +4,7 @@ The planner is rooted at UR's URDF ``base_link``, the DH base turned half a turn
 (``probe_payload_attach.py`` ``frame`` measures 0.0001 mm with the turn, 1019 mm without). A UR cell
 declares its geometry and commands its goals in the frame the controller reports in, the DH base.
 This builds a :class:`URRobotArm` the way a cell does, with a stand-in RTDE connection that reports
-one joint vector and moves nothing, and asks the planner the arm builds (``_curobo_ur_planner``):
+one joint vector and moves nothing, and asks the planner the arm builds (``_curobo_planner``):
 
 * (f1) a box declared in the cell's config, in the controller's frame, 20 mm into the fingers makes
   the arm's own configuration invalid;
@@ -57,7 +57,7 @@ sys.path.insert(0, str(_ROOT))
 from src.config.schema.robot import RobotConfig  # noqa: E402
 from src.contracts import chosen  # noqa: E402
 from src.robot.drivers.ur.arm import URRobotArm  # noqa: E402
-from src.robot.drivers.ur.planner_frame import PlannerFrameClient  # noqa: E402
+from src.robot.drivers.planned.planner_frame import PlannerFrameClient  # noqa: E402
 from src.robot.safety._ur_ik import nearest_goals, ur_flange_ik  # noqa: E402
 from src.robot.safety._ur_kinematics import ur_link_transforms_mm  # noqa: E402
 from src.robot.safety.planning import CuroboUnavailableError  # noqa: E402
@@ -99,10 +99,10 @@ def _cell(fixtures: "list[dict[str, Any]]", *, field: bool) -> RobotConfig:
         world["perceived"] = {"voxel_field_mm": _FIELD_VOXEL_MM}
     return RobotConfig.model_validate({
         "vendor": "ur",
-        "ur": {"model": _ARM, "motion_planner": "curobo"},
+        "ur": {"model": _ARM}, "motion": {"planner": "curobo"},
         "safety": {
             "payload": {"enforce": False},
-            "self_collision": {"backend": "fcl", "kinematics_model": _ARM, "planner_margin_mm": _MARGIN_MM,
+            "self_collision": {"backend": "fcl", "planner_margin_mm": _MARGIN_MM,
                                "fixtures": fixtures},
             "planning_world": world,
         },
@@ -168,7 +168,7 @@ def main(argv: "list[str] | None" = None) -> int:
     claims: dict[str, Any] = {}
     try:
         # (f1): the declared world, through the cell's own config and the planner's registration.
-        planner = _arm([into])._curobo_ur_planner()
+        planner = _arm([into])._curobo_planner()
         try:
             verdict = planner.check_joint_path([list(_DOWN_Q)])
             claims["f1_a_declared_box_in_the_fingers"] = {"valid": bool(verdict.valid), "reason": str(verdict.reason)}
@@ -176,12 +176,12 @@ def main(argv: "list[str] | None" = None) -> int:
             planner.close()
 
         arm = _arm([], field=True)
-        planner = arm._curobo_ur_planner()
+        planner = arm._curobo_planner()
         try:
             # (f3) first, on a world with nothing near the hand.
             goal = flange0.copy()
             goal[:3, 3] = flange0[:3, 3] - approach * _RAISE_MM
-            lower, upper = arm._goal_joint_window()
+            lower, upper = arm.goal_joint_window()
             solutions = ur_flange_ik(_ARM, goal, q6_if_singular=_DOWN_Q[-1]) or ()
             nearest = nearest_goals(solutions, current=_DOWN_Q, lower=lower, upper=upper, velocity=1.0)
             traj = planner.plan_joint(list(nearest[0].joints)) if nearest else None

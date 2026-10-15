@@ -25,7 +25,7 @@ def _hande() -> Any:
     return load_robot_section(profile="hande")
 
 
-def _with_frame(z_mm: float, *, source: str = "polyscope") -> Any:
+def _with_frame(z_mm: float, *, source: str = "controller") -> Any:
     """The ``hande`` profile with its tool frame declared ``z_mm`` out along the flange's axis: its plates are 20 mm,
     its registry grasp centre 136.2, so the guard's grasp centre stands at 156.2 mm."""
     cfg = _hande()

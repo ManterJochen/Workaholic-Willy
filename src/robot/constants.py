@@ -27,9 +27,7 @@ ROBOT_MODULES_LOG_DIR: Final[str] = "logs/robot/modules"
 UR_CONNECTION_LOG_FILE: Final[str] = "ur_connection.log"
 UR_ARM_LOG_FILE: Final[str] = "ur_arm.log"
 UR_MOTION_LOG_FILE: Final[str] = "ur_motion.log"
-UR_CUROBO_LOG_FILE: Final[str] = "ur_curobo.log"
-KUKA_ARM_LOG_FILE: Final[str] = "kuka_arm.log"
-KUKA_EKI_LOG_FILE: Final[str] = "kuka_eki.log"
+CUROBO_PLANNER_LOG_FILE: Final[str] = "curobo_planner.log"
 SIM_ARM_LOG_FILE: Final[str] = "sim_arm.log"
 GRIPPER_LOG_FILE: Final[str] = "gripper.log"
 SAFETY_PREFLIGHT_LOG_FILE: Final[str] = "safety_preflight.log"
@@ -85,10 +83,6 @@ PLANNING_ENVIRONMENT_LOG_FILE: Final[str] = "planning_environment.log"
 #: reports comes from a live reputation service and changes over time, so the history is the
 #: value and would be lost among the per-build resolution lines.
 PLANNING_DOCTOR_LOG_FILE: Final[str] = "planning_doctor.log"
-# There is deliberately no constant for ``safety/planning/robot/build_gripper_spheres.py``.
-# That generator is documented to run by path, which puts only the script's own directory on
-# ``sys.path``, so importing ``src.robot.constants`` there would break the documented
-# invocation. It already prints its output path and sphere count.
 
 
 def create_robot_logger(name: str, sub_file: str, level: int = logging.INFO) -> Logger:
@@ -109,25 +103,3 @@ def create_robot_logger(name: str, sub_file: str, level: int = logging.INFO) -> 
         aggregate_file=ROBOT_LOG_FILE,
         aggregate_dir=ROBOT_LOG_DIR,
     )
-
-# ----------------------------------------------------------------------
-# Kinematics defaults
-# ----------------------------------------------------------------------
-#: Default home joint configuration for a 6-DOF UR arm, in radians: the arm standing straight
-#: up, shoulder lift and wrist 1 at -pi/2 and every other joint at zero. It is not a looking-down
-#: pose. The flange faces sideways, along base -Y, and on a UR5e it sits at (0.0, -232.9, 1079.4) mm
-#: by the bundled DH table, above most cells' ``workspace_limits``, so ``move_home`` refuses it
-#: until the cell sets ``robot.home_joint_positions``.
-HOME_JOINTS_DEFAULT: Final[tuple[float, ...]] = (
-    0.0,
-    -1.5707963267948966,  # -pi/2
-    0.0,
-    -1.5707963267948966,  # -pi/2
-    0.0,
-    0.0,
-)
-
-
-def home_joints_default() -> list[float]:
-    """Return a fresh, mutable copy of :data:`HOME_JOINTS_DEFAULT`."""
-    return list(HOME_JOINTS_DEFAULT)

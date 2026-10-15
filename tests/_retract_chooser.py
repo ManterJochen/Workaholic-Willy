@@ -1,4 +1,4 @@
-"""Run ``scripts/curobo/choose_ur_retract.py`` into a temporary table with its three judges standing in (not a test).
+"""Run ``scripts/arms/retract.py`` into a temporary table with its three judges standing in (not a test).
 
 The chooser needs Coal for the exact meshes, a GPU sidecar for the planner and minutes of search. What a customer
 depends on around those judges is plain code: which hands and plates a run judges, what it refuses before starting
@@ -22,14 +22,14 @@ from typing import Any
 from unittest import mock
 
 REPO = Path(__file__).resolve().parents[1]
-CUROBO = REPO / "scripts" / "curobo"
-TABLE = REPO / "src" / "robot" / "safety" / "planning" / "robot" / "ur_retract.yaml"
+ARMS = REPO / "scripts" / "arms"
+TABLE = REPO / "src" / "robot" / "safety" / "planning" / "robot" / "retract.yaml"
 
 
 def chooser() -> Any:
-    if str(CUROBO) not in sys.path:
-        sys.path.insert(0, str(CUROBO))
-    spec = importlib.util.spec_from_file_location("_chooser_under_test", CUROBO / "choose_ur_retract.py")
+    if str(ARMS) not in sys.path:
+        sys.path.insert(0, str(ARMS))
+    spec = importlib.util.spec_from_file_location("_chooser_under_test", ARMS / "retract.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -51,7 +51,7 @@ def run(argv: list[str], *, maps: Path | None = None, planner_refuses: tuple = (
     planner cannot be asked; ``moved`` holds (arm, hand) pairs whose rule answers a pose one wrist step off the anchor."""
     module = chooser()
     folder = Path(tempfile.mkdtemp(prefix="retract_chooser_"))
-    table = folder / "ur_retract.yaml"
+    table = folder / "retract.yaml"
     shutil.copy(TABLE, table)
     judges: list = []
     planners: list = []
@@ -60,10 +60,12 @@ def run(argv: list[str], *, maps: Path | None = None, planner_refuses: tuple = (
         engine = "coal"
 
         def __init__(self, arm: str, hand: str, plate_mm: float, placement: Any) -> None:
+            self.arm = arm
             judges.append((arm, hand, plate_mm))
 
         def nearest(self, joints: list) -> tuple:
-            return (0.0, "forearm|upper_arm") if list(joints) == list(module.FOLDED) else (40.0, "wrist_1|gripper")
+            folded = list(joints) == module.folded_control(self.arm)
+            return (0.0, "forearm|upper_arm") if folded else (40.0, "wrist_1|gripper")
 
         def lowest_z_mm(self, joints: list) -> float:
             return 200.0
@@ -97,7 +99,7 @@ def run(argv: list[str], *, maps: Path | None = None, planner_refuses: tuple = (
         mock.patch.object(module, "ExactJudge", FakeExact),
         mock.patch.object(module, "PlannerJudge", FakePlanner),
         mock.patch.object(module, "choose", fake_choose),
-        mock.patch.object(module, "planner_envelope_rad", lambda: ((-6.0,) * 6, (6.0,) * 6)),
+        mock.patch.object(module, "planner_envelope_rad", lambda *_numbers: ((-6.0,) * 6, (6.0,) * 6)),
     ]
     if maps is not None:
         patches.append(mock.patch.object(module, "MAPS", maps))

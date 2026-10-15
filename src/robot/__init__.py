@@ -26,31 +26,33 @@ Architecture
 Lazy re-exports
 ---------------
 The vendor-neutral types under :mod:`.core` are re-exported eagerly, so most
-callers can write ``from src.robot import RobotArm, JointPositions``. The
-concrete UR-facing names are re-exported lazily through :pep:`562`
-``__getattr__``, so importing :mod:`src.robot.core` for vendor-free work does not
-pull in the UR driver chain.
+callers can write ``from src.robot import RobotArm, JointPositions``. The heavier
+vendor-neutral names (the safety guards, ``Robot``, the calibration routine) are
+re-exported lazily through :pep:`562` ``__getattr__``. No driver class is: a
+vendor's classes live in :mod:`src.robot.drivers` and reach a caller as a
+:class:`RobotArm` from ``create_arm``.
 
 Numerics contract
 -----------------
 Inside this package translations are in millimetres and rotations follow the
 geometry subsystem: XYZW quaternions in ``float64``. Axis-angle URPose
-conversions happen at the :mod:`src.geometry.conversions` boundary and nowhere
-else.
+conversions happen at the UR driver's boundary,
+:mod:`src.robot.drivers.ur.pose_adapter`, and nowhere else.
 """
 
 from __future__ import annotations
 
 # Eager: vendor-free types only.
-from .constants import HOME_JOINTS_DEFAULT, ROBOT_LOG_DIR, ROBOT_LOG_FILE
+from .constants import ROBOT_LOG_DIR, ROBOT_LOG_FILE
 from .core import (
+    ArmFault,
+    ArmFaultClass,
     Gripper,
     GripperVendor,
     JointPositions,
     RobotArm,
     RobotCapabilities,
     RobotConnectionError,
-    RobotEmergencyStop,
     RobotError,
     RobotKinematicsError,
     RobotMotionRejected,
@@ -58,14 +60,13 @@ from .core import (
     RobotVendor,
 )
 
-# Lazy proxies for the concrete UR-facing names.
+# Lazy proxies for the vendor-neutral names. No driver is reachable from here: a vendor's classes live in
+# `robot.drivers.<vendor>` and reach the stack as a `RobotArm` from `create_arm`, so the package root cannot
+# become the door through which one vendor's types spread (the four UR entries left on 2026-09-20).
 # Each entry: attribute_name -> (relative_module, attribute_in_module).
 _LAZY: dict[str, tuple[str, str]] = {
     "Robot": (".execution", "Robot"),
-    "URRobotArm": (".drivers.ur.arm", "URRobotArm"),
-    "URConnection": (".drivers.ur", "URConnection"),
     "GripperController": (".grippers", "GripperController"),
-    "URPose": (".drivers.ur.pose", "URPose"),
     "WorkspaceGuard": (".safety", "WorkspaceGuard"),
     "SingularityThresholds": (".safety", "SingularityThresholds"),
     "SingularityReport": (".safety", "SingularityReport"),
@@ -84,7 +85,6 @@ _LAZY: dict[str, tuple[str, str]] = {
     "analyze_joint_singularity": (".safety", "analyze_joint_singularity"),
     "analyze_pose_singularity": (".safety", "analyze_pose_singularity"),
     "assert_pose_not_singular": (".safety", "assert_pose_not_singular"),
-    "MotionController": (".drivers.ur.motion", "MotionController"),
     "PoseProvider": (".execution", "PoseProvider"),
     "CalibrationRoutine": (".execution", "CalibrationRoutine"),
     "CalibrationResult": (".execution", "CalibrationResult"),
@@ -112,7 +112,6 @@ def __dir__() -> list[str]:
 
 
 __all__ = [
-    "HOME_JOINTS_DEFAULT",
     "ROBOT_LOG_DIR",
     "ROBOT_LOG_FILE",
     "CalibrationResult",
@@ -121,7 +120,6 @@ __all__ = [
     "GripperController",
     "GripperVendor",
     "JointPositions",
-    "MotionController",
     "PoseProvider",
     # The arm and the gripper as one noun (execution/robot.py)
     "Robot",
@@ -131,7 +129,6 @@ __all__ = [
     "RobotCalibrationEventListener",
     "RobotCapabilities",
     "RobotConnectionError",
-    "RobotEmergencyStop",
     "RobotError",
     "RobotKinematicsError",
     "RobotMotionRejected",
@@ -150,9 +147,6 @@ __all__ = [
     "SingularityGuard",
     "SingularityReport",
     "SingularityThresholds",
-    "URConnection",
-    "URPose",
-    "URRobotArm",
     "WorkspaceGuard",
     "WorkspaceSafetyGuard",
     "analyze_joint_singularity",

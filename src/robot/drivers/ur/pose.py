@@ -20,12 +20,9 @@ crossed in the wrong place.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from pathlib import Path
 
 import cv2 as cv
 import numpy as np
-
-from src.utility.io import dump_json, load_json
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,16 +127,3 @@ class URPose:
     @classmethod
     def from_dict(cls, d: dict) -> URPose:
         return cls(**d)
-
-    @staticmethod
-    def save_list(poses: list[URPose], path: str | Path) -> Path:
-        """Write a list of poses to a JSON file."""
-        path = Path(path)
-        dump_json([p.to_dict() for p in poses], path)
-        return path
-
-    @staticmethod
-    def load_list(path: str | Path) -> list[URPose]:
-        """Load a list of poses from a JSON file."""
-        data = load_json(path)
-        return [URPose.from_dict(d) for d in data]

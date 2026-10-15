@@ -1,6 +1,6 @@
 """Every retract and evidence refusal ends in the whole command that judges or measures what the cell asked for (C3h).
 
-The refusals said "choose_ur_retract.py <arm>" and "Measure it with matrix_gate.py": pasted, the first judges the Isaac
+The refusals said "retract.py <arm>" and "Measure it with gate.py": pasted, the first judges the Isaac
 cell's +Y placement and the second measures an undeclared frame at no plate and no payload, so a +Z customer cell got
 a file that could never admit it (finding 10 of the audit of 2026-09-17). Each command here is parsed back by the
 script's own parser and compared with what the cell asked.
@@ -18,13 +18,13 @@ from pathlib import Path
 from typing import Any
 
 _REPO = Path(__file__).resolve().parents[1]
-_CUROBO = _REPO / "scripts" / "curobo"
+_ARMS = _REPO / "scripts" / "arms"
 
 
 def _script(name: str) -> Any:
-    if str(_CUROBO) not in sys.path:
-        sys.path.insert(0, str(_CUROBO))
-    spec = importlib.util.spec_from_file_location(f"_parse_back_{name}", _CUROBO / f"{name}.py")
+    if str(_ARMS) not in sys.path:
+        sys.path.insert(0, str(_ARMS))
+    spec = importlib.util.spec_from_file_location(f"_parse_back_{name}", _ARMS / f"{name}.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -40,13 +40,13 @@ def _after(text: str, script: str) -> list[str]:
 class ARetractRefusalParsesBackTests(unittest.TestCase):
     def _table(self, body: str) -> Path:
         folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
-        path = folder / "ur_retract.yaml"
+        path = folder / "retract.yaml"
         path.write_text("rule:\n  placement: +Y+X\n  planner_margin_mm: 4.0\n  pairs_with_no_retract: []\nretracts:\n" + body,
                         encoding="utf-8")
         return path
 
     def _asked(self, text: str) -> Any:
-        return _script("choose_ur_retract").parser().parse_args(_after(text, "choose_ur_retract.py"))
+        return _script("retract").parser().parse_args(_after(text, "scripts/arms/retract.py"))
 
     def test_every_retract_refusal_parses_back_to_the_asked_key(self) -> None:
         from src.robot.safety.planning.robot.retract_table import RetractMissing, read_retract
@@ -79,11 +79,11 @@ class AnEvidenceRefusalParsesBackTests(unittest.TestCase):
         from src.config.schema.robot import RobotConfig
 
         return RobotConfig.model_validate({
-            "vendor": "ur", "ur": {"model": "ur5e", "motion_planner": "curobo"},
+            "vendor": "ur", "ur": {"model": "ur5e"}, "motion": {"planner": "curobo"},
             "gripper": {"model": "robotiq_hande", "coupling_plates": self._PLATE,
-                        "tool_frame": {"source": "polyscope", "offset_mm": [0.0, 0.0, 175.75],
+                        "tool_frame": {"source": "controller", "offset_mm": [0.0, 0.0, 175.75],
                                        "rotation_quat_xyzw": [0.0, 0.0, 0.0, 1.0]}},
-            "safety": {"self_collision": {"kinematics_model": "ur5e", "planner_margin_mm": 4.0},
+            "safety": {"self_collision": {"planner_margin_mm": 4.0},
                        "planning_world": {"enabled": True, "support_plane": {"height_mm": 0.0},
                                           "payload": {"enabled": True, "sphere_slots": 4, "length_mm": 60.0}}},
         })
@@ -94,7 +94,7 @@ class AnEvidenceRefusalParsesBackTests(unittest.TestCase):
         empty = Path(self.enterContext(tempfile.TemporaryDirectory()))
         refused, _ = desk_evidence_refusal(self._cell(), evidence_dir=empty)
         assert refused is not None
-        args = _script("matrix_gate").parser().parse_args(_after(refused, "matrix_gate.py"))
+        args = _script("gate").parser().parse_args(_after(refused, "scripts/arms/gate.py"))
         self.assertEqual((args.arm, args.hand), ("ur5e", "robotiq_hande"))
         self.assertEqual(args.plate, self._PLATE)
         self.assertEqual((args.planner_margin_mm, args.guard_margin_mm, args.attach), (4.0, 3.0, 4))
@@ -110,7 +110,7 @@ class AnEvidenceRefusalParsesBackTests(unittest.TestCase):
         empty = Path(self.enterContext(tempfile.TemporaryDirectory()))
         (row,) = [c for c in run_config_preflight(self._cell(), curobo_available=True, evidence_dir=empty).checks
                   if c.name == "planner margin"]
-        self.assertIn("matrix_gate.py --arm", row.detail)
+        self.assertIn("scripts/arms/gate.py --arm", row.detail)
         self.assertIn("command", row.fix)
 
     def test_a_hand_carries_its_plates_in_order(self) -> None:

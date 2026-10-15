@@ -232,7 +232,7 @@ def _probe_hand_link(voxel_mm: float) -> dict[str, Any]:
     hand = planner_hand(_probe_cell(voxel_mm))
     if not chosen(hand):
         raise ValueError("the probe cell names no hand, so its planner has no hand body to start with")
-    return HandLink.from_hand(hand).to_dict()
+    return HandLink.from_hand(hand, arm=_HAND_MODEL).to_dict()
 
 
 class _Camera:
@@ -818,6 +818,24 @@ def _step_two_cameras(client: CuroboPlanClient, tuning: WorldBuildTuning) -> dic
     return entry
 
 
+class _HoldsTheWorld:
+    """An arm that holds the live world and nothing else (``HoldsAPlannerWorld``): what ``keeping_out`` reaches.
+
+    A namespace with a ``live_planner_world`` attribute is not one, and ``keeping_out`` would open an empty scope on
+    it: the probe would plan with the wall still in the world and say the world was not wired.
+    """
+
+    def __init__(self, world: Any) -> None:
+        self._world = world
+
+    @property
+    def live_planner_world(self) -> Any:
+        return self._world
+
+    def set_live_planner_world(self, world: Any) -> None:
+        self._world = world
+
+
 def _step_two_camera_target(client: CuroboPlanClient, tuning: WorldBuildTuning) -> dict[str, Any]:
     """7b.1: a target both fixed cameras see plans with the held offer, and stops again once forgotten.
 
@@ -826,8 +844,6 @@ def _step_two_camera_target(client: CuroboPlanClient, tuning: WorldBuildTuning) 
     leaves both views and the plan goes through; after the block the world has the wall back and the
     plan stops again.
     """
-    from types import SimpleNamespace
-
     world = LivePlannerWorld(
         cameras=(
             CameraView(name="overhead", depth_source=_FixedCamera(_CAMERA_X_MM), camera_to_base=_CAMERA_TO_BASE),
@@ -839,7 +855,7 @@ def _step_two_camera_target(client: CuroboPlanClient, tuning: WorldBuildTuning) 
         tuning=tuning,
         max_age_ms=5000.0,
     )
-    arm = SimpleNamespace(live_planner_world=world)
+    arm = _HoldsTheWorld(world)
     half_t, half_w = _WALL_THICKNESS_MM / 2.0, _WALL_WIDTH_MM / 2.0
     top = _block_points((_WALL_X_MM - half_t, -half_w, _WALL_HEIGHT_MM), (_WALL_X_MM + half_t, half_w, _WALL_HEIGHT_MM))
     entry: dict[str, Any] = {}
@@ -903,7 +919,7 @@ def _step_jaw_region(client: CuroboPlanClient, tuning: WorldBuildTuning, voxel_m
     """
     from types import SimpleNamespace
 
-    from src.robot.drivers.ur.tool_frame import tool_frame_matrix
+    from src.geometry.matrix import position_quaternion_to_matrix
     from src.robot.safety.planning.hand import planner_hand
     from src.robot.safety.planning.self_envelope import goal_keep_out
 
@@ -912,7 +928,7 @@ def _step_jaw_region(client: CuroboPlanClient, tuning: WorldBuildTuning, voxel_m
     flange = np.eye(4)
     flange[:3, :3] = _quat_matrix(_GOAL_QUAT_WXYZ)
     flange[:3, 3] = np.asarray(_GOAL_POS_M, dtype=np.float64) * 1000.0
-    tcp = flange @ tool_frame_matrix(frame.offset_mm, frame.rotation_quat_xyzw)
+    tcp = flange @ position_quaternion_to_matrix(np.asarray(frame.offset_mm), np.asarray(frame.rotation_quat_xyzw))
     hand = planner_hand(cell)
     goal = goal_keep_out(SimpleNamespace(planner_hand=lambda arm=None: hand), None, tcp)
     entry: dict[str, Any] = {"tcp_mm": [round(float(v), 2) for v in tcp[:3, 3]], "reason": goal.reason}
@@ -1172,10 +1188,10 @@ def main(argv: "list[str] | None" = None) -> int:
 
     # The planner a cell starts: this arm's own descriptor, with the cell's hand added as a body link when the
     # sidecar comes up. Started bare, this probe would measure a robot no cell plans with.
-    from src.robot.drivers.sim.robot_models import curobo_arm_descriptor
+    from src.config.arms import curobo_descriptor_name
 
     client = CuroboPlanClient(
-        robot_config=curobo_arm_descriptor(_HAND_MODEL), body_links=[_probe_hand_link(args.voxel_mm)],
+        robot_config=curobo_descriptor_name(_HAND_MODEL), body_links=[_probe_hand_link(args.voxel_mm)],
     )
     client.reserve_world(planned)
     started = time.perf_counter()

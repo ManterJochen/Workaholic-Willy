@@ -316,13 +316,13 @@ Both live in [`serialization.py`](../../src/calibration/serialization.py).
 - **The real-cell sweep on a UR arm** writes `willy.calibration.cam_to_tool/2`, which adds
   `flange_to_tcp`: the tool frame the solve was made against. `get_tcp_pose` is the flange times that
   frame, so `CAMERA -> TOOL` is only true while the cell holds it. On a `willy` tool frame the record
-  is the declared frame; on a `polyscope` one it is the frame the driver read from the controller at
+  is the declared frame; on a `controller` one it is the frame the driver read from the controller at
   connect.
 
 A `/1` eye-in-hand artifact still loads, with no record, but a rig that declares a camera body refuses
 it: calibrate that rig again. Once a body is placed from the record, a tool frame that has moved since
 refuses the rig: exactly on `willy`, and beyond the rig's `extrinsics.record_tolerance_mm` and
-`record_tolerance_deg` on `polyscope`, because the body and the pick frame are both stale.
+`record_tolerance_deg` on `controller`, because the body and the pick frame are both stale.
 
 Both types check their frames on write and on read, and both write a temporary file and then
 `Path.replace()` it, so a save is atomic. The schema check on load is strict and raises. An artifact
@@ -510,7 +510,7 @@ above = tcp_above(point.base_mm, point.normal, 20.0) # the TCP 20 mm over it, sq
   its normal, its +Z onto the surface and its +X as near base -Y as a pose square to the surface allows
   (`closing_axis="-y"`, as the owner's poses stand; over a level surface it is
   `Pose.tool_down(..., closing_axis="-y")`). The TCP is the one `robot.move` places and
-  `robot.arm.get_tcp_pose` reads, the controller's active TCP on a `polyscope` tool frame;
+  `robot.arm.get_tcp_pose` reads, the controller's active TCP on a `controller` tool frame;
   `fingertips_of=tree.robot` stands the hand's fingertips there instead. It only proposes: nothing is sent to the arm, and a program that wants it there drives it
   through `robot.move` and its guards, once a person said so.
 - **Without the console, and beside it.** All of it is a plain script (`load_tree`, `Camera`, `Robot`),
@@ -585,7 +585,14 @@ and `--radial-closing` to their own flags, and write artifacts per robot model u
 `logs/calibration/`, which is not committed. Their `-h` is the procedure. They run declared stations,
 not generated ones: `src/willy_sim/calibration/stations/eth_<model>.json` and `eih_<model>.json` for
 the three models the sim cell drives, or `--stations PATH`. Those files were frozen from the generators
-this repository used to carry, and no Isaac run has been repeated on them since.
+this repository used to carry. On the ur5e they ran in Isaac in aurora on 2026-09-26, the same files:
+ETH ground truth 22 of 22, ETH ArUco 10 of 22 at `rmse_mm` 3.44, quality `marginal`, 6.3 mm and 0.49
+degrees from the oracle, which the runner's gate accepts for ArUco; EIH ground truth and ArUco 21 of 24
+each, the ArUco solve at `rmse_mm` 2.63, quality `marginal`, 4.4 mm and 0.08 degrees from the oracle,
+which the EIH runner's gate (good, under 5 mm) calls `CHECK`. The same EIH run on aurora's tree before
+these files existed, on the same 24 views, counted 20 of 24 and missed the oracle by 5.8 mm and 0.18
+degrees, `CHECK` as well. This repository's runners have not run them in Isaac, and the ur3e and ur10e
+files have not run in Isaac at all.
 
 **The real-cell sweep.** [`src/robot/execution/real_cell/calibrate.py`](../../src/robot/execution/real_cell/calibrate.py)
 is a caller of `HandEyeCalibration` in [`src/robot/execution/hand_eye.py`](../../src/robot/execution/hand_eye.py).

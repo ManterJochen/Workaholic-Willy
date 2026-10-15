@@ -35,6 +35,7 @@ from src.robot.core import JointPositions, MotionCommand, MotionResult, MotionSt
 from src.robot.grasping.loop.pick_loop import KEPT_BRANCH_OVERSHOOT_DEG, PickOutcome
 from src.robot.grasping.motion.execution_policy import PolicyOutcome, PolicyReport
 from src.robot.safety._ur_ik import ur_branch
+from tests._arm_kit import LOGGER_NAME
 from tests._plan_end import pose_where_it_ends
 from tests._route_planner import RoutePlanner, line
 from tests._wrist_views import LookingArm
@@ -101,7 +102,7 @@ class InsideTheBlockAMoveKeepsTheBranchTests(unittest.TestCase):
         planner.line_clear = lambda start, end: not _near(end, same, 1e-9)
         planner.answer = lambda goal: None
 
-        with self.assertLogs("URRobotArm", level="WARNING") as logs:
+        with self.assertLogs(LOGGER_NAME, level="WARNING") as logs:
             result = _move(arm, _TO)
 
         self.assertTrue(result.ok, result.message)
@@ -226,7 +227,7 @@ class ARouteJudgedAheadKeepsItsBranchTests(unittest.TestCase):
         self.assertEqual("", arm.grasp_refusal_ahead(standoff=other, grasp=grasp, lift=grasp, grip_width_mm=40.0))
         self._the_change(arm, planner)
         with arm.without_camera_world("unit double: no camera world is wired"), \
-                self.assertLogs("URRobotArm", level="WARNING") as logs:
+                self.assertLogs(LOGGER_NAME, level="WARNING") as logs:
             result = arm.move(standoff)
 
         self.assertTrue(result.ok, result.message)

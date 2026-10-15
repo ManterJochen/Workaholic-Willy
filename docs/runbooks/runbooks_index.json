@@ -10,6 +10,12 @@
   ],
   "runbooks": [
     {
+      "id": "add_an_arm_model",
+      "path": "docs/runbooks/add_an_arm_model.md",
+      "summary": "Add an arm model through the build: describe it, build its bundle, sphere map and descriptor, judge its retract, admit it, measure each combination a cell runs, and catch the UR CB-series swap nothing upstream can see.",
+      "owner_role": "commissioning"
+    },
+    {
       "id": "cell_bringup",
       "path": "docs/runbooks/cell_bringup.md",
       "summary": "Bring a cell up on any robot: profile, desk check, simulator, connect and check, with a section per vendor for its controller simulator (UR: URSim in Docker and the container lifetime trap).",
@@ -44,12 +50,6 @@
       "path": "docs/runbooks/train_your_own_generator.md",
       "summary": "Train the deep grasp generator on a customer's own parts, from a CAD export to a model a cell can select. No weights ship in this repository.",
       "owner_role": "data"
-    },
-    {
-      "id": "ur_family_bringup",
-      "path": "docs/runbooks/ur_family_bringup.md",
-      "summary": "Stand up any UR arm the stack models, add one it does not model yet, and catch the CB-series swap nothing upstream can see.",
-      "owner_role": "commissioning"
     },
     {
       "id": "your_own_gripper",

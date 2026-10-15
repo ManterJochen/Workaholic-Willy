@@ -1,7 +1,7 @@
 # The URSim bed with the planner on: a real controller, a real sidecar, no hardware.
 #
 # Layered on top of `ursim`, as `WILLY_PROFILE=ursim,ursim_curobo`. That profile exercises the driver
-# against a real UR controller with `motion_planner: ik`, because nothing there plans. This layer
+# against a real UR controller with `motion.planner: ik`, because nothing there plans. This layer
 # turns the planner on, so the bed measures every verb planned or path checked, against a controller
 # that answers like the real one.
 #
@@ -13,8 +13,8 @@
 # cuRobo environment's own python, so the container's missing GPU decides nothing here; what decides
 # it is whether that environment is installed on the machine running this repository.
 robot:
-  ur:
-    motion_planner: "curobo"
+  motion:
+    planner: "curobo"
 
   safety:
     self_collision:

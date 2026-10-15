@@ -11,7 +11,8 @@ test bench's camera and sidecar (the fixture of ``test_a_grasp_judged_ahead_runs
 * an arm that came to rest more than 0.5 mm off is judged again; one within it is sent the judged motion;
 * a timeout at the gate, and a halt during it, send nothing;
 * a route whose first waypoint is where the gate found the arm skips that zero-length first ``moveJ``;
-* the verbs leave the gate to such an arm and keep their own everywhere else; ``"verb"``, the default, is unchanged.
+* in ``"verb"``, the default, the arm waits once at the start of its verb, before it judges anything (P0e E9), and no
+  verb above the arm waits any more.
 
 Honesty bucket (2): the arm's real judgement on a stand-in controller.
 """
@@ -21,14 +22,14 @@ from __future__ import annotations
 import time
 import unittest
 from typing import Any
-from unittest.mock import MagicMock
 
 from src.config.schema.robot import RobotConfig
 from src.robot.core import JointPositions, MotionCommand, MotionResult, MotionStatus
 from src.robot.core.arm_capabilities import HaltState, LineMotion, LineReading
 from src.robot.drivers.ur.arm import URRobotArm
-from src.robot.execution.motion import gates_its_own_sends, steady_timeout_of
+from src.robot.execution.motion import steady_timeout_of
 from src.robot.grasping.motion.execution_policy import GraspExecutionPolicy
+from tests._helpers import PlansItsMotions
 from tests.test_a_grasp_judged_ahead_runs_as_it_was_judged import (
     _GRASP,
     _STANDOFF,
@@ -94,13 +95,13 @@ class TheGateWaitsRightBeforeTheSendTests(unittest.TestCase):
                          "the moveJ to where the arm stands went out, or a judged waypoint did not")
         self.assertNotIn("gate_planned_path", events, "the route judged ahead was judged a second time")
 
-    def test_verb_mode_sends_every_waypoint_and_gates_nothing_itself(self) -> None:
+    def test_verb_mode_waits_once_at_the_start_of_the_verb_and_sends_every_waypoint(self) -> None:
         arm, events, _solved = _cell()
         self.assertEqual("", _judged_ahead(arm))
         route = arm._judged_ahead.route
         self.assertTrue(arm.move(_STANDOFF).ok)
         self.assertEqual(len(route.waypoints), arm._conn.moveJ.call_count)
-        arm._conn.wait_until_steady.assert_not_called()
+        arm._conn.wait_until_steady.assert_called_once()
 
     def test_an_arm_that_came_to_rest_half_a_millimetre_off_is_judged_again_from_there(self) -> None:
         arm, events, _solved = _cell()
@@ -227,10 +228,8 @@ class TheGateWaitsRightBeforeTheSendTests(unittest.TestCase):
         self.assertTrue(_after(events, "steady", "moveJ"), events)
 
 
-class _GatedArm:
-    """An arm that keeps its lines and gates its own sends, recording who waited for steady."""
-
-    gates_its_own_sends = True
+class _WaitedArm(PlansItsMotions):
+    """An arm that keeps its lines, recording who waited for steady."""
 
     def __init__(self) -> None:
         self.waited: list[float] = []
@@ -246,43 +245,27 @@ class _GatedArm:
         return MotionResult.executed(MotionCommand.MOVE_TO, target_pose=pose)
 
 
-class TheVerbsLeaveTheGateToAnArmThatGatesItsSendsTests(unittest.TestCase):
-    def test_the_policy_asks_such_an_arm_with_no_gate_of_its_own(self) -> None:
-        arm = _GatedArm()
-        policy = GraspExecutionPolicy(arm=arm, require_steady_before_motion=True)  # type: ignore[arg-type]
-        self.assertTrue(policy._drive_to(_STANDOFF).ok)
+class TheVerbsAboveTheArmLeaveTheGateToItTests(unittest.TestCase):
+    """P0e E9: the arm holds the steady gate inside its own verbs, so the verbs above it wait for nothing."""
+
+    def test_the_policy_asks_the_arm_with_no_gate_of_its_own(self) -> None:
+        arm = _WaitedArm()
+        self.assertTrue(GraspExecutionPolicy(arm=arm)._drive_to(_STANDOFF).ok)  # type: ignore[arg-type]
         self.assertEqual([], arm.waited)
 
-    def test_the_policy_keeps_its_gate_before_any_other_arm(self) -> None:
-        arm = _GatedArm()
-        arm.gates_its_own_sends = False  # type: ignore[misc]
-        policy = GraspExecutionPolicy(arm=arm, require_steady_before_motion=True)  # type: ignore[arg-type]
-        self.assertTrue(policy._drive_to(_STANDOFF).ok)
-        self.assertEqual([5.0], arm.waited)
-
-    def test_the_robot_verbs_ask_such_an_arm_with_no_gate_of_their_own(self) -> None:
+    def test_the_robot_verbs_ask_the_arm_with_no_gate_of_their_own(self) -> None:
         from types import SimpleNamespace
 
         from src.robot.execution import motion
-        from src.robot.execution.handling import HandlingVerb, _Handling
 
-        for gates, waits in ((True, []), (False, [4.0])):
-            with self.subTest(gates_its_own_sends=gates):
-                arm = _GatedArm()
-                arm.gates_its_own_sends = gates  # type: ignore[misc]
-                arm.plans_paths = True  # type: ignore[attr-defined]
-                arm.is_connected = True  # type: ignore[attr-defined]
-                arm.config = SimpleNamespace(safety=SimpleNamespace(dwell=SimpleNamespace(  # type: ignore[attr-defined]
-                    require_steady_before_motion=True, steady_timeout_s=4.0)))
-                self.assertTrue(motion.move(arm, _STANDOFF).ok)
-                self.assertEqual(waits, arm.waited)
-                handling = _Handling(SimpleNamespace(arm=arm, gripper=None), HandlingVerb.PLACE, _STANDOFF, 80.0,
-                                     camera_world=MagicMock())
-                self.assertEqual(None if gates else 4.0, handling._steady_timeout())
-                self.assertEqual(4.0, steady_timeout_of(arm), "what the tree asks stays what it asks, for the push")
-
-    def test_a_double_that_answers_every_attribute_keeps_its_verbs_gate(self) -> None:
-        self.assertFalse(gates_its_own_sends(MagicMock()))
+        arm = _WaitedArm()
+        arm.plans_paths = True
+        arm.is_connected = True  # type: ignore[attr-defined]
+        arm.config = SimpleNamespace(safety=SimpleNamespace(dwell=SimpleNamespace(  # type: ignore[attr-defined]
+            require_steady_before_motion=True, steady_timeout_s=4.0)))
+        self.assertTrue(motion.move(arm, _STANDOFF).ok)
+        self.assertEqual([], arm.waited)
+        self.assertEqual(4.0, steady_timeout_of(arm), "what the tree asks stays what it asks, for the push")
 
 
 class TheGateAtKeyReachesTheArmTests(unittest.TestCase):
@@ -290,22 +273,22 @@ class TheGateAtKeyReachesTheArmTests(unittest.TestCase):
         planner = safety.pop("planner", "curobo")
         # No guard that reads a hand: what is read here is the key, not the guard.
         guards = {"payload": {"enforce": False}, "ik_quality": {"enforce": False}, "self_collision": {"enforce": False}}
-        return URRobotArm(RobotConfig.model_validate({"vendor": "ur", "ur": {"motion_planner": planner},
+        return URRobotArm(RobotConfig.model_validate({"vendor": "ur", "motion": {"planner": planner},
                                                       "safety": {**guards, **safety}}))
 
     def test_send_on_a_curobo_arm_gates_its_own_sends(self) -> None:
-        self.assertTrue(self._arm(dwell={"gate_at": "send"}).gates_its_own_sends)
+        self.assertTrue(self._arm(dwell={"gate_at": "send"})._gates_sends)
 
-    def test_verb_the_default_keeps_the_verbs_gate(self) -> None:
-        self.assertFalse(self._arm().gates_its_own_sends)
+    def test_verb_the_default_waits_at_the_start_of_the_verb(self) -> None:
+        self.assertFalse(self._arm()._gates_sends)
         self.assertEqual("verb", RobotConfig().safety.dwell.gate_at)
 
     def test_no_gate_asked_is_no_gate_moved(self) -> None:
-        self.assertFalse(self._arm(dwell={"gate_at": "send", "require_steady_before_motion": False}).gates_its_own_sends)
+        self.assertFalse(self._arm(dwell={"gate_at": "send", "require_steady_before_motion": False})._gates_sends)
 
-    def test_an_ik_arm_keeps_the_verbs_gate(self) -> None:
+    def test_an_ik_arm_waits_at_the_start_of_its_verb(self) -> None:
         """Only a cuRobo arm sends every motion through the sends that gate."""
-        self.assertFalse(self._arm(dwell={"gate_at": "send"}, planner="ik").gates_its_own_sends)
+        self.assertFalse(self._arm(dwell={"gate_at": "send"}, planner="ik")._gates_sends)
 
 
 if __name__ == "__main__":

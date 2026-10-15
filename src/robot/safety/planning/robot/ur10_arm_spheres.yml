@@ -1,10 +1,10 @@
 _provenance:
   what: ur10 arm links
   source: ur10_collision_meshes.npz
-  generated_by: scripts/curobo/fit_cover_spheres.py
+  generated_by: scripts/arms/fit.py
   recipe: 'cover fit: every surface sample inside a sphere, no sphere reaching further
     past the body than the reach it was fitted at'
-  asked_for: scripts/curobo/fit_cover_spheres.py ARM_PLAN / HAND_PLAN, per body
+  asked_for: scripts/arms/fit.py ARM_PLAN / HAND_PLAN, per body
   overrides: null
   seed: 0
   bodies:
@@ -23,7 +23,6 @@ _provenance:
     fresh_reach_max_mm: 19.999739825544548
     fresh_samples: 60000
     sample_spacing_mm: 3.305
-    seconds: 10.6
   - body: upper_arm
     frame: 2
     why: 'in no binding pair, and the most expensive body: 320 spheres at 15 mm against
@@ -40,10 +39,10 @@ _provenance:
     fresh_reach_max_mm: 29.974146787175656
     fresh_samples: 60000
     sample_spacing_mm: 5.472
-    seconds: 13.4
   - body: forearm
     frame: 3
     why: forearm|wrist_2 is the nearest exact pair in 11 rows; 155 spheres at 15 mm
+      on the ur5e, 240 on the ur10
     spheres: 240
     reach_mm: 15.0
     radius_min_mm: 15.704572663005376
@@ -56,7 +55,6 @@ _provenance:
     fresh_reach_max_mm: 14.999165884625658
     fresh_samples: 60000
     sample_spacing_mm: 4.546
-    seconds: 21.5
   - body: wrist_1
     frame: 4
     why: in every binding pair there is, exact and sphere alike; 160 spheres at 8
@@ -73,7 +71,6 @@ _provenance:
     fresh_reach_max_mm: 7.998065017519771
     fresh_samples: 60000
     sample_spacing_mm: 2.057
-    seconds: 12.5
   - body: wrist_2
     frame: 5
     why: forearm|wrist_2; 122 spheres at 8 mm
@@ -89,7 +86,6 @@ _provenance:
     fresh_reach_max_mm: 7.999788578875922
     fresh_samples: 60000
     sample_spacing_mm: 2.057
-    seconds: 12.6
   - body: wrist_3
     frame: 6
     why: 'wrist_1|wrist_3, and cheap: 57 spheres at 6 mm'
@@ -105,7 +101,6 @@ _provenance:
     fresh_reach_max_mm: 5.997949373446585
     fresh_samples: 60000
     sample_spacing_mm: 1.124
-    seconds: 10.4
 collision_spheres:
   shoulder:
     frame: 1

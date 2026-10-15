@@ -14,22 +14,25 @@ that ever made a planned move safe to execute, which is that somebody looked at 
 `safety.trajectory_check` is gone whole, `enabled` and `stride` together (the owner, 2026-09-12): the
 sampling density comes from the collision margin and the reach, so a second knob beside it would only
 be able to make the check sparser than the geometry says it has to be.
+
+The arms are ``PlannedArm`` over the fake transport since P0g slice 13 (``tests/_arm_kit.planned_arm``).
 """
 
 from __future__ import annotations
 
 import pathlib
 import unittest
-from unittest.mock import MagicMock
+from typing import Any
 
 import numpy as np
 import pytest
 
-from src.config.schema.robot import RobotConfig
 from src.geometry import Frame, Pose
 from src.robot.core import MotionResult, MotionStatus
-from src.robot.drivers.ur.arm import URRobotArm
+from src.robot.drivers.planned.arm import PlannedArm
 from src.robot.safety._fcl_self_collision import mesh_backend_status
+from tests._arm_kit import kit_tree, planned_arm
+from tests._fake_transport import fake_transport
 from tests._plan_end import OPEN_WORKSPACE, pose_where_it_ends
 
 #: Said where each arm is built: these doubles plan or check with cuRobo and carry no camera world, so every
@@ -106,25 +109,16 @@ class MotionCommandStub:
 
 
 def _curobo_arm(trajectory: list[list[float]], *, max_detour_deg: float = 45.0,
-                min_distance_mm: "float | None" = None) -> tuple[URRobotArm, _FakePlanner]:
+                min_distance_mm: "float | None" = None) -> tuple[PlannedArm, _FakePlanner]:
     self_collision = {} if min_distance_mm is None else {"min_distance_mm": min_distance_mm}
-    config = RobotConfig.model_validate({
-        "vendor": "ur",
-        "ur": {"motion_planner": "curobo"},
-        "safety": {"payload": {"enforce": False}, "planned_motion": {"max_detour_deg": max_detour_deg},
-                   "self_collision": self_collision},
-        "gripper": {"model": "robotiq_2f85"},
-        # The configurations here were chosen for what the exact meshes say about them, and they put the flange
-        # outside the shipped box; the box is not what this file is about.
-        "workspace_limits": OPEN_WORKSPACE,
-    })
-    arm = URRobotArm(config)
-    arm._conn = MagicMock()
-    arm._conn.is_connected = True
+    # The configurations here were chosen for what the exact meshes say about them, and they put the flange
+    # outside the shipped box; the box is not what this file is about.
+    config = kit_tree("curobo", safety={"payload": {"enforce": False}, "planned_motion": {"max_detour_deg": max_detour_deg},
+                                        "self_collision": self_collision}, workspace_limits=OPEN_WORKSPACE)
     # The endpoint gate reads the arm's CURRENT joints, so the fake controller has to hold some.
-    arm._conn.get_joint_positions.return_value = list(_NEAR_CLEAR)
+    arm: Any = planned_arm(config, transport=fake_transport(joints=_NEAR_CLEAR))
     planner = _FakePlanner(trajectory)
-    arm._curobo_ur = planner  # type: ignore[assignment]  # bypass the lazy builder
+    arm._curobo = planner  # bypass the lazy builder
     return arm, planner
 
 
@@ -261,22 +255,15 @@ class TheOffSwitchIsGoneTests(unittest.TestCase):
 class TheAttestationReadsThePlannerTests(unittest.TestCase):
     """What a cell attests about paths is now what its arm plans with, not a key anybody could set."""
 
-    def _rendered(self, planner: str, vendor: str = "ur") -> str:
+    def _rendered(self, planner: str) -> str:
         from src.robot.safety.attestation import SafetyAttestation
 
-        config = RobotConfig.model_validate(
-            {"vendor": vendor, "ur": {"motion_planner": planner}, "gripper": {"model": "robotiq_2f85"}} if vendor == "ur"
-            else {"vendor": vendor}
-        )
-        arm = URRobotArm(config) if vendor == "ur" else None
-        if arm is None:
-            self.skipTest(f"no arm class for {vendor} in this test")
-        return SafetyAttestation.of(arm).render()
+        return SafetyAttestation.of(planned_arm(kit_tree(planner))).render()
 
-    def test_a_curobo_ur_attests_endpoints_and_paths(self) -> None:
+    def test_a_curobo_arm_attests_endpoints_and_paths(self) -> None:
         self.assertIn("endpoints and paths", self._rendered("curobo"))
 
-    def test_an_ik_ur_attests_endpoints_only(self) -> None:
+    def test_an_ik_arm_attests_endpoints_only(self) -> None:
         """An interpolated move has no path to judge, and saying otherwise would be a claim too many."""
         self.assertIn("endpoints only", self._rendered("ik"))
 

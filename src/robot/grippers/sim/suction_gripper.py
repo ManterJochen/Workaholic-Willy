@@ -224,6 +224,10 @@ class IsaacSuctionGripper:
             raise RobotConnectionError("IsaacSuctionGripper is not connected.")
         return 0.0 if self._vacuum_on else self._max_width_mm
 
+    def set_closed(self, closed: bool) -> None:
+        """Vacuum on when ``closed``, off otherwise (``OpensAndCloses``), as the real cup takes it (P0g)."""
+        self.set_width_mm(0.0 if closed else self._max_width_mm)
+
     def open(self) -> None:
         """Release the vacuum, which the Protocol expresses as ``max_width_mm``."""
         self.set_width_mm(self._max_width_mm)

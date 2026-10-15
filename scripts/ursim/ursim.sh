@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Start URSim (Universal Robots' offline simulator) in Docker inside WSL2.
 #
-#   ursim.sh up UR5                starts, or resumes, a UR5e controller
-#   ursim.sh up UR3                starts, or resumes, a UR3e controller
+#   ursim.sh up UR5                starts, or resumes, a UR5e controller, then puts it in remote control
+#   ursim.sh up UR3                starts, or resumes, a UR3e controller, then puts it in remote control
 #   URSIM_FRESH=1 ursim.sh up UR5  recreates from the image, for clean controller state
+#   URSIM_NO_REMOTE=1 ursim.sh up  leaves the selector on Local, for a person to set
+#   ursim.sh remote                puts a running controller in remote control (enable_remote.py)
 #   ursim.sh down                  stops and removes the container
 #   ursim.sh status                is it up, and does the dashboard answer
 #
@@ -37,11 +39,16 @@
 #     from the pristine image too, which `docker create` plus `docker cp` shows, so every healthy
 #     run prints it.
 #
-# Remote control is required and cannot be set from here. In local mode the controller never runs a
-# program sent from outside, so RTDEControlInterface times out with a message that names nothing.
-# Enable it at http://localhost:6080/vnc.html under menu, Settings, System, Remote Control, then
-# switch the top-right selector from Local to Remote. `URConnection.connect()` diagnoses the local
-# case explicitly, so a cell that forgets gets told rather than left guessing.
+# Remote control is required. In local mode the controller never runs a program sent from outside, so
+# RTDEControlInterface times out with a message that names nothing; `URConnection.connect()` diagnoses
+# the local case explicitly, so a cell that forgets gets told rather than left guessing.
+#
+# `up` sets it: `ursim.sh remote` runs `enable_remote.py` inside the container, which drives the
+# pendant's own UI over x11vnc (menu, Settings, System, Remote Control, Enable, then the top-right
+# selector) and then asks the dashboard whether it took. Measured on a fresh pinned e-Series container
+# (aurora, 2026-09-22): `is in remote control` read false, then true, and the pendant read Remote. By
+# hand it is http://localhost:6080/vnc.html and the same path; `URSIM_NO_REMOTE=1` leaves it to a
+# person. A CB3 has no selector, and nothing is clicked there.
 #
 # Ports, and why each one is published:
 #   29999  dashboard server: power on, brake release, safetystatus, unlockProtectiveStop
@@ -144,7 +151,38 @@ PYEOF
   return 1
 }
 
+enable_remote() {
+  # Put the running controller in Remote Control, or say what a person must do instead. Never fatal to `up`:
+  # the container is up either way, and the probes refuse a Local cell with their own sentence.
+  if [ "${URSIM_NO_REMOTE:-0}" = "1" ]; then
+    echo "== URSIM_NO_REMOTE=1: the selector stays on Local, set it at http://localhost:6080/vnc.html =="
+    return 0
+  fi
+  # A CB3 (PolyScope 3) has no Remote/Local selector at all, so there is nothing to click (the README's CB3 part).
+  case "$IMAGE" in
+    *ursim_cb3*) echo "== a CB3 has no Remote/Local selector: nothing to set =="; return 0 ;;
+  esac
+  # This script is usually run as a CR-stripped copy in /tmp, which has no sibling to find, so the folder can
+  # be named. It is never guessed: a wrong path would silently skip the step.
+  local dir="${URSIM_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
+  if [ ! -f "$dir/enable_remote.py" ]; then
+    echo "== no enable_remote.py in $dir: set URSIM_DIR to the repository's scripts/ursim, or set Remote"
+    echo "== Control by hand at http://localhost:6080/vnc.html =="
+    return 0
+  fi
+  tr -d '\r' < "$dir/enable_remote.py" > /tmp/enable_remote.py
+  docker cp /tmp/enable_remote.py "$NAME":/tmp/enable_remote.py >/dev/null
+  if ! docker exec "$NAME" python3 /tmp/enable_remote.py; then
+    echo "== Remote Control NOT set: do it at http://localhost:6080/vnc.html before any probe =="
+    return 0
+  fi
+}
+
 case "$cmd" in
+  remote)
+    docker inspect "$NAME" >/dev/null 2>&1 || { echo "no container named $NAME" >&2; exit 1; }
+    enable_remote
+    ;;
   up)
     # Reuse a stopped container by default: a deliberate trade-off with a sharp edge.
     #
@@ -155,9 +193,11 @@ case "$cmd" in
     # file does persist in the writable layer; what does not persist is the runtime state.
     # PolyScope's remote control is two things and only the first is a setting: the feature enable,
     # which is that file and survives, and the top-right Local/Remote selector, which boots to
-    # Local every time. Nothing in the dashboard protocol or in RTDE can move that selector; only a
-    # person at the pendant can. So budget for enabling remote control after every start, fresh or
-    # reused.
+    # Local every time. Nothing in the dashboard protocol or in RTDE can move that selector, but the
+    # pendant can be driven: it is a Java UI on an Xvfb display in this container, served by x11vnc, so
+    # `enable_remote.py` sends the same clicks over RFB and the dashboard then answers true (aurora,
+    # 2026-09-22). Neither step survives a start, so `up` clicks it after every start, fresh or reused,
+    # and reuse saves the person, not the click.
     #
     # Against reuse: the controller's float registers are part of that state.
     # `getForwardKinematics(q)` reads the TCP-offset registers, and anything that previously wrote
@@ -179,6 +219,7 @@ case "$cmd" in
       docker start "$NAME" >/dev/null
       wait_for_polyscope
       docker ps --filter "name=$NAME" --format 'container: {{.Names}} / {{.Status}}'
+      enable_remote
       echo "URSIM_UP model=<reused>"
       exit 0
     fi
@@ -196,6 +237,7 @@ case "$cmd" in
       "$IMAGE" >/dev/null
     wait_for_polyscope
     docker ps --filter "name=$NAME" --format 'container: {{.Names}} / {{.Status}}'
+    enable_remote
     echo "URSIM_UP model=$model"
     ;;
   down)
@@ -212,6 +254,7 @@ case "$cmd" in
     fi
     ;;
   *)
-    echo "usage: ursim.sh {up MODEL|down|status}   (URSIM_FRESH=1 forces a clean controller)" >&2
+    echo "usage: ursim.sh {up MODEL|remote|down|status}   (URSIM_FRESH=1 forces a clean controller," >&2
+    echo "       URSIM_NO_REMOTE=1 leaves the selector on Local, URSIM_DIR names this folder)" >&2
     exit 2 ;;
 esac

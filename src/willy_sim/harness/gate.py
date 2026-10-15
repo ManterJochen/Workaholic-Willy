@@ -6,8 +6,8 @@ score the lift, then roll the per-run results up into a gate verdict. This modul
 fragments of that skeleton, the object reset and measure and the gate-fraction math, plus the typed
 :class:`GateResult` a runner returns.
 
-Two parts stay per-runner. The reset move stays, because ``move_joint``, ``move_to_joints`` and
-``move`` carry different preflight and continuity semantics. The pass criterion stays, because it
+Two parts stay per-runner. The reset move stays, because ``move_to_joints`` and ``move`` carry
+different preflight and continuity semantics. The pass criterion stays, because it
 ranges from lift alone through succeeded plus lift to target lifted with no distractor lifted.
 """
 

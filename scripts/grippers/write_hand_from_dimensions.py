@@ -154,9 +154,9 @@ def main(argv: "list[str] | None" = None) -> int:
     else:
         print(f"  no {INDEX_NAME} beside {Path(written).name}, so no row was recorded")
     print(f"  source dimensions, origin {args.origin}, inflation {args.inflation_mm:g} mm. Which arms it may be composed onto is "
-          f"measured, not written: scripts/curobo/matrix_gate.py --hand {args.hand}")
+          f"measured, not written: scripts/arms/gate.py --hand {args.hand}")
     print("  next: fit its spheres for the planner, "
-          f"scripts/curobo/fit_cover_spheres.py --hand {args.hand} --write")
+          f"scripts/arms/fit.py --hand {args.hand} --write")
     return 0
 
 

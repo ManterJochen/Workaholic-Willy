@@ -15,9 +15,9 @@ set of rows answers both questions here, and `require()` is a query over those r
 rather than a second implementation.
 
 The gripper half is derived rather than hand-kept for the same reason. Reading
-`registered` off membership in `_GRIPPER_VENDOR_SDKS` reports any vendor missing from
-that dict as having no driver, whether or not one exists, and that has already happened
-twice: `vacuum` was added to the dict to fix it, and `jaw_io` then landed without a line
+`registered` off membership in the SDK table, a dict kept by hand until P0g slice 8,
+reported any vendor missing from it as having no driver, whether or not one existed, and
+that happened twice: `vacuum` was added to the dict to fix it, and `jaw_io` then landed without a line
 and read as unregistered, while `available_gripper_vendors()` sat one import away.
 `registered` comes from the registries now, so the next vendor cannot repeat it.
 
@@ -50,6 +50,9 @@ class ReadinessReport:
     #: same interpreter twice per invocation, and gives a table and a verdict printed
     #: together two chances to disagree.
     rows: tuple["VendorReadiness", ...]
+    #: The `sys.platform` these rows were composed for. Empty where nobody said, and the platform
+    #: half of `require` then stays quiet rather than refusing on an answer it does not have.
+    platform: str = ""
 
     @property
     def ready(self) -> tuple["VendorReadiness", ...]:
@@ -105,6 +108,14 @@ class ReadinessReport:
         if self.ready_for(vendor, mock_mode=mock_mode):
             return
         row = self.row_for("arm", name)
+        # The system first, because nothing on this box fixes it. An operator told "no driver is
+        # registered" looks for a version of this repository that has one; the true answer is that
+        # this vendor is driven from another machine, and no install here changes that.
+        if row is not None and self.platform and not row.runs_on(self.platform):
+            raise RobotConnectionError(
+                f"host not ready for arm vendor {name!r}: {row.note}. Drive it from that system, or "
+                f"run the arm server there and reach it from here."
+            )
         if row is not None and not row.registered:
             raise RobotConnectionError(
                 f"host not ready for arm vendor {name!r}: no driver is registered for it. It is a "
@@ -165,11 +176,23 @@ class Host:
     #: therefore still seen, where freezing a copy here would ignore it silently.
     arm_sdks: "Mapping[Any, Sequence[str]] | None" = None
     gripper_sdks: "Mapping[Any, Sequence[str]] | None" = None
+    #: The `sys.platform` this host is asked about. `None` means this interpreter's.
+    platform: str | None = None
 
     @classmethod
     def local(cls) -> "Host":
         """This interpreter, with the vendor maps this checkout ships."""
         return cls()
+
+    @classmethod
+    def running(cls, platform: str) -> "Host":
+        """The same checkout asked about another system: "could a Linux box drive this vendor?"
+
+        A question, not a monkeypatch: several vendors drive from one system only, so "what would the
+        other box say" is a thing an operator and a test both ask, and neither should have to reach
+        into a module global to ask it.
+        """
+        return cls(platform=platform)
 
     @classmethod
     def from_sdk_map(
@@ -186,19 +209,27 @@ class Host:
         return cls(arm_sdks=dict(arm_sdks), gripper_sdks=dict(gripper_sdks))
 
     def readiness(self) -> ReadinessReport:
-        """Probe the host: one import per SDK module and two registry lookups. Isaac is spec-only."""
+        """Probe the host: one import per SDK module and two registry lookups. Isaac is spec-only.
+
+        A vendor this checkout declares Linux-only is not probed on another system at all: the row says
+        which system drives it instead of naming a module that has no wheel here.
+        """
+        import sys  # noqa: PLC0415
+
         from src.robot.core.gripper_vendor import GripperVendor  # noqa: PLC0415
         from src.robot.core.vendor import RobotVendor  # noqa: PLC0415
         from src.robot.drivers import doctor  # noqa: PLC0415
 
         arm_map = self.arm_sdks if self.arm_sdks is not None else doctor._ARM_VENDOR_SDKS
         grip_map = (
-            self.gripper_sdks if self.gripper_sdks is not None else doctor._GRIPPER_VENDOR_SDKS
+            self.gripper_sdks if self.gripper_sdks is not None else doctor._gripper_vendor_sdks()
         )
+        platform = self.platform if self.platform is not None else sys.platform
 
         rows: list[VendorReadiness] = [
             doctor._readiness(
-                v.value, "arm", tuple(arm_map.get(v, ())), doctor._is_arm_registered(v)
+                v.value, "arm", tuple(arm_map.get(v, ())), doctor._is_arm_registered(v),
+                tuple(sorted(doctor._ARM_VENDOR_PLATFORMS.get(v, ()))), platform,
             )
             for v in RobotVendor
         ]
@@ -213,7 +244,7 @@ class Host:
             )
             for v in GripperVendor
         )
-        return ReadinessReport(rows=tuple(rows))
+        return ReadinessReport(rows=tuple(rows), platform=platform)
 
 
 def _registered_gripper_names() -> frozenset[str]:
