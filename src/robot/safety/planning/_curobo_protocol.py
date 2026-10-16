@@ -17,7 +17,9 @@ __all__ = [
     "KIND_WORLD",
     "NAME_PAIRS_KEY",
     "PAIRS_NAMED_KEY",
+    "PERCEIVED_FIELD",
     "PERCEIVED_IGNORED_KEY",
+    "PERCEIVED_NEAR_FIELD",
     "PERCEIVED_PREFIX",
     "REFUSED_KEY",
     "REPORT_REFUSED_KEY",
@@ -63,6 +65,11 @@ PAIRS_NAMED_KEY = "pairs_named"
 #: What every box the camera world registers is named with (``perceived.WorldBuildTuning.name_prefix``), and so how the
 #: sidecar tells the camera's boxes from the bench and the declared fixtures in the world it holds.
 PERCEIVED_PREFIX = "seen_"
+#: The name of the distance field the camera world sends (``perceived.build_voxel_field``): the camera's too, so it is set
+#: aside with the camera's boxes and never with the bench, a declared fixture or a mesh (owner, 2026-10-15).
+PERCEIVED_FIELD = PERCEIVED_PREFIX + "field"
+#: The name of its fine grid about a motion's goal (``perceived.VoxelField.near``), the camera's as well.
+PERCEIVED_NEAR_FIELD = PERCEIVED_FIELD + "_near"
 
 #: A check_js request key: the names of the boxes the camera saw, every one the sidecar holds, to set aside for this one
 #: judgement and put back exactly before the reply (``_curobo_perceived.SetAside``). The reply then says which under

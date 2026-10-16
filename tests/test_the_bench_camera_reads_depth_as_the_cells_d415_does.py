@@ -300,13 +300,17 @@ class TheBenchRendersTheRealDepthTests(unittest.TestCase):
             def run(self, names: list[str]) -> dict[str, Any]:
                 return {"scenes": {}}
 
+        # The tree and the calibration named, as on a box that guesses neither (CI on Linux, P0h h8).
         with tempfile.TemporaryDirectory() as work, mock.patch.object(run_bench, "Bench", _Bench), \
                 redirect_stdout(io.StringIO()):
-            run_bench.main(["--scenes", "clutter_one_10", "--work", work])
-            run_bench.main(["--scenes", "clutter_one_10", "--work", work, "--noise", "clean"])
+            named = ["--tree", work, "--no-calibration", "--scenes", "clutter_one_10", "--work", work]
+            run_bench.main(named)
+            run_bench.main([*named, "--noise", "clean"])
         self.assertEqual(["real", "clean"], asked)
-        with self.assertRaises(SystemExit), redirect_stderr(io.StringIO()):
-            run_bench.main(["--noise", "drawn"])
+        with self.assertRaises(SystemExit) as refused, redirect_stderr(io.StringIO()) as said:
+            run_bench.main(["--tree", "tree", "--no-calibration", "--noise", "drawn"])
+        self.assertEqual(2, refused.exception.code)
+        self.assertIn("--noise", said.getvalue())
 
 
 if __name__ == "__main__":

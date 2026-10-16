@@ -128,7 +128,8 @@ class GripperController:
 
     @property
     def min_width_mm(self) -> float:
-        """Smallest commandable jaw opening, from config. A policy floor, not the mechanism."""
+        """The thinnest part the cell plans a grasp for, from config: a policy floor about the part, not the mechanism.
+        The jaws close past it to :attr:`closed_width_mm`."""
         return float(self.config.min_width_mm)
 
     @property
@@ -214,8 +215,8 @@ class GripperController:
         self.set_width_mm(self.config.max_width_mm, speed=speed, force=force)
 
     def close(self, *, speed: float | None = None, force: float | None = None) -> None:
-        """Fully close the gripper. Query :meth:`get_width_mm` for the result."""
-        self.set_width_mm(self.config.min_width_mm, speed=speed, force=force)
+        """Fully close the gripper, to its :attr:`closed_width_mm`. Query :meth:`get_width_mm` for the result."""
+        self.set_width_mm(self.closed_width_mm, speed=speed, force=force)
 
     def set_width_mm(
         self, width_mm: float, *, speed: float | None = None, force: float | None = None,
@@ -427,7 +428,9 @@ class GripperController:
         return self._driver
 
     def _clamp_width_mm(self, width_mm: float) -> float:
-        lo = self.config.min_width_mm
+        # Into the mechanism's own range: closed as far as the fingers go. Clamped at min_width_mm, a close stopped at
+        # 5 mm, and a velcro band the jaws squeezed flat to 5.1 mm read as nothing held (the owner's cell, 2026-10-15).
+        lo = self.closed_width_mm
         hi = self.config.max_width_mm
         if width_mm < lo:
             self.logger.debug("Clamping width %.2f -> %.2f (min).", width_mm, lo)

@@ -33,15 +33,21 @@ A grounding VLM emits no calibrated score. :data:`VLM_NOMINAL_SCORE` means "the 
 this", not "the model is this sure", and the model's own output order is kept as its ranking.
 Nothing downstream should read it as a probability.
 
-An answer to a class list (``classes``, several descriptions grounded in one call, the sorting
-package of 2026-10-09) fails closed where a box is no one description's: a box with no label, and
-every box of a group that overlaps by :data:`AMBIGUOUS_IOU` or more under more than one
-description, is labelled :data:`AMBIGUOUS_LABEL`. Such a box stays an obstacle and is never a
-target, since no description is that word. An answer to one description is read as it always was.
+The boxes of a class list (several descriptions, the sorting package of 2026-10-09), each description
+grounded on its own since 2026-10-15, fail closed where a box is no one description's: every box of a
+group that overlaps by :data:`AMBIGUOUS_IOU` or more under more than one description is labelled
+:data:`AMBIGUOUS_LABEL` (:func:`claimed_once`). Such a box stays an obstacle and is never a target,
+since no description is that word.
 
 A box that repeats one written before it under the same description (:data:`REPEAT_IOU`) is the same
 object written again and is dropped: a model that loops writes it again and again, and on the cell
 (2026-10-12) Qwen answered 52 boxes of 4 objects for "each separate gray cube in the blue bin".
+
+A model can loop without repeating a box too: on the cell's Thursday (2026-10-15) Qwen walked across the
+picture box by box, each the size of the one before, either a fixed step further (a ladder of 40 boxes
+down a diagonal) or edge to edge (a tiling of 32 boxes over a pile), until its tokens ran out. Those
+boxes are dropped (:func:`without_walks`, :data:`LADDER_RUN`, :data:`TILING_BOXES`), and so is a box
+that holds two others (:func:`without_groups`): a box drawn round a pile or a bin of parts, not a part.
 """
 
 from __future__ import annotations
@@ -67,13 +73,21 @@ _LOG = create_logger("VLMGroundingParser", log_file=VLM_PARSING_LOG_FILE, log_di
 __all__ = [
     "AMBIGUOUS_IOU",
     "AMBIGUOUS_LABEL",
+    "GROUP_INSIDE",
+    "LADDER_RUN",
     "REPEAT_IOU",
+    "SAME_SIZE_PX",
+    "SAME_STEP_PX",
+    "TILING_BOXES",
     "VLM_NOMINAL_SCORE",
     "CoordinateSpace",
     "GRID_SIZE",
     "box_iou",
     "claimed_once",
     "parse_grounding_response",
+    "walked",
+    "without_groups",
+    "without_walks",
     "extract_json_payload",
 ]
 
@@ -112,8 +126,24 @@ AMBIGUOUS_IOU = 0.7
 
 #: How much a box overlaps one written before it under the same description, as intersection over union, to be that
 #: object written again. Two parts side by side, even pressed together in a crate, overlap far less; the loop the cell
-#: met wrote two boxes of one cube in turn, 0.87 apart (2026-10-12). A choice, not a measurement.
-REPEAT_IOU = 0.8
+#: met wrote two boxes of one cube in turn, 0.87 apart (2026-10-12), and the owner drops a box 0.6 like another
+#: (2026-10-15). A choice, not a measurement.
+REPEAT_IOU = 0.6
+#: Boxes written one after the other under one description, each the size of the one before (:data:`SAME_SIZE_PX`) and
+#: placed by the step before it (:data:`SAME_STEP_PX`), this many in a run, are a model walking across the picture: the
+#: ladders of the cell's Thursday (2026-10-15). Real parts are named in no such order.
+LADDER_RUN = 5
+#: Boxes of one description, each the size of the next, joined edge to edge into one patch this many or more, are a
+#: model tiling a pile (2026-10-15): real parts' boxes do not meet along whole edges in such numbers.
+TILING_BOXES = 6
+#: Two boxes are the same size where their widths and their heights each differ by at most this, pixels.
+SAME_SIZE_PX = 5.0
+#: Two steps are the same, and two edges meet, within this, pixels.
+SAME_STEP_PX = 3.0
+#: A box holding at least two other boxes, each with this share of its area inside it and at most half its size, is a
+#: box round a pile or a bin of parts, not a part (the owner, 2026-10-15: Thursday's ten group boxes). One object
+#: boxed twice holds nothing.
+GROUP_INSIDE = 0.8
 
 #: ```json ... ``` or bare ``` ... ``` fences, which instruct-tuned models add unprompted.
 _FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL | re.IGNORECASE)
@@ -245,6 +275,135 @@ def box_iou(first: Sequence[float], second: Sequence[float]) -> float:
     return inter / union if union > 0.0 else 0.0
 
 
+def _same_size(first: Sequence[float], second: Sequence[float]) -> bool:
+    return (abs((first[2] - first[0]) - (second[2] - second[0])) <= SAME_SIZE_PX
+            and abs((first[3] - first[1]) - (second[3] - second[1])) <= SAME_SIZE_PX)
+
+
+def _meet(first: Sequence[float], second: Sequence[float]) -> bool:
+    """Whether two boxes meet along a whole edge: one's right on the other's left, or one's bottom on the other's top,
+    each spanning the same rows (or columns), all within :data:`SAME_STEP_PX` and :data:`SAME_SIZE_PX`."""
+    for a, b in ((first, second), (second, first)):
+        if (abs(a[2] - b[0]) <= SAME_STEP_PX and abs(a[1] - b[1]) <= SAME_SIZE_PX
+                and abs(a[3] - b[3]) <= SAME_SIZE_PX):
+            return True
+        if (abs(a[3] - b[1]) <= SAME_STEP_PX and abs(a[0] - b[0]) <= SAME_SIZE_PX
+                and abs(a[2] - b[2]) <= SAME_SIZE_PX):
+            return True
+    return False
+
+
+def _touch(first: Sequence[float], second: Sequence[float]) -> bool:
+    """Whether two boxes overlap or meet, within :data:`SAME_STEP_PX`: a model's walk, where real parts in a row leave
+    room between their boxes."""
+    return (first[0] <= second[2] + SAME_STEP_PX and second[0] <= first[2] + SAME_STEP_PX
+            and first[1] <= second[3] + SAME_STEP_PX and second[1] <= first[3] + SAME_STEP_PX)
+
+
+def walked(boxes: Sequence[Sequence[float]]) -> list[bool]:
+    """Which of ``boxes`` (``[x0, y0, x1, y1]``, in the order written) a model walked across the picture with: a run of
+    :data:`LADDER_RUN` or more written one after the other, each touching the one before and either placed by the step
+    before it (a ladder) or spanning its very columns or rows (a walk down a column or along a row), or a patch of
+    :data:`TILING_BOXES` or more, each the size of one it meets edge to edge (a tiling). Parts set out in rows with room
+    between them are none of these. The caller hands the boxes of one description.
+
+    Args:
+        boxes (Sequence[Sequence[float]]): The boxes, in the order the model wrote them.
+
+    Returns:
+        list[bool]: One flag per box, ``True`` where it is a step of a walk.
+    """
+    count = len(boxes)
+    out = [False] * count
+    start = 0  # the first box of the run of steps that ends at the box looked at
+    for index in range(2, count):
+        before, last, box = boxes[index - 2], boxes[index - 1], boxes[index]
+        if not (_touch(before, last) and _touch(last, box)
+                and all(abs((box[k] - last[k]) - (last[k] - before[k])) <= SAME_STEP_PX for k in range(4))):
+            start = index - 1
+            continue
+        if index - start + 1 >= LADDER_RUN:
+            out[start:index + 1] = [True] * (index + 1 - start)
+    # A walk down a column or along a row: each box spanning the very columns, or the very rows, of the one before.
+    start = 0
+    for index in range(1, count):
+        last, box = boxes[index - 1], boxes[index]
+        if not _touch(last, box) or not any(abs(box[low] - last[low]) <= SAME_STEP_PX
+                                            and abs(box[high] - last[high]) <= SAME_STEP_PX
+                                            for low, high in ((0, 2), (1, 3))):
+            start = index
+            continue
+        if index - start + 1 >= LADDER_RUN:
+            out[start:index + 1] = [True] * (index + 1 - start)
+    patch = list(range(count))
+
+    def root(index: int) -> int:
+        while patch[index] != index:
+            patch[index] = patch[patch[index]]
+            index = patch[index]
+        return index
+
+    for first in range(count):
+        for second in range(first + 1, count):
+            if _same_size(boxes[first], boxes[second]) and _meet(boxes[first], boxes[second]):
+                patch[root(second)] = root(first)
+    sizes: dict[int, int] = {}
+    for index in range(count):
+        sizes[root(index)] = sizes.get(root(index), 0) + 1
+    for index in range(count):
+        if sizes[root(index)] >= TILING_BOXES:
+            out[index] = True
+    return out
+
+
+def without_walks(detections: list[Detection]) -> tuple[list[Detection], int]:
+    """``detections`` in their order, every box a model walked across the picture with dropped (:func:`walked`, the
+    boxes of each description apart), and how many were dropped.
+
+    Args:
+        detections (list[Detection]): One answer's boxes, in the order written.
+
+    Returns:
+        tuple[list[Detection], int]: The boxes kept, and how many went.
+    """
+    dropped = [False] * len(detections)
+    for words in {" ".join(detection.label.casefold().split()) for detection in detections}:
+        members = [index for index, detection in enumerate(detections)
+                   if " ".join(detection.label.casefold().split()) == words]
+        for index, flag in zip(members, walked([detections[member].box for member in members])):
+            dropped[index] = flag
+    return [detection for detection, flag in zip(detections, dropped) if not flag], sum(dropped)
+
+
+def without_groups(detections: list[Detection]) -> tuple[list[Detection], int]:
+    """``detections`` in their order, every box that holds two others at most half its size dropped
+    (:data:`GROUP_INSIDE`): a box round a pile or a bin of parts, whichever description drew it; and how many were
+    dropped.
+
+    Args:
+        detections (list[Detection]): The boxes of one picture, every description's.
+
+    Returns:
+        tuple[list[Detection], int]: The boxes kept, and how many went.
+    """
+
+    def area(box: Sequence[float]) -> float:
+        return max(0.0, box[2] - box[0]) * max(0.0, box[3] - box[1])
+
+    def holds(outer: Sequence[float], inner: Sequence[float]) -> bool:
+        width = min(inner[2], outer[2]) - max(inner[0], outer[0])
+        height = min(inner[3], outer[3]) - max(inner[1], outer[1])
+        return (0.0 < area(inner) <= 0.5 * area(outer)
+                and max(0.0, width) * max(0.0, height) >= GROUP_INSIDE * area(inner))
+
+    groups = [sum(1 for inner in detections if holds(detection.box, inner.box)) >= 2 for detection in detections]
+    if any(groups):
+        _LOG.warning("%d box(es) hold two others or more and are dropped, a box round a pile or a bin of parts: %s",
+                     sum(groups), "; ".join(f"{detection.label!r} at {[round(value) for value in detection.box]}"
+                                            for detection, group in zip(detections, groups) if group))
+    return [detection for detection, group in zip(detections, groups) if not group], sum(groups)
+
+
 def _without_repeats(detections: list[Detection]) -> tuple[list[Detection], int]:
     """The boxes in their order, every one dropped that repeats a box kept before it under the same description
     (:data:`REPEAT_IOU`, descriptions compared as words), and how many were dropped. An :data:`AMBIGUOUS_LABEL` box is
@@ -307,7 +466,6 @@ def parse_grounding_response(
     image_height: int,
     fallback_label: str,
     space: CoordinateSpace = CoordinateSpace.GRID_1000,
-    classes: Sequence[str] = (),
 ) -> list[Detection]:
     """Validated detections from a grounding answer. Never raises; ``[]`` when nothing survives.
 
@@ -317,14 +475,8 @@ def parse_grounding_response(
 
     ``fallback_label`` is used when the model names no label, normally the caller's prompt, so
     downstream label matching has something to match on rather than an empty string, which
-    :class:`Detection` rejects outright.
-
-    ``classes`` are the descriptions of a class list the answer was asked for
-    (``src.models.vlm.qwen.classes_of``), ``()`` for one description. With them the answer fails
-    closed: a box with no label is :data:`AMBIGUOUS_LABEL` rather than the prompt, which names every
-    description at once, and so is each box of an object boxed under more than one description
-    (:data:`AMBIGUOUS_IOU`). A label the list does not hold is kept as the model wrote it: it names
-    no description, and the camera source maps it onto none.
+    :class:`Detection` rejects outright. Boxes a model walked across the picture with are dropped
+    (:func:`without_walks`), and so is a box that repeats one before it (:data:`REPEAT_IOU`).
     """
     payload = extract_json_payload(text)
     if payload is None:
@@ -340,9 +492,6 @@ def parse_grounding_response(
     # ones, while leaving the case of a few boxes lost out of many visible.
     dropped_no_box = 0
     dropped_degenerate = 0
-    # The prompt of a class list names every description at once: a box of it the model named by none is no one's.
-    unnamed = AMBIGUOUS_LABEL if classes else fallback_label
-    nameless = 0
     for item in _as_items(payload):
         values = _box_from(item)
         if values is None:
@@ -374,29 +523,26 @@ def parse_grounding_response(
             # space deliberately does not rescale. Either way there is no box to send a gripper to.
             dropped_degenerate += 1
             continue
-        label = _label_from(item, "")
-        if not label:
-            nameless += 1
         detections.append(Detection(
             box=[x0, y0, x1, y1],
             x_center=(x0 + x1) / 2.0,
             y_center=(y0 + y1) / 2.0,
-            label=label or unnamed,
+            label=_label_from(item, fallback_label),
             score=VLM_NOMINAL_SCORE,
         ))
 
-    if classes:
-        if nameless:
-            _LOG.warning("class list %r: %d box(es) named by no description, each %r, an obstacle and never a target",
-                         fallback_label, nameless, AMBIGUOUS_LABEL)
-        detections = claimed_once(detections, fallback_label)
-
-    # After the class list is read: a box that repeats another still makes their object ambiguous first.
     detections, repeated = _without_repeats(detections)
     if repeated:
         # Warning level: the model looped, and each of these would otherwise have been a part of its own.
         _LOG.warning("%d box(es) of %r repeat an earlier box under the same description (IoU >= %.2f) and are "
                      "dropped: the model wrote the same object again", repeated, fallback_label, REPEAT_IOU)
+    # Once the repeats are gone: a part written again in turn with its twin is no walk.
+    detections, walks = without_walks(detections)
+    if walks:
+        # Warning level: the model walked across the picture, and each of these would otherwise have been a part.
+        _LOG.warning("%d box(es) of %r are a model walking across the picture (a ladder of %d or more, or a tiling of "
+                     "%d or more, each box the size of the one before) and are dropped", walks, fallback_label,
+                     LADDER_RUN, TILING_BOXES)
 
     if dropped_no_box or dropped_degenerate:
         # Warning level because each of these was a box the model asserted and this parser refused.

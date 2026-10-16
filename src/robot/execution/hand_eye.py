@@ -102,8 +102,9 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-#: Where the artifact and the dataset land unless the options say otherwise. The sim runners write the same layout,
-#: so a cell brought up in sim and then on hardware keeps one place to look.
+#: Where the artifact and the dataset land unless the options say otherwise: in the folder of the tree the sweep was
+#: built from (``data_dir``), where its ``artifact_path`` is read, and with no tree in the working directory. The sim
+#: runners write the same layout, so a cell brought up in sim and then on hardware keeps one place to look.
 DEFAULT_OUT_DIR = "calibration/real"
 #: The ArUco id a sweep poses unless the options or the mode's ``camera.hand_eye`` block say otherwise.
 DEFAULT_MARKER_ID = 0
@@ -848,6 +849,7 @@ class HandEyeCalibration:
         carry every wrist body the tree declares; without it only the body of the camera an eye-in-hand sweep calibrates
         is read. A ``robot`` that already holds bodies is handed only those it does not hold.
         """
+        from src.config.paths import resolve_config_path
         from src.robot.execution.calibration import DEFAULT_FREEDRIVE_SAMPLES
 
         selected = MountingMode(mode)
@@ -890,7 +892,10 @@ class HandEyeCalibration:
             marker_id=int(resolve("marker_id", chosen_options.marker_id,
                                   block_id if isinstance(block_id, int) else DEFAULT_MARKER_ID)),
             dict_name=str(resolve("dict_name", chosen_options.dict_name, marker.aruco_dict_name)),
-            out_dir=str(resolve("out_dir", chosen_options.out_dir, DEFAULT_OUT_DIR)),
+            # Beside the tree it was loaded from, where its artifact_path reads it (``config.paths``): written to the
+            # working directory, a cell's calibration landed in the repository whatever tree was named (the owner,
+            # 2026-10-15), and a second cell's would have written over it.
+            out_dir=str(resolve("out_dir", chosen_options.out_dir, resolve_config_path(DEFAULT_OUT_DIR, data_dir))),
             sections=_Sections(robot=tree, camera=camera_config),
             target=whole,
             target_from=whole_from,

@@ -44,6 +44,8 @@ re-blessing.
 from __future__ import annotations
 
 import os
+import shutil
+import tempfile
 
 import pytest
 
@@ -53,6 +55,10 @@ from tests._determinism import (
     PLATFORM_FLOAT_LOCKED_NODEIDS,
     snapshot_lf_locked_goldens,
 )
+
+
+#: Where the run's picks keep their looks (:func:`pytest_configure`); ``""`` before it.
+_VIEWS = ""
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -66,6 +72,21 @@ def pytest_configure(config: pytest.Config) -> None:
     snapshot_lf_locked_goldens()
     # A test may only inject what the arm already carries; see tests/_injection_guard.py.
     injection_guard.install()
+    # Every pick keeps its looks (record_views, the owner, 2026-10-15): the suite's go to a folder of its own, never into
+    # the cell's logs/robot/views, and the folder goes when the run ends.
+    from src.robot.execution import record_views
+
+    global _VIEWS
+    _VIEWS = tempfile.mkdtemp(prefix="willy-test-views-")
+    record_views.RECORD_VIEWS_DIR = _VIEWS  # type: ignore[misc]
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    """Take the run's folder of looks away."""
+
+    del config
+    if _VIEWS:
+        shutil.rmtree(_VIEWS, ignore_errors=True)
 
 
 def pytest_collection_modifyitems(

@@ -18,7 +18,8 @@ is switched on), and fix the board where every station sees it. Then, at the cel
 from willy import HandEyeCalibration, SweepOptions, load_tree, print_sweep_progress
 
 # A template in the file's format, four joint stations and two poses, taught on no cell: teach your
-# own, or name the file 09 wrote, "calibration/real/eye_in_hand_wrist_stations.json".
+# own, or name the file 09 wrote in your tree's folder (its report names it),
+# "<tree>/calibration/real/eye_in_hand_wrist_stations.json".
 STATIONS = "examples/real_robot/eih_fixed_stations.json"
 # The board, as --board spells it, so camera.hand_eye needs no edit for this run: id 50 of
 # DICT_4X4_100, 150 mm edge. A wrong edge scales every sample; measure the print.
@@ -41,7 +42,7 @@ if not rehearsed.ok:
     raise SystemExit(rehearsed.exit_code)
 
 # The stations in order: the arm drives to each, you adjust and press Enter, hands off, 3-2-1, next.
-# The adjusted stations are written to calibration/real/eye_in_hand_wrist_stations.json for next time;
+# The adjusted stations are written to calibration/real/eye_in_hand_wrist_stations.json in your tree's folder;
 # when that is the file STATIONS names (09's), it is never written over, and they go to
 # eye_in_hand_wrist_stations.adjusted.json beside it. The report names the file either way.
 report = calibration.run()  # this moves the robot

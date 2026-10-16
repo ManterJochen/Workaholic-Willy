@@ -206,15 +206,15 @@ class MeshFirstTests(unittest.TestCase):
     def test_the_exact_guard_alone_where_it_holds_what_the_planner_holds(self) -> None:
         self.assertIsNone(_mesh_first(world={"enabled": True, "support_plane": _PLANE}, pairs=_pairs()))
         self.assertIsNone(_mesh_first(pairs=_pairs(lowest=None, says=False)), "no planning world, no plane to keep")
+        # A distance field is the camera world's boxes as measured, which the guard holds (owner, 2026-10-15).
+        field = {"enabled": True, "support_plane": _PLANE, "perceived": {"voxel_field_mm": 20.0}}
+        self.assertIsNone(_mesh_first(world=field, pairs=_pairs()))
 
     def test_the_switch_off_or_no_exact_guard_asks_the_planner(self) -> None:
         self.assertIn("mesh_first is off", _mesh_first(pairs=_pairs(), mesh_first=False) or "")
         self.assertIn("no exact mesh guard", _mesh_first(pairs=None) or "")
 
     def test_what_only_the_planner_holds_asks_it(self) -> None:
-        field = {"enabled": True, "support_plane": _PLANE, "perceived": {"voxel_field_mm": 20.0}}
-        self.assertIn("distance field", _mesh_first(world=field, pairs=_pairs()) or "")
-
         def carrying(arm: URRobotArm) -> None:
             arm._attached_payload = object()  # type: ignore[assignment]
 

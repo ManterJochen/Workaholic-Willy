@@ -127,19 +127,26 @@ class TheCommandedNumberReachesTheDriverTests(unittest.TestCase):
                                        msg=f"commanded {want} mm, the driver received a count worth "
                                            f"{got:.2f} mm")
 
-    def test_the_policy_floor_is_applied_and_the_map_is_not_shifted_by_it(self) -> None:
-        """Two configs differing only in the floor must send the SAME count for a width above it."""
+    def test_a_close_reaches_the_closed_end_past_the_policy_floor_and_the_map_is_not_shifted_by_it(self) -> None:
+        """Two configs differing only in the floor must send the SAME count for a width above it. The floor is the
+        planner's thinnest part, not the mechanism's end: a close goes on to the closed width, so a soft part squeezed
+        flatter than the floor stops the jaws before it (the owner's velcro band, 2026-10-15, closed to the 5 mm floor
+        at 5.1 mm and read as nothing held)."""
         a, da = _gripper(GripperConfig(min_width_mm=0.0, max_width_mm=50.0, closed_width_mm=0.0))
         b, db = _gripper(GripperConfig(min_width_mm=5.0, max_width_mm=50.0, closed_width_mm=0.0))
         a.set_width_mm(30.0)
         b.set_width_mm(30.0)
         self.assertEqual(da.last[0], db.last[0])
-        b.set_width_mm(1.0)  # below the floor
+        b.set_width_mm(1.0)  # below the floor, above the closed end
         # ⚠ delta, not equality: counts are integers, so one step is max_width_mm/255 = 0.196 mm on
-        # this stroke and the floor round-trips to 4.902 mm. The first draft of this line asserted
-        # exact equality and failed against a driver that was right, which is this repo's standing
-        # lesson about a test claiming more than the system promises.
-        self.assertAlmostEqual(b._count_to_mm(db.last[0]), 5.0, delta=50.0 / 255.0)
+        # this stroke. The first draft of a line like this asserted exact equality and failed against
+        # a driver that was right, which is this repo's standing lesson about a test claiming more than
+        # the system promises.
+        self.assertAlmostEqual(b._count_to_mm(db.last[0]), 1.0, delta=50.0 / 255.0)
+        b.close()
+        self.assertEqual(255, db.last[0], "a close goes to the closed end")
+        b.set_width_mm(-3.0)  # past the closed end: clamped to it
+        self.assertEqual(255, db.last[0])
 
     def test_force_and_speed_are_fractions_not_newtons(self) -> None:
         """⚠ `close_force_n` is named in newtons and normalised as a [0,1] fraction, so anything at

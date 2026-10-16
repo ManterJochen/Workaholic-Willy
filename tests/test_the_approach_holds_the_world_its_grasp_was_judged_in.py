@@ -36,7 +36,7 @@ from tests.test_a_grasp_judged_ahead_runs_as_it_was_judged import (
     _cell,
     _configuration,
     _judged_ahead,
-    _moved_1_mm,
+    _moved_2_mm,
     _refreshes,
     _shifted,
     _stand,
@@ -120,7 +120,7 @@ class TheApproachHoldsThatWorldTests(unittest.TestCase):
             "more than half a second": lambda arm: (
                 setattr(arm, "_judged_ahead", dataclasses.replace(arm._judged_ahead, at=time.monotonic() - 0.6))
                 or _STANDOFF),
-            "the arm moved": lambda arm: (_moved_1_mm(arm) or _STANDOFF),
+            "the arm moved": lambda arm: (_moved_2_mm(arm) or _STANDOFF),
         }
         for label, standoff in cases.items():
             with self.subTest(label):

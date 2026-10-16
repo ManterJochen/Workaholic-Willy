@@ -11,8 +11,8 @@ world read one depth, placed by the arm's own TCP and the rig's own calibration:
 * :class:`Part` is a cylinder or a box standing on the mat's reading (its foot on the local reading, its axis along the
   mat's normal), ray cast into every frame.
 * :class:`Scene` holds the parts and what happens to them: a part the jaws close on is carried with the TCP and set
-  down where they open (:meth:`Scene.jaws_changed`); a push moves the part where its plan put it
-  (:meth:`Scene.pushed`). Nothing else moves a part.
+  down where they open (:meth:`Scene.jaws_changed`); a push moves the part where its plan put it, and a rearranging
+  one what stands ahead of the part in its lane with it (:meth:`Scene.pushed`). Nothing else moves a part.
 * :class:`StandInD415` renders the scene from where the camera stands at every grab, as a D415 at 1280x720 reads it:
   nothing closer than :data:`MIN_Z_MM`, whole millimetres. :class:`StandInBackend` grounds the prompt on the part the
   scene names as the target, with the mask the same render cut, so the detector and the segmenter are the only
@@ -209,6 +209,13 @@ class Part:
             hx, hy = float(self.dims[0]) / 2.0, float(self.dims[1]) / 2.0
         h = self.height_mm
         return np.array([[sx * hx, sy * hy, z] for sx in (-1, 1) for sy in (-1, 1) for z in (0.0, h)])
+
+    def half_along(self, axis_xy: np.ndarray) -> float:
+        """Half its footprint's extent along the BASE XY unit vector ``axis_xy``."""
+        if self.shape == "cylinder":
+            return float(self.dims[0])
+        return (abs(float(axis_xy @ self.frame[:2, 0])) * float(self.dims[0])
+                + abs(float(axis_xy @ self.frame[:2, 1])) * float(self.dims[1])) / 2.0
 
     def contains(self, point_local: np.ndarray, grow_mm: float) -> bool:
         x, y, z = (float(v) for v in point_local[:3])
@@ -679,7 +686,8 @@ class Scene:
 
     def pushed(self, plan: Any, legs_done: Sequence[str], tcp_after: Optional[np.ndarray]) -> None:
         """A push ran: the part whose foot is nearest the plan's centre goes where the plan put it, or, stopped on its
-        push leg, as far as the finger went past the contact gap."""
+        push leg, as far as the finger went past the contact gap. A rearranging push (``plan.shoves``) takes along what
+        stands ahead of the part in its lane (:meth:`_shove_ahead`)."""
         with self._lock:
             if not self.parts:
                 return
@@ -700,18 +708,45 @@ class Scene:
                 moved = 0.0
             if moved <= 0.0:
                 return
-            xy = part.frame[:2, 3] + moved * direction
-            if getattr(self, "keep_height_on_push", False):
-                # On a floor that is not the mat (a bin's), the part slides at the height it stood at.
-                part.frame = part.frame.copy()
-                part.frame[:2, 3] = xy
-                foot = part.frame[:3, 3]
-            else:
-                foot, normal = self.foot_on_mat(xy)
-                yaw = math.atan2(float(part.frame[1, 0]), float(part.frame[0, 0]))
-                part.frame = standing_frame(foot, normal, yaw)
+            start = part.frame[:2, 3].copy()
+            foot = self._slide(part, start + moved * direction)
             self.version += 1
             self.events.append({"t": time.time(), "event": "pushed", "part": part.name, "moved_mm": round(moved, 1),
+                                "to_mm": [round(float(v), 1) for v in foot]})
+            if getattr(plan, "shoves", False):
+                self._shove_ahead(part, start, direction, moved, movable)
+
+    def _slide(self, part: Part, xy: np.ndarray) -> np.ndarray:
+        """``part`` slid to ``xy`` (BASE mm), standing on the mat there, or at its own height on a floor that is not the
+        mat (``keep_height_on_push``, a bin's); its new foot."""
+        if getattr(self, "keep_height_on_push", False):
+            part.frame = part.frame.copy()
+            part.frame[:2, 3] = xy
+            return part.frame[:3, 3]
+        foot, normal = self.foot_on_mat(xy)
+        yaw = math.atan2(float(part.frame[1, 0]), float(part.frame[0, 0]))
+        part.frame = standing_frame(foot, normal, yaw)
+        return foot
+
+    def _shove_ahead(self, pushed: Part, start_xy: np.ndarray, direction: np.ndarray, moved: float,
+                     movable: Sequence[Part]) -> None:
+        """What a rearranging push takes along (2026-10-16): each movable part ahead of ``pushed`` in its lane from
+        ``start_xy`` ends just ahead of where it stops, ``moved`` along ``direction``, as the plan predicts it; a part
+        it shoves shoves nothing in turn."""
+        across = np.array([-direction[1], direction[0]])
+        front = moved + pushed.half_along(direction)
+        for other in movable:
+            if other is pushed or other.held is not None:
+                continue
+            offset = other.frame[:2, 3] - start_xy
+            along, lateral = float(offset @ direction), float(offset @ across)
+            if along <= 0.0 or abs(lateral) >= pushed.half_along(across) + other.half_along(across):
+                continue
+            shift = front + other.half_along(direction) - along
+            if shift <= 0.0:
+                continue
+            foot = self._slide(other, other.frame[:2, 3] + shift * direction)
+            self.events.append({"t": time.time(), "event": "shoved", "part": other.name, "moved_mm": round(shift, 1),
                                 "to_mm": [round(float(v), 1) for v in foot]})
 
     def render(self, cam_to_base: np.ndarray, tcp: Optional[np.ndarray], *, temporal: bool = True) -> Render:
@@ -882,6 +917,9 @@ class StandInBackend:
         #: Ground every part the render shows (a bin to clear, "alle Objekte"), not the scene's target alone. Fixed parts
         #: (a bin's walls and floor) and the part in the jaws are never grounded.
         self.all_parts = False
+        #: With :attr:`all_parts`, every part but the scene's target under its own name, not the prompt's: a detector
+        #: that names the scene's other kinds, parts the task does not want and a scene push may push (2026-10-16).
+        self.others_by_name = False
 
     def perceive(self, image_bgr: Any, prompt: str) -> tuple[Any, ...]:
         from src.models.detection.types import Detection  # noqa: PLC0415
@@ -905,10 +943,11 @@ class StandInBackend:
                 continue
             rows, cols = np.nonzero(mask)
             x0, x1, y0, y1 = int(cols.min()), int(cols.max()) + 1, int(rows.min()), int(rows.max()) + 1
+            said = name if self.others_by_name and name != target else label
             det = Detection(box=[float(x0), float(y0), float(x1), float(y1)], x_center=(x0 + x1) / 2.0,
-                            y_center=(y0 + y1) / 2.0, label=label, score=0.9)
+                            y_center=(y0 + y1) / 2.0, label=said, score=0.9)
             seg = SegmentationResult(
-                label=label, score=0.9, bbox_xyxy=(x0, y0, x1, y1), mask=mask.astype(np.uint8), mask_area_px=area,
+                label=said, score=0.9, bbox_xyxy=(x0, y0, x1, y1), mask=mask.astype(np.uint8), mask_area_px=area,
                 centroid_xy=(float(cols.mean()), float(rows.mean())), derived_bbox_xyxy=(x0, y0, x1, y1),
                 inference_time_s=0.0, timestamp_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 frame_id=None, metadata={"stand_in": True, "part": name},

@@ -366,6 +366,27 @@ class TheReasonsReadTheCountsTests(unittest.TestCase):
         reasons, _ = self._read(own_fragments=9)
         self.assertEqual((R.NO_VALID_GRASP, R.RESCAN_RECOMMENDED), reasons)
 
+    def test_the_part_itself_is_said_by_what_it_refused_the_most_for(self) -> None:
+        """The owner's tilted cube of 2026-10-15: of 22,000 spans the pads held on 20, and those met a neighbour or
+        space no camera saw. The neighbour is still the reason a push answers; the sentence says the rest too, by the
+        cause the part refused the most for, and alone where nothing reached the scene."""
+        from src.robot.grasping.types.feedback import GraspFailureReason as R
+
+        reasons, said = self._read(aperture=16644, prism=4514, cone=1126, seen_corridor=8, unseen_corridor=12)
+        self.assertEqual((R.ALL_COLLIDED, R.RESCAN_RECOMMENDED), reasons)
+        self.assertEqual("every grasp that holds on the part meets a neighbour the camera saw beside the part or space "
+                         "no camera saw; everywhere else the part is wider than the hand opens, or thinner than it "
+                         "closes", said)
+        _, crowded = self._read(aperture=3, seen_fingers=400)
+        self.assertEqual("every grasp that holds on the part meets a neighbour the camera saw beside the part", crowded)
+        for refused, words in (({"cone": 900, "aperture": 200}, "lean or round away from the pads"),
+                               ({"prism": 90, "cone": 10}, "the open fingers come down on the part itself"),
+                               ({"aperture": 50, "cone": 10}, "wider than the hand opens")):
+            with self.subTest(refused):
+                reasons, said = self._read(**refused)
+                self.assertEqual((R.NO_VALID_GRASP, R.RESCAN_RECOMMENDED), reasons)
+                self.assertIn(words, said)
+
 
 class TheDistanceIsExactTests(unittest.TestCase):
     """The box distance the envelope filter reads: never more than a dense sampling of the two boxes measures, never

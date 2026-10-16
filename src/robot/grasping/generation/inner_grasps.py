@@ -14,8 +14,10 @@ outer search, which stays as it is, and its grasps rank after every outer grasp 
 taken where no outer grasp is.
 
 * A bore is a hollow of the body the body encloses in the plane: the cells no point stands in, or whose top stands at
-  least :func:`body_grasps.body_least_height_mm` under the part's top, joined to none at the grid's edge
-  (:func:`bores`). Its centre is the middle of the largest circle inside it.
+  least :func:`body_grasps.body_least_height_mm` under the part's top, or that a hole of the part's colour mask covers
+  (``footprint_hull.mask_hole_xy``: the depth inside a bore reads its wall's mixed pixels, the colour mask does not,
+  the owner's L of 2026-10-15), joined to none at the grid's edge (:func:`bores`). What stands a cell inside such a hole
+  is no part of the body. Its centre is the middle of the largest circle inside it.
 * Through every bore's centre, every :data:`body_grasps.BODY_YAW_STEP_DEG` of closing direction and at every height the
   outer search asks (its pads :data:`body_grasps.HOLD_OVERLAP_MM` under the part's top down to the fingertips the
   support's clearance over it, and never so deep that the housing comes nearer the part's top than the room below), the
@@ -105,6 +107,7 @@ __all__ = [
     "Bore",
     "InnerGrasp",
     "bores",
+    "hole_cells",
     "inner_grasps",
 ]
 
@@ -170,10 +173,11 @@ class _Found:
     part_width_mm: float
 
 
-def bores(body: BodyMap, *, deeper_than_mm: float) -> list[Bore]:
+def bores(body: BodyMap, *, deeper_than_mm: float, hollow: "np.ndarray | None" = None) -> list[Bore]:
     """The bores of ``body``: each hollow the body encloses in the plane, its cells those no point stands in or whose
-    top stands ``deeper_than_mm`` or more under the part's top (``body.top_mm``), joined edge to edge to no cell at the
-    grid's edge; a hollow of fewer than :data:`_FEWEST_CELLS` cells is a speck.
+    top stands ``deeper_than_mm`` or more under the part's top (``body.top_mm``), or that ``hollow`` holds (a grid the
+    shape of ``body.top``: the colour mask's holes, :func:`hole_cells`), joined edge to edge to no cell at the grid's
+    edge; a hollow of fewer than :data:`_FEWEST_CELLS` cells is a speck.
 
     A through bore holds no point (its floor is the support, under the body's floor margin); a blind one holds its floor
     deeper than the pads need.
@@ -181,6 +185,7 @@ def bores(body: BodyMap, *, deeper_than_mm: float) -> list[Bore]:
     Args:
         body: The part's body (``body_grasps.body_map``).
         deeper_than_mm: How far under the part's top a cell's top has to stand to be hollow, millimetres.
+        hollow: Cells hollow whatever stands in them, ``None`` for none.
 
     Returns:
         list[Bore]: The bores, largest first; empty where the body encloses none.
@@ -188,8 +193,10 @@ def bores(body: BodyMap, *, deeper_than_mm: float) -> list[Bore]:
     from scipy import ndimage  # noqa: PLC0415 (only the stage pays for it)
 
     top = body.top
-    hollow = ~np.isfinite(top) | (top < float(body.top_mm) - float(deeper_than_mm))
-    labels, count = ndimage.label(np.pad(hollow, 1, constant_values=True))
+    empty = ~np.isfinite(top) | (top < float(body.top_mm) - float(deeper_than_mm))
+    if hollow is not None:
+        empty = empty | np.asarray(hollow, dtype=bool)
+    labels, count = ndimage.label(np.pad(empty, 1, constant_values=True))
     outside = set(np.unique(np.concatenate([labels[0], labels[-1], labels[:, 0], labels[:, -1]])).tolist())
     labels = labels[1:-1, 1:-1]
     found: list[Bore] = []
@@ -207,6 +214,41 @@ def bores(body: BodyMap, *, deeper_than_mm: float) -> list[Bore]:
         centre = (middle.mean(axis=0) + 0.5) * body.cell_mm + np.asarray(body.origin_mm, dtype=np.float64)
         found.append(Bore(centre_mm=centre, diameter_mm=2.0 * max(widest - 0.5, 0.0) * body.cell_mm))
     return sorted(found, key=lambda bore: -bore.diameter_mm)
+
+
+def hole_cells(body: BodyMap, hole_xy_mm: np.ndarray) -> np.ndarray:
+    """The cells of ``body``'s grid a hole of the part's colour mask covers (``footprint_hull.mask_hole_xy``, BASE x and
+    y): a grid the shape of ``body.top``.
+
+    Args:
+        body: The part's body (``body_grasps.body_map``).
+        hole_xy_mm: The mask's holes met at the part's top, ``(N, 2)`` BASE millimetres.
+
+    Returns:
+        np.ndarray: ``True`` where a hole point falls in the cell.
+    """
+    rows, cols = body.top.shape
+    cells = np.zeros((rows, cols), dtype=bool)
+    xy = np.asarray(hole_xy_mm, dtype=np.float64).reshape(-1, 2)
+    index = np.floor((xy - np.asarray(body.origin_mm, dtype=np.float64)) / body.cell_mm).astype(np.int64)
+    inside = (index >= 0).all(axis=1) & (index[:, 0] < rows) & (index[:, 1] < cols)
+    cells[index[inside, 0], index[inside, 1]] = True
+    return cells
+
+
+def _without_what_stands_in_a_hole(cloud: np.ndarray, body: BodyMap, hole_xy_mm: np.ndarray) -> np.ndarray:
+    """``cloud`` less its points that stand a cell inside a hole of the part's colour mask: the mixed pixels the depth
+    reads inside a bore, no part of its wall, which stands at the hole's rim."""
+    from scipy import ndimage  # noqa: PLC0415 (only the stage pays for it)
+
+    inside = ndimage.binary_erosion(hole_cells(body, hole_xy_mm))
+    if not inside.any():
+        return cloud
+    index = np.floor((cloud[:, :2] - np.asarray(body.origin_mm, dtype=np.float64)) / body.cell_mm).astype(np.int64)
+    on = (index >= 0).all(axis=1) & (index[:, 0] < inside.shape[0]) & (index[:, 1] < inside.shape[1])
+    held = np.zeros(cloud.shape[0], dtype=bool)
+    held[on] = inside[index[on, 0], index[on, 1]]
+    return cloud[~held]
 
 
 def _guard_distance_mm(seen_envelope: Any, hand_floor: "HandFloor | None") -> float:
@@ -245,6 +287,7 @@ def inner_grasps(
     refusals: "dict[str, int] | None" = None,
     score_weights: "tuple[float, float, float, float, float] | None" = None,
     bores_found: "list[Bore] | None" = None,
+    hole_xy_mm: "np.ndarray | None" = None,
 ) -> list[InnerGrasp]:
     """The grasps from inside the bores of the part's measured body (module docstring), robust first, each by score,
     ``max_candidates`` at most.
@@ -272,6 +315,8 @@ def inner_grasps(
         refusals: Counted into where given, as above.
         score_weights: The stage's five weights, ``None`` for its own (``support_footprint._SCORE_WEIGHTS``).
         bores_found: Where given, the bores the part's body holds are added to it, a grasp found in them or not.
+        hole_xy_mm: The holes of the part's colour mask met at its top (``footprint_hull.mask_hole_xy``), BASE x and y,
+            ``None`` for none: their cells are hollow, and what stands a cell inside them is no part of the body.
 
     Returns:
         list[InnerGrasp]: The grasps; empty where the part has no bore a grasp from inside holds in.
@@ -285,7 +330,15 @@ def inner_grasps(
     body = body_map(cloud_base_mm, support_height_mm, floor_margin_mm=floor_margin_mm)
     if body is None:
         return []
-    found_bores = bores(body, deeper_than_mm=body_least_height_mm(jaw))
+    hollow = None
+    if hole_xy_mm is not None and np.asarray(hole_xy_mm).size:
+        body = body_map(_without_what_stands_in_a_hole(np.asarray(cloud_base_mm, dtype=np.float64).reshape(-1, 3),
+                                                       body, hole_xy_mm),
+                        support_height_mm, floor_margin_mm=floor_margin_mm)
+        if body is None:
+            return []
+        hollow = hole_cells(body, hole_xy_mm)
+    found_bores = bores(body, deeper_than_mm=body_least_height_mm(jaw), hollow=hollow)
     if bores_found is not None:
         bores_found.extend(found_bores)
     if not found_bores:

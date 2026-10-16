@@ -402,11 +402,13 @@ class _Cell:
         self.case = case
         case.enterContext(patch.object(builtins, "input", side_effect=AssertionError("input() was called")))
 
-    def push(self, plan: Any = PLAN, *, gripper: Any = "jaws", offer: SegmentationOffer = OFFER) -> PushOutcome:
+    def push(self, plan: Any = PLAN, *, gripper: Any = "jaws", offer: SegmentationOffer = OFFER,
+             **keywords: Any) -> PushOutcome:
         self.commands_before = self.jaws.commands_sent
         self.writes_before = len(self.log.of("DO"))
         self.log.events.clear()
-        return execute_push(self.arm, plan, gripper=self.jaws if gripper == "jaws" else gripper, offer=offer)
+        return execute_push(self.arm, plan, gripper=self.jaws if gripper == "jaws" else gripper, offer=offer,
+                            **keywords)
 
     def motions(self) -> list[str]:
         return [kind for kind in self.log.kinds() if kind in MOTION_VERBS]

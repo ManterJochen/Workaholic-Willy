@@ -23,7 +23,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from src.robot.safety.planning._curobo_cspace import CUROBO_FINETUNE_PASSES as _CUROBO_FINETUNE_PASSES
-from src.robot.safety.planning.perceived import WorldBuildLimits, voxel_grid_extent
+from src.robot.safety.planning.fine_world import FINE_REACH_MM
+from src.robot.safety.planning.perceived import WorldBuildLimits, near_grid_extent, voxel_grid_extent
 from src.robot.safety.planning.world import DEFAULT_MAX_CUBOIDS, build_planner_cuboids
 
 if TYPE_CHECKING:  # pragma: no cover (typing only, keeps the safety layer free of a config import)
@@ -74,7 +75,8 @@ class PlannerReservation:
     """What one planner sidecar allocates when it starts, and how it is started.
 
     ``voxel_grid`` is ``x,y,z,voxel`` in metres to four decimals, or empty for no grid, in exactly
-    the form the sidecar reads, and exactly the grid :func:`voxel_grid_extent` cuts a field into.
+    the form the sidecar reads, and exactly the grid :func:`voxel_grid_extent` cuts a field into;
+    after a ``;`` the largest fine grid about a goal the field sends beside it (:func:`near_grid_extent`).
 
     The last three are fixed when the sidecar starts as well, and every driver hands its client the
     reservation before it starts: ``world_in_place`` registers a world of boxes in one call
@@ -103,11 +105,12 @@ class PlannerReservation:
         world_in_place: bool = False,
         finetune_passes: int = _CUROBO_FINETUNE_PASSES,
         planning_spheres: str = "",
+        near_extent: "tuple[tuple[float, float, float], float] | None" = None,
     ) -> "PlannerReservation":
         """The reservation for a world of these sizes: the counts a cell will send, not guesses."""
-        grid = "" if grid_extent is None else ",".join(
-            f"{v / 1000.0:.4f}" for v in (*grid_extent[0], grid_extent[1])
-        )
+        # The fine grid about a goal goes beside a field's own grid, never without it.
+        extents = [] if grid_extent is None else [extent for extent in (grid_extent, near_extent) if extent is not None]
+        grid = ";".join(",".join(f"{v / 1000.0:.4f}" for v in (*extent[0], extent[1])) for extent in extents)
         return cls(
             cuboid_slots=max(DEFAULT_MAX_CUBOIDS, int(declared_cuboids) + int(perceived_boxes)),
             mesh_slots=max(0, int(meshes)),
@@ -157,33 +160,44 @@ class PlannerReservation:
         )
         perceived_boxes = 0
         extent: "tuple[tuple[float, float, float], float] | None" = None
+        near: "tuple[tuple[float, float, float], float] | None" = None
         perceived = getattr(world_cfg, "perceived", None)
         if perceived is not None and bool(getattr(perceived, "enabled", False)):
             perceived_boxes = int(perceived.max_boxes)
             limits = planner_world_limits(robot_cfg)
             if limits is not None:
                 extent = voxel_grid_extent(limits, float(perceived.voxel_field_mm))
+                # The live world builds the fine world about every goal (``camera_world_wiring``), and with it the
+                # field's fine grid there.
+                near = near_grid_extent(limits, float(perceived.voxel_field_mm), FINE_REACH_MM)
         return cls.from_parts(
             declared_cuboids=declared,
             perceived_boxes=perceived_boxes,
             meshes=len(getattr(world_cfg, "meshes", ()) or ()),
             grid_extent=extent,
             sphere_slots=spheres,
+            near_extent=near,
             **started,
         )
 
     @property
+    def _grids_mm(self) -> "list[tuple[float, float, float, float]]":
+        """Each grid as ``x, y, z, voxel`` in millimetres: the field's own, then its fine grid about the goal."""
+        return [tuple(float(v) * 1000.0 for v in part.split(",")) for part in self.voxel_grid.split(";") if part]  # type: ignore[misc]
+
+    @property
     def grid_shape(self) -> "tuple[int, int, int] | None":
-        """Voxels along x, y and z, or `None` for no grid."""
+        """Voxels along x, y and z of the field's own grid, or `None` for no grid."""
         if not self.voxel_grid:
             return None
-        x, y, z, voxel = (float(v) for v in self.voxel_grid.split(","))
+        x, y, z, voxel = self._grids_mm[0]
         return int(round(x / voxel)), int(round(y / voxel)), int(round(z / voxel))
 
     @property
     def grid_cells(self) -> int:
-        shape = self.grid_shape
-        return 0 if shape is None else shape[0] * shape[1] * shape[2]
+        """The values the sidecar's grid storage holds: a layer a grid, each as large as the largest grid."""
+        cells = [round(x / voxel) * round(y / voxel) * round(z / voxel) for x, y, z, voxel in self._grids_mm]
+        return len(cells) * max(cells, default=0)
 
     @property
     def grid_bytes(self) -> int:
@@ -194,9 +208,9 @@ class PlannerReservation:
         """Describe this to a person, as text, ASCII, no trailing newline."""
         parts = [f"{self.cuboid_slots} box slot(s)", f"{self.mesh_slots} mesh slot(s)"]
         if self.voxel_grid:
-            x, y, z, voxel = (float(v) * 1000.0 for v in self.voxel_grid.split(","))
+            grids = [f"{x:.0f} x {y:.0f} x {z:.0f} mm at {voxel:.0f} mm" for x, y, z, voxel in self._grids_mm]
             parts.append(
-                f"a live scene grid of {x:.0f} x {y:.0f} x {z:.0f} mm at {voxel:.0f} mm "
+                f"a live scene grid of {' and one about the goal of '.join(grids)} "
                 f"({self.grid_cells} cells, {self.grid_bytes / 1e6:.2f} MB as float16)"
             )
         else:

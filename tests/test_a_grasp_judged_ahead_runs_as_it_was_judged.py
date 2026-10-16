@@ -132,11 +132,12 @@ def _refreshes() -> Any:
     return patch.object(curobo_motion, "refresh_planner_world", wraps=curobo_motion.refresh_planner_world)
 
 
-def _moved_1_mm(arm: Any) -> None:
-    """The arm a millimetre from where it stood, in the path gate's own metric: wrist 3 turned that far."""
+def _moved_2_mm(arm: Any) -> None:
+    """The arm two millimetres from where it stood, in the path gate's own metric: wrist 3 turned that far, past the
+    millimetre an arm may stand from where it was judged from (``PlannedArm._AHEAD_MOVED_MM``)."""
     here = [float(v) for v in arm._conn.get_joint_positions()]
     radii = arm._preflight.joint_radii_mm(arm)
-    here[5] += 1.0 / float(radii[5])
+    here[5] += 2.0 / float(radii[5])
     arm._conn.get_joint_positions.return_value = here
 
 
@@ -252,7 +253,7 @@ class TheMoveToTheStandoffRunsTheRouteJudgedAheadTests(unittest.TestCase):
 
     def test_an_arm_moved_a_millimetre_has_its_route_judged_again(self) -> None:
         arm, events, _ahead = self._ready()
-        _moved_1_mm(arm)
+        _moved_2_mm(arm)
         result = self._judged_again(arm, events)
         self.assertTrue(result.ok, result.message)
         self.assertEqual([float(v) for v in arm._conn.get_joint_positions()],
@@ -367,7 +368,7 @@ class TheLineUpRunsOnTheLiftJudgedAtThePartTests(unittest.TestCase):
         with arm.held_world(_HELD):
             self.assertIsNone(arm.carried_line_refusal(_LIFT, grip_width_mm=_WIDTH_MM))
             arm.attach_payload(_WIDTH_MM)
-            _moved_1_mm(arm)
+            _moved_2_mm(arm)
             self._judged_again(arm, events, solved)
 
     def test_another_pose_has_the_line_up_judged(self) -> None:

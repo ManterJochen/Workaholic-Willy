@@ -218,15 +218,18 @@ class DecisionsTests(unittest.TestCase):
         self.addCleanup(set_active_profile, None)
         return decisions(load_config(None), DATA, layers, section=section)
 
-    def test_the_production_tree_has_exactly_three_robot_decisions(self) -> None:
+    def test_the_production_tree_has_exactly_four_robot_decisions(self) -> None:
         """The headline measurement, now asserted. If this number moves, someone made a decision --
         which is precisely what the view is for. It was three until the KUKA block, whose model the tree
         set away from its default, went with the EthernetKRL driver (2026-09-19), and three again since the
-        controller address lost its default (2026-10-13): the base tree names the owner's cell, a decision."""
+        controller address lost its default (2026-10-13): the base tree names the owner's cell, a decision.
+        Four since the owner turned the planner's distance field on (2026-10-15): the schema still sends a
+        tree that names none boxes alone."""
         text = self._decisions()
-        self.assertIn("3 value(s)", text)
+        self.assertIn("4 value(s)", text)
         self.assertIn("robot.workspace_limits.z_min", text)
         self.assertIn("robot.ur.ip", text)
+        self.assertIn("robot.safety.planning_world.perceived.voxel_field_mm", text)
 
     def test_every_decision_carries_its_origin(self) -> None:
         self.assertIn("robot.yaml:", self._decisions())

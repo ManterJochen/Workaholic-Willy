@@ -414,6 +414,17 @@ def _lab_of_rgb(rgb: Any) -> np.ndarray:
     return np.column_stack([116.0 * f[:, 1] - 16.0, 500.0 * (f[:, 0] - f[:, 1]), 200.0 * (f[:, 1] - f[:, 2])])
 
 
+@dataclass(frozen=True)
+class MeasuredLook:
+    """The frame a :meth:`Locator.measure` read, kept as a look is kept for ``record_views``: the frame
+    (``PerceptionFrame``), where its camera stood at the shutter (CAMERA to BASE, 4x4 mm), and the camera's name."""
+
+    frame: Any
+    camera_to_base: np.ndarray
+    name: str
+    label: str = ""
+
+
 def _measured(points_base_mm: Any, *, camera: str, captured_at_s: float, depth_mm: Any, intrinsics: Any,
               camera_to_base: Any, rgb: "np.ndarray | None") -> Measured:
     """What a frame (``depth_mm``, CAMERA mm, 0 or NaN where nothing was measured; ``rgb`` its colour, or ``None``) read
@@ -481,7 +492,7 @@ class Located:
             fewer than two looks shared one (default: None).
         generated_view_deg (float | None): How far the one generated view turned about the part, degrees; ``None`` where
             none was generated (default: None).
-        views_file (str): Where the looks' frames were kept with ``record_views``; ``""`` otherwise (default: "").
+        views_file (str): Where the looks' frames were kept; ``""`` where none were (default: "").
         closing_axis (ClosingAxis | None): The axis the look around judged object 0's grasp along; ``None`` for any
             axis, and for one locate (default: None).
     """
@@ -514,8 +525,8 @@ class Located:
     #: enough, turned about the part, degrees (``src/robot/execution/generated_view.py``); its look is among
     #: :attr:`looks`. ``None`` where no view was generated.
     generated_view_deg: float | None = None
-    #: Where the frames of the looks were kept, for training (``look_around(..., record_views=True)``,
-    #: ``src/robot/execution/record_views.py``); ``""`` where they were not.
+    #: Where the frames of the looks were kept, for training (every look around's, ``src/robot/execution/
+    #: record_views.py``); ``""`` where none were taken or they could not be written.
     views_file: str = ""
     #: The closing axis :meth:`Locator.look_around` judged object 0's grasp along (``closing_axis``), ``None`` for the best
     #: grasp of any axis, and for one locate. :meth:`scene` hands it on, so the grasp gripped is the grasp judged.
@@ -778,7 +789,7 @@ def _support_model(frame: _Frame, robot_config: Any, target_points: np.ndarray) 
     from src.robot.safety.planning.perceived import DepthView, WorldBuildTuning  # noqa: PLC0415
     from src.robot.safety.planning.reservation import planner_world_limits  # noqa: PLC0415
     from src.robot.safety.planning.self_envelope import ROBOT_BASES  # noqa: PLC0415
-    from src.robot.safety.planning.support_surfaces import find_supports  # noqa: PLC0415
+    from src.robot.safety.planning.support_surfaces import find_supports, lowest_tenth_mm  # noqa: PLC0415
 
     world = getattr(robot_config.safety, "planning_world", None)
     perceived = getattr(world, "perceived", None)
@@ -804,7 +815,8 @@ def _support_model(frame: _Frame, robot_config: Any, target_points: np.ndarray) 
         low, high = points.min(axis=0), points.max(axis=0)
         place = np.eye(4)
         place[:3, 3] = (low + high) / 2.0
-        keep_out = (KeepOutBox.from_matrix("target", place, (high - low) / 2.0 + _TARGET_BOX_MARGIN_MM),)
+        keep_out = (KeepOutBox.from_matrix("target", place, (high - low) / 2.0 + _TARGET_BOX_MARGIN_MM,
+                                           low_mm=lowest_tenth_mm(points)),)
     return find_supports([DepthView(surface_depth_mm=frame.depth_mm, intrinsics=frame.intrinsics,
                                     camera_to_base=frame.camera_to_base, name="locator")],
                          limits=limits, tuning=tuning, base=ROBOT_BASES.get(model_name), keep_out=keep_out)
@@ -883,8 +895,18 @@ class Locator:
         self._tool_pose = tool_pose
         self._attempts = int(attempts)
         self._view = view
+        self._last_measured: "MeasuredLook | None" = None
         if view is not None:
             _on_view(view, "watch", camera)
+
+    @property
+    def last_measured(self) -> "MeasuredLook | None":
+        """The frame :meth:`measure` read last, as a look is kept (``record_views``); ``None`` before the first.
+
+        Returns:
+            MeasuredLook | None: The frame, where the camera stood at its shutter, and the camera's name.
+        """
+        return self._last_measured
 
     @classmethod
     def from_parts(
@@ -1096,7 +1118,10 @@ class Locator:
                 _on_view(self._view, "note", f"measure failed: {type(exc).__name__}: {exc}",
                          str(getattr(self._camera, "rig_id", "camera")))
             raise
-        return _measured(points_base_mm, camera=str(getattr(self._camera, "rig_id", "camera")),
+        rig_id = str(getattr(self._camera, "rig_id", "camera"))
+        self._last_measured = MeasuredLook(frame=frame, camera_to_base=np.asarray(camera_to_base, dtype=np.float64),
+                                           name=rig_id)
+        return _measured(points_base_mm, camera=rig_id,
                          captured_at_s=float(frame.timestamp if frame.timestamp is not None else float("nan")),
                          depth_mm=depth, intrinsics=frame.intrinsics, camera_to_base=camera_to_base, rgb=frame.rgb)
 
@@ -1132,7 +1157,7 @@ class Locator:
         )
 
     def look_around(self, prompt: str, looks: "Look | None" = None, *, robot: Any, both_faces: bool = False,
-                    record_views: bool = False, closing_axis: "Maybe[ClosingAxisLike]" = UNSET) -> Located:
+                    closing_axis: "Maybe[ClosingAxisLike]" = UNSET) -> Located:
         """Find the part a prompt names from each look in turn, every look fused with the ones before, until its grasp
         is safe; a camera on the wrist moves there through ``robot``'s own verbs.
 
@@ -1144,8 +1169,6 @@ class Locator:
                 (``Robot.from_tree``) and its hand must be a parallel jaw.
             both_faces (bool): Look on until both jaw contact faces of the chosen grasp were seen, and refuse a part no
                 look showed both of: the switch for safety-critical processes (default: False).
-            record_views (bool): Keep the looks' frames for training, one file for the look around: each look's colour
-                image, depth, lens, tool pose and camera pose, and the part's fused cloud (default: False).
             closing_axis (Maybe[ClosingAxisLike]): Judge only the grasps closing along this axis (``"-y"``, ...), as
                 ``scene.grasps(closing_axis=...)`` takes it; the ``Located`` keeps it and object 0's scene holds to it
                 (default: UNSET, any axis).
@@ -1200,8 +1223,7 @@ class Locator:
         # (:meth:`_look_from_each`), so the frame of the pose it starts from is never held (owner, 2026-09-30).
         _let_go_of_earlier_looks(arm)
         looking = _Looking(camera=str(getattr(self._camera, "rig_id", "camera")), robot_config=robot_config,
-                           both_faces=both_faces, record_views=record_views,
-                           name=f"look_around-{prompt}", closing_axis=wanted)
+                           both_faces=both_faces, name=f"look_around-{prompt}", closing_axis=wanted)
         try:
             return self._look_from_each(prompt, looks, plan, looking, robot, arm)
         except BaseException:
@@ -1768,15 +1790,13 @@ class _Looking:
     how its grasp stood after each look."""
 
     def __init__(self, *, camera: str, robot_config: Any, both_faces: bool, holding: bool = False,
-                 record_views: bool = False, name: str = "", closing_axis: "ClosingAxis | None" = None) -> None:
+                 name: str = "", closing_axis: "ClosingAxis | None" = None) -> None:
         self.camera = camera
         self.robot_config = robot_config
         self.both_faces = both_faces
         #: The closing axis the part's grasp is judged along (``look_around(closing_axis=...)``), or ``None`` for any.
         self.closing_axis = closing_axis
-        #: Whether the frames of the looks are kept for training when the looking answers, and the name their file
-        #: goes by (``record_views``).
-        self.record_views = record_views
+        #: The name the file of the looks' frames goes by, kept for training when the looking answers.
         self.name = name
         #: Whether the arm's live planner world holds the frames of the looks (``LivePlannerWorld.hold_pick_views``):
         #: a generated view and a move back refuse to run without it.
@@ -1972,12 +1992,12 @@ class _Looking:
         return self._located(refused=refused, hand_eye_gap_mm=gap, views_file=self._kept())
 
     def _kept(self) -> str:
-        """Keep the frames of the looks for training (``record_views``), where asked and a look was taken; the file, or
-        ``""``. Through the one writer ``PickRun(record_views=True)`` uses (``execution.record_views``), each look as a
+        """Keep the frames of the looks for training, where a look was taken; the file, or ``""``. Through the one
+        writer every pick's looks go through (``execution.record_views``), each look as a
         pick's look is kept: its colour (RGB), the depth it was placed by, its lens, the tool pose stamped at its
         shutter, where its camera stood, and the part's fused cloud. A file that cannot be written is said, and the
         looking answers all the same: the frames are for training."""
-        if not self.record_views or not self.frames:
+        if not self.frames:
             return ""
         from types import SimpleNamespace  # noqa: PLC0415
 

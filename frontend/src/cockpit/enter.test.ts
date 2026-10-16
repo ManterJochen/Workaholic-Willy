@@ -212,7 +212,7 @@ describe('the looks, the views and the carry a task starts with (the owner, 2026
     place: { kind: 'camera', phrase: 'yellow bin', said: 'in die Gelbe Kiste' },
     return_to: 'home',
     scope: 'once',
-    options: { multi_view: true, every_look: true, both_faces: true, record_views: false, carry: 'over_the_rim' },
+    options: { multi_view: true, every_look: true, both_faces: true, carry: 'over_the_rim' },
   } as unknown as TaskPlanOut
 
   it('take the looks from the settings, Enter or card, and a card filled by hand too', () => {
@@ -230,7 +230,7 @@ describe('the looks, the views and the carry a task starts with (the owner, 2026
       ['when_needed', { multi_view: true, every_look: false }],
       ['every', { multi_view: true, every_look: true }],
     ] as const) {
-      expect(taskOf({ ...card, options: { ...card.options, looks } }).options).toMatchObject({ ...options, record_views: true })
+      expect(taskOf({ ...card, options: { ...card.options, looks } }).options).toMatchObject({ ...options })
     }
     expect(looksOptions('every')).toEqual({ multi_view: true, every_look: true })
   })
@@ -246,7 +246,7 @@ describe('the looks, the views and the carry a task starts with (the owner, 2026
 
   it('keep a run\'s plan as it ran: its looks, its carry and a program\'s both faces, its views kept', () => {
     expect(draftFromPlan(PLAN).options).toMatchObject({ looks: 'every', carryOverTheRim: true, bothFaces: true })
-    expect(taskOfPlan(PLAN).options).toMatchObject({ multi_view: true, every_look: true, both_faces: true, record_views: true, carry: 'over_the_rim' })
+    expect(taskOfPlan(PLAN).options).toMatchObject({ multi_view: true, every_look: true, both_faces: true, carry: 'over_the_rim' })
     expect(taskOfPlan(PLAN, 'default').options?.carry).toBeNull()
     const first = { ...PLAN, options: { multi_view: false } } as unknown as TaskPlanOut
     expect(looksOfPlan(first.options)).toBe('first')

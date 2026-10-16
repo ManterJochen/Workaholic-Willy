@@ -10,8 +10,10 @@
  * **What you do**, a live checklist in this order where it applies: a stopped controller is cleared at the pendant
  * (never here); "Zelle ist frei" (the person's word: `POST /v1/cell/acknowledge`); the jaws: a toggle hand's question
  * is asked by the cell (`POST /v1/cell/jaws/check`) and answered in its own window, never here and never with a
- * default; another hand is emptied and confirmed "Backen leer"; a hand among parts is jogged clear first; then Restart
- * or Home, each behind its confirm dialog, enabled only when every gate is green.
+ * default; another hand is emptied and confirmed "Backen leer", and a hand told a width is opened for it first with
+ * "Greifer öffnen" (`POST /v1/cell/jaws/open`, behind its confirm: a part it holds falls out, the owner, 2026-10-15); a
+ * hand among parts is jogged clear first; then Restart or Home, each behind its confirm dialog, enabled only when every
+ * gate is green.
  *
  * Restart replays the stopped run to ITS return pose, so it waits for the stopped run's record (read again until it
  * answers) and names that pose; Home needs no record. Where the arm said its brake was not confirmed, the card does not
@@ -32,6 +34,7 @@
 import { useState } from 'react'
 
 import { ApiError, api, type PosesOut } from '../api/client'
+import ConfirmDialog from '../components/ConfirmDialog'
 import { ErrorBanner } from '../components/ui'
 import { useT } from '../i18n'
 import { runKindMsg, stopMsg, stopSayMsg, whereMsg } from '../i18n/codes'
@@ -100,7 +103,8 @@ export default function StopCard({ record: stoppedRun, homeTo, running, part, st
   const { cell, readiness, refresh } = useCell()
   const { view } = useRun()
   const motions = useMotions()
-  const [busy, setBusy] = useState<'clear' | 'jaws' | 'empty' | null>(null)
+  const [busy, setBusy] = useState<'clear' | 'jaws' | 'empty' | 'open' | null>(null)
+  const [opening, setOpening] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
   const refused = useBroughtIntoView<HTMLDivElement>(error, motions.error)
   const record = cell?.recovery
@@ -140,7 +144,7 @@ export default function StopCard({ record: stoppedRun, homeTo, running, part, st
   const standsAt = view.runId === record.run_id ? standsAtLine(view.stopCard?.standsAt ?? view.standsAt) : null
   const byHand = onlyByHand(record.stop_code, run?.error)
 
-  const act = async (what: 'clear' | 'jaws' | 'empty', request: () => Promise<unknown>) => {
+  const act = async (what: 'clear' | 'jaws' | 'empty' | 'open', request: () => Promise<unknown>) => {
     setBusy(what)
     setError(null)
     try {
@@ -240,7 +244,18 @@ export default function StopCard({ record: stoppedRun, homeTo, running, part, st
         ) : (
           <li className={`ck-check${ok('empty') ? ' done' : ''}`}>
             <Icon name={ok('empty') ? 'check' : 'gripper'} size={16} />
-            <span>{ok('empty') ? t('ck.stop.empty') : t('ck.stop.step.jawsOther')}</span>
+            <span>{ok('empty') ? t('ck.stop.empty') : t(cell.hand?.kind === 'width' ? 'ck.stop.step.jawsWidth' : 'ck.stop.step.jawsOther')}</span>
+            {!ok('empty') && cell.hand?.kind === 'width' && (
+              <button
+                type="button"
+                className="big"
+                disabled={busy !== null || !cleared || !idle || stopped}
+                title={t('ck.act.openJawsTitle')}
+                onClick={() => setOpening(true)}
+              >
+                {t('ck.act.openJaws')}
+              </button>
+            )}
             {!ok('empty') && (
               <button
                 type="button"
@@ -307,6 +322,23 @@ export default function StopCard({ record: stoppedRun, homeTo, running, part, st
 
       {/* A pick run (a program's `POST /v1/pick`) is not restarted: Home is its way back. */}
       {!restartable && <p className="ck-quiet">{t('ck.stop.pickNoRestart')}</p>}
+
+      <ConfirmDialog
+        open={opening}
+        title={t('ck.confirm.openJawsTitle')}
+        firstMotion={t('ck.confirm.openJawsMotion')}
+        straightLeg={false}
+        confirmLabel={t('ck.confirm.openJawsGo')}
+        moves
+        busy={busy === 'open'}
+        onConfirm={() => {
+          setOpening(false)
+          void act('open', () => api.openJaws())
+        }}
+        onCancel={() => setOpening(false)}
+      >
+        <p>{t('ck.confirm.openJawsHold')}</p>
+      </ConfirmDialog>
     </section>
   )
 }

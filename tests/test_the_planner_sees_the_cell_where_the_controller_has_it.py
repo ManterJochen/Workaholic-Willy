@@ -173,6 +173,18 @@ def test_the_live_scene_channels_reach_the_planner_turned() -> None:
     assert client.scene[2]["pose"] == pytest.approx([-0.5, -0.1, 0.3, 0.0, 0.0, 0.0, 1.0])
 
 
+def test_the_fine_grid_about_the_goal_reaches_the_planner_turned() -> None:
+    client = _RecordingClient()
+    near = {"path": "f_near.npy", "dims_m": [0.54, 0.54, 0.2], "voxel_size_m": 0.004,
+            "pose": [0.4, -0.2, 0.1, 1.0, 0.0, 0.0, 0.0]}
+    field = {"path": "f.npy", "dims_m": [0.3] * 3, "voxel_size_m": 0.01, "pose": [0.5, 0.1, 0.3, 1.0, 0.0, 0.0, 0.0],
+             "near": near}
+    PlannerFrameClient(client).set_scene([], None, field)
+    assert client.scene is not None and client.scene[2] is not None
+    assert client.scene[2]["near"]["pose"] == pytest.approx([-0.4, 0.2, 0.1, 0.0, 0.0, 0.0, 1.0])
+    assert near["pose"] == [0.4, -0.2, 0.1, 1.0, 0.0, 0.0, 0.0], "the caller's field was turned in place"
+
+
 def test_what_the_planner_reports_comes_back_in_the_controllers_frame() -> None:
     pos, quat = PlannerFrameClient(_RecordingClient()).fk([0.0] * 6)
     assert pos == pytest.approx([-0.5, -0.1, 0.3])

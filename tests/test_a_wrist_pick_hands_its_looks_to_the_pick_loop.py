@@ -12,7 +12,7 @@ A fixed camera's pick is the one it always was unless ``both_faces`` is set: the
 is handed, the first look that finds something ending it. ``both_faces`` is the owner's switch for safety-critical
 processes, a keyword of ``pick`` and of both ``PickRun`` doors; the console and the API keep it off. It means one thing
 on every camera: a fixed camera, which cannot look around, grips only a grasp its cameras showed both contact faces of.
-``record_views`` keeps each pick's looks for training, off by default.
+Every pick keeps its looks for training (``record_views``, always since 2026-10-15).
 
 The scene is ``tests/_wrist_views.py``: a 40 mm cube on the bench, ray cast through the wrist D415 from the tool pose
 each look puts the arm at, and stamped with it. The service is the real one (``from_components``) with an eye-in-hand
@@ -654,8 +654,8 @@ class APickSaysNothingOfTheLastPicksLooksTests(unittest.TestCase):
 # ---------------------------------------------------------------------------------------------------------------------
 
 
-class TheViewsOfAPickAreKeptOnlyWhenAskedTests(unittest.TestCase):
-    def test_a_campaign_asked_to_keeps_each_picks_looks_where_it_says(self) -> None:
+class TheViewsOfAPickAreKeptTests(unittest.TestCase):
+    def test_a_campaign_keeps_each_picks_looks_where_it_says(self) -> None:
         # A file none of whose looks a camera recorded for research is format 1, byte for byte (format 2, 2026-10-09).
         from src.robot.execution.record_views import RECORD_VIEWS_FORMAT_WITHOUT_RESEARCH
 
@@ -663,7 +663,7 @@ class TheViewsOfAPickAreKeptOnlyWhenAskedTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, \
                 mock.patch("src.robot.execution.record_views.RECORD_VIEWS_DIR", folder):
             run = PickRun.from_service(cell.service, runs=1, recording=Recording.off(),
-                                       look=[LOOK_PLUS_X, LOOK_MINUS_X], record_views=True).execute()
+                                       look=[LOOK_PLUS_X, LOOK_MINUS_X]).execute()
             (attempt,) = run.attempts
             written = Path(attempt.views_file)
             self.assertEqual([written], sorted(Path(folder).glob("*.npz")))
@@ -685,20 +685,11 @@ class TheViewsOfAPickAreKeptOnlyWhenAskedTests(unittest.TestCase):
                 self.assertTrue(np.all(np.abs(cloud[:, 0]) < 25.0), "the fused target cloud is not the cube's")
         self.assertEqual(1, run.succeeded, run.render())
 
-    def test_off_by_default_nothing_is_written(self) -> None:
-        cell = _Cell(grasps_on=(1,))
-        with tempfile.TemporaryDirectory() as folder, \
-                mock.patch("src.robot.execution.record_views.RECORD_VIEWS_DIR", folder):
-            run = PickRun.from_service(cell.service, runs=1, recording=Recording.off(),
-                                       look=[LOOK_PLUS_X, LOOK_MINUS_X]).execute()
-            self.assertEqual([], list(Path(folder).iterdir()))
-        self.assertEqual("", run.attempts[0].views_file)
-
     def test_a_fixed_camera_has_no_looks_to_keep(self) -> None:
         cell = _Cell(fixed=True)
         with tempfile.TemporaryDirectory() as folder, \
                 mock.patch("src.robot.execution.record_views.RECORD_VIEWS_DIR", folder):
-            run = PickRun.from_service(cell.service, runs=1, recording=Recording.off(), record_views=True).execute()
+            run = PickRun.from_service(cell.service, runs=1, recording=Recording.off()).execute()
             self.assertEqual([], list(Path(folder).iterdir()))
         self.assertEqual(1, run.succeeded)
         self.assertEqual("", run.attempts[0].views_file)

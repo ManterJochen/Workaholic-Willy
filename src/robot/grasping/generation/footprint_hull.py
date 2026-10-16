@@ -44,7 +44,7 @@ from typing import Final
 
 import numpy as np
 
-__all__ = ["HULL_LIFT_MM", "hull_points", "unread_pixels"]
+__all__ = ["HULL_LIFT_MM", "hull_points", "mask_outline_xy", "unread_pixels"]
 
 #: How far inside its two ends a placed point's vertical is tested: over the floor the stage cuts and under the top.
 #: One pixel at the part spans 0.7 mm at the owner's 650 mm; the millimetre keeps a rounding off the mask's own edge.
@@ -164,3 +164,63 @@ def hull_points(
     if not found:
         return np.zeros((0, 3), dtype=np.float64)
     return np.concatenate(found).astype(np.float64)
+
+
+def mask_outline_xy(mask: np.ndarray, intrinsics: np.ndarray, camera_to_base: np.ndarray,
+                    height_mm: float) -> np.ndarray:
+    """The outline of a part's mask in BASE: its edge pixels' rays met at ``height_mm``, x and y.
+
+    The colour mask is sharp where the depth smears a part's edge, and a pad meets the part at its outline: how square
+    is read on this (``body_grasps._squared``).
+
+    Args:
+        mask (np.ndarray): The part's mask, ``(H, W)``, anything truthy for the part.
+        intrinsics (np.ndarray): The camera matrix ``K``, ``(3, 3)``, pixels.
+        camera_to_base (np.ndarray): CAMERA to BASE, ``(4, 4)``, millimetres.
+        height_mm (float): The BASE height the rays are met at, millimetres: the part's top.
+
+    Returns:
+        np.ndarray: The outline's points, ``(N, 2)`` BASE millimetres; ``(0, 2)`` for an empty mask.
+    """
+    from scipy import ndimage  # noqa: PLC0415 (kept out of import time)
+
+    whole = np.asarray(mask).astype(bool)
+    return _met_at(whole & ~ndimage.binary_erosion(whole), intrinsics, camera_to_base, height_mm)
+
+
+def mask_hole_xy(mask: np.ndarray, intrinsics: np.ndarray, camera_to_base: np.ndarray,
+                 height_mm: float) -> np.ndarray:
+    """The holes of a part's mask in BASE: the pixels the mask encloses and does not hold, their rays met at
+    ``height_mm``, x and y.
+
+    The colour mask's hole is sharp where the depth inside a bore reads its wall's mixed pixels: where a part's bore is
+    read (``inner_grasps.bores``, the owner's L of 2026-10-15).
+
+    Args:
+        mask (np.ndarray): The part's mask, ``(H, W)``, anything truthy for the part.
+        intrinsics (np.ndarray): The camera matrix ``K``, ``(3, 3)``, pixels.
+        camera_to_base (np.ndarray): CAMERA to BASE, ``(4, 4)``, millimetres.
+        height_mm (float): The BASE height the rays are met at, millimetres: the part's top.
+
+    Returns:
+        np.ndarray: The holes' points, ``(N, 2)`` BASE millimetres; ``(0, 2)`` where the mask encloses none.
+    """
+    from scipy import ndimage  # noqa: PLC0415 (kept out of import time)
+
+    whole = np.asarray(mask).astype(bool)
+    return _met_at(ndimage.binary_fill_holes(whole) & ~whole, intrinsics, camera_to_base, height_mm)
+
+
+def _met_at(pixels: np.ndarray, intrinsics: np.ndarray, camera_to_base: np.ndarray, height_mm: float) -> np.ndarray:
+    """The rays of ``pixels`` (a boolean image) met at the BASE height ``height_mm``, x and y; ``(0, 2)`` for none."""
+    rows, cols = np.nonzero(pixels)
+    if rows.size == 0:
+        return np.zeros((0, 2), dtype=np.float64)
+    k = np.asarray(intrinsics, dtype=np.float64)
+    matrix = np.asarray(camera_to_base, dtype=np.float64)
+    directions = np.stack([(cols - k[0, 2]) / k[0, 0], (rows - k[1, 2]) / k[1, 1], np.ones(cols.size)],
+                          axis=-1) @ matrix[:3, :3].T
+    with np.errstate(divide="ignore", invalid="ignore"):
+        reach = (float(height_mm) - matrix[2, 3]) / directions[:, 2]
+    met = np.isfinite(reach) & (reach > 0.0)
+    return np.asarray((matrix[:3, 3] + reach[met, None] * directions[met])[:, :2], dtype=np.float64)

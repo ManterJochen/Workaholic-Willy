@@ -55,7 +55,6 @@ with LiveView(show=SHOW_CAMERAS) as view:
         prompt="a red cube",  # what every camera grounds, for this campaign only
         look=LOOK,
         both_faces=False,  # True asks each pick to see both jaw contact faces before it grips: safety-critical parts
-        record_views=True,  # each pick's looks (images, depth, tool poses) under logs/robot/views: read back, train on
         push_mm=50.0,  # a boxed-in part no blocker frees is pushed 50 mm where the cell arms it: 30 planned no push
         put_back=True,  # a part that does not go back stops the campaign: no pick starts with a part in the hand
         recording=Recording.to_file("logs/picks.jsonl"),  # one attempt record per line: positions, scores, outcome

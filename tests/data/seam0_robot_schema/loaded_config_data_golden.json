@@ -645,7 +645,7 @@
           "fresh_frame_attempts": 3,
           "pixel_stride": 2,
           "voxel_size_mm": 10.0,
-          "voxel_field_mm": 0.0,
+          "voxel_field_mm": 10.0,
           "cluster_voxel_mm": 25.0,
           "min_points": 12,
           "margin_mm": 8.0,

@@ -126,6 +126,9 @@ def support_footprint_breakdowns(
     batched: bool = False,
     opens_as_needed: bool = False,
     inner_grasps: bool = False,
+    measured_base_mm: np.ndarray | None = None,
+    outline_base_mm: np.ndarray | None = None,
+    hole_base_mm: np.ndarray | None = None,
 ) -> tuple[list[GraspScoreBreakdown], dict]:
     """Run SFE and return camera-frame breakdowns plus its telemetry.
 
@@ -162,11 +165,20 @@ def support_footprint_breakdowns(
     ``inner_grasps`` adds the grasps from inside the part's bores after every outer grasp (``inner_grasps``, the
     module docstring), each planned for a hand told a width; off, the default here, adds nothing and leaves every
     breakdown and every telemetry key as before.
+
+    ``measured_base_mm`` holds the points of ``target_cloud_base_mm`` a camera measured, where the rest stand in the
+    part's visual hull (the calculator's ``_with_the_hull``): the body reads where the part is widest from these alone.
+    ``None`` reads every point as measured. ``outline_base_mm`` is the part's outline in its colour mask, BASE x and y
+    at its top: the body reads on it how square each pad meets the part, and ranks the square grasps first; ``None``
+    reads none. ``hole_base_mm`` are the holes of that mask at the part's top: the inner search reads a bore there
+    (``inner_grasps.bores``); ``None`` reads the bores off the depth alone.
     """
     # The part the guard holds out (``perceived.target_body_points``): never a piece of something else its mask ran onto.
     from src.robot.safety.planning.perceived import target_body_points  # noqa: PLC0415 (the stage's only use of it)
 
     target_cloud_base_mm = target_body_points(target_cloud_base_mm)
+    if measured_base_mm is not None:
+        measured_base_mm = target_body_points(measured_base_mm)
     # Scored by the weights SFE scored by: with side approaches upright weighs nothing and the room a grasp keeps counts
     # more (the owner, 2026-10-01). By the plain weights a vertical grasp of the body 16 mm from a wall outranked SFE's
     # tilt 21 mm from it (2026-10-14).
@@ -178,7 +190,8 @@ def support_footprint_breakdowns(
         obstacle_points_base_mm=obstacle_points_base_mm, rigid_obstacle_points_base_mm=rigid_obstacle_points_base_mm,
         seen_envelope=seen_envelope, hand_floor=hand_floor, corridor_seen=corridor_seen,
         floor_margin_mm=floor, opens_as_needed=opens_as_needed, max_candidates=max_candidates, refusals=body_refused,
-        score_weights=weights)
+        score_weights=weights, measured_base_mm=measured_base_mm, outline_base_mm=outline_base_mm,
+        inflate_mm=inflate_mm)
     breakdowns: list[GraspScoreBreakdown] = []
     for candidate in candidates:
         pose = _to_camera_pose(candidate, camera_to_base)
@@ -257,7 +270,7 @@ def support_footprint_breakdowns(
             obstacle_points_base_mm=obstacle_points_base_mm,
             rigid_obstacle_points_base_mm=rigid_obstacle_points_base_mm, seen_envelope=seen_envelope,
             hand_floor=hand_floor, corridor_seen=corridor_seen, floor_margin_mm=floor, max_candidates=max_candidates,
-            refusals=inner_refused, score_weights=weights, bores_found=found_bores)
+            refusals=inner_refused, score_weights=weights, bores_found=found_bores, hole_xy_mm=hole_base_mm)
         kept = [b for b in (_inner_breakdown(grasp, camera_to_base) for grasp in inner) if b is not None]
         breakdowns.extend(kept)
         telemetry["inner_grasps"] = len(inner)

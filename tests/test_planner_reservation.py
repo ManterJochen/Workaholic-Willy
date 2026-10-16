@@ -18,10 +18,10 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-import numpy as np
 
 from src.config.schema.robot import RobotConfig
 from src.robot.safety.planning.curobo_client import CuroboPlanClient
+from src.robot.safety.planning.fine_world import FINE_REACH_MM, FineRegion
 from src.robot.safety.planning.perceived import (
     WorldBuildLimits,
     WorldBuildTuning,
@@ -34,6 +34,9 @@ _LIMITS = WorldBuildLimits(
 )
 #: 1000 mm at 30 mm rounds to 33 voxels, 990 mm, on both horizontal axes; 600 mm is 20 voxels.
 _GRID = "0.9900,0.9900,0.6000,0.0300"
+#: The fine grid about a goal beside it (``perceived.near_grid_extent``): the 150 mm square and 120 mm past it on each
+#: side, 540 mm at 4 mm, as high as the field at the most.
+_NEAR = "0.5400,0.5400,0.6000,0.0040"
 
 
 def _cell(
@@ -98,9 +101,7 @@ class TheFieldCentreTests(unittest.TestCase):
         span). Measured on the box on 2026-09-13: the planner puts a voxel centre half a voxel inside
         the low corner of the pose, so an off centre pose moves every obstacle by the difference.
         """
-        field = build_voxel_field(
-            np.array([[0.0, 0.0, 50.0]]), limits=_LIMITS, tuning=WorldBuildTuning(voxel_field_mm=30.0)
-        )
+        field = build_voxel_field((), limits=_LIMITS, tuning=WorldBuildTuning(voxel_field_mm=30.0))
         assert field is not None
 
         self.assertEqual(field.dims_mm, (990.0, 990.0, 600.0))
@@ -114,14 +115,17 @@ class TheReservationTests(_NoPlannerEnvironment):
         from src.robot.safety.planning.reservation import PlannerReservation
 
         reservation = PlannerReservation.from_config(robot_cfg=_cell(voxel_mm=30.0))
-        field = build_voxel_field(
-            np.array([[0.0, 0.0, 50.0]]), limits=_LIMITS, tuning=WorldBuildTuning(voxel_field_mm=30.0)
-        )
-        assert field is not None
+        field = build_voxel_field((), limits=_LIMITS, tuning=WorldBuildTuning(voxel_field_mm=30.0),
+                                  near=(FineRegion.about((0.0, 0.0, 0.0), FINE_REACH_MM), ()))
+        assert field is not None and field.near is not None
 
-        grid = ",".join(f"{v / 1000.0:.4f}" for v in (*field.dims_mm, field.voxel_size_mm))
-        self.assertEqual(reservation.voxel_grid, grid)
-        self.assertEqual(reservation.voxel_grid, _GRID)
+        own, near = reservation.voxel_grid.split(";")
+        self.assertEqual(own, ",".join(f"{v / 1000.0:.4f}" for v in (*field.dims_mm, field.voxel_size_mm)))
+        self.assertEqual((own, near), (_GRID, _NEAR))
+        # The fine grid about the goal stands as high as what it holds: as wide as the one reserved, never higher.
+        x, y, z, voxel = (float(v) * 1000.0 for v in near.split(","))
+        self.assertEqual((x, y, voxel), (*field.near.dims_mm[:2], field.near.voxel_size_mm))
+        self.assertLessEqual(field.near.dims_mm[2], z)
 
     def test_the_slots_are_derived_from_what_the_cell_declares(self) -> None:
         from src.robot.safety.planning.reservation import PlannerReservation
@@ -132,7 +136,8 @@ class TheReservationTests(_NoPlannerEnvironment):
 
         # The bench and fifteen walls, plus the eight perceived boxes the cell allows.
         self.assertEqual(
-            reservation, PlannerReservation(cuboid_slots=24, mesh_slots=1, voxel_grid=_GRID, sphere_slots=16)
+            reservation,
+            PlannerReservation(cuboid_slots=24, mesh_slots=1, voxel_grid=f"{_GRID};{_NEAR}", sphere_slots=16),
         )
 
     def test_a_small_cell_keeps_the_sixteen_it_always_had(self) -> None:
@@ -192,7 +197,8 @@ class TheClientsCarryTheReservationTests(_NoPlannerEnvironment):
         # Declares its planner margin, as every cuRobo cell must since B1 S17: the factory refuses without it.
         client = planned_arm(_cell(fixtures=15, meshes=1, voxel_mm=30.0, planner_margin_mm=4.0))._default_curobo_client_factory()()
 
-        self.assertEqual((client._scene, client._mesh_cache, client._voxel_grid), ("24", 1, _GRID))  # noqa: SLF001
+        self.assertEqual((client._scene, client._mesh_cache, client._voxel_grid),  # noqa: SLF001
+                         ("24", 1, f"{_GRID};{_NEAR}"))
 
     def test_a_shipped_base_profile_client_is_unchanged(self) -> None:
         """The control, green before and after: no planning world, the sidecar it always started."""
@@ -307,7 +313,8 @@ class ThePreflightPrintsTheReservationTests(_NoPlannerEnvironment):
         rows = [c for c in report.checks if c.name == "planner reservation"]
         self.assertEqual(len(rows), 1, [c.name for c in report.checks])
         self.assertIs(rows[0].status, CheckStatus.OK)
-        self.assertIn("21780 cells", rows[0].detail)  # 33 x 33 x 20
+        # Two layers, each as large as the larger grid: the fine one about the goal, 135 x 135 x 150.
+        self.assertIn("5467500 cells", rows[0].detail)
         self.assertIn("1 mesh slot", rows[0].detail)
 
     def test_an_ik_cell_has_no_such_row(self) -> None:

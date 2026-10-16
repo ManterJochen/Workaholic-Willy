@@ -2,7 +2,7 @@
 
 Two prompts name the part and where it goes. Every camera of the cell's world is opened, one owner each (16), with a
 Locator each over one set of models (15); the first that locates a prompt answers it, and SHOW_CAMERAS shows each live.
-A wrist camera looks around for the part, its looks fused until the grasp is safe and kept (record_views), and for the
+A wrist camera looks around for the part, its looks fused until the grasp is safe and kept on disk, and for the
 target from each look in turn; a fixed one does not move. A grasp refused before anything was sent gets a fresh look and
 the next grasp. The part hangs at least as far below the grasp as the grasp stood above the declared table, so it comes
 down 5 mm or more over the middle of the target's seen top, never into it, the target held out of the world.
@@ -47,7 +47,7 @@ with ExitStack() as owners:  # one owner per rig, the primary first, each releas
         refused: list = []  # grasps a guard or the planner refused before anything was sent, the jaws left open
         for _ in range(1 if BOTH_FACES else 4):  # the best grasp, then up to 3 next ones, each on a fresh look
             for locator in locators:  # the part: the looks' frames stay in the camera world until the pick ends
-                print(seen := locator.look_around(OBJECT, LOOK, robot=robot, both_faces=BOTH_FACES, record_views=True))
+                print(seen := locator.look_around(OBJECT, LOOK, robot=robot, both_faces=BOTH_FACES))
                 if seen.refused or seen.objects:  # found, or a look not reached or a contact face no look showed
                     break
             if seen.refused or not seen.objects:

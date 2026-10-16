@@ -475,9 +475,9 @@ flowchart LR
   the named way round: choose, don't twist. The heading counts and the tilt stays free; the ranking asks
   for 36 candidates while it is set. A pick none of whose grasps closes along it ends `no_valid_grasp`,
   its failure line naming the axis and the 30 degrees.
-* **`record_views=True`**, off by default, keeps each pick's looks for training: colour, depth, the
-  tool pose at each shutter, the lens and the fused part cloud, one `.npz` per pick under
-  `logs/robot/views`, named after the pick's record (`attempt_id`).
+* **Every pick keeps its looks** for training, no switch: colour, depth, the tool pose at each shutter,
+  the lens and the fused part cloud, one `.npz` per pick under `logs/robot/views`, named after the pick's
+  record (`attempt_id`).
 * **Rescans.** A pick handed looks has had its rescans, its looks and the one generated view, so a
   rescan never repeats them; only `next_target` runs them again, for another part of the label
   (Diagnose 9). A wrist pick handed no look, and a fixed camera, rescan where they stand.
@@ -600,7 +600,7 @@ grasp mode is the outer gate, and `recovery.allowed_actions` has to name an acti
 
 | The push | |
 |---|---|
-| **Pusher** | The jaws stay **open**, and the outer face of the leading finger pushes along the closing axis. The push never changes the hand's output: a toggle's count is the same after it, and nobody is asked. |
+| **Pusher** | The hand closes in the air over the part before the line down, a Robotiq to its closed width and a toggle by one change of DO0, and the **closed fingers** push (about 22 mm across, where the open Hand-E stands 72). At the look after the push it opens again, a toggle by one more change. Any other hand keeps its jaws open, and the outer face of the leading finger pushes along the closing axis. Nobody is asked. |
 | **Jaw count** | A count that says closed means no push. One that cannot say when the push reads it, once its plan and budgets passed (DO0 switched at the pendant while the pick looked, or its output unreadable), **ends the pick as a gripper fault**: nothing pushed or moved, and the campaign stops. A Robotiq over its socket, or any hand that measures its width, found not connected there, or whose width read fails (a socket that stopped answering), ends it the same way. Look at the jaws, then connect again: a toggle's connect asks where they stand, and a width gripper is reconnected. A push refused before that read falls through, and `next_target` reads the count before it drives the looks again: one nobody can vouch for ends the pick as a gripper fault before any look. |
 | **During the push** | The count, the controller and the pick's stop check are read again before each contact leg and once the arm is up. DO0 switched while the push drives, or a stop asked for (halt now in the console), **stops the push where the arm stands**, the fingers possibly down beside the part: nothing more moves, not even back to the look, and a person decides (After a stop). |
 | **Critical parts** | `recovery.critical_parts: true`, or *Kritische Teile* for one console run: never pushed, a blocked approach included; a blocker is cleared instead. |

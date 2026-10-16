@@ -5,6 +5,8 @@
     python scripts/replay_bank/run.py --picks 114555Z 115142Z           # picks by a part of their name
     python scripts/replay_bank/run.py --out logs/replay/after.jsonl --compare logs/replay/before.jsonl
     python scripts/replay_bank/run.py --off ground --out logs/replay/without_ground.jsonl   # a lever set aside
+    python scripts/replay_bank/run.py --plan --out logs/replay/routes.jsonl  # the routes to the standoffs, cuRobo asked
+    python scripts/replay_bank/run.py --push --views                    # where no grasp is admitted: push, view
 
 Each pick is one JSON line in ``--out``: the grasps the calculator offered, how many the guard admits, the first
 admitted and what refused the others. ``--compare`` sets a run before beside it, pick by pick, and exits 1 where a pick
@@ -40,6 +42,41 @@ def _summary(records: "list[dict]") -> str:
              f"total {sum(admitted)} of {sum(int(r.get('offered', 0)) for r in judged)} offered"]
     for kind, count in sorted(causes.items(), key=lambda kv: -kv[1])[:8]:
         lines.append(f"  refused {count:4d}  {kind}")
+    routes = [route for r in judged for route in r.get("routes", ())]
+    if routes:
+        kinds: dict[str, int] = {}
+        whys: dict[str, int] = {}
+        for route in routes:
+            kinds[route["route"]] = kinds.get(route["route"], 0) + 1
+            if route["route"] not in ("straight", "planned"):
+                why = bank._cause(route.get("route_why", route["route"]))
+                whys[why] = whys.get(why, 0) + 1
+        seconds = sorted(float(route.get("route_s", 0.0)) for route in routes)
+        routed = [r for r in judged if r.get("routed", 0) > 0]
+        lines.append(f"routes to the standoff: {len(routes)} asked, "
+                     + ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
+                     + f"; {len(routed)} picks with a route; seconds a route: median "
+                     f"{seconds[len(seconds) // 2]:.2f}, max {seconds[-1]:.2f}")
+        for kind, count in sorted(whys.items(), key=lambda kv: -kv[1])[:6]:
+            lines.append(f"  route refused {count:4d}  {kind}")
+    plans = [plan for r in judged for plan in r.get("plans", ())]
+    if plans:
+        kinds = {}
+        for plan in plans:
+            kinds[plan["plan"]] = kinds.get(plan["plan"], 0) + 1
+        timed = sorted(float(plan.get("plan_s", 0.0)) for plan in plans if "plan_s" in plan)
+        lengths = sorted(float(plan["plan_rad"]) for plan in plans if "plan_rad" in plan)
+        lines.append(f"plans from home: {len(plans)} asked, " + ", ".join(
+            f"{count} {kind}" for kind, count in sorted(kinds.items()))
+            + (f"; seconds a plan: median {timed[len(timed) // 2]:.2f}, max {timed[-1]:.2f}" if timed else "")
+            + (f"; joint path: median {lengths[len(lengths) // 2]:.2f} rad" if lengths else ""))
+        refused_by: dict[str, int] = {}
+        for plan in plans:
+            if plan["plan"] == "refused by the guard":
+                why = bank._cause(plan.get("plan_why", ""))
+                refused_by[why] = refused_by.get(why, 0) + 1
+        for kind, count in sorted(refused_by.items(), key=lambda kv: -kv[1])[:6]:
+            lines.append(f"  plan refused by the guard {count:4d}  {kind}")
     return "\n".join(lines)
 
 
@@ -56,6 +93,10 @@ def _compare(records: "list[dict]", before_path: Path) -> int:
             print(f"  {record['pick']}: {then} -> {now} admitted")
         worse += now < then
         better += now > then
+        if "routed" in record and "routed" in old and record["routed"] != old["routed"]:
+            print(f"  {record['pick']}: {old['routed']} -> {record['routed']} routed")
+        if "planned" in record and "planned" in old and record["planned"] != old["planned"]:
+            print(f"  {record['pick']}: {old['planned']} -> {record['planned']} planned from home and admitted")
     print(f"== against {before_path.name}: {better} pick(s) with more grasps admitted, {worse} with fewer")
     return 1 if worse else 0
 
@@ -71,7 +112,20 @@ def main(argv: "list[str] | None" = None) -> int:
     parser.add_argument("--compare", type=Path, default=None)
     parser.add_argument("--off", nargs="*", default=(), choices=bank.LEVERS,
                         help="levers to run without, to set them beside the code with them")
+    parser.add_argument("--plan", action="store_true",
+                        help="route the first admitted grasps to their standoffs with the cell's planner (GPU)")
+    parser.add_argument("--plan-from-home", action="store_true",
+                        help="plan them with cuRobo from the cell's home too, no straight line, the guard judging (GPU)")
+    parser.add_argument("--push", action="store_true",
+                        help="where no grasp is admitted, the push of the part and of the scene the pick would plan")
+    parser.add_argument("--views", action="store_true",
+                        help="where no grasp is admitted, the view the pick would generate (the instant controller)")
+    parser.add_argument("--set", nargs="*", default=(), metavar="KEY=VALUE",
+                        help="config values in memory for this run (LoadedTree.with_values), a value read as YAML")
     args = parser.parse_args(argv)
+    import yaml  # noqa: PLC0415 (a value as the tree's own files would write it)
+
+    values = {key: yaml.safe_load(value) for key, _, value in (item.partition("=") for item in args.set)}
 
     logging.basicConfig(level=logging.ERROR)
     paths = bank.recorded_picks(args.bank, tuple(args.days))
@@ -79,7 +133,9 @@ def main(argv: "list[str] | None" = None) -> int:
         paths = [p for p in paths if any(part in p.name for part in args.picks)]
     if args.limit:
         paths = paths[:args.limit]
-    cell = bank.ReplayCell(args.config or args.bank / "robominds_config" / "config", off=tuple(args.off))
+    cell = bank.ReplayCell(args.config or args.bank / "robominds_config" / "config", off=tuple(args.off),
+                           plan=args.plan, plan_from_home=args.plan_from_home, values=values, push=args.push,
+                           views=args.views)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     records = []
     started = time.perf_counter()
@@ -96,7 +152,11 @@ def main(argv: "list[str] | None" = None) -> int:
                   + (record["skipped"] if "skipped" in record else
                      f"{record.get('admitted', 0)}/{record.get('offered', 0)} admitted"
                      + (f", beside {record.get('parts_beside')}" if record.get("parts_beside") else "")
-                     + (f" ({record.get('no_grasp')})" if not record.get("offered") else "")), flush=True)
+                     + (f" ({record.get('no_grasp')})" if not record.get("offered") else "")
+                     + (f", routed {record['routed']}/{len(record['routes'])}" if "routes" in record else "")
+                     + (f", planned {record['planned']}/{len(record['plans'])}" if "plans" in record else "")),
+                  flush=True)
+    cell.close()
     print(f"== {time.perf_counter() - started:.0f} s; {args.out}")
     print(_summary(records))
     return _compare(records, args.compare) if args.compare is not None else 0

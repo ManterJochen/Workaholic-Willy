@@ -192,7 +192,7 @@ class NoReaderReportsAnotherVendorsDefaultsTests(unittest.TestCase):
 #: only shrink: each reader of this shape that went wrong answered confidently and wrongly on a tree with no UR in it,
 #: and nothing stops the next one from being written except a list that makes it visible.
 _UR_BLOCK_READS: tuple[tuple[str, int, str], ...] = (
-    ("src/robot/grippers/robotiq.py", 527,
+    ("src/robot/grippers/robotiq.py", 530,
      "deliberate: the refusal contrasts the arm's own address with what this tree's UR block says, and says so; it "
      "moved with the Robotiq's refusal into its driver's spec (P0g slice 8)"),
     ("scripts/ursim/probe_halt.py", 279,

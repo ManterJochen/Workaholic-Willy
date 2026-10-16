@@ -244,8 +244,8 @@ class RealSenseConfig(StrictModel):
     #: Record for research (the owner, 2026-10-09: "alles in einem Schalter"), off by default. On, the camera streams
     #: both infrared images as well (infrared 1 and 2, Y8, at the depth resolution and frame rate, with the projector as
     #: ``enable_emitter`` sets it and never toggled), and every frame carries them, the depth as the sensor streamed it,
-    #: before the filters and the alignment, and the camera's facts. The views file of every pick a program keeps
-    #: (``record_views``; the console keeps every task's) then holds them per look, with their lenses and extrinsics,
+    #: before the filters and the alignment, and the camera's facts. The views file every pick keeps
+    #: (``record_views``) then holds them per look, with their lenses and extrinsics,
     #: every segmentation's mask, box, label and score, SAM2's predicted IoUs and which one was the target, and once the
     #: camera's name, serial, firmware, depth units, filters, preset, colour settings, the colour and depth lenses and the
     #: depth to colour extrinsics (``src/robot/execution/record_views.py``). Both infrared streams add 442 Mbit/s on the

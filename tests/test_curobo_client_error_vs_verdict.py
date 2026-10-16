@@ -294,7 +294,8 @@ class TheSceneBranchesTests(unittest.TestCase):
         self.assertIn('"voxels_set"', self.set_world)
 
     def test_a_field_on_a_grid_that_was_not_reserved_is_refused(self) -> None:
-        self.assertIn('_collision_cache["voxel"]', self.grid_check)
+        # Against each grid the reservation names: the field's own, then its fine grid about the goal (2026-10-15).
+        self.assertIn("GRIDS[index]", self.grid_check)
         for label, branch in (("set_world", self.set_world), ("set_voxels", self.set_voxels)):
             with self.subTest(branch=label):
                 self.assertIn("_grid_refusal(", branch)

@@ -268,6 +268,7 @@ if TYPE_CHECKING:  # pragma: no cover (import only for typing)
     from src.robot.grasping.multiview.scene_geometry import FusedSceneGeometry, ObservedView
     from src.robot.grasping.multiview.unseen_side import JawFacesSeen
     from src.robot.grasping.recovery.exclusion_zones import ExclusionZones
+    from src.robot.grasping.recovery.push_budgets import PushBudgets
     from src.robot.grasping.recovery.push_gate import FailedPart, PickPush, PushGate
     from src.robot.grasping.recovery.push_motion import PushOutcome
     from src.robot.grasping.recovery.push_planner import PushPlan
@@ -350,6 +351,10 @@ _BASE_PADDING_MM: float = 15.0
 _SET_DOWN_REACH_MM: float = 30.0
 #: A blocker's mask is its points' pixels grown by this many: the calculator reads every second pixel.
 _BLOCKER_MASK_GROWTH_PX: int = 2
+#: Where no neighbour frees a grasp alone, up to this many together are taken away (the owner, 2026-10-15: "Bis 3
+#: zusammen"), sought among the :data:`_BLOCKERS_SOUGHT_AMONG` that spare most of the part's refusals alone.
+_BLOCKERS_TOGETHER: int = 3
+_BLOCKERS_SOUGHT_AMONG: int = 4
 #: The TCP that sets a blocker down stays this far inside the workspace's floor and ceiling, millimetres.
 _SET_DOWN_WORKSPACE_MARGIN_MM: float = 20.0
 #: The support's band where the live world says none, millimetres (``plane_clearance_mm``).
@@ -364,6 +369,11 @@ _CROWDING_OVER_MM: float = 5.0
 #: across (``BinPickingOrchestrator._fits_the_stroke``), millimetres: the room SFE leaves beside each jaw, both sides.
 _STROKE_SPARE_MM: float = 2.0 * JAW_SIDE_ROOM_MM
 
+#: What a look saw beside the parts it named is read on every this many'th pixel of its depth, each way, and the
+#: masks are grown by this many pixels first, so a part's own rim is not taken for something beside it (the scene
+#: push's unnamed points).
+_UNNAMED_STRIDE_PX = 4
+_UNNAMED_MASK_GROWTH_PX = 4
 #: How much vertical extent a single-view target cloud needs before it may be used to locate the
 #: support plane, in millimetres along the support normal.
 #:
@@ -393,6 +403,10 @@ WEAK_LOOK_PLATEAU_SHARE: float = 0.10
 _PLATEAU_BIN_MM: float = 2.0
 _PLATEAU_BAND_MM: float = 6.0
 _PLATEAU_VALLEY: float = 0.5
+#: A part's points within this of the support it stands on, millimetres, are the support seen past the rim of its mask,
+#: no plateau of a part: the owner's first part of 2026-10-15 (8:02) showed the mat at 61 mm beside its top at 93, and
+#: every look of the pick and an orbit about it were judged weak.
+_ON_THE_SUPPORT_MM: float = 6.0
 #: A cloud of fewer points than this says nothing about the part's shape: no shape trigger judges it.
 _WEAK_LOOK_LEAST_POINTS: int = 50
 
@@ -1001,6 +1015,21 @@ class _Tried:
     stands_at: str = ""
 
 
+def _refused_before_anything_touched(tried: _Tried) -> bool:
+    """Whether every grasp ``tried`` was refused by a guard or the planner before the motion it failed on was sent
+    (``generated_view.REFUSED_BEFORE_SENDING``, or judged ahead), none executed, and the arm stands at the look again:
+    no try sent the hand onto the part, whatever its planned poses reached."""
+    from src.robot.execution.generated_view import REFUSED_BEFORE_SENDING  # noqa: PLC0415
+
+    refused = {status.value for status in REFUSED_BEFORE_SENDING}
+    if not tried.tries or tried.moved_back is not None or tried.not_back or tried.stands_at:
+        return False
+    return all(str(row.get("outcome") or "") == PolicyOutcome.MOTION_FAILED.value
+               and (str(row.get("motion_status") or "") in refused
+                    or str(row.get("motion_message") or "").startswith("judged ahead:"))
+               for row in tried.tries)
+
+
 def _plane_at_least(plane: Any, height_mm: "float | None", at_xy_mm: Any) -> Any:
     """``plane``, or the plane with its normal through ``at_xy_mm`` at ``height_mm`` where that stands higher there: a
     grasp planned on it never reaches below what its part stands on. ``plane`` itself where no height is given."""
@@ -1043,6 +1072,9 @@ class _BlockerChoice:
     #: The blocker's next grasps the clearing may take where :attr:`grasp` is refused, each with the TCP pose that sets
     #: the blocker down from it, in the calculator's order (``recovery.blocker_grasp_tries`` in all).
     alternatives: "tuple[tuple[GraspPoint, Pose | None], ...]" = ()
+    #: Where the others stand (BASE x, y) that free a grasp of the part together with this one, outside in: each taken
+    #: away in turn, from a look taken again (the owner, 2026-10-15). Empty where this one frees a grasp alone.
+    rest: "tuple[tuple[float, float], ...]" = ()
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -2026,6 +2058,7 @@ class BinPickingOrchestrator:
         label's or a sort's kinds, else every segmentation), grown by the world's margin: a surface more than half of
         whose pixels lie in one is a part's own top, no support."""
         from src.robot.grasping.multiview.scene_geometry import to_base_mm  # noqa: PLC0415
+        from src.robot.safety.planning.support_surfaces import lowest_tenth_mm  # noqa: PLC0415
 
         boxes: list[KeepOutBox] = []
         for index, seg in enumerate(frame.segmentations):
@@ -2040,7 +2073,8 @@ class BinPickingOrchestrator:
             low, high = points.min(axis=0), points.max(axis=0)
             place = np.eye(4)
             place[:3, 3] = (low + high) / 2.0
-            boxes.append(KeepOutBox.from_matrix(f"part_{index}", place, (high - low) / 2.0 + margin_mm))
+            boxes.append(KeepOutBox.from_matrix(f"part_{index}", place, (high - low) / 2.0 + margin_mm,
+                                                low_mm=lowest_tenth_mm(points)))
         return tuple(boxes)
 
     def _robot_base(self) -> Any:
@@ -2905,8 +2939,9 @@ class BinPickingOrchestrator:
         look's own mask of the part (a shiny or clear part, whose cloud holds what the projector's pattern found of it);
         a part standing more than ``WEAK_LOOK_TALL_RATIO`` times its footprint's short side over its support where no
         look saw a side of it (``_MIN_CLOUD_EXTENT_FOR_SUPPORT_MM``), as two parts stacked are seen from above; and two
-        height plateaus in its cloud at least ``WEAK_LOOK_PLATEAU_GAP_MM`` apart (``_two_plateaus``), as two parts
-        stacked offset are. The shape is judged on ``cloud``, the views fused so far, so a look that saw a side or more
+        height plateaus in its cloud at least ``WEAK_LOOK_PLATEAU_GAP_MM`` apart (``_two_plateaus``) over the support it
+        stands on (``_ON_THE_SUPPORT_MM``), as two parts stacked offset are. The shape is judged on ``cloud``, the views
+        fused so far, so a look that saw a side or more
         of the part clears it; the depth on this look's own mask.
         """
         said: list[str] = []
@@ -2932,7 +2967,8 @@ class BinPickingOrchestrator:
                 tall = float(np.percentile(heights, 98.0)) - float(support)
                 if tall > WEAK_LOOK_TALL_RATIO * short and not self._spans_the_support(points, "the weak-look"):
                     said.append(f"{tall:.0f} mm tall on a {short:.0f} mm footprint, and no side of it seen")
-            plateaus = _two_plateaus(heights)
+            plateaus = _two_plateaus(heights if support is None
+                                     else heights[heights > float(support) + _ON_THE_SUPPORT_MM])
             if plateaus is not None:
                 said.append(f"two height plateaus, at {plateaus[0]:.0f} and {plateaus[1]:.0f} mm")
         return "; ".join(said)
@@ -3484,12 +3520,17 @@ class BinPickingOrchestrator:
                             return pushed
                         if pushed:
                             continue
-                    cleared = self._clear_the_blockers(
-                        attempt_index, attempts, looked, frame, target_index, reasons=tuple(reasons),
-                        fused_target=fused_target)
-                    if isinstance(cleared, PickReport):
-                        return cleared
-                    if cleared:
+                    # A task that takes every part sets no neighbour aside, as that is a part it takes next: no part it
+                    # wants has a grasp, so the scene is pushed (the owner, 2026-10-15). A task of one part, and
+                    # critical parts, clear a blocker.
+                    changed = (self._clear_the_blockers(attempt_index, attempts, looked, frame, target_index,
+                                                        reasons=tuple(reasons), fused_target=fused_target)
+                               if critical or not self._takes_every_part()
+                               else self._push_the_scene(attempt_index, attempts, looked, frame, target_index,
+                                                         reasons=tuple(reasons), fused_target=fused_target))
+                    if isinstance(changed, PickReport):
+                        return changed
+                    if changed:
                         continue
                     # Only a push this attempt considered: an earlier attempt's refusal is not this one's.
                     if len(self._pushes) > considered_before:
@@ -3747,12 +3788,36 @@ class BinPickingOrchestrator:
                         return pushed
                     if pushed:
                         continue
-                cleared = self._clear_the_blockers(attempt_index, attempts, looked, frame, target_index,
-                                                   reasons=ahead_reasons, fused_target=fused_target)
-                if isinstance(cleared, PickReport):
-                    return cleared
-                if cleared:
+                # A task taking every part pushes the scene here too, as where every grasp collided (the owner,
+                # 2026-10-16: "ja er soll dann schieben"); a task of one part, and critical parts, clear a blocker.
+                changed = (self._clear_the_blockers(attempt_index, attempts, looked, frame, target_index,
+                                                    reasons=ahead_reasons, fused_target=fused_target)
+                           if self.push_gate.critical_parts or not self._takes_every_part()
+                           else self._push_the_scene(attempt_index, attempts, looked, frame, target_index,
+                                                     reasons=ahead_reasons, fused_target=fused_target))
+                if isinstance(changed, PickReport):
+                    return changed
+                if changed:
                     continue
+            if (not refused_ahead and looked is not None and self.push_gate is not None and controller_reason is None
+                    and attempt_index + 1 < self.max_attempts and _refused_before_anything_touched(tried)):
+                # The guard refused the last grasp at its standoff, before its line down was sent, once the camera stood
+                # nearer, and the arm stands at the look again: nothing touched the part. Not the pick's end (the owner,
+                # 2026-10-16: "ja er soll dann schieben"): the next attempt looks again, its world holding the nearer
+                # frame, and where its grasps are refused ahead there, the part is pushed, or the scene.
+                _LOG.warning("every grasp tried was refused before anything touched the part, the last at its "
+                             "standoff once the camera stood nearer; the pick looks again, and pushes where the next "
+                             "look's grasps are refused ahead")
+                emit(self.on_progress, PickStage.ATTEMPT_FINISHED, attempt=attempt_index, action="rescan",
+                     outcome=str(pick_outcome),
+                     **{k: v for k, v in _motion_fields(policy_report).items() if v is not None})
+                attempts.append(PickAttempt(
+                    attempt_index=attempt_index, target_index=target_index,
+                    reasons=(GraspFailureReason.MOTION_PLAN_REFUSED,), score=best_result.top_score, action="rescan",
+                    ordering_decision=ordering_decision, **_motion_fields(policy_report), **fused_for_target,
+                    tries=tried.tries,
+                ))
+                continue
             if pick_outcome is not PickOutcome.EXECUTED:
                 self._remember_failed_part(frame, target_index, fused_target, centre=target_centre)
             # The motion the attempt ended on: the last try's, or the move back to the look that failed once sent.
@@ -3872,17 +3937,6 @@ class BinPickingOrchestrator:
         world that cannot vouch for the cell on the way raises, as on every motion of a pick, once the push is kept as
         one that stopped where the arm stands (:meth:`_push_stopped_by_the_camera_world`).
         """
-        from src.robot.core.errors import CameraWorldUnavailable  # noqa: PLC0415
-        from src.robot.core.gripper import toggle_without_sensor_of, width_is_measured_of  # noqa: PLC0415
-        from src.robot.execution.looks import look_label  # noqa: PLC0415
-        from src.robot.grasping.recovery.push_gate import REFUSED_STOP_REQUESTED  # noqa: PLC0415
-        from src.robot.grasping.recovery.push_motion import (  # noqa: PLC0415
-            PushOutcomeCode,
-            execute_push,
-            neighbours_kept_out,
-        )
-        from src.robot.grasping.recovery.push_planner import swept_target_points_mm  # noqa: PLC0415
-
         gate = self.push_gate
         judged = looked.judged
         if gate is None or judged is None or target_index is None:
@@ -3897,9 +3951,89 @@ class BinPickingOrchestrator:
             _LOG.info("no push of the part (%s): %s", considered.code, considered.sentence)
             return False
         plan, points, back_to = considered
+        return self._drive_the_push(gate.budgets, plan, points, back_to, target_index, attempt_index, attempts, looked,
+                                    frame, target_index, trigger=trigger, reasons=reasons, fused_target=fused_target)
+
+    def _takes_every_part(self) -> bool:
+        """Whether this pick's task takes every part it names until none is left (``PushGate.every_part``)."""
+        return self.push_gate is not None and self.push_gate.every_part
+
+    def _push_the_scene(
+        self,
+        attempt_index: int,
+        attempts: list[PickAttempt],
+        looked: LookedAround,
+        frame: PerceptionFrame,
+        target_index: int | None,
+        *,
+        reasons: tuple[GraspFailureReason, ...],
+        fused_target: "np.ndarray | None",
+    ) -> "PickReport | bool":
+        """Push the scene where no part the task wants has a grasp and none could be pushed on its own (the owner,
+        2026-10-15: "ist das nicht genau der Punkt wo man extreme Veraenderung braucht?"), and look again.
+
+        Any part the judged look named may be the one pushed, as a rearranging push with every guard of
+        :meth:`_push_the_failed_part`, judged by the room it opens for a grasp of a part the task wants
+        (:meth:`_considered_scene_push`). Its own budgets hold (3 per pick, 10 per campaign); critical parts are never
+        pushed, and only a task that takes every part pushes the scene (``PushGate.every_part``). Every earlier look of
+        the pick saw a scene that moved, so the look taken again after the push is fused with none of them. Returns as
+        :meth:`_push_the_failed_part` does."""
+        from src.robot.grasping.recovery.push_gate import TRIGGER_NO_PART_GRASPABLE  # noqa: PLC0415
+
+        gate = self.push_gate
+        judged = looked.judged
+        if gate is None or judged is None or gate.critical_parts or not gate.every_part:
+            return False
+        considered = self._considered_scene_push(gate, judged, attempt_index)
+        if not isinstance(considered, tuple):
+            self._pushes.append(considered)
+            _LOG.info("no push of the scene (%s): %s", considered.code, considered.sentence)
+            return False
+        plan, points, pushed_index, back_to = considered
+        return self._drive_the_push(gate.scene_budgets, plan, points, back_to, pushed_index, attempt_index, attempts,
+                                    looked, judged.frame, target_index, trigger=TRIGGER_NO_PART_GRASPABLE,
+                                    reasons=reasons, fused_target=fused_target, whole_scene=True)
+
+    def _drive_the_push(
+        self,
+        budgets: "PushBudgets",
+        plan: "PushPlan",
+        points: np.ndarray,
+        back_to: "JointPositions",
+        pushed_index: int,
+        attempt_index: int,
+        attempts: list[PickAttempt],
+        looked: LookedAround,
+        frame: PerceptionFrame,
+        target_index: int | None,
+        *,
+        trigger: str,
+        reasons: tuple[GraspFailureReason, ...],
+        fused_target: "np.ndarray | None",
+        whole_scene: bool = False,
+    ) -> "PickReport | bool":
+        """Drive a planned push of segmentation ``pushed_index`` of ``frame`` and look again, the pick's target being
+        ``target_index``: what :meth:`_push_the_failed_part` and :meth:`_push_the_scene` share from the offer on, counted
+        against ``budgets``. ``whole_scene`` fuses the look taken again after it with none of the earlier ones."""
+        from src.robot.core.errors import CameraWorldUnavailable  # noqa: PLC0415
+        from src.robot.core.gripper import toggle_without_sensor_of, width_is_measured_of  # noqa: PLC0415
+        from src.robot.execution.looks import look_label  # noqa: PLC0415
+        from src.robot.grasping.recovery.push_gate import REFUSED_STOP_REQUESTED  # noqa: PLC0415
+        from src.robot.grasping.recovery.push_motion import (  # noqa: PLC0415
+            APPROACH_LEG,
+            PushOutcomeCode,
+            execute_push,
+            neighbours_kept_out,
+            open_after_the_push,
+        )
+        from src.robot.grasping.recovery.push_planner import swept_target_points_mm  # noqa: PLC0415
+
+        gate = self.push_gate
+        judged = looked.judged
+        assert gate is not None and judged is not None  # the callers' own checks
         transform = self._pending_camera_to_base
         offer = segmentation_offer_from_frame(
-            frame, target_index, camera=self._perception_camera_name(),
+            frame, pushed_index, camera=self._perception_camera_name(),
             camera_to_base_mm=None if transform is None else np.asarray(transform.to_matrix(), dtype=np.float64),
             target_points_base_mm=points,
         )
@@ -3922,7 +4056,7 @@ class BinPickingOrchestrator:
         natural = closing_axis_of(self.natural_closing_axis) if self.natural_closing_axis is not None else None
         try:
             outcome = execute_push(self.arm, plan, gripper=self.gripper, offer=offer, natural_closing_axis=natural,
-                                   should_cancel=self.should_cancel)
+                                   should_cancel=self.should_cancel, close_to_mm=gate.cell.closed_width_mm)
         except CameraWorldUnavailable as exc:
             self._push_stopped_by_the_camera_world(gate, trigger, plan, exc)
             raise
@@ -3933,8 +4067,8 @@ class BinPickingOrchestrator:
             # the air above a part nothing touched included: by the same centre the check was given, and by the landing
             # it predicted where the part may have moved (push_budget_key); a part nothing touched stands where it stood.
             assert outcome.budget_centre_mm is not None  # a push that moved the arm has its plan
-            gate.budgets.record(centre_mm=outcome.budget_centre_mm,
-                                landing_mm=outcome.budget_landing_mm if outcome.motion_started else None)
+            budgets.record(centre_mm=outcome.budget_centre_mm,
+                           landing_mm=outcome.budget_landing_mm if outcome.motion_started else None)
         if outcome.motion_started:
             swept = np.vstack([points, swept_target_points_mm(points, plan.direction, plan.push_distance_mm)])
             landing = outcome.budget_landing_mm or plan.predicted_landing_centre_mm
@@ -4011,6 +4145,20 @@ class BinPickingOrchestrator:
             return self._push_stopped(attempt_index, attempts, stopped, target_index, outcome=outcome,
                                       frame=frame, fused_target=fused_target, moved=back.stopped,
                                       refused=back.refused)
+        gripper = self.gripper
+        if gate.cell.closed_width_mm is not None and APPROACH_LEG in outcome.legs_done and gripper is not None:
+            # The hand closed in the air at P0 to push (the owner, 2026-10-15; a toggle by one change of its output,
+            # 2026-10-16): it opens again at the look, in the air, before the look is taken again and before the next
+            # grasp tells it a width, a toggle by one more change. One that does not open is a hand nobody vouches for:
+            # the pick ends there, the arm at the look.
+            try:
+                open_after_the_push(gripper)
+            except Exception as exc:  # noqa: BLE001 (a gripper fault ends the pick, never an escaping raise)
+                fault = replace(record, sentence=(f"The jaws closed to push did not open again at the look "
+                                                  f"({type(exc).__name__}: {exc}); the arm stands at the look."))
+                return self._push_found_the_jaws_unknown(attempt_index, attempts, fault, target_index, frame=frame,
+                                                         fused_target=fused_target,
+                                                         said="the pick ends after the push, the arm at the look")
         if outcome.refused_before_motion:
             # The down leg was refused before anything was sent: the arm is back at the look and the part untouched, so
             # the looks still stand and the attempt goes on to its next action, as on any refusal before motion.
@@ -4019,7 +4167,8 @@ class BinPickingOrchestrator:
                       outcome.code.value)
             return False
         label = f"{look_label(back_to)} after the push"
-        relooked = self._look_again_after_the_push(looked, judged, label, back_to, attempt_index=attempt_index)
+        relooked = self._look_again_after_the_push(looked, judged, label, back_to, attempt_index=attempt_index,
+                                                   whole_scene=whole_scene)
         pushed = replace(record, looked_again=label)
         self._pushes.append(pushed)
         fields = _push_motion_fields(outcome)
@@ -4135,6 +4284,136 @@ class BinPickingOrchestrator:
                 "The arm could not say where it stands, so it could not come back to the look after the push, and "
                 "the part is not pushed."), plan=plan)
         return plan, points, back_to
+
+    def _considered_scene_push(
+        self, gate: "PushGate", judged: _Judgement, attempt_index: int,
+    ) -> "tuple[PushPlan, np.ndarray, int, JointPositions] | PickPush":
+        """The scene push's plan, the points and the index of the part it pushes and the joints to come back to, or why
+        none is made; nothing moves here.
+
+        Every part the judged look named is one it may push, the ones the task wants (the label gate's, none standing in
+        a region the task keeps out) are the ones it opens room for, and what the looks saw that no mask names stays
+        what it is: a bin's wall, clutter (:meth:`_unnamed_points`). The plan is
+        :func:`~src.robot.grasping.recovery.push_planner.plan_scene_push` at the campaign's longest push, on the support
+        under the parts and the table every look saw, with the cell's hand, workspace and clearances and the fixture
+        box; then the scene budgets and where the arm stands, to come back to.
+        """
+        from src.robot.grasping.recovery.push_gate import TRIGGER_NO_PART_GRASPABLE, support_points_of_views  # noqa: PLC0415
+        from src.robot.grasping.recovery.push_motion import push_budget_key  # noqa: PLC0415
+        from src.robot.grasping.recovery.push_planner import (  # noqa: PLC0415
+            PUSH_DISTANCE_CAP_MM,
+            PushRefusal,
+            plan_scene_push,
+        )
+
+        trigger = TRIGGER_NO_PART_GRASPABLE
+        if attempt_index + 1 >= self.max_attempts:
+            return self._push_record(trigger, "refused_no_attempt_left", (
+                f"This pick has no attempt left after attempt {attempt_index + 1} of {self.max_attempts} to pick from "
+                "after a push, so the scene is not pushed."))
+        if self.support_config is None or judged.support_height_mm is None:
+            return self._push_record(trigger, "refused_no_support", (
+                "No support plane was resolved for the parts (grasping.support), so how high a finger rides beside one "
+                "is not known and the scene is not pushed."))
+        zones = self.exclusion_zones
+        objects = judged.scene_objects
+        indices: list[int] = []
+        parts: list[np.ndarray] = []
+        wanted: list[bool] = []
+        for index, cloud in enumerate(judged.look.clouds):
+            points = np.asarray(cloud, dtype=np.float64).reshape(-1, 3)
+            if not len(points):
+                continue
+            middle = np.median(points[:, :2], axis=0)
+            if zones is not None and self._kept_out_by_a_region(zones, (float(middle[0]), float(middle[1]))):
+                continue  # in a bin it belongs in, or at a drop already: left where it lies
+            indices.append(index)
+            parts.append(points)
+            wanted.append(index < len(objects) and self._is_target(getattr(objects[index], "segmentation", None)))
+        if not any(wanted):
+            return self._push_record(trigger, "refused_no_wanted_part", (
+                "The looks named no part the task wants outside the regions it keeps out, so the scene is not pushed."))
+        every = np.vstack(parts)
+        normal = np.asarray(self.support_config.normal, dtype=np.float64).reshape(3)
+        normal = normal / max(float(np.linalg.norm(normal)), 1e-12)
+        offset = float(judged.support_height_mm)
+        model = judged.support_model
+        surface = model.surface_under(every[:, :2]) if model is not None else None
+        if surface is not None and surface.offset_mm is not None:
+            normal = np.asarray(surface.normal, dtype=np.float64).reshape(3)
+            offset = float(surface.offset_mm)
+        fixed = self._fixed_views[0] if self._fixed_views is not None else ()
+        if surface is not None and model is not None:
+            table = model.table_points(self._depth_views(fixed), every[:, :2])
+        else:
+            views = [(seen.depth, seen.frame.intrinsics, seen.camera_to_base) for seen in self._look_views]
+            views += [(view.depth_map, view.intrinsics, view.camera_to_base) for view in fixed]
+            table = support_points_of_views(views, support_normal=normal, support_offset_mm=offset)
+        floor = self._finger_floor_mm(model, every, normal, offset, gate)
+        distance = min(float(gate.longest_mm or gate.distance_mm), PUSH_DISTANCE_CAP_MM)
+        try:
+            answer = plan_scene_push(
+                parts_mm=parts, wanted=wanted, unnamed_points_mm=self._unnamed_points(normal, offset),
+                push_distance_mm=distance, support_normal=normal, support_offset_mm=offset,
+                workspace=gate.cell.workspace, hand=gate.cell.hand, table_points_mm=table,
+                container_interior=gate.cell.container_interior, operator_box=gate.operator_box,
+                hand_clearance_mm=gate.cell.hand_clearance_mm, beside_part_clearance_mm=gate.cell.beside_part_clearance_mm,
+                beside_part_mm=gate.cell.beside_part_mm, named_part_clearance_mm=gate.cell.named_part_clearance_mm,
+                **({} if floor is None else {"finger_floor_mm": floor}),
+            )
+        except ValueError as exc:
+            return self._push_record(trigger, "refused_plan_malformed",
+                                     f"The scene push could not be planned on what the looks saw ({exc}), so the scene "
+                                     "is not pushed.")
+        if isinstance(answer, PushRefusal):
+            return self._push_record(trigger, answer.code, answer.sentence)
+        which, plan = answer
+        centre, _landing = push_budget_key(plan)
+        verdict = gate.scene_budgets.check(centre)
+        if not verdict.allowed:
+            return self._push_record(trigger, verdict.code, verdict.sentence, plan=plan)
+        back_to = self._joints_here()
+        if back_to is None:
+            return self._push_record(trigger, "refused_joints_unknown", (
+                "The arm could not say where it stands, so it could not come back to the look after the push, and the "
+                "scene is not pushed."), plan=plan)
+        _LOG.info("no part the task wants has a grasp: pushing part %d of the look to open room for one (%.0f -> %.0f mm "
+                  "of room on two opposite faces, %d part(s) moved)", indices[which], plan.clearance_before_mm,
+                  plan.clearance_after_mm, plan.parts_moved)
+        return plan, parts[which], indices[which], back_to
+
+    def _unnamed_points(self, normal: np.ndarray, offset: float) -> np.ndarray:
+        """What every look of the pick saw standing on the support that no mask of it names, BASE mm, each look's masks
+        grown by :data:`_UNNAMED_MASK_GROWTH_PX` so the rim of a part is not taken for something beside it: a bin's
+        wall, clutter. Read on every :data:`_UNNAMED_STRIDE_PX` th pixel."""
+        from scipy.ndimage import binary_dilation  # noqa: PLC0415
+
+        from src.robot.grasping.recovery.push_planner import SUPPORT_BAND_MM  # noqa: PLC0415
+
+        kept: list[np.ndarray] = []
+        for seen in self._look_views:
+            if seen.depth is None or seen.camera_to_base is None:
+                continue
+            depth = np.asarray(seen.depth, dtype=np.float64)
+            named = np.zeros(depth.shape, dtype=bool)
+            for segmentation in seen.frame.segmentations:
+                mask = np.asarray(getattr(segmentation, "mask", None), dtype=bool)
+                if mask.shape == named.shape:
+                    named |= mask
+            named = binary_dilation(named, iterations=_UNNAMED_MASK_GROWTH_PX)
+            v, u = np.mgrid[0:depth.shape[0]:_UNNAMED_STRIDE_PX, 0:depth.shape[1]:_UNNAMED_STRIDE_PX]
+            z = depth[v, u]
+            with np.errstate(invalid="ignore"):
+                free = np.isfinite(z) & (z > 0.0) & ~named[v, u]
+            if not free.any():
+                continue
+            lens = np.asarray(seen.frame.intrinsics, dtype=np.float64)
+            z, u, v = z[free], u[free].astype(np.float64), v[free].astype(np.float64)
+            camera = np.column_stack([(u - lens[0, 2]) * z / lens[0, 0], (v - lens[1, 2]) * z / lens[1, 1], z])
+            placed = np.asarray(seen.camera_to_base, dtype=np.float64)
+            base = camera @ placed[:3, :3].T + placed[:3, 3]
+            kept.append(base[base @ normal - offset > SUPPORT_BAND_MM])
+        return np.vstack(kept) if kept else np.zeros((0, 3), dtype=np.float64)
 
     def _depth_views(self, fixed: Any = ()) -> list[Any]:
         """Every look of the pick, and every fixed camera fused with it, as the camera world's ``DepthView``s."""
@@ -4327,6 +4606,7 @@ class BinPickingOrchestrator:
         *,
         frame: PerceptionFrame,
         fused_target: "np.ndarray | None",
+        said: str = "the pick ends before the push, with nothing commanded",
     ) -> PickReport:
         """The attempt of a push refused because nobody can say where a toggle hand's jaws stand
         (``refused_jaws_unknown``: DO0 switched at the pendant since the pick began, the count lost at a failed change
@@ -4338,11 +4618,12 @@ class BinPickingOrchestrator:
         so no next_target drives the looks again with a hand nobody vouches for, and its ``motion_message`` says why,
         which the service's report reads as its ``gripper_fault``: ``PickRun`` and the console run stop on it. Nobody is
         asked here; a person looks at the jaws, and the next pick's start, or the next connect, asks where they stand.
-        A count or a width that says closed is no fault: that push is refused and the pick falls through."""
+        A count or a width that says closed is no fault: that push is refused and the pick falls through. A hand closed
+        to push that did not open again at the look ends the pick the same way (``said``), nothing more commanded."""
         self._pushes.append(refused)
-        _LOG.error("pick aborted before the push: %s", refused.sentence)
+        _LOG.error("pick aborted at the push: %s", refused.sentence)
         outcome = PickOutcome.GRIPPER_FAULT
-        said = f"the pick ends before the push, with nothing commanded: {refused.sentence}"
+        said = f"{said}: {refused.sentence}"
         emit(
             self.on_progress, PickStage.ATTEMPT_FINISHED,
             attempt=attempt_index, action="push", outcome=str(outcome), target_index=target_index,
@@ -4476,10 +4757,16 @@ class BinPickingOrchestrator:
 
     def _look_again_after_the_push(
         self, looked: LookedAround, judged: _Judgement, label: str, back_to: "JointPositions", *, attempt_index: int,
+        whole_scene: bool = False,
     ) -> LookedAround:
         """The look taken again from where the arm stood before the push, fused with the pick's earlier looks less the
-        part they saw where it stood, and judged afresh: what the next attempt goes on with."""
-        self._without_the_pushed_part(judged)
+        part they saw where it stood, and judged afresh: what the next attempt goes on with. After a push of the scene
+        (``whole_scene``) every earlier look saw a scene that moved, and it is fused with none of them."""
+        if whole_scene:
+            self._look_views = []
+            self._fixed_views = None
+        else:
+            self._without_the_pushed_part(judged)
         judgement, _missed = self._look(label, back_to, None, attempt_index=attempt_index)
         withheld = ""
         if judgement is not None and judgement.valid and self._faces_unseen_by(judgement):
@@ -4557,8 +4844,9 @@ class BinPickingOrchestrator:
         before = _seen_refusals(judged.result)
         cleared = 0
         # A blocker already chosen for the next round, where a removal that spared nothing by the count was followed by
-        # one that frees a grasp outright (below).
+        # one that frees a grasp outright, or by the next of neighbours that free one together (below).
         next_one: Any = None
+        planned: tuple[tuple[float, float], ...] = ()
         while True:
             assert current.judged is not None  # every look this loop goes on with judged the part
             chosen_one = next_one if next_one is not None else self._choose_a_blocker(current.judged, gate,
@@ -4571,6 +4859,7 @@ class BinPickingOrchestrator:
                 self._blockers_stopped = chosen_one.code
                 self._pending_looked = current
                 return True
+            planned = chosen_one.rest
             moved = self._set_the_blocker_aside(attempt_index, attempts, current, chosen_one, reasons=reasons,
                                                 fused_target=fused_target if not cleared else None)
             if isinstance(moved, PickReport):
@@ -4590,6 +4879,13 @@ class BinPickingOrchestrator:
                 self._pending_looked = current
                 return True
             now = _seen_refusals(now_judged.result)
+            if planned:
+                # The next of the neighbours that free a grasp together, found again on this look where it stood.
+                follow = self._choose_a_blocker(now_judged, gate, refusals=now, planned=planned)
+                if not isinstance(follow, B.BlockerRecord):
+                    next_one = follow
+                    before = now
+                    continue
             if now >= before:
                 # The count is a new look's, and two blockers either side of a part each spare nothing alone: two posts
                 # 10 mm off a cylinder, the first set aside and its count up by 11 of 1419, the second freeing 7 grasps
@@ -4656,7 +4952,8 @@ class BinPickingOrchestrator:
                                                      top_score=float(getattr(grasp, "score", 0.0) or 0.0)),
                           target_centre_mm=centre)
 
-    def _choose_a_blocker(self, judged: _Judgement, gate: "PushGate", *, refusals: int) -> Any:
+    def _choose_a_blocker(self, judged: _Judgement, gate: "PushGate", *, refusals: int,
+                          planned: "tuple[tuple[float, float], ...]" = ()) -> Any:
         """The blocker to take away (a ``_BlockerChoice``), or why none (a ``blocker.BlockerRecord``); nothing moves.
 
         The candidates are the separate objects among what the calculator saw beside the part (Track A's obstacle
@@ -4666,7 +4963,11 @@ class BinPickingOrchestrator:
         (:meth:`_ask_again`): how many grasps of the part its removal frees, and how many of the part's refusals by
         what the camera saw it spares. Those that free or spare any are taken in that order, the nearer the part first
         on a tie; the first the calculator grasps (:meth:`_blocker_grasp`) with somewhere to go
-        (:meth:`_where_the_blocker_goes`) is the blocker.
+        (:meth:`_where_the_blocker_goes`) is the blocker. Where none frees or spares anything alone, the smallest set of
+        two or three of the :data:`_BLOCKERS_SOUGHT_AMONG` that spare most whose removal together frees a grasp is
+        taken away, outside in, the farthest from the part first (the owner, 2026-10-15), the rest of the set said on
+        the choice (``_BlockerChoice.rest``); ``planned``, the rest of a set chosen on an earlier look, takes the
+        neighbour standing where its first member stood (:data:`_SET_DOWN_REACH_MM`) before any other.
 
         Never one in a region the task keeps out (its bin, a part it placed). Where the blocker is the pick
         (:attr:`blocker_is_the_pick`), only a part the detector named: it is carried where the parts go, and a wall of
@@ -4736,7 +5037,16 @@ class BinPickingOrchestrator:
         if not candidates:
             return B.BlockerRecord(code=B.NO_BLOCKER_SEEN, sentence=(
                 "Nothing beside the part may be taken away as a blocker" + (": " + "; ".join(said) if said else ".")))
+        centre_of_part = np.median(target[:, :2], axis=0) if target.shape[0] else np.zeros(2)
+        if planned:
+            ahead = [row for row in candidates if float(np.hypot(*(row[0].centre_mm[:2] - np.asarray(planned[0])))) <=
+                     _SET_DOWN_REACH_MM]
+            if ahead:
+                return self._the_first_graspable(
+                    judged, gate, [(cluster, support, mask, 0, 0) for cluster, support, mask in ahead[:1]],
+                    rest=planned[1:])
         frees: list[tuple[Any, float | None, np.ndarray, int, int]] = []
+        spared: list[int] = []
         for cluster, support, mask in candidates:
             blanked = depth.copy()
             blanked[mask] = 0.0
@@ -4747,28 +5057,59 @@ class BinPickingOrchestrator:
             _LOG.info("a blocker at (%.0f, %.0f, %.0f) mm, %s: taking it away frees %d grasp(s) of the part and spares %d "
                       "of its %d refusal(s) by what the camera saw", centre[0], centre[1], centre[2],
                       "x".join(f"{w:.0f}" for w in cluster.widths_mm) + " mm", freed, max(fewer, 0), refusals)
+            spared.append(max(fewer, 0))
             if freed > 0 or fewer > 0:
                 frees.append((cluster, support, mask, freed, max(fewer, 0)))
-        if not frees and len(candidates) > 1:
-            # Two or more neighbours may hold the part between them, each refusing every grasp the other leaves (an L):
-            # none taken away alone frees anything. Asked once with all of them gone, a grasp freed says they hold it
-            # together; the nearest goes first, and the next attempt's look finds the rest (the owner's L, 2026-10-03).
-            blanked = depth.copy()
-            for _cluster, _support, mask in candidates:
-                blanked[mask] = 0.0
-            together = np.vstack([cluster.points_base_mm for cluster, _support, _mask in candidates])
-            again = self._ask_again(call, depth=blanked, drop_near=together)
-            freed = len(again.candidates) if again.is_success else 0
-            _LOG.info("taking away all %d neighbour(s) beside the part together frees %d grasp(s) of it",
-                      len(candidates), freed)
-            if freed > 0:
-                frees = [(cluster, support, mask, 0, 0) for cluster, support, mask in candidates]
-        if not frees:
-            return B.BlockerRecord(code=B.NO_BLOCKER_FREES_A_GRASP, sentence=(
-                f"Taking away none of the {len(candidates)} neighbour(s) beside the part frees a grasp of it or spares "
-                "one of its refusals, asked of the calculator, so none is taken away."))
-        centre_of_part = np.median(target[:, :2], axis=0) if target.shape[0] else np.zeros(2)
-        frees.sort(key=lambda row: (-row[3], -row[4], float(np.hypot(*(row[0].centre_mm[:2] - centre_of_part)))))
+        if frees:
+            frees.sort(key=lambda row: (-row[3], -row[4], float(np.hypot(*(row[0].centre_mm[:2] - centre_of_part)))))
+            return self._the_first_graspable(judged, gate, frees)
+        together = self._together(call, depth, candidates, spared, centre_of_part)
+        if together:
+            outside_in = sorted(together, key=lambda row: -float(np.hypot(*(row[0].centre_mm[:2] - centre_of_part))))
+            rest = tuple((float(row[0].centre_mm[0]), float(row[0].centre_mm[1])) for row in outside_in[1:])
+            return self._the_first_graspable(
+                judged, gate, [(cluster, support, mask, 0, 0) for cluster, support, mask in outside_in[:1]], rest=rest)
+        return B.BlockerRecord(code=B.NO_BLOCKER_FREES_A_GRASP, sentence=(
+            f"Taking away none of the {len(candidates)} neighbour(s) beside the part, alone or up to "
+            f"{_BLOCKERS_TOGETHER} together, frees a grasp of it or spares one of its refusals, asked of the "
+            "calculator, so none is taken away."))
+
+    def _together(self, call: _Call, depth: np.ndarray, candidates: "list[tuple[Any, float | None, np.ndarray]]",
+                  spared: list[int], centre_of_part: np.ndarray) -> "list[tuple[Any, float | None, np.ndarray]]":
+        """The smallest set of two or three neighbours whose removal together frees a grasp of the part, among the
+        :data:`_BLOCKERS_SOUGHT_AMONG` that spare most of its refusals alone (the nearer on a tie), each set asked of
+        the calculator once; empty where none does. Neighbours can hold a part between them, each refusing every grasp
+        the others leave (the owner's L, 2026-10-03; three round a part in a pile, 2026-10-15)."""
+        from itertools import combinations  # noqa: PLC0415
+
+        ranked = sorted(range(len(candidates)), key=lambda index: (
+            -spared[index], float(np.hypot(*(candidates[index][0].centre_mm[:2] - centre_of_part)))))
+        sought = [candidates[index] for index in ranked[:_BLOCKERS_SOUGHT_AMONG]]
+        for size in range(2, _BLOCKERS_TOGETHER + 1):
+            for group in combinations(sought, size):
+                blanked = depth.copy()
+                for _cluster, _support, mask in group:
+                    blanked[mask] = 0.0
+                again = self._ask_again(call, depth=blanked,
+                                        drop_near=np.vstack([cluster.points_base_mm for cluster, _s, _m in group]))
+                freed = len(again.candidates) if again.is_success else 0
+                _LOG.info("taking away %d neighbours at %s together frees %d grasp(s) of the part", size,
+                          ", ".join(f"({cluster.centre_mm[0]:.0f}, {cluster.centre_mm[1]:.0f})"
+                                    for cluster, _s, _m in group), freed)
+                if freed > 0:
+                    return list(group)
+        return []
+
+    def _the_first_graspable(self, judged: _Judgement, gate: "PushGate",
+                             frees: "list[tuple[Any, float | None, np.ndarray, int, int]]", *,
+                             rest: "tuple[tuple[float, float], ...]" = ()) -> Any:
+        """The first of ``frees`` the calculator grasps with somewhere to go, as a ``_BlockerChoice`` that says ``rest``,
+        or why none (a ``blocker.BlockerRecord``)."""
+        from src.robot.grasping.recovery import blocker as B  # noqa: PLC0415
+
+        ranked = judged.ranked
+        assert ranked is not None and ranked.call is not None  # the caller's
+        call = ranked.call
         nowhere = 0
         too_long: list[float] = []
         carried = self._carried_length_mm()
@@ -4805,7 +5146,7 @@ class BinPickingOrchestrator:
                 grasped, release, where, spot_xy = usable[0]
                 return _BlockerChoice(cluster=cluster, mask=mask, grasp=grasped, release=release, where=where,
                                       spot_xy=spot_xy, freed=freed, fewer=fewer,
-                                      alternatives=tuple((g, r) for g, r, _w, _s in usable[1:]))
+                                      alternatives=tuple((g, r) for g, r, _w, _s in usable[1:]), rest=rest)
             if no_place:
                 nowhere += 1
             elif long_reach:
@@ -6834,15 +7175,25 @@ class BinPickingOrchestrator:
         return ranked
 
     def _scene_views(self, frame: Any) -> tuple[Any, ...]:
-        """The pick's looks other than the one of ``frame`` (``scene_obstacles.SceneView``), each its depth and
-        placement; the calculator leaves the part it grasps out of them as the guard does. Empty for a pick of one
-        look."""
+        """The pick's looks other than the one of ``frame`` and the fixed cameras fused with them
+        (``scene_obstacles.SceneView``), each its depth and placement; the calculator leaves the part it grasps out of
+        them as the guard does, and a point is seen where any of them saw it (the owner, 2026-10-16: several cameras
+        joined, so a fixed camera at a slant vouches for the way under a tilted part). Empty for a pick of one look and
+        no fixed camera."""
         from src.robot.grasping.generation.scene_obstacles import SceneView  # noqa: PLC0415
 
-        return tuple(SceneView(depth_mm=np.asarray(look.depth, dtype=np.float64), intrinsics=look.frame.intrinsics,
-                               camera_to_base=look.camera_to_base)
-                     for look in self._look_views
-                     if look.depth is not None and look.camera_to_base is not None and look.frame is not frame)
+        looks = tuple(SceneView(depth_mm=np.asarray(look.depth, dtype=np.float64), intrinsics=look.frame.intrinsics,
+                                camera_to_base=look.camera_to_base)
+                      for look in self._look_views
+                      if look.depth is not None and look.camera_to_base is not None and look.frame is not frame)
+        # The other cameras this pick's fusion took (``_last_other_views``: a wrist pick's fixed cameras, or a fixed
+        # camera's others), each as it was fused.
+        return looks + tuple(SceneView(depth_mm=np.asarray(view.depth_map, dtype=np.float64),
+                                       intrinsics=np.asarray(view.intrinsics, dtype=np.float64),
+                                       camera_to_base=np.asarray(view.camera_to_base, dtype=np.float64))
+                             for view in self._last_other_views
+                             if getattr(view, "depth_map", None) is not None
+                             and getattr(view, "camera_to_base", None) is not None)
 
     def _lazy_choice(
         self, ctx: _FrameContext, scene: "list[Any] | tuple[Any, ...]", eligible: list[int],

@@ -47,12 +47,15 @@ class KeepOutBox:
     """A box in BASE whose inside is not an obstacle for the motion it was handed to.
 
     ``box_to_base_mm`` places the box's own frame in BASE as a rigid 4x4 in millimetres, and ``half_extents_mm`` is
-    its half size along that frame's X, Y and Z. A point on a face is inside.
+    its half size along that frame's X, Y and Z. A point on a face is inside. ``low_mm`` is how low the target's own
+    points reach where the box was fit round a target (``support_surfaces.lowest_tenth_mm``), BASE z millimetres:
+    a box carried down to the declared plane says nothing of where its part stands. ``None`` for any other box.
     """
 
     name: str
     box_to_base_mm: tuple[tuple[float, float, float, float], ...]
     half_extents_mm: tuple[float, float, float]
+    low_mm: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name.strip():
@@ -69,15 +72,19 @@ class KeepOutBox:
                 f"keep-out box {self.name!r}: half_extents_mm must be three finite non-negative numbers, got "
                 f"{self.half_extents_mm!r}"
             )
+        if self.low_mm is not None and not math.isfinite(float(self.low_mm)):
+            raise ValueError(f"keep-out box {self.name!r}: low_mm must be finite or None, got {self.low_mm!r}")
         object.__setattr__(self, "box_to_base_mm", tuple(tuple(float(v) for v in row) for row in matrix))
         object.__setattr__(self, "half_extents_mm", half)
 
     @classmethod
-    def from_matrix(cls, name: str, box_to_base_mm: Any, half_extents_mm: Sequence[float]) -> "KeepOutBox":
-        """A box from a 4x4 array and its half extents."""
+    def from_matrix(cls, name: str, box_to_base_mm: Any, half_extents_mm: Sequence[float], *,
+                    low_mm: float | None = None) -> "KeepOutBox":
+        """A box from a 4x4 array and its half extents, and how low its target reaches where it holds one."""
         matrix = np.asarray(box_to_base_mm, dtype=np.float64)
         return cls(name=name, box_to_base_mm=tuple(tuple(row) for row in matrix.tolist()),
-                   half_extents_mm=tuple(float(v) for v in half_extents_mm))  # type: ignore[arg-type]
+                   half_extents_mm=tuple(float(v) for v in half_extents_mm),  # type: ignore[arg-type]
+                   low_mm=None if low_mm is None else float(low_mm))
 
     @classmethod
     def from_jaw(

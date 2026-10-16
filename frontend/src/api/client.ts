@@ -320,6 +320,8 @@ export const api = {
 
   /** Ask where the jaws stand now (Restart, Setup, the ready bar). Blocks until answered; no answer is never open. */
   checkJaws: () => request<JawsOut>('POST', '/v1/cell/jaws/check'),
+  /** THIS MOVES THE JAWS: a hand told a width opens to its widest where the arm stands; a toggle is asked as at the check. */
+  openJaws: () => request<JawsOut>('POST', '/v1/cell/jaws/open'),
 
   /** One display frame through `Camera.peek`: never waits, never a measurement. `measuring` keeps the last frame. */
   live: (rig?: string | null, maxWidth = 960) =>

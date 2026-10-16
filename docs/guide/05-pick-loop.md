@@ -577,7 +577,7 @@ the hand-eye calibration may have drifted. Nothing is changed for it ([03](03-ca
 
 The same values are fields of the report (`looks`, `looks_fused`, `jaw_faces_seen`, `generated_view_deg`,
 `hand_eye_gap_mm`, `both_faces`) and, `both_faces` aside, of each `PickRun` attempt, which adds
-`views_file` where `record_views` kept the looks. The console's `pick_result` event carries `looks` and
+`views_file` where the looks were kept. The console's `pick_result` event carries `looks` and
 `looks_fused`, and `jaw_faces_seen`, `generated_view_deg`, `hand_eye_gap_mm` and `refused_look` where set.
 
 **What the log says.**
@@ -608,11 +608,10 @@ These lines reach `robot.log` beside each module's own file (`pick_loop.log`, `g
 `pick_run.log`, `generated_view.log`, `looks.log`), and every handling verb that fails leaves a WARNING with its message
 there (`handling.log`): the owner's cell kept the reason of a failed pick in no file (2026-10-01).
 
-**Keep the views: `record_views`.** `PickRun.from_cell(..., record_views=True)` keeps each pick's looks
-for training: one `.npz` per pick under `logs/robot/views`, named after the pick's record (`attempt_id`),
-with each look's colour and depth, the tool pose stamped at its shutter, the lens, CAMERA to BASE, and the
-fused target cloud. Off by default. A fixed camera has no looks to keep, and a file that cannot be written
-is said while the campaign goes on. The layout is in
+**The views are kept.** Every pick keeps its looks for training, no switch (the owner, 2026-10-15): one `.npz`
+per pick under `logs/robot/views`, named after the pick's record (`attempt_id`), with each look's colour and
+depth, the tool pose stamped at its shutter, the lens, CAMERA to BASE, and the fused target cloud. A fixed
+camera has no looks to keep, and a file that cannot be written is said while the campaign goes on. The layout is in
 [`record_views.py`](../../src/robot/execution/record_views.py). A camera whose rig records for research
 (`realsense.record_for_research`, [`src/camera/`](../../src/camera/README.md)) makes the file format 2: per look
 also both infrared images, the depth before the filters, and every segmentation's mask, box, label, score, SAM2's
@@ -621,7 +620,7 @@ before.
 
 **Locate first, then pick.** A program that locates before it picks
 ([`examples/real_robot/13`](../../examples/real_robot/13_pick_and_place_with_the_camera.py)) looks around
-with `locator.look_around(prompt, looks, robot=robot, both_faces=False, record_views=False)`: the same
+with `locator.look_around(prompt, looks, robot=robot, both_faces=False)`: the same
 fused looks, early stop, generated view and move back, answering with a `Located`. Name a
 `closing_axis=` there, once: the looks judge the grasps along it, and the part's scene takes it (5.2). Its
 per-look INFO line ends `label agreed in N of M looks` too. Its frames stay held in the planner world, from
@@ -1238,9 +1237,13 @@ at hand, and only where the parts are not critical. **A fixed-camera cell never 
   `allowed_actions`, the parts not critical, a budget left, and an attempt left to pick the part from
   afterwards (`max_attempts: 1` never pushes). **No fixture needed**: a declared `recovery.fixture` only
   narrows the push box.
-- **What pushes.** The outer face of the leading finger, **jaws open**, along the closing axis. The jaws
-  never change: the push reads the hand and never writes it, and nobody is asked. A toggle's count that
-  says closed, or a measuring hand more than 2 mm short of fully open, means no push. A toggle's count
+- **What pushes.** The **closed fingers**, about 22 mm across where the open Hand-E stands 72: the hand
+  closes in the air over the part before the line down, a Robotiq to its closed width (the owner,
+  2026-10-15) and a toggle by one change of DO0 (2026-10-16), and opens again at the look after the push,
+  a toggle by one more change. Any other hand pushes with its **jaws open**, the outer face of the leading
+  finger along the closing axis, and the push reads it and never writes it. Nobody is asked. A toggle's
+  count that says closed, or a hand that pushes open and measures more than 2 mm short of fully open, means
+  no push; a hand that does not open again at the look ends the pick as a gripper fault. A toggle's count
   **nobody can vouch for** when the push reads it, once its plan and budgets passed (DO0 switched at the
   pendant mid-pick, or unreadable), **ends the pick as a gripper fault**, as the toggle's own refusal ends
   one, and so does a width-measuring gripper found **not connected** there, or whose width read fails (a
@@ -1411,7 +1414,7 @@ updating the KPI, taxonomy and reinforcement-learning consumers together.
 process write each pick's record, its timestamp taken when the pick ended, so a pick returns before its record is
 written; the jobs are written in order, a write that fails is said at WARNING and the next one is still written,
 and what is still waiting is written when the process exits, 60 s at most. A task on a real cell keeps its picks'
-looks the same way (`record_views`): taken when each pick ends, written while the task goes on, the file it reports
+looks the same way: taken when each pick ends, written while the task goes on, the file it reports
 being where they will be. A rehearsal cell and a cell built by hand write each record before the pick returns, as
 before, and a `PickRun` campaign writes its views before its next pick.
 
@@ -1427,7 +1430,7 @@ motion stated one, and a runner's own `extra` cannot overwrite them.
 `jaw_faces_seen`, `hand_eye_gap_mm`, `generated_view_deg` and `both_faces` where they apply; a fixed
 camera's look the arm did not reach is left out of `looks_visited`. Each key is added only where set, so a
 record of a pick handed no look on a fixed camera is the record it always was. The frames themselves are
-not in the record: `record_views=True` keeps them beside it (5.1).
+not in the record: they are kept beside it (5.1).
 
 **What consumes it.**
 
@@ -1597,8 +1600,8 @@ the whole path on a dummy arm, and KUKA, Franka and ROS 2 are empty registry slo
    nearby pose where its line names one, otherwise by hand elsewhere, and screen it again. A band look runs;
    one whose line names no nearby pose runs on straight lines only, and if planned moves have to reach it or
    leave it, re-teach it by hand where both clear it and screen it again. `both_faces=True` grips only once
-   both jaw contact faces were seen, for safety-critical parts, and `record_views=True` keeps the looks for
-   training. A fixed camera does not look around: its arm goes to the looks the program or the profile
+   both jaw contact faces were seen, for safety-critical parts, and every pick keeps its looks for training.
+   A fixed camera does not look around: its arm goes to the looks the program or the profile
    names, and the pick stops at the first look that finds something. `put_back=True` places each lifted part
    back where the tool closed on it, so one part serves a whole campaign
    ([`examples/real_robot/12`](../../examples/real_robot/12_pick_with_the_camera.py),

@@ -37,6 +37,8 @@ __all__ = [
     "PUSHES_PER_PART",
     "PUSHES_PER_PICK",
     "SAME_PART_RADIUS_MM",
+    "SCENE_PUSHES_PER_CAMPAIGN",
+    "SCENE_PUSHES_PER_PICK",
     "PushBudgetVerdict",
     "PushBudgets",
     "PushRecord",
@@ -48,6 +50,10 @@ PUSHES_PER_PART = 1
 PUSHES_PER_PICK = 2
 #: Pushes one campaign may take.
 PUSHES_PER_CAMPAIGN = 5
+#: Pushes of the scene one pick may take, where no part it wants has a grasp (the owner, 2026-10-15), and one campaign:
+#: a budget of their own, the same part pushed again among them.
+SCENE_PUSHES_PER_PICK = 3
+SCENE_PUSHES_PER_CAMPAIGN = 10
 #: A part whose BASE XY centre lies within this plus the push's length of a pushed part's centre is the same
 #: part. It matches the floor of the next_target exclusion radius.
 SAME_PART_RADIUS_MM = 30.0

@@ -61,6 +61,7 @@ __all__ = [
     "TogglesWithoutSensor",
     "TwoStateGripper",
     "closes_onto_the_part_of",
+    "guard_holds_the_fingers_at",
     "hold_evidence_of",
     "holds_from_inside_of",
     "toggle_without_sensor_of",
@@ -256,7 +257,8 @@ class TogglesWithoutSensor(Protocol):
       commanding an open: where the count says open it answers at once, and where it says closed, or cannot say, it
       asks the person again rather than switching, and refuses the pick when nobody can be asked.
     * Exactly one change at the part (the close) and one at the release, each only where the count says the jaws
-      stand the other way.
+      stand the other way. A push with its jaws closed (the owner, 2026-10-16) adds one in the air over the part before
+      the line down and one at the look after it, the same way.
     * No width is checked and no hold is measured: a close counts as a grasp, and a report says it was not checked
       because there is no sensor.
 
@@ -380,6 +382,39 @@ OPEN_WITHIN_MM = 2.0
 #: G), millimetres: the Robotiq's position count is 0.2 mm a step over the Hand-E's stroke, and a reading never stands
 #: the fingers nearer the part than they are. The calculator holds a grasp's fingers this much wider than it plans them.
 FINGER_OPENING_SLACK_MM = 0.5
+
+
+def guard_holds_the_fingers_at(arm: object, gripper: object, commanded_mm: float | None) -> bool:
+    """Tell ``arm``'s guard where the fingers stand: the wider of what was commanded and what ``gripper`` reads back, and
+    :data:`FINGER_OPENING_SLACK_MM`; ``commanded_mm`` ``None`` stands them fully open again. Whether the guard was told:
+    an arm that cannot say it judges the fingers fully open, as before, which is never nearer a part than they are.
+    Only the motion that told the hand that width says it (lever G, 2026-10-13: a grasp, a push with closed jaws), and
+    it says ``None`` again before anything opens the hand wider.
+
+    Args:
+        arm: The arm whose guard holds the fingers (``set_finger_opening``).
+        gripper: The hand, read back where it measures its width; ``None`` holds the fingers at the command.
+        commanded_mm: The width the hand was told, millimetres; ``None`` for fully open.
+
+    Returns:
+        bool: Whether the guard was told.
+    """
+    setter = getattr(arm, "set_finger_opening", None)
+    if not callable(setter):
+        return False
+    if commanded_mm is None:
+        setter(None)
+        return True
+    reading = None
+    read = getattr(gripper, "get_width_mm", None)
+    if callable(read):
+        try:
+            reading = float(read())
+        except Exception:  # noqa: BLE001 (a hand that cannot read back is held at its command and the slack)
+            reading = None
+    width = max(float(commanded_mm), reading if reading is not None else float(commanded_mm)) + FINGER_OPENING_SLACK_MM
+    setter(width)
+    return True
 
 
 def why_not_known_open(gripper: object) -> str:

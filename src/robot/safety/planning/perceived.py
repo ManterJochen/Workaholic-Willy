@@ -70,6 +70,7 @@ and WXYZ happens in `world.py`, which owns that wire format for both sources.
 
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -89,7 +90,13 @@ from src.robot.safety.planning.fine_world import (
     specks,
 )
 from src.robot.safety.planning.height_map import Column, bridge_columns, coarsen, height_map_columns, turn_of
-from src.robot.safety.planning.support_surfaces import SupportModel, SupportSolid, detect, detection_step
+from src.robot.safety.planning.support_surfaces import (
+    SupportModel,
+    SupportSolid,
+    detect,
+    detection_step,
+    lowest_tenth_mm,
+)
 
 if TYPE_CHECKING:  # pragma: no cover (typing only: self_envelope imports this module)
     from src.robot.safety.planning.self_envelope import BaseShape
@@ -97,6 +104,8 @@ if TYPE_CHECKING:  # pragma: no cover (typing only: self_envelope imports this m
 __all__ = [
     "DECLARED_SURFACE_MM",
     "MAX_DECLARED_BAND_MM",
+    "NEAR_BAND_MM",
+    "NEAR_VOXEL_MM",
     "SELF_FILTER_MIN_MM",
     "DeclaredBody",
     "DepthView",
@@ -116,6 +125,7 @@ __all__ = [
     "build_perceived_boxes",
     "build_voxel_field",
     "has_depth",
+    "near_grid_extent",
     "seen_part_boxes",
     "self_filter_padding",
     "target_body_points",
@@ -591,6 +601,12 @@ class SelfEnvelope:
     #: The robot's base about the BASE axis, where its shape is known (``self_envelope.ROBOT_BASES``): no support
     #: surface is found over it, or its top would put the shoulder in a solid. ``None`` keeps none out.
     base: "BaseShape | None" = None
+    #: The second robot mask (owner, 2026-10-15): spheres inside the robot's bodies, each on the frame that carries it,
+    #: every point of the robot within the gap of one (``self_envelope.mask_spheres``). A point within
+    #: :attr:`mask_reach_mm` of one is the robot's, whatever the self filter's padding. Empty masks nothing more.
+    mask: tuple[LinkCapsule, ...] = ()
+    #: How far from a mask sphere a point is the robot's, millimetres: the maps' gap and a depth's noise.
+    mask_reach_mm: float = 0.0
 
     def reach(self, *, padding_mm: float = 0.0) -> ReachSphere:
         """The sphere about the base frame's origin that holds this body in every configuration.
@@ -640,6 +656,22 @@ class SelfEnvelope:
         )
 
 
+def _within_spheres(points: np.ndarray, spheres: np.ndarray) -> np.ndarray:
+    """Which of ``(N, 3)`` points lie within one of ``spheres`` (``(M, 4)``: centre and radius), ``(N,)`` boolean: the
+    points within the spheres' box, held in a k-d tree and asked of every sphere at once: the 307,200 points of a
+    640 x 480 frame against the ur5e and its 2F-85, 2,300 spheres, in 21 ms, where a sphere at a time takes seconds."""
+    from scipy.spatial import cKDTree  # noqa: PLC0415 (kept out of import time, like a declared mesh's)
+
+    low = (spheres[:, :3] - spheres[:, 3:]).min(axis=0)
+    high = (spheres[:, :3] + spheres[:, 3:]).max(axis=0)
+    near = np.nonzero(np.all((points >= low) & (points <= high), axis=1))[0]
+    held = np.zeros(points.shape[0], dtype=bool)
+    if near.size:
+        hits = cKDTree(points[near]).query_ball_point(spheres[:, :3], spheres[:, 3])
+        held[near[np.fromiter(itertools.chain.from_iterable(hits), dtype=np.int64)]] = True
+    return held
+
+
 @dataclass(frozen=True, slots=True)
 class SelfBody:
     """Where the robot's own body is, so the camera's view of it can be taken back out.
@@ -679,6 +711,9 @@ class SelfBody:
     #: Per capsule, the frame of the chain that carries it (0 the base, 6 the flange of a six-joint arm); empty where the
     #: body was not built from a chain.
     frames: tuple[int, ...] = ()
+    #: The second robot mask in BASE, ``(M, 4)``: each sphere's centre and its radius grown by the mask's reach
+    #: (:meth:`of`). A point within one is the robot's; empty masks nothing more.
+    mask_mm: np.ndarray = field(default_factory=lambda: np.empty((0, 4), dtype=np.float64))
 
     def __post_init__(self) -> None:
         segments = np.asarray(self.segments_mm, dtype=np.float64)
@@ -699,8 +734,12 @@ class SelfBody:
             raise PerceptionGeometryError(
                 f"surfaces must name one surface or None per capsule, {segments.shape[0]}, got {len(self.surfaces)}"
             )
+        mask = np.asarray(self.mask_mm, dtype=np.float64).reshape(-1, 4)
+        if mask.size and (not np.all(np.isfinite(mask)) or np.any(mask[:, 3] < 0.0)):
+            raise PerceptionGeometryError("a robot mask is finite spheres of a radius of 0 or more")
         object.__setattr__(self, "segments_mm", segments)
         object.__setattr__(self, "radii_mm", radii)
+        object.__setattr__(self, "mask_mm", mask)
 
     @classmethod
     def from_polyline(
@@ -770,6 +809,16 @@ class SelfBody:
         return cls(segments_mm=segments, radii_mm=radii, surfaces=tuple(surfaces),
                    surface_padding_mm=float(padding_mm), frames=frames)
 
+    @classmethod
+    def of(cls, envelope: SelfEnvelope, *, padding_mm: float) -> "SelfBody":
+        """The body ``envelope`` describes: its capsules grown by ``padding_mm`` (:meth:`from_frames`), and its robot mask
+        placed by the same frames, each sphere grown by the mask's own reach (owner, 2026-10-15)."""
+        body = cls.from_frames(envelope.frames_mm, envelope.capsules, padding_mm=padding_mm)
+        if not envelope.mask:
+            return body
+        placed = cls.from_frames(envelope.frames_mm, envelope.mask, padding_mm=float(envelope.mask_reach_mm))
+        return replace(body, mask_mm=np.column_stack((placed.segments_mm[:, 0, :], placed.radii_mm)))
+
     def contains(self, points_mm: np.ndarray) -> np.ndarray:
         """Which of `points_mm` lie inside the body. `(N,)` boolean.
 
@@ -810,6 +859,11 @@ class SelfBody:
                     local = at[asked] @ to_link[:3, :3].T + to_link[:3, 3]
                     near[asked] = surface.distance_mm(local) <= self.surface_padding_mm
             inside[candidate[near]] = True
+        # The second robot mask, asked of the points the capsules left: a point within the mask's reach of a sphere
+        # inside the robot is the robot's.
+        rest = np.nonzero(~inside)[0] if len(self.mask_mm) else np.zeros(0, dtype=np.int64)
+        if rest.size:
+            inside[rest[_within_spheres(points[rest], self.mask_mm)]] = True
         return inside
 
     def cut_by(self, centre_mm: Sequence[float], dims_mm: Sequence[float], yaw_rad: float) -> bool:
@@ -1045,29 +1099,60 @@ class VoxelField:
 
     The order is the planner's: x slowest, z fastest, over voxel centres that start half a voxel
     inside the low corner. The same sweep confirms that placement to the millimetre.
+
+    What travels is the occupancy, eight voxels to a byte: the planner takes the distances of it itself, on the GPU,
+    with cuRobo's own exact transform (owner, 2026-10-15: the part of nvblox's successor that brings us something,
+    ``curobo_planner_server._field_block``); :attr:`field` is the same transform here.
     """
 
-    #: Flat float32 field, one value per voxel, in the order described above.
-    field: np.ndarray
+    #: Which voxels a box of the camera world reaches into, flat, in the order described above.
+    occupancy: np.ndarray
     #: Grid size in BASE millimetres.
     dims_mm: tuple[float, float, float]
     #: Edge length of one voxel, millimetres.
     voxel_size_mm: float
     #: Grid centre in BASE millimetres.
     center_mm: tuple[float, float, float]
-    #: Voxels the cameras put something in, before any filling or margin.
-    occupied: int
+    #: The fine grid about the motion's goal (:data:`NEAR_VOXEL_MM`), which holds the guard's own world in the fine
+    #: square this field leaves to it (:func:`build_voxel_field`), or ``None`` where no fine world was built.
+    near: "VoxelField | None" = None
 
     @property
     def shape(self) -> tuple[int, int, int]:
         return tuple(int(round(d / self.voxel_size_mm)) for d in self.dims_mm)  # type: ignore[return-value]
 
+    @property
+    def occupied(self) -> int:
+        """Voxels a box of the camera world reaches into."""
+        return int(np.count_nonzero(self.occupancy))
+
+    @property
+    def field(self) -> np.ndarray:
+        """The signed distance at every voxel, millimetres, flat float32, negative inside and positive outside: what the
+        planner takes of :attr:`occupancy`; free everywhere, every voxel reads farther off than the grid is long."""
+        return _signed_distances(self.occupancy.reshape(self.shape), self.voxel_size_mm)
+
+    def holds(self, box: "PerceivedBox") -> bool:
+        """Whether every point of ``box`` lies inside this field's grid, so the field stands for it whole.
+
+        Args:
+            box (PerceivedBox): A box of the camera world, turned about BASE Z by its ``yaw_rad``.
+
+        Returns:
+            bool: ``True`` where its extent in BASE lies within the grid.
+        """
+        centre, reach = np.asarray(box.center_mm, dtype=np.float64), _base_reach(box)
+        low = np.asarray(self.center_mm, dtype=np.float64) - np.asarray(self.dims_mm, dtype=np.float64) / 2.0
+        high = low + np.asarray(self.dims_mm, dtype=np.float64)
+        return bool(np.all(centre - reach >= low) and np.all(centre + reach <= high))
+
     def render(self) -> str:
         """Describe this to a person, as text, ASCII, no trailing newline."""
         nx, ny, nz = self.shape
+        near = "" if self.near is None else f"; about the goal {self.near.render().removeprefix('live scene: ')}"
         return (
             f"live scene: {nx} x {ny} x {nz} voxels at {self.voxel_size_mm:.0f} mm, "
-            f"{self.occupied} occupied"
+            f"{self.occupied} occupied{near}"
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -1078,6 +1163,7 @@ class VoxelField:
             "voxel_size_mm": float(self.voxel_size_mm),
             "center_mm": list(self.center_mm),
             "occupied": int(self.occupied),
+            **({} if self.near is None else {"near": self.near.to_dict()}),
         }
 
 
@@ -1102,6 +1188,9 @@ class PerceivedWorld:
     #: and an operator can read; this is what lets the planner see everything rather than the nearest
     #: few. Both come from one pass over one cloud, so they cannot describe different cells.
     voxels: "VoxelField | None" = None
+    #: The boxes of :attr:`boxes` the field holds whole (:meth:`VoxelField.holds`): with a field, the planner is not
+    #: sent them, the field stands for them, every column of them as the cameras measured it.
+    field_held: tuple[str, ...] = ()
     #: Points each keep-out box took out, by box name. Empty when no box was handed over.
     keep_out_points: dict[str, int] = field(default_factory=dict)
     #: The share of each view's pixels that held a depth, by view name, of the pixels no mask left
@@ -1412,10 +1501,7 @@ def build_perceived_boxes(
         return PerceivedWorld(
             boxes=solids, dropped_points=dropped_points, dropped_clusters={},
             considered_points=0, source_timestamp=oldest, keep_out_points=keep_out_points,
-            voxels=(
-                build_voxel_field(np.empty((0, 3)), limits=limits, tuning=tuning)
-                if tuning.voxel_field_mm > 0.0 else None
-            ),
+            voxels=build_voxel_field((), limits=limits, tuning=tuning),
             depth_coverage=depth_coverage, bench_band_mm=bench_band_mm,
             declared_points=dict(declared_points or {}), supports=supports,
         )
@@ -1588,6 +1674,8 @@ def build_perceived_boxes(
     # Past the slot budget the columns merge into the boxes that hold them, never into less. The solids of what the
     # parts stand on come first and are never merged: the obstacles get what is left.
     budget = max(0, int(tuning.max_boxes) - len(solids))
+    # The field holds every column as measured, before the slot budget merges them (``build_voxel_field``).
+    as_measured = [list(columns) for _, _, columns in mapped] if tuning.voxel_field_mm > 0.0 else None
     # The boxes far from the motion's goal merge first: those the hand passes between stay as they were seen.
     merged_to_fit = coarsen([columns for _, _, columns in mapped], budget,
                             near_mm=None if near_point_mm is None else reference,
@@ -1667,8 +1755,8 @@ def build_perceived_boxes(
         )
         for index, box in enumerate(survivors)
     ) + solids
-    # Near the motion's goal the guard holds the fine world instead of these boxes (``fine_world``); the planner keeps
-    # them. Only where a floor is held: a box of the fine world stands on it.
+    # Near the motion's goal the guard holds the fine world instead of these boxes (``fine_world``), and so does the
+    # planner where it gets a field; its boxes stay. Only where a floor is held: a box of the fine world stands on it.
     fine: "_FineGuardWorld | None" = None
     if float(tuning.fine_reach_mm) > 0.0 and near_point_mm is not None and floor is not None:
         fine = _fine_guard_world(
@@ -1680,16 +1768,25 @@ def build_perceived_boxes(
             survivors=dict(zip((id(box) for box in survivors), boxes)), solids=solids, column_box=column_box,
             shadow=shadow,
         )
+    voxels: VoxelField | None = None
+    field_held: tuple[str, ...] = ()
+    if as_measured is not None:
+        solid = {id(box) for box in solids}  # the planner holds a support's solid as a box, the field never
+        voxels = build_voxel_field(
+            [boxed for (chosen_points, part_yaw, _), columns in zip(mapped, as_measured) for column in columns
+             for boxed in (column_box(chosen_points, part_yaw, column),) if boxed is not None],
+            limits=limits, tuning=tuning,
+            near=None if fine is None else (fine.region, [box for box in fine.boxes if id(box) not in solid]))
+        if voxels is not None:
+            field_held = tuple(box.name for box in boxes[:len(survivors)] if voxels.holds(box))
     return PerceivedWorld(
         boxes=boxes,
         dropped_points=dropped_points,
         dropped_clusters=dropped_clusters,
         considered_points=int(points.shape[0]),
         source_timestamp=oldest,
-        voxels=(
-            build_voxel_field(points, limits=limits, tuning=tuning)
-            if tuning.voxel_field_mm > 0.0 else None
-        ),
+        voxels=voxels,
+        field_held=field_held,
         keep_out_points=keep_out_points,
         depth_coverage=depth_coverage,
         bench_band_mm=bench_band_mm,
@@ -1699,7 +1796,7 @@ def build_perceived_boxes(
         hidden_cells=sum(box.hidden_cells for box in boxes),
         supports=supports,
         guard_boxes=None if fine is None else fine.boxes,
-        fine_region="" if fine is None else fine.region,
+        fine_region="" if fine is None else fine.region.render(),
         fine_boxes=0 if fine is None else fine.fine,
         fine_uncovered=0 if fine is None else fine.uncovered,
     )
@@ -1783,7 +1880,7 @@ def target_keep_out_box(
     box_to_base = np.eye(4)
     box_to_base[:3, :3] = [[math.cos(yaw), -math.sin(yaw), 0.0], [math.sin(yaw), math.cos(yaw), 0.0], [0.0, 0.0, 1.0]]
     box_to_base[:3, 3] = centre
-    return KeepOutBox.from_matrix(name, box_to_base, tuple(d / 2.0 for d in dims))
+    return KeepOutBox.from_matrix(name, box_to_base, tuple(d / 2.0 for d in dims), low_mm=lowest_tenth_mm(points[member]))
 
 
 def voxel_grid_extent(
@@ -1809,85 +1906,195 @@ def voxel_grid_extent(
     return dims, float(voxel_size_mm)
 
 
+#: The edge of a voxel of the fine grid about a motion's goal (:attr:`VoxelField.near`), millimetres: two cells of the
+#: fine world (``fine_world.FINE_CELL_MM``).
+NEAR_VOXEL_MM = 4.0
+#: How far the fine grid about the goal reaches past the fine square, millimetres. cuRobo reads a grid at a sphere's
+#: centre, and a centre off the grid as free: what the field leaves to the fine grid stands at least a sphere and its
+#: activation distance inside the fine grid, or a sphere centred beside it reaches into the square unseen. The largest
+#: sphere of an arm cuRobo plans for is 106 mm (``willy_ur16e.yml``), and its optimiser pushes from 10 mm out.
+NEAR_BAND_MM = 120.0
+
+
+def near_grid_extent(
+    limits: WorldBuildLimits, voxel_size_mm: float, reach_mm: float
+) -> "tuple[tuple[float, float, float], float] | None":
+    """The largest fine grid about a motion's goal a live scene sends (:attr:`VoxelField.near`), as ``(dims_mm,
+    voxel_mm)``, or `None` for none: the planner reserves it beside the field's own grid (:func:`voxel_grid_extent`).
+
+    Args:
+        limits (WorldBuildLimits): The workspace and the support plane the field's grid spans.
+        voxel_size_mm (float): The field's voxel (``voxel_field_mm``); 0 sends no field.
+        reach_mm (float): How far the fine square reaches from the goal (``fine_reach_mm``); 0 builds none.
+
+    Returns:
+        tuple | None: Its square and band across in x and y and the field's height in z, at :data:`NEAR_VOXEL_MM`.
+    """
+    extent = voxel_grid_extent(limits, voxel_size_mm)
+    if extent is None or reach_mm <= 0.0:
+        return None
+    across = math.ceil(2.0 * (reach_mm + NEAR_BAND_MM) / NEAR_VOXEL_MM - 1e-9) * NEAR_VOXEL_MM
+    return (across, across, math.ceil(extent[0][2] / NEAR_VOXEL_MM - 1e-9) * NEAR_VOXEL_MM), NEAR_VOXEL_MM
+
+
 def build_voxel_field(
-    points_mm: np.ndarray, *, limits: WorldBuildLimits, tuning: WorldBuildTuning
+    boxes: "Sequence[PerceivedBox]", *, limits: WorldBuildLimits, tuning: WorldBuildTuning,
+    near: "tuple[FineRegion, Sequence[PerceivedBox]] | None" = None,
 ) -> "VoxelField | None":
-    """The kept points as a distance field over the cell, or `None` when the cell configured no field.
+    """The camera world's columns as a distance field over the cell, or `None` when the cell configured no field.
 
-    A cell with a field and nothing in it gets a field that is free everywhere, never `None`. The
-    planner keeps the last field it was sent until another replaces it, so a refresh that sent
-    nothing would leave behind whatever was seen before: a part that has since been taken away, or
-    the target a pick has just taken out of the world.
+    Built from the boxes of every part's height map as the cameras measured them, before the slot budget merges them
+    (owner, 2026-10-15: cuRobo gets more of the world): the field is what the boxes are, every column of every part,
+    each carried down to its floor and grown by the camera world's margin as a box is, so the planner holds what the
+    exact guard holds and nothing it does not (the noise, the robot's own columns and the keep-outs are already out of
+    the boxes), and no merged box takes room the cameras saw free. A voxel a box reaches into is an obstacle, the box
+    tested on its own axes with the voxel's half width projected onto them, so a voxel that touches a box is never
+    left free. The distances run between voxel centres, so the planner holds a box's face within half a voxel of where
+    it stands, inside its margin (``scripts/curobo/probe_live_world.py`` 4a.10 measures the half voxel).
 
-    The grid spans the declared workspace and sits on the support plane, because that is the volume
-    the TCP is allowed into and the volume the planner reserved storage for. A kept point outside
-    it, within the robot's reach but past the workspace box, is not in the field: the boxes carry
-    it, and they are registered beside the field.
+    A cell with a field and no box gets a field that is free everywhere, never `None`: the planner keeps the last field
+    it was sent until another replaces it, so a refresh that sent nothing would leave behind what was seen before.
 
-    Two things happen to the occupancy before the distance transform, and both are the conservative
-    reading of what a depth camera can know:
+    The grid spans the declared workspace and sits on the support plane, the volume the planner reserved storage for
+    (:func:`voxel_grid_extent`). A box that reaches past it is not the field's: the planner gets it as a box
+    (:meth:`VoxelField.holds`).
 
-      * Every occupied column is filled down to the plane, for the same reason a box is: a camera
-        measures surfaces, so what it returns for a part standing on a bench is the top face, and the
-        body underneath is unmeasured rather than empty. `floor_to_plane` turns this off.
-      * The surface is grown by `margin_mm`, by subtracting it from the field. Depth noise at an edge
-        is one-sided and a planner that grazes is a planner that touches.
+    Near a motion's goal the planner holds what the guard holds there (owner, 2026-10-15): with ``near``, the fine
+    square about the goal and the guard's boxes (``fine_world``), every voxel of this field wholly over the square is
+    cleared, and a fine grid of its own (:attr:`VoxelField.near`, :data:`NEAR_VOXEL_MM`) holds the guard's boxes over
+    the square and reaches :data:`NEAR_BAND_MM` past it and over the highest of them, so no sphere of the arm reaches
+    into the square from where that grid cannot see it.
 
-    The transform is a Euclidean distance transform in each direction, which is the honest way to get
-    a field rather than a shell: without the inside half, a thin surface has no depth and an
-    optimiser stepping over it lands on the far side having never seen it.
+    The field is the occupancy; the planner takes its distances itself, on the GPU (:class:`VoxelField`). The transform
+    is a Euclidean distance transform in each direction, which is the honest way to get a field rather than a shell:
+    without the inside half, a thin surface has no depth and an optimiser stepping over it lands on the far side having
+    never seen it.
+
+    Args:
+        boxes (Sequence[PerceivedBox]): The camera world's columns, in BASE millimetres.
+        limits (WorldBuildLimits): The workspace and the support plane the grid spans.
+        tuning (WorldBuildTuning): ``voxel_field_mm``, the edge of a voxel.
+        near (tuple | None): The fine square about the goal and the guard's boxes, but for the supports' solids, which
+            the planner holds as boxes; ``None`` for no fine grid.
+
+    Returns:
+        VoxelField | None: The field; ``None`` where ``voxel_field_mm`` is 0.
     """
     if tuning.voxel_field_mm <= 0.0:
         return None
-    from scipy import ndimage  # noqa: PLC0415 (kept out of import time, this is the only user)
-
     voxel = float(tuning.voxel_field_mm)
     floor_mm = float(limits.support_plane_top_mm or 0.0)
     low = np.array([limits.x_mm[0], limits.y_mm[0], floor_mm], dtype=np.float64)
     high = np.array([limits.x_mm[1], limits.y_mm[1], max(limits.z_mm[1], floor_mm + voxel)],
                     dtype=np.float64)
     shape = np.maximum(np.round((high - low) / voxel).astype(int), 1)
+    occupancy = np.zeros(tuple(int(n) for n in shape), dtype=bool)
+    for box in boxes:
+        _mark_box(occupancy, box, low, voxel)
+    if near is None:
+        return _voxel_field(occupancy, low, voxel)
+    square, held = near
+    occupancy &= ~_over_the_square(square, low, voxel, occupancy.shape, wholly=True)
+    return _voxel_field(occupancy, low, voxel,
+                        near=_near_field(square, held, floor_mm=floor_mm, top_mm=float(low[2] + shape[2] * voxel)))
 
-    index = np.floor((np.asarray(points_mm, dtype=np.float64).reshape(-1, 3) - low) / voxel).astype(np.int64)
-    inside = np.all((index >= 0) & (index < shape), axis=1)
-    index = index[inside]
+
+def _near_field(square: FineRegion, held: "Sequence[PerceivedBox]", *, floor_mm: float, top_mm: float) -> VoxelField:
+    """The fine grid about the goal (:attr:`VoxelField.near`): ``held`` over ``square`` at :data:`NEAR_VOXEL_MM`, the
+    grid :data:`NEAR_BAND_MM` past the square and over the highest of them, up to ``top_mm``."""
+    voxel = NEAR_VOXEL_MM
+    centre = np.asarray(square.centre_xy, dtype=np.float64)
+    over = [box for box in held
+            if np.all(np.abs(np.asarray(box.center_mm[:2]) - centre) <= _base_reach(box)[:2] + square.half_mm)]
+    highest = max((float(box.center_mm[2]) + float(box.dims_mm[2]) / 2.0 for box in over), default=floor_mm)
+    across = math.ceil(2.0 * (square.half_mm + NEAR_BAND_MM) / voxel - 1e-9)
+    up = max(1, math.ceil((min(top_mm, highest + NEAR_BAND_MM) - floor_mm) / voxel - 1e-9))
+    low = np.array([*(centre - across * voxel / 2.0), floor_mm])
+    occupancy = np.zeros((across, across, up), dtype=bool)
+    for box in over:
+        _mark_box(occupancy, box, low, voxel)
+    # Past the square the field holds what stands there; a voxel that touches the square stays.
+    occupancy &= _over_the_square(square, low, voxel, occupancy.shape, wholly=False)
+    return _voxel_field(occupancy, low, voxel)
+
+
+def _over_the_square(
+    square: FineRegion, low: np.ndarray, voxel: float, shape: "tuple[int, ...]", *, wholly: bool
+) -> np.ndarray:
+    """Which columns of a grid (its low corner at ``low``) stand wholly over ``square``, or touch it, as a mask that
+    broadcasts over the grid."""
+    over = []
+    for axis in (0, 1):
+        start = low[axis] + np.arange(shape[axis]) * voxel
+        lo, hi = square.centre_xy[axis] - square.half_mm, square.centre_xy[axis] + square.half_mm
+        over.append((start >= lo) & (start + voxel <= hi) if wholly else (start + voxel >= lo) & (start <= hi))
+    return (over[0][:, None] & over[1][None, :])[:, :, None]
+
+
+def _voxel_field(
+    occupancy: np.ndarray, low: np.ndarray, voxel: float, near: "VoxelField | None" = None
+) -> VoxelField:
+    """``occupancy`` (its low corner at ``low``) as a field on the planner's grid."""
+    shape = np.asarray(occupancy.shape)
     # The centre of the grid the voxels were indexed into, not of the span. The grid is rounded to
     # whole voxels, and the planner puts a voxel centre half a voxel inside the low corner of the
     # pose, so a centre taken from the span would move every obstacle by half the rounding.
     centre = low + shape * voxel / 2.0
-    dims = (float(shape[0] * voxel), float(shape[1] * voxel), float(shape[2] * voxel))
-    if index.shape[0] == 0:
-        # Nothing to measure a distance to: every voxel is free by more than the grid is long.
-        free = float(np.linalg.norm(shape * voxel)) - float(tuning.margin_mm)
-        return VoxelField(
-            field=np.full(int(np.prod(shape)), free, dtype=np.float32), dims_mm=dims, voxel_size_mm=voxel,
-            center_mm=(float(centre[0]), float(centre[1]), float(centre[2])), occupied=0,
-        )
-
-    occupancy = np.zeros(tuple(int(n) for n in shape), dtype=bool)
-    occupancy[index[:, 0], index[:, 1], index[:, 2]] = True
-    occupied = int(occupancy.sum())
-
-    if tuning.floor_to_plane:
-        # Fill each column from its highest occupied voxel down. `maximum.accumulate` over a
-        # reversed axis is the whole operation, and it is the voxel form of carrying a box to the
-        # bench.
-        occupancy = np.flip(np.maximum.accumulate(np.flip(occupancy, axis=2), axis=2), axis=2)
-
-    outside = ndimage.distance_transform_edt(~occupancy) * voxel
-    within = ndimage.distance_transform_edt(occupancy) * voxel
-    # Negative inside, positive outside, and the margin moves the surface outward by making every
-    # value smaller. See the note on `VoxelField`: the other sign turns the whole grid into an
-    # obstacle.
-    field = (outside - within - float(tuning.margin_mm)).astype(np.float32)
-
     return VoxelField(
-        field=field.reshape(-1),
-        dims_mm=dims,
+        occupancy=occupancy.reshape(-1),
+        dims_mm=(float(shape[0] * voxel), float(shape[1] * voxel), float(shape[2] * voxel)),
         voxel_size_mm=voxel,
         center_mm=(float(centre[0]), float(centre[1]), float(centre[2])),
-        occupied=occupied,
+        near=near,
     )
+
+
+def _signed_distances(occupancy: np.ndarray, voxel: float) -> np.ndarray:
+    """The exact signed distance transform of ``occupancy``, millimetres, flat float32 (:attr:`VoxelField.field`)."""
+    from scipy import ndimage  # noqa: PLC0415 (kept out of import time, this is the only user)
+
+    shape = np.asarray(occupancy.shape)
+    if not occupancy.any():
+        # Nothing to measure a distance to: every voxel is free by more than the grid is long.
+        return np.full(int(np.prod(shape)), float(np.linalg.norm(shape * voxel)), dtype=np.float32)
+    outside = ndimage.distance_transform_edt(~occupancy) * voxel
+    # Inside, the distance to the nearest free voxel over the occupied voxels' box and a free voxel round it: no free
+    # voxel past that rim lies nearer, so this is the transform over the whole grid, at a fraction of its cost.
+    spans = [np.flatnonzero(occupancy.any(axis=tuple(a for a in range(3) if a != axis))) for axis in range(3)]
+    rim = tuple(slice(max(int(span[0]) - 1, 0), min(int(span[-1]) + 2, n)) for span, n in zip(spans, shape))
+    within = np.zeros(occupancy.shape)
+    within[rim] = ndimage.distance_transform_edt(occupancy[rim]) * voxel
+    # Negative inside, positive outside: see the note on `VoxelField`, the other sign turns the whole grid into an
+    # obstacle. No margin here: every box already carries the camera world's.
+    return (outside - within).astype(np.float32).reshape(-1)
+
+
+def _base_reach(box: "PerceivedBox") -> np.ndarray:
+    """How far ``box`` reaches from its centre along BASE x, y and z, turned about Z by its ``yaw_rad``."""
+    half = np.asarray(box.dims_mm, dtype=np.float64) / 2.0
+    c, s = abs(math.cos(float(box.yaw_rad))), abs(math.sin(float(box.yaw_rad)))
+    return np.array([half[0] * c + half[1] * s, half[0] * s + half[1] * c, half[2]])
+
+
+def _mark_box(occupancy: np.ndarray, box: "PerceivedBox", low: np.ndarray, voxel: float) -> None:
+    """Every voxel of ``occupancy`` (its low corner at ``low``) that ``box`` reaches into, marked."""
+    centre = np.asarray(box.center_mm, dtype=np.float64)
+    reach = _base_reach(box) + voxel / 2.0
+    first = np.clip(np.floor((centre - reach - low) / voxel).astype(int), 0, occupancy.shape)
+    last = np.clip(np.ceil((centre + reach - low) / voxel).astype(int), 0, occupancy.shape)
+    if np.any(last <= first):
+        return
+    axes = [low[i] + (np.arange(first[i], last[i]) + 0.5) * voxel - centre[i] for i in range(3)]
+    dx, dy = np.meshgrid(axes[0], axes[1], indexing="ij")
+    yaw = float(box.yaw_rad)
+    c, s = math.cos(yaw), math.sin(yaw)
+    half = np.asarray(box.dims_mm, dtype=np.float64) / 2.0
+    # The voxel's half width on the box's own axes: a voxel that touches the box reaches into it on both. The box turns
+    # about Z alone, so its height is a test of its own.
+    spread = voxel / 2.0 * (abs(c) + abs(s))
+    across = (np.abs(c * dx + s * dy) <= half[0] + spread) & (np.abs(-s * dx + c * dy) <= half[1] + spread)
+    up = np.abs(axes[2]) <= half[2] + voxel / 2.0
+    occupancy[first[0]:last[0], first[1]:last[1], first[2]:last[2]] |= across[:, :, None] & up[None, None, :]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -2873,7 +3080,7 @@ class _FineGuardWorld:
     """What the guard holds where it holds the fine world (:func:`_fine_guard_world`)."""
 
     boxes: tuple[PerceivedBox, ...]
-    region: str
+    region: FineRegion
     fine: int
     uncovered: int
 
@@ -3113,7 +3320,7 @@ def _fine_guard_world(
                     guard.append(replace(boxed, name=_box_name(f"{tuning.name_prefix}o", extra, boxed.label)))
                     extra += 1
     guard.extend(solids)
-    return _FineGuardWorld(boxes=tuple(guard), region=region.render(), fine=len(fine), uncovered=uncovered)
+    return _FineGuardWorld(boxes=tuple(guard), region=region, fine=len(fine), uncovered=uncovered)
 
 
 

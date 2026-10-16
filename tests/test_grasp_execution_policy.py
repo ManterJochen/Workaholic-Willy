@@ -261,9 +261,29 @@ class PolicyDetectingGripperTests(unittest.TestCase):
         report = policy.execute(_grasp())
         self.assertIs(report.outcome, PolicyOutcome.EXECUTED)
         self.assertTrue(report.object_detected)
-        self.assertEqual(gripper.is_object_detected_calls, 1)
+        # Asked at the close and again once the part is lifted (the owner, 2026-10-15).
+        self.assertEqual(gripper.is_object_detected_calls, 2)
         # Retreat commanded.
         self.assertEqual(arm.move_to_calls[-1].label, "retreat")
+
+    def test_a_part_that_slips_out_on_the_lift_is_no_part_carried(self) -> None:
+        """The owner's cell, 2026-10-15: now and then a part held at the close fell out as the arm lifted it, and the cell
+        carried it to the place as gripped. Asked again once the lift is done, the jaws closed on nothing end the pick
+        as an empty grasp, the arm standing where the lift ended."""
+
+        class _SlipsOnTheLift(_DetectingGripper):
+            def is_object_detected(self) -> bool:
+                self.is_object_detected_calls += 1
+                return self.is_object_detected_calls == 1
+
+        arm = _FakeArm()
+        gripper = _SlipsOnTheLift(detects=True)
+        report = GraspExecutionPolicy(arm=arm, gripper=gripper).execute(_grasp())
+        self.assertIs(report.outcome, PolicyOutcome.OBJECT_NOT_DETECTED)
+        self.assertFalse(report.object_detected)
+        self.assertEqual(2, gripper.is_object_detected_calls)
+        self.assertEqual("retreat", arm.move_to_calls[-1].label, "the lift ran before it was asked again")
+        self.assertIn("slipped out", report.motion_message)
 
     def test_detecting_gripper_failure_skips_retreat(self) -> None:
         arm = _FakeArm()
@@ -432,6 +452,9 @@ class CloseWidthResolveTests(unittest.TestCase):
         g.min_width_mm = 2.0
         self.assertEqual(GraspExecutionPolicy(arm=_FakeArm(), gripper=g, close_squeeze_mm=11.0)
                          ._resolve_close_width(_grasp()), 2.0)
+        # Its closed end where it says one, past the planner's floor (the owner's velcro band, 2026-10-15).
+        g.closed_width_mm = 0.0
+        self.assertEqual(GraspExecutionPolicy(arm=_FakeArm(), gripper=g)._resolve_close_width(_grasp()), 0.0)
         self.assertEqual(GraspExecutionPolicy(arm=_FakeArm(), gripper=g, close_width_mm=25.0)
                          ._resolve_close_width(_grasp()), 25.0)
         from unittest import mock

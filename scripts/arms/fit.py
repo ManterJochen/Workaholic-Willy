@@ -30,12 +30,25 @@ The plan asks every hand for a 12 mm reach within 256 spheres for the gripper an
 fit says so, and says whether the reach was not tried (below twice its sample spacing) or did not fit within the cap.
 A ``--cap`` or ``--reach-mm`` passed to ``--write`` is recorded in the map's provenance under ``overrides``, so a map
 fitted to other numbers than the plan's says which.
+
+The second robot mask takes its spheres from the same fit, turned inside out (owner, 2026-10-15: "die Kugeln so fitten,
+dass diese nicht herausragen"):
+
+    .venv/Scripts/python.exe scripts/arms/fit.py --arm ur10 --mask --write
+    .venv/Scripts/python.exe scripts/arms/fit.py --hand robotiq_hande --mask --write
+
+Each body is covered at a reach of :data:`MASK_GAP_MM` and every sphere shrunk by it, which leaves the ball about each
+centre that lies inside the body, and every surface sample within the gap of one; the map is
+``robot/<name>_..._mask_spheres.yml``, its provenance carrying the gap and, for an arm, the DH rows its spheres are
+written in. The robot's envelope places them where the guard stands the robot (``self_envelope.mask_spheres``,
+``tests/test_the_second_robot_mask_takes_the_robot_and_nothing_beside_it``).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 import time
 from dataclasses import dataclass
@@ -209,6 +222,18 @@ LADDER_MM = (2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 15.0, 20.0, 25.0, 30.0)
 #: Surface samples per body, from the shared oracle. Coverage is a claim at the samples, checked afterwards on a
 #: fresh draw with another seed.
 SAMPLES = DEFAULT_SAMPLES
+
+#: The second robot mask (``--mask``, owner 2026-10-15: "die Kugeln so fitten, dass diese nicht herausragen"): every
+#: sphere lies inside its body and every surface sample within this of one, millimetres. The mask takes a point this near
+#: a sphere, and the depth's noise, as the robot's, so nothing farther from the robot than that leaves the camera world;
+#: the self filter takes 15 mm. At 8 mm the Hand-E costs 180 spheres and the UR10's shoulder 622; at 5 the Hand-E 711.
+MASK_GAP_MM = 8.0
+#: The most spheres one body may take for the mask: a mask is judged per pixel, not per plan, so it may hold many.
+MASK_CAP = 4000
+#: The radius a mask sphere the cover sat on the surface keeps, metres: a point on the body, 0.1 mm past it at most.
+MASK_FLAT_M = 1e-4
+MASK_RECIPE = ("inner fit: the cover fit at a reach of the gap, each sphere shrunk by it, so every sphere lies inside "
+               "the body and every surface sample within the gap of one; the second robot mask, never a planner")
 #: Candidate seeds per round. More is a better cover and a slower fit; rounds re-seed from whatever is left.
 SEEDS_PER_ROUND = 1024
 
@@ -267,12 +292,14 @@ class Body(MeshBody):
 
 def fit_bundle(bundle: Path, plan: "dict[str, Ask]", *, seed: int = 0,
                cap: "int | None" = None, reach_mm: "float | None" = None,
-               target: str = "--hand <name> or --arm <model>") -> "tuple[dict, list[dict]]":
+               target: str = "--hand <name> or --arm <model>",
+               spacing_mm: "float | None" = None) -> "tuple[dict, list[dict]]":
     """Every body of one bundle, fitted to what the plan asks of it and verified on points it never saw.
 
     ``cap`` and ``reach_mm`` override the plan for the whole bundle, which is how a measurement is taken. A
     map that gets committed is written from the plan. ``target`` is the ``--hand`` or ``--arm`` this bundle was
-    named by, for the ``--curve`` command a refusal ends in.
+    named by, for the ``--curve`` command a refusal ends in. ``spacing_mm`` samples every body at least that finely,
+    for a reach below twice what :data:`SAMPLES` gives a large body.
     """
     spheres: dict = {}
     rows: list[dict] = []
@@ -280,7 +307,10 @@ def fit_bundle(bundle: Path, plan: "dict[str, Ask]", *, seed: int = 0,
         started = time.time()
         asked_cap = cap if cap is not None else ask.cap
         ladder = (reach_mm,) if reach_mm else (ask.reach_mm,)
-        body = Body(load_meshes(bundle, [name]), samples=SAMPLES, seed=seed)
+        meshes = load_meshes(bundle, [name])
+        samples = SAMPLES if spacing_mm is None else max(SAMPLES, math.ceil(
+            4.0 * sum(float(mesh.area) for mesh in meshes) / (spacing_mm / 1000.0) ** 2))
+        body = Body(meshes, samples=samples, seed=seed)
         curve = (f"{_main_interpreter()} scripts/arms/fit.py {target} --bodies {name} --curve")
         if body.below_sampling(ladder[0]):
             # Never tried, which is a different answer from did not fit: a larger cap cannot help it.
@@ -396,12 +426,17 @@ def main(argv: "list[str] | None" = None) -> int:
     parser.add_argument("--curve", action="store_true",
                         help="report every rung of the ladder instead of fitting the first that fits")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--mask", action="store_true",
+                        help=f"the second robot mask's spheres: inside every body, each surface sample within "
+                             f"{MASK_GAP_MM:g} mm of one (robot/<name>_..._mask_spheres.yml)")
     parser.add_argument("--write", action="store_true", help="write the committed map; otherwise report only")
     parser.add_argument("--json-out", default=None, help="where to append one JSON row per body")
     args = parser.parse_args(argv)
 
     if bool(args.arm) == bool(args.hand):
         raise SystemExit("name exactly one of --arm or --hand")
+    if args.mask and args.curve:
+        raise SystemExit("--mask fits at its own gap; --curve measures the cover fit's count against reach")
 
     if args.arm:
         bundle = DATA / f"{args.arm}_collision_meshes.npz"
@@ -443,11 +478,26 @@ def main(argv: "list[str] | None" = None) -> int:
         return 0
 
     target = f"--arm {args.arm}" if args.arm else f"--hand {args.hand}"
-    plan = planned(frames, ARM_PLAN if args.arm else HAND_PLAN, target=target)
-    spheres, rows = fit_bundle(bundle, plan, seed=args.seed, cap=args.cap, reach_mm=args.reach_mm, target=target)
+    if args.mask:
+        if args.cap or args.reach_mm:
+            raise SystemExit("--mask fits at its own gap and cap; --cap and --reach-mm measure the cover fit")
+        out, what = out.with_name(out.name.replace("_spheres.yml", "_mask_spheres.yml")), f"{what}, the robot mask"
+        plan = {part: Ask(frame, MASK_GAP_MM, MASK_CAP, "the second robot mask: inside the body, every sample within "
+                                                        "the gap") for part, frame in frames.items()}
+        spheres, rows = fit_bundle(bundle, plan, seed=args.seed, spacing_mm=MASK_GAP_MM / 2.2, target=target)
+        # The cover at a reach of the gap, each sphere shrunk by it: its ball about the same centre lies inside the body
+        # (``_cover_fit``), and every sample it covered lies within the gap of it. A sphere the cover sat on the surface
+        # (a flat one, of the reach alone) keeps MASK_FLAT_M, as cuRobo takes no sphere of radius 0.
+        spheres = {name: {**block, "spheres": [{"center": sphere["center"], "radius": round(max(
+            float(sphere["radius"]) - MASK_GAP_MM / 1000.0, MASK_FLAT_M), 6)} for sphere in block["spheres"]]}
+            for name, block in spheres.items()}
+    else:
+        plan = planned(frames, ARM_PLAN if args.arm else HAND_PLAN, target=target)
+        spheres, rows = fit_bundle(bundle, plan, seed=args.seed, cap=args.cap, reach_mm=args.reach_mm, target=target)
     total = sum(row["spheres"] for row in rows)
     print(f"[fit] {total} spheres over {len(rows)} bodies, reaching at most "
-          f"{max(row['fresh_reach_max_mm'] for row in rows):.1f} mm past the geometry", flush=True)
+          f"{max(row['fresh_reach_max_mm'] for row in rows):.1f} mm past the geometry"
+          + (", each shrunk by it to lie inside" if args.mask else ""), flush=True)
 
     if args.json_out:
         path = Path(args.json_out)
@@ -458,6 +508,13 @@ def main(argv: "list[str] | None" = None) -> int:
 
     provenance = provenance_of(what=what, source=bundle, rows=rows, seed=args.seed,
                                overrides={"cap": args.cap, "reach_mm": args.reach_mm})
+    if args.mask:
+        provenance.update({"model": "mask", "recipe": MASK_RECIPE, "asked_for": "scripts/arms/fit.py --mask",
+                           "gap_mm": MASK_GAP_MM})
+        if args.arm:
+            import _ur_description  # noqa: PLC0415 (beside this script; the DH rows the spheres are written in)
+
+            provenance["dh_m"] = [[float(v) for v in row] for row in _ur_description.dh_rows(args.arm)]
     if args.write:
         if args.bodies:
             raise SystemExit(

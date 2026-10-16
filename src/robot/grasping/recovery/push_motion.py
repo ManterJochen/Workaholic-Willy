@@ -26,7 +26,9 @@ with a ``refused_*`` outcome and zero motion, so the recovery loop falls through
   disconnect and the next connect asks), nothing else counts, and ``jaws_open_for_a_pick``, which can ask a person,
   is never called. A toggle's count nobody can vouch for (``refused_jaws_unknown``) ends the pick at the caller, as a
   gripper fault, and so does a gripper that measures its width found not connected or whose width read fails; a count
-  or a width that says closed is a refusal like the others;
+  or a width that says closed is a refusal like the others. A push that closes its hand (``close_to_mm``) asks a
+  Robotiq (the owner, 2026-10-15) only that it measure its width, be connected and read one, and a toggle (the owner,
+  2026-10-16) that its count stand and say open, as above;
 * the arm is at rest, where the cell asks for that before every motion (``safety.dwell``), as for every grasp and
   look motion.
 
@@ -68,7 +70,11 @@ person: ``acknowledge_fault`` is never called, and the campaign ends. A camera w
 for the cell (``CameraWorldUnavailable``) is raised out, as every motion of a pick raises it: nothing more was
 commanded, and the campaign stops on it.
 
-The gripper is only read: DO0 is never written, so a push cannot lose the toggle's count. Once the keep-out scope
+A hand closes in the air at P0 (``close_to_mm``), its fingers judged where it closes them from the judgement ahead to
+the up leg's end, and the caller opens it once the arm is back at the look: a Robotiq told its closed width, a toggle by
+one change of its output, and one more at the look (the owner, 2026-10-16: "Ja, geschlossen", its footprint 22 mm where
+open it was 72). Between the two the toggle's count is read before each contact leg and once the up leg ended, as
+ever, and nothing else writes its output. A hand that pushes open is only read. Once the keep-out scope
 was opened the live world forgets every offer when it closes (the live world's rule), so after any push, a refusal
 included, the caller offers the pick's target again before its next motion.
 """
@@ -100,7 +106,12 @@ from src.robot.core.arm_capabilities import (
 )
 from src.robot.core.camera_world import live_planner_world_of
 from src.robot.core.errors import CameraWorldUnavailable
-from src.robot.core.gripper import toggle_without_sensor_of, why_toggle_count_unknown, width_is_measured_of
+from src.robot.core.gripper import (
+    guard_holds_the_fingers_at,
+    toggle_without_sensor_of,
+    why_toggle_count_unknown,
+    width_is_measured_of,
+)
 from src.robot.core.keep_out import SegmentationOffer, keeping_out
 from src.robot.execution.motion import steady_timeout_of
 from src.robot.grasping.recovery.policy import refused_before_motion
@@ -122,7 +133,9 @@ __all__ = [
     "STATION_TOLERANCE_MM",
     "PushOutcome",
     "PushOutcomeCode",
+    "close_for_the_push",
     "execute_push",
+    "open_after_the_push",
     "push_budget_key",
     "push_tool_quaternion",
 ]
@@ -399,14 +412,22 @@ def execute_push(
     offer: SegmentationOffer,
     natural_closing_axis: Optional[ClosingAxis] = None,
     should_cancel: Optional[Callable[[], bool]] = None,
+    close_to_mm: Optional[float] = None,
 ) -> PushOutcome:
     """Drive one push: the whole push judged ahead, then P0 like a grasp approach and the four judged contact lines,
     all while the part and its swept travel, and every neighbour a rearranging push may touch, are kept out of the
     arm's live camera world. See the module docstring for every rule.
 
+    ``close_to_mm`` is how far apart the fingers stand once the hand closed before it comes down
+    (``PushCell.closed_width_mm``: a Robotiq told that width, the owner, 2026-10-15; a toggle closed by one change of
+    its output, at the band it reports, 2026-10-16): the push is judged ahead with the guard holding the fingers that
+    far apart, the hand closes in the air at P0 and the guard is told where it reads them, and once the legs end the
+    guard holds them fully open again, wider than they stand until the caller opens the hand. ``None`` pushes with the
+    jaws open as they stand, read only.
+
     ``arm`` is the cell's :class:`~src.robot.core.RobotArm`. ``plan`` is what
     :func:`~src.robot.grasping.recovery.push_planner.plan_push` answered; its refusal is answered with a refusal here.
-    ``gripper`` is the cell's gripper, only ever read. ``offer`` is the pick's segmentation offer of the part (its
+    ``gripper`` is the cell's gripper, only read unless ``close_to_mm`` closes it. ``offer`` is the pick's segmentation offer of the part (its
     masks for their camera, its BASE points and the frame's shutter time, as the pick holds it for a grasp); the push
     holds the same offer with the part's points swept along the push. ``natural_closing_axis`` is how the cell's hand
     and camera naturally stand (``robot.natural_closing_axis``): the push closes the way round nearer it
@@ -421,7 +442,8 @@ def execute_push(
     own memory there), and a ``BaseException`` that is no ``Exception``, such as a person's ``KeyboardInterrupt``.
     """
 
-    ready = _before_motion(arm, plan, gripper=gripper, offer=offer, natural=natural_closing_axis)
+    ready = _before_motion(arm, plan, gripper=gripper, offer=offer, natural=natural_closing_axis,
+                           closes=close_to_mm is not None)
     if isinstance(ready, PushOutcome):
         return ready
     push_plan, poses, held, steady_s = ready
@@ -437,12 +459,47 @@ def execute_push(
             return _refused(PushOutcomeCode.REFUSED_KEEP_OUT_NOT_TAKEN,
                             f"The arm's camera world did not take the part and its push path to keep out "
                             f"({type(exc).__name__}: {exc}), so nothing was commanded.", plan=push_plan)
-        ahead = _refusal_ahead(arm, poses)
+        try:
+            if close_to_mm is not None:
+                # Judged ahead with the fingers where the hand will close them, as a grasp's are where it opens them.
+                guard_holds_the_fingers_at(arm, None, close_to_mm)
+            ahead = _refusal_ahead(arm, poses)
+        finally:
+            if close_to_mm is not None:
+                guard_holds_the_fingers_at(arm, None, None)
         if ahead:
             return _refused(PushOutcomeCode.REFUSED_AHEAD,
                             f"The push was judged from where the arm stands before P0, and {ahead}: nothing was "
                             "commanded, and the arm stands where it stood.", plan=push_plan)
-        return _drive_push(arm, push_plan, poses, steady_s, gripper=gripper, should_cancel=should_cancel)
+        return _drive_push(arm, push_plan, poses, steady_s, gripper=gripper, should_cancel=should_cancel,
+                           close_to_mm=close_to_mm)
+
+
+def close_for_the_push(gripper: Any, width_mm: float) -> None:
+    """Close the hand in the air for a push with its jaws closed: a toggle by one change of its output
+    (``set_closed``: where its count already says closed it sends nothing), any other hand told ``width_mm``.
+
+    Args:
+        gripper: The cell's hand.
+        width_mm: The width a hand told a width closes to, millimetres; a toggle closes as far as it goes.
+    """
+    if toggle_without_sensor_of(gripper) is not None:
+        gripper.set_closed(True)
+        return
+    gripper.set_width_mm(float(width_mm))
+
+
+def open_after_the_push(gripper: Any) -> None:
+    """Open the hand a push closed, at the look after it: a toggle by one change of its output, any other hand told its
+    widest.
+
+    Args:
+        gripper: The cell's hand.
+    """
+    if toggle_without_sensor_of(gripper) is not None:
+        gripper.set_closed(False)
+        return
+    gripper.set_width_mm(float(gripper.max_width_mm))
 
 
 def neighbours_kept_out(plan: Any, offer: SegmentationOffer) -> tuple[SegmentationOffer, ...]:
@@ -475,14 +532,29 @@ def _refusal_ahead(arm: Any, poses: tuple[Pose, ...]) -> str:
 
 
 def _drive_push(arm: Any, plan: PushPlan, poses: tuple[Pose, ...], steady_s: Optional[float], *,
-                gripper: Any = None, should_cancel: Optional[Callable[[], bool]] = None) -> PushOutcome:
+                gripper: Any = None, should_cancel: Optional[Callable[[], bool]] = None,
+                close_to_mm: Optional[float] = None) -> PushOutcome:
     """P0, then the four contact legs, inside the open keep-out scope: the outcome, and nothing moved after a stop.
     Before each contact leg, and once the up leg ended, a toggle's count is read again (``gripper``): one nobody can
-    vouch for stops the push where the arm stands, as a controller that cannot be read does."""
+    vouch for stops the push where the arm stands, as a controller that cannot be read does. A hand told a width
+    (``close_to_mm``) closes at P0 first, in the air, and the guard holds its fingers where it reads them for the legs
+    and fully open once they end; a close that raises leaves the arm at P0 with nothing touched, and it goes back."""
 
     move = arm.move
     results: list[MotionResult] = []
     done: list[str] = []
+    try:
+        return _drive_legs(arm, plan, poses, steady_s, move, results, done, gripper=gripper,
+                           should_cancel=should_cancel, close_to_mm=close_to_mm)
+    finally:
+        if close_to_mm is not None:
+            guard_holds_the_fingers_at(arm, None, None)
+
+
+def _drive_legs(arm: Any, plan: PushPlan, poses: tuple[Pose, ...], steady_s: Optional[float], move: Any,
+                results: list[MotionResult], done: list[str], *, gripper: Any,
+                should_cancel: Optional[Callable[[], bool]], close_to_mm: Optional[float]) -> PushOutcome:
+    """:func:`_drive_push`'s motions, the guard's fingers left to it."""
 
     result, error = _drive(move, poses[0], linear=False)
     if result is not None:
@@ -499,6 +571,18 @@ def _drive_push(arm: Any, plan: PushPlan, poses: tuple[Pose, ...], steady_s: Opt
         )
     else:
         return _stop(arm, plan, APPROACH_LEG, result, error, done, results)
+
+    if close_to_mm is not None:
+        try:
+            close_for_the_push(gripper, float(close_to_mm))
+        except Exception as exc:  # noqa: BLE001 (a hand that did not close leaves the arm in the air, nothing touched)
+            return _finish(arm, PushOutcome(
+                code=PushOutcomeCode.REFUSED_DOWN_NOT_SENT,
+                reason=(f"The jaws did not close for the push ({type(exc).__name__}: {exc}); the arm stands in the air "
+                        "at P0 and nothing touched the part, so it goes back to the look."),
+                plan=plan, leg=CONTACT_LEGS[0], legs_done=tuple(done), results=tuple(results), error=exc,
+            ))
+        guard_holds_the_fingers_at(arm, gripper, float(close_to_mm))
 
     for leg, pose in zip(plan.legs, poses[1:]):
         halted = _halt(arm, plan, f"Before the {leg.name} leg", leg.name, done, results, steady_s=steady_s,
@@ -557,9 +641,11 @@ def _refused(code: PushOutcomeCode, reason: str, *, plan: Optional[PushPlan] = N
 
 def _before_motion(
     arm: Any, plan: Any, *, gripper: Any, offer: SegmentationOffer, natural: Optional[ClosingAxis] = None,
+    closes: bool = False,
 ) -> Union[PushOutcome, tuple[PushPlan, tuple[Pose, ...], SegmentationOffer, Optional[float]]]:
     """Every precondition, read and never asked: the refusal, or the plan, its five poses, the offer to hold and the
-    steady gate's timeout (``None`` where the cell asks for none)."""
+    steady gate's timeout (``None`` where the cell asks for none). A push that ``closes`` its hand at P0 asks the hand
+    to measure its width and answer, not to stand open."""
 
     if isinstance(plan, PushRefusal):
         return _refused(PushOutcomeCode.REFUSED_NO_PLAN,
@@ -612,7 +698,7 @@ def _before_motion(
         return _refused(PushOutcomeCode.REFUSED_CONTROLLER_STOPPED,
                         f"The controller could not be read ({read_error}), so nothing was commanded.", plan=plan)
 
-    jaws = _jaws_refusal(gripper)
+    jaws = _jaws_refusal(gripper, closes=closes)
     if jaws is not None:
         return _refused(jaws[0], jaws[1], plan=plan)
 
@@ -809,21 +895,32 @@ def _not_at_rest(arm: Any, timeout_s: Optional[float]) -> str:
     return f"The arm did not come to rest within {timeout_s:g} s (safety.dwell)"
 
 
-def _jaws_refusal(gripper: Any) -> Optional[tuple[PushOutcomeCode, str]]:
-    """Why the jaws cannot be said to stand open, read without asking or sending anything; ``None`` where they do.
-    A read that raises is a jaw nobody can vouch for."""
+def _jaws_refusal(gripper: Any, *, closes: bool = False) -> Optional[tuple[PushOutcomeCode, str]]:
+    """Why the jaws cannot be said to stand open, read without asking or sending anything; ``None`` where they do. A
+    push that ``closes`` the hand at P0 asks only that it measure its width and answer. A read that raises is a jaw
+    nobody can vouch for."""
 
     try:
-        return _jaws_reading(gripper)
+        return _jaws_reading(gripper, closes=closes)
     except Exception as exc:  # noqa: BLE001 (a failed read refuses the push, never escapes it)
         return (PushOutcomeCode.REFUSED_JAWS_UNKNOWN,
                 f"The jaws could not be read ({type(exc).__name__}: {exc}), so nothing is pushed and nobody is asked.")
 
 
-def _jaws_reading(gripper: Any) -> Optional[tuple[PushOutcomeCode, str]]:
+def _jaws_reading(gripper: Any, *, closes: bool = False) -> Optional[tuple[PushOutcomeCode, str]]:
     if gripper is None:
         return (PushOutcomeCode.REFUSED_NO_GRIPPER,
                 "There is no gripper to read, so nobody can say the jaws stand open, and nothing is pushed.")
+    if closes and toggle_without_sensor_of(gripper) is None:
+        if not width_is_measured_of(gripper):
+            return (PushOutcomeCode.REFUSED_JAWS_UNKNOWN,
+                    f"The push closes its hand to a width at P0, and the gripper ({type(gripper).__name__}) is told no "
+                    "width it measures, so nothing is pushed.")
+        if getattr(gripper, "is_connected", False) is not True or not math.isfinite(float(gripper.get_width_mm())):
+            return (PushOutcomeCode.REFUSED_JAWS_UNKNOWN,
+                    "The gripper is not connected or reads no width, so it cannot be closed for the push and nothing "
+                    "is pushed.")
+        return None
     toggle = toggle_without_sensor_of(gripper)
     if toggle is not None:
         if getattr(gripper, "is_connected", False) is not True:
@@ -845,6 +942,8 @@ def _jaws_reading(gripper: Any) -> Optional[tuple[PushOutcomeCode, str]]:
                     f"Nobody can say where the jaws stand ({why}), so nothing is pushed and nobody is asked.")
         if bool(toggle.jaws_closed):
             return (PushOutcomeCode.REFUSED_JAWS_CLOSED,
+                    "The count says the jaws stand closed, and a push closes them from open at P0, so nothing is "
+                    "pushed and nobody is asked." if closes else
                     "The count says the jaws stand closed. A push runs with open jaws and never switches them, so "
                     "nothing is pushed and nobody is asked.")
         return None

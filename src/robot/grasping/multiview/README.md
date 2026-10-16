@@ -84,7 +84,7 @@ looks the same way ([perception/](../../perception/README.md)). What this packag
 | **One name per look** | the pick loop | a look is the view `rig@look`, so two looks of one camera are two views; a pick handed no looks keeps the rig id |
 | **Label agreement** | `association.label_agreement` | looks that call the associated part by different labels make its grasp uncertain; looks that agree change nothing. One rule for the pick loop and the Locator, and one sentence for both accounts, `label_agreement_said`: `label agreed in N of M looks`, M the looks that saw the part, N those that call it the judged look's label |
 | **Jaw contact faces** | `unseen_side.jaw_faces_seen` | a face counts as seen when at least 30 % of the pad's touchable 4 mm cells, and at least 3 cells, hold 3 or more points within 6 mm of the face |
-| **The generated view** | `unseen_side.orbit_views` | the judged look turned about the vertical through the part, smallest turn first, up to 180 deg either way (`ORBIT_MAX_DEG`), a face counting as shown within 60 deg of incidence, at most 3 motions (`ORBIT_MAX_MOTIONS`); the safeguards past 120 deg live in [`execution/generated_view.py`](../../execution/generated_view.py) |
+| **The generated view** | `unseen_side.orbit_views`, `unseen_side.other_angles` | the judged look turned about the vertical through the part, smallest turn first, up to 180 deg either way (`ORBIT_MAX_DEG`), a face counting as shown within 60 deg of incidence, at most 3 motions (`ORBIT_MAX_MOTIONS`); where no turn can be driven, its other angles (the owner, 2026-10-16): lowered 15 and 30 deg about the part or raised 15, at 0.85 and 1.15 of its distance, each with every turn, nearest the judged look first, between 15 and 80 deg over the table; the safeguards past 120 deg live in [`execution/generated_view.py`](../../execution/generated_view.py) |
 
 **The hand-eye check** compares two looks where they saw the same surface
 (`association.nearest_surface_distances_mm`): each point's nearest point of the other look within 15 mm,
@@ -142,7 +142,7 @@ out by `camera.cameras.primary_rig_id`, and listing it keeps the single-view war
 | `association.py` | `AssociationMetric`, `associate_target`, `assign_view`, `cluster_views`, `fuse_target_cloud`, `fuse_scene_clouds`; `label_agreement`, `label_agreement_said`, `nearest_surface_distances_mm`, `HAND_EYE_DRIFT_WARN_MM`, `HAND_EYE_MIN_POINTS` and the `WRIST_VIEW_*` tolerances |
 | `scene_geometry.py` | `ObservedView` (with its `footprints`), `fuse_scene_geometry`, `FusedSceneGeometry` (with its `footprint_clouds_base_mm`), `build_scene_objects`, `SceneObject`, `to_base_mm`, `grazing_pixels` |
 | `localize.py` | `fuse_view_localizations`, `ViewLocalization`: a visibility-weighted BASE centroid |
-| `unseen_side.py` | `jaw_faces_seen`, `orbit_views`: were both jaw contact faces seen, and the turns of the judged look that would show the one that was not, up to 180 deg |
+| `unseen_side.py` | `jaw_faces_seen`, `orbit_views`, `other_angles`: were both jaw contact faces seen, the turns of the judged look that would show the one that was not, up to 180 deg, and its other angles where no turn can be driven |
 
 `synthesis.py` (`synthesize_grasp_from_cloud`, a top-down grasp from the fused footprint) was removed on
 2026-09-29 with the two `run_multiview_pick` levers that called it, `--synthesize-3d` and `--closed-loop`:
@@ -159,4 +159,5 @@ a fused cell's grasp comes from the generator fed the fused cloud.
   `tests/test_scene_objects.py`, `tests/test_promoted_objects_reach_the_pick.py`,
   `tests/test_fusion_camera_map_means_every_camera.py`, `tests/test_both_jaw_faces_are_seen.py`,
   `tests/test_the_generated_view_orbits_to_the_unseen_face.py`,
+  `tests/test_the_generated_view_tries_other_angles_where_no_turn_can_be_driven.py`,
   `tests/test_a_wrist_pick_looks_until_its_grasp_is_safe.py`.

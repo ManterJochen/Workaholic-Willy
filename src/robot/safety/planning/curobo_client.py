@@ -1681,8 +1681,10 @@ class CuroboPlanClient:
         The field is a signed distance in metres, negative inside an obstacle and positive
         in free space. Written positive inside, every voxel that is not an obstacle reads as
         inside one and the whole grid blocks, so a wall looks seen when the cell is, as
-        ``scripts/curobo/probe_live_world.py`` measures.
-        :mod:`src.robot.safety.planning.live_world` writes the file in this sign.
+        ``scripts/curobo/probe_live_world.py`` measures. The file holds those distances
+        (float16), or the field's occupancy, eight voxels to a byte (uint8), whose distances
+        the sidecar takes on the GPU in that sign, which is what
+        :mod:`src.robot.safety.planning.live_world` writes.
 
         It returns the number of values registered, or ``None`` where the sidecar refused,
         which is the state a caller must treat as no world at all.

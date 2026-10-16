@@ -386,15 +386,18 @@ robot:
       # `max_age_ms` refuses the motion rather than planning against a cell that had time to
       # change. Measured on one camera at 848 x 480: 9 ms to build boxes and a distance field.
       #
-      # `voxel_field_mm` is the difference between the planner seeing the nearest few obstacles
-      # and seeing the whole cell, and it is 0 until the sidecar reserves a grid at start-up.
+      # `voxel_field_mm` sends the planner every column the cameras measured as a distance field,
+      # and about a motion's goal the fine world the guard holds there, on a grid of its own at
+      # 4 mm; the planner reserves both when it starts and takes their distances on the GPU. 0
+      # sends boxes alone. On the replay bank (2026-10-15, 297 picks): 26 more of 823 plans from
+      # home, none fewer, every route as before, 0.1 s more a route.
       perceived:
         enabled: true
         max_age_ms: 500.0
         fresh_frame_attempts: 3
         pixel_stride: 2
         voxel_size_mm: 10.0
-        voxel_field_mm: 0.0
+        voxel_field_mm: 10.0
         cluster_voxel_mm: 25.0
         min_points: 12
         margin_mm: 8.0

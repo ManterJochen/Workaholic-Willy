@@ -2386,9 +2386,10 @@ class PlannedArm(RobotArm):
     #: 10 ms on the cell (2026-10-08). A person asked anything in between takes longer, and the route is judged again.
     _AHEAD_HOLDS_S = 0.5
     #: How far the arm may stand from where a route or a lift judged ahead starts for it to run as judged, in the path
-    #: gate's own metric (the sum of |dq| * r over the joints): ten times the encoder noise of an arm at rest, about
-    #: 0.05 mm.
-    _AHEAD_MOVED_MM = 0.5
+    #: gate's own metric (the sum of |dq| * r over the joints), millimetres: twenty times the encoder noise of an arm at
+    #: rest, about 0.05 mm, and a fifth of the guard's distance to a camera box. At 0.5 mm the owner's cell came to rest
+    #: 0.56 mm off a line down and judged it twice, 3.5 to 4 s each (2026-10-15, 8:05; the owner: 1 mm).
+    _AHEAD_MOVED_MM = 1.0
 
     def _why_judged_again(self, ahead: _JudgedAhead, planner: object, pose: Pose, *, velocity: float) -> str:
         """Why the route judged ahead to ``pose`` is judged again rather than run as it was judged; ``""`` where it runs.
@@ -2975,9 +2976,10 @@ class PlannedArm(RobotArm):
 
         ``None`` where the switch is on, an exact mesh guard runs, and it holds everything the planner would judge the
         samples against. The arm, the hand, the wrist cameras and the declared fixtures both hold; the camera's boxes
-        the guard holds from the same refresh the planner's world was built from. What only the planner holds keeps it
-        asked: a mesh its world declares, a distance field of the camera's points (``perceived.voxel_field_mm``), a
-        carried part (attached by the arm, the jaws closed on one where the cell models it, or a planner that carries
+        the guard holds from the same refresh the planner's world was built from, and a distance field of them
+        (``perceived.voxel_field_mm``) too, the fine world about the goal in its fine grid. What only the planner holds
+        keeps it asked: a mesh its world declares, a carried part (attached by the arm, the jaws closed on one where the
+        cell models it, or a planner that carries
         one or cannot say), on a cell that models a carried part a hand not known empty and open, which may hold one
         (the owner, 2026-10-01), the declared support plane, wherever a part of the arm or the hand past the
         shoulder comes within the guard's ``min_distance_mm`` of its top on the exact meshes, and the robot's own base,
@@ -2997,10 +2999,9 @@ class PlannedArm(RobotArm):
         on = world is not None and bool(getattr(world, "enabled", False))
         if on and tuple(getattr(world, "meshes", None) or ()):
             return "the planner's world declares meshes the exact guard does not hold"
-        perceived = getattr(world, "perceived", None) if on else None
-        if perceived is not None and float(getattr(perceived, "voxel_field_mm", 0.0) or 0.0) > 0.0:
-            return ("the planner holds a distance field of the camera's points (perceived.voxel_field_mm), which the "
-                    "exact guard does not")
+        # A distance field (perceived.voxel_field_mm) is the camera world's boxes as measured, and about the goal the
+        # guard's own fine world, which the exact guard holds (``perceived.build_voxel_field``): it holds nothing the
+        # guard does not (owner, 2026-10-15).
         carried = getattr(planner, "carries_part", None)
         unmodelled = self._attached_payload is None and self._payload_config_declined() is not None
         if self._attached_payload is not None or (self._closed_on_part and not unmodelled) or carried is True:

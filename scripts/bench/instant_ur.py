@@ -74,6 +74,9 @@ class ControllerState:
     outputs: list[bool] = field(default_factory=lambda: [False] * 18)
     inputs: list[bool] = field(default_factory=lambda: [False] * 18)
     protective_stopped: bool = False
+    #: How many asynchronous moves it took: the id the control script writes into its progress register at each start,
+    #: which a watched move reads before it sends and waits to see change (``connection._move_and_wait``).
+    operations: int = 0
     on_tool_output: Callable[[int, bool, np.ndarray], None] | None = None
     #: Every command sent, ``(verb, target)``: joints in radians, or a UR pose.
     commands: list[tuple[str, Any]] = field(default_factory=list)
@@ -131,6 +134,15 @@ class ControllerState:
 
 
 class _Progress:
+    """``rtde_control.AsyncOperationStatus`` for moves taken at once: the id of the last asynchronous move, never
+    running."""
+
+    def __init__(self, operation_id: int) -> None:
+        self._operation_id = operation_id
+
+    def operationId(self) -> int:  # noqa: N802 (ur_rtde's name)
+        return self._operation_id
+
     def isAsyncOperationRunning(self) -> bool:  # noqa: N802 (ur_rtde's name)
         return False
 
@@ -157,6 +169,7 @@ def install(state: ControllerState) -> dict[str, Any]:
             with state.lock:
                 state.commands.append(("moveJ", [float(v) for v in q[:6]]))
                 state.joints = [float(v) for v in q[:6]]
+                state.operations += int(bool(asynchronous))
             return True
 
         def moveL(self, pose: Any, speed: float = 0.25, acceleration: float = 1.2,  # noqa: N802
@@ -169,6 +182,7 @@ def install(state: ControllerState) -> dict[str, Any]:
             with state.lock:
                 state.commands.append(("moveL", [float(v) for v in target[:6]]))
                 state.joints = state.ik(target[:6])
+                state.operations += int(bool(asynchronous))
             return True
 
         def stopJ(self, *args: Any, **kwargs: Any) -> bool:  # noqa: N802
@@ -178,7 +192,8 @@ def install(state: ControllerState) -> dict[str, Any]:
             return True
 
         def getAsyncOperationProgressEx(self) -> _Progress:  # noqa: N802
-            return _Progress()
+            with state.lock:
+                return _Progress(state.operations)
 
         # kinematics
         def getForwardKinematics(self, q: Any = None, tcp_offset: Any = None) -> list[float]:  # noqa: N802

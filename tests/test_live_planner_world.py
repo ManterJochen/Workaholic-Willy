@@ -423,7 +423,7 @@ class KeepOutTests(unittest.TestCase):
         self.assertTrue(refresh.ok, refresh.render())
         self.assertEqual(2, len(planner.scene_calls), "the second refresh sent no field")
         values = np.load(planner.scene_calls[-1]["voxels"]["path"])
-        self.assertGreater(float(values.min()), 0.0, "a field with nothing in it reads free everywhere")
+        self.assertFalse(np.unpackbits(values).any(), "a field with nothing in it holds no voxel")
 
 
 class TwoCamerasThroughThePickLoopTests(unittest.TestCase):
@@ -539,9 +539,12 @@ class RefreshTests(unittest.TestCase):
         self.assertEqual(len(call["pose"]), 7, "a pose is position plus a WXYZ quaternion")
         self.assertGreater(refresh.voxels_registered or 0, 0)
         self.assertIn("live scene", refresh.render())
-        # The boxes still went, because the guard cannot read a distance field and an operator
-        # cannot read one either.
-        self.assertGreaterEqual(len(planner.worlds[0]), 2)
+        # The guard still holds every box, as it cannot read a distance field; the planner gets the declared world and
+        # no box the field holds whole, the field stands for those (owner, 2026-10-15).
+        held = set(source.world_for(self_envelope=_SELF, now=100.1).perceived.field_held)  # type: ignore[union-attr]
+        self.assertTrue(held)
+        self.assertGreaterEqual(len(planner.worlds[0]), 1, "the declared world went with the field")
+        self.assertFalse(held & {str(box["name"]) for box in planner.worlds[0]})
         self.assertGreater(len(refresh.guard_boxes), 0)
 
     def test_a_planner_with_no_live_scene_channel_refuses_rather_than_pretending(self) -> None:
@@ -771,14 +774,16 @@ class OneRegistrationTests(unittest.TestCase):
 
 
 class TheFieldOnTheWireTests(unittest.TestCase):
-    """The file the planner reads holds metres, negative inside an obstacle.
+    """The file the planner reads holds the field's occupancy, eight voxels to a byte, in the planner's order.
 
-    Measured on this box on 2026-09-13 (tests/test_voxel_field_sign.py carries the numbers): the planner
-    reads the field in metres and negative inside. The code wrote millimetres, positive inside, so every
-    voxel that was not an obstacle read as hundreds of metres inside one.
+    The planner takes the distances of it itself, on the GPU, in metres and negative inside (2026-10-15,
+    ``curobo_planner_server._signed_distances``, measured by ``scripts/curobo/probe_live_world.py`` 4a.10); the field
+    the camera world reads, :attr:`VoxelField.field`, is the same transform (``tests/test_voxel_field_sign.py``).
+    Measured on this box on 2026-09-13: the planner reads the field in metres and negative inside. The code once wrote
+    millimetres, positive inside, so every voxel that was not an obstacle read as hundreds of metres inside one.
     """
 
-    def test_the_block_is_negative_and_the_values_are_metres(self) -> None:
+    def test_the_block_is_occupied_in_the_planners_order_and_far_space_is_free(self) -> None:
         depth, _ = _scene_with_a_block()
         camera = _Camera(DepthSnapshot(depth_mm=depth, intrinsics=_INTRINSICS, timestamp=100.0))
         source = _world(camera, tuning=WorldBuildTuning(max_boxes=4, voxel_field_mm=30.0))
@@ -787,17 +792,16 @@ class TheFieldOnTheWireTests(unittest.TestCase):
         refresh = refresh_planner_world(source=source, client=planner, self_envelope=_SELF, now=100.1)
 
         self.assertTrue(refresh.ok, refresh.render())
-        values = np.load(planner.voxel_calls[0]["path"]).astype(np.float64)
+        values = np.load(planner.voxel_calls[0]["path"])
+        self.assertEqual(values.dtype, np.uint8, "the occupancy travels eight voxels to a byte")
         shape = (27, 27, 30)  # 800 x 800 x 900 mm at 30 mm, as the grid is cut from _LIMITS
-        self.assertEqual(values.size, int(np.prod(shape)))
-        grid = values.reshape(shape)
+        self.assertEqual(values.size, -(-int(np.prod(shape)) // 8))
+        grid = np.unpackbits(values, count=int(np.prod(shape))).astype(bool).reshape(shape)
         # The block stands at x 150, y 0 with its top 80 mm up; the grid is indexed from (-400, -400, 0).
-        self.assertLess(grid[18, 13, 1], 0.0, "the block must read negative, as the planner reads inside")
-        self.assertGreater(grid[1, 1, 28], 0.0, "far free space must read positive")
-        self.assertLess(
-            float(np.abs(values).max()), 2.0,
-            "a field over a two metre cell in metres stays under two; millimetres read hundreds",
-        )
+        self.assertTrue(grid[18, 13, 1], "the block's voxel is occupied")
+        self.assertFalse(grid[1, 1, 28], "far free space is free")
+        np.testing.assert_array_equal(grid.reshape(-1), source.world_for(self_envelope=_SELF, now=100.1)
+                                      .perceived.voxels.occupancy)
 
 
 def _blind() -> DepthSnapshot:

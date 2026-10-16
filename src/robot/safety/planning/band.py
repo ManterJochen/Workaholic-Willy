@@ -40,7 +40,8 @@ the planner's world refuses a sample, the driver asks it once more with every bo
 (``check_js`` with ``ignore_perceived``), and where only those boxes refused it the exact guard decides them, as it holds
 the very same boxes, turned, at ``perceived_min_distance_mm`` (:func:`world_admission_refusal`). Never while a part is
 carried, never unless the hand reads empty and open (a toggle's count open, a width measured fully open; the owner,
-2026-10-01), and never the bench, a declared fixture or mesh, or the camera's distance field: those stay the planner's.
+2026-10-01), and never the bench, a declared fixture or mesh: those stay the planner's. The camera's distance field and
+its fine grid about the goal are the camera's, and go aside with its boxes (2026-10-15).
 cuRobo still plans in its whole world, so a planned move into or out of such a pose is refused, and so is any move while
 the hand carries a part or cannot say it stands open. A grasp there judges its lift as if the jaws held the part before
 they close, and backs out where that lift would be refused (the owner, 2026-10-01), so it does not close there; an arm
@@ -272,8 +273,8 @@ def world_admission_refusal(first: "RefusedSample", second: "RefusedSample | Non
     ``first`` is the configuration's row in the planner's report, refused on its world; ``second`` its row in the report
     asked of the same configuration with the camera's boxes set aside, or ``None`` where that report passes it on every
     term. The joint bounds and the robot itself do not depend on the world, so the two reports have to find them alike:
-    two that do not are no report on this configuration. What still refuses with the camera's boxes set aside is the
-    bench, a declared fixture or mesh, or the camera's distance field, and those stay the planner's. ``None`` says only
+    two that do not are no report on this configuration. What still refuses with the camera's boxes, its field and the
+    field's fine grid set aside is the bench, a declared fixture or mesh, and those stay the planner's. ``None`` says only
     that the camera's boxes were all the planner's world found here: the caller has to have had the exact guard judge
     this very configuration with those boxes, at ``perceived_min_distance_mm``, and no part carried.
     """
@@ -285,7 +286,7 @@ def world_admission_refusal(first: "RefusedSample", second: "RefusedSample | Non
                 "joint bounds or on the robot itself, so neither is read and the planner's world stands")
     if second is not None and not second.world_ok:
         return ("the planner's world refuses it with the boxes the camera saw set aside too: the bench, a declared "
-                "fixture or mesh, or the camera's distance field, which stay the planner's")
+                "fixture or mesh, which stay the planner's")
     return None
 
 

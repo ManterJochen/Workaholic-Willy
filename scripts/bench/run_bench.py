@@ -459,9 +459,10 @@ class Bench:
         self.scene.keep_height_on_push = spec.keep_height_on_push
         self.backend.all_parts = spec.mode == "clear"
         # A clearing takes every part, as the owner's task "alle Objekte ... in die gelbe Kiste" does: a blocker is the
-        # part a pick takes and leaves the scene as a picked part does (``recovery.blocker_into_the_place``).
+        # part a pick takes and leaves the scene as a picked part does (``recovery.blocker_into_the_place``), and where
+        # no part has a grasp the scene is pushed, as a task until empty starts its campaign (``every_part``, 2026-10-15).
         into = spec.mode == "clear" and self.blocker_into_the_place
-        self.service.start_campaign(blocker_is_the_pick=into)
+        self.service.start_campaign(blocker_is_the_pick=into, every_part=spec.mode == "clear")
         base = {"scene": name, "family": spec.family, "note": spec.note, "possible": spec.possible,
                 "impossible": spec.impossible, "mode": spec.mode}
         if spec.mode != "clear":

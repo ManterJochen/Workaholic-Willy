@@ -40,10 +40,11 @@ _CUBES = [((x, y, FLOOR_MM + CUBE_MM / 2.0), (CUBE_MM, CUBE_MM, CUBE_MM), None)
 
 
 def _held(x: float, y: float, z_top: float, size: float = CUBE_MM) -> KeepOutBox:
-    """The box a pick holds round its target: the part's footprint, from its top down its height."""
+    """The box a pick holds round its target: the part's footprint, from its top down its height, its own points
+    reaching down to its foot."""
     matrix = np.eye(4)
     matrix[:3, 3] = (x, y, z_top - size / 2.0)
-    return KeepOutBox.from_matrix("target", matrix, (size / 2.0, size / 2.0, size / 2.0))
+    return KeepOutBox.from_matrix("target", matrix, (size / 2.0, size / 2.0, size / 2.0), low_mm=z_top - size)
 
 
 def _model(boxes: Any, keep_out: Any = ()) -> Any:
@@ -87,6 +88,17 @@ class NoGroundWhereThereIsNoneTests(unittest.TestCase):
         block = ((0.0, 0.0, 30.0), (60.0, 60.0, 60.0), None)
         part = ((0.0, 0.0, 60.0 + CUBE_MM / 2.0), (CUBE_MM, CUBE_MM, CUBE_MM), None)
         model = _model([block, part], keep_out=[_held(0.0, 0.0, 60.0 + CUBE_MM)])
+
+        under = _height_under(model, 0.0, 0.0)
+        self.assertTrue(under is None or under < 10.0, model.render())
+
+    def test_a_part_in_a_dense_pile_stands_on_the_bench_not_on_the_tops_round_it(self) -> None:
+        """The owner's cell, 2026-10-15, 14:36 to 14:41: the tops of the cubes packed round a part as tall as they are
+        were its ground, and the solid under it left its grasps the top few millimetres. A ground more than 10 mm over
+        how low the part's own points reach stands beside it."""
+        pile = [((x, y, CUBE_MM / 2.0), (CUBE_MM, CUBE_MM, CUBE_MM), None)
+                for x in (-CUBE_MM, 0.0, CUBE_MM) for y in (-CUBE_MM, 0.0, CUBE_MM)]
+        model = _model(pile, keep_out=[_held(0.0, 0.0, CUBE_MM)])
 
         under = _height_under(model, 0.0, 0.0)
         self.assertTrue(under is None or under < 10.0, model.render())

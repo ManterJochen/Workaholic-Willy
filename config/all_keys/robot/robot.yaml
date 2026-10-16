@@ -1204,13 +1204,15 @@ robot:
         # Edge length of a voxel in the distance field handed to the planner, in mm. 0 sends none.
         # This is the difference between the planner seeing the nearest few obstacles and seeing the
         # whole cell: the box channel is bounded by the planner's collision slots, so something always
-        # has to be left out, while a distance field carries everything the cameras saw.
-        # The planner allocates the grid when it STARTS, from the workspace limits and this number, so
-        # both have to be settled before the sidecar spawns. A planner started without a voxel
-        # reservation refuses the field, and refusing the field refuses the motion.
-        # Measured: a 30 mm field over a two metre cell is 13.7 ms to build and 1.9 ms to register.
+        # has to be left out, while a distance field carries every column the cameras measured. About
+        # a motion's goal a second grid at 4 mm holds the fine world the guard holds there.
+        # The planner allocates both grids when it STARTS, from the workspace limits and this number, so
+        # both have to be settled before the sidecar spawns, and takes their distances on the GPU. A
+        # planner started without a voxel reservation refuses the field, and refusing the field
+        # refuses the motion. Measured on the replay bank (2026-10-15, 297 picks) at 10 mm: 26 more of
+        # 823 plans from home, none fewer, every route as before, 0.1 s more a route.
         # [default: 0.0]
-        voxel_field_mm: 0.0
+        voxel_field_mm: 10.0
 
         # The grid the clustering runs on, in mm. Two points in touching cells are one object, so this
         # is also the gap at which two parts stop being one obstacle. Must not be finer than

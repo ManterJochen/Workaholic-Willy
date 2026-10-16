@@ -16,7 +16,10 @@ Pinned:
 
 * dense_clutter pushes the part once (P0 a plain move like a grasp approach, then the four judged lines at the owner's
   speeds: down 50 mm/s, push 25 mm/s at 0.1 m/s^2, back 50 mm/s, up 50 mm/s), the arm goes back to the look it stood at,
-  looks again, and the part is picked from there. DO0 is never written, the count never changes and nobody is asked;
+  looks again, and the part is picked from there. The push cell here plans the open hand, as a hand that is neither
+  a Robotiq nor a toggle pushes (the toggle's closed push is pinned in
+  ``tests/test_a_toggle_closes_for_its_push_and_opens_at_the_look.py``): DO0 is never written, the count never
+  changes and nobody is asked;
   the budgets count the push by the plan's own centre; the part and its path stay out of the planner world;
 * from the one view the pick generated (every declared look ranked the part ``ALL_COLLIDED``), the arm comes back on
   the straight joint line only, never through the planner's detour (the owner's rule of 2026-09-29 for a configuration

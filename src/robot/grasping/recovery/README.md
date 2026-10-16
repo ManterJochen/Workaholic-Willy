@@ -133,10 +133,13 @@ wherever the arm stood, left with the push that replaced it.
 
 ## The push
 
-A clutter jam is the one case a push is for. The jaws stay open and the **outer face of the leading
-finger** moves the failed part along the closing axis, away from the neighbours that blocked the grasp.
-Then the pick looks again. Nobody is asked anything on the way, and DO0 is never written. The push runs
-**on a wrist camera's pick only**, after its looks judged the part: a fixed-camera cell never pushes.
+A clutter jam is the one case a push is for. The hand closes in the air over the part, a Robotiq to its
+closed width (the owner, 2026-10-15) and a toggle by one change of DO0 (2026-10-16), and the **closed
+fingers**, about 22 mm across where the open Hand-E stood 72, move the failed part away from the neighbours
+that blocked the grasp. At the look after the push the hand opens again, a toggle by one more change of
+DO0, and the pick looks again. Any other hand keeps its jaws open, and the outer face of the leading finger
+pushes. Nobody is asked anything on the way. The push runs **on a wrist camera's pick only**, after its
+looks judged the part: a fixed-camera cell never pushes.
 
 **The push may rearrange the scene** (the owner, 2026-10-03: "Er darf die Szene ruhig dolle verändern"):
 the part may shove what stands in its way, and the fingers may brush what stands beside their stroke. Only

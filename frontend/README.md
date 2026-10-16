@@ -149,7 +149,7 @@ bewegt". It stays as the thumbnail of its part's card.
   sets it for every task, the line under the box says it where it is not "Bei Bedarf", and the card's drawer may
   change it for its task. **"Direkt über die Kante tragen"** shows for a bin the wrist camera finds: ticked as the
   cell carries (`facts.carry`, `robot.place.carry`), sent only where touched (`options.carry`). The drawer has no
-  "Aufnahmen" switch any more (every task the console starts keeps its picks' looks, `record_views: true`) and no
+  "Aufnahmen" switch any more (every pick keeps its looks, the library's own rule) and no
   "Beide Backenflächen" (a program's switch; a card made from a run's plan keeps it, and the summary says it).
 - **Start is the confirmation.** One click, no second dialog, and its label names the first motion: "Start –
   der Roboter fährt zu Blick 1" (configured looks), "nach Home und schaut" (a wrist camera with no looks) or

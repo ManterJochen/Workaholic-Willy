@@ -161,9 +161,13 @@ class RobotiqCountMapTests(unittest.TestCase):
         for w in (10.0, 40.0, 70.0):
             self.assertEqual(a._mm_to_count(w), b._mm_to_count(w))
 
-    def test_clamp_still_applies_the_policy_floor(self) -> None:
+    def test_clamp_holds_the_mechanism_not_the_policy_floor(self) -> None:
+        """The jaws close past min_width_mm, the thinnest part the cell plans for, to their closed width: clamped at the
+        floor, a close stopped at 5 mm and a velcro band squeezed to 5.1 mm read as nothing held (the owner's cell,
+        2026-10-15)."""
         g = self._g(5.0, 85.0)
-        self.assertEqual(g._clamp_width_mm(3.0), 5.0)   # below floor -> floor
+        self.assertEqual(g._clamp_width_mm(3.0), 3.0)    # under the policy floor, over the closed width -> unchanged
+        self.assertEqual(g._clamp_width_mm(-2.0), g.closed_width_mm)  # past closed -> closed
         self.assertEqual(g._clamp_width_mm(40.0), 40.0)  # in range -> unchanged
         self.assertEqual(g._clamp_width_mm(99.0), 85.0)  # above max -> max
 

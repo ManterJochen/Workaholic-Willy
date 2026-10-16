@@ -1,17 +1,16 @@
-"""One Qwen call grounds every rule's kind of part: the class-list prompt, its instruction, and the boxes no rule may take.
+"""A class list is grounded one description per Qwen call, each box under the description it was asked for, and what no
+rule may take stays an obstacle or goes (the owner, 2026-10-15: every loop, group box and box written twice of the
+cell's Thursday came from a class list asked in one call, none from a description asked alone).
 
-No weights and no GPU: the model is a double that answers a fixed string, and its processor keeps what it was asked.
-What the real model writes for a class list is ``tests/test_vlm_class_list_inference.py`` (GPU, outside the gate).
+No weights and no GPU: the model is a double that answers fixed strings, one per call, and its processor keeps what it
+was asked. What the real model writes is ``tests/test_vlm_class_list_inference.py`` (GPU, outside the gate).
 
-* ``class_list_prompt(["green part", "red part"])`` is ``"green part | red part"``, and ``classes_of`` reads it back. A
-  prompt of one description reads ``()`` and is asked with today's instruction, byte for byte.
-* A class list is asked with the class-list instruction: each object once, labelled with the one description it
-  matches best, copied exactly, what matches none left out, ``[]`` for none. The answer's end, the lookup and the decode
-  graphs are the same for both.
-* The answer fails closed, since sorting places no part by guess (the owner, 2026-10-09). Boxes over one object
-  (IoU >= 0.7) under two descriptions are all ``ambiguous``, and so is a box named by none. A label outside the list is
-  kept as the model wrote it, and the camera source maps it onto no rule
-  (``tests/test_a_locate_of_a_class_list_finds_every_bin_in_one_call.py``).
+* ``class_list_prompt(["green part", "red part"])`` is ``"green part | red part"``, and ``classes_of`` reads it back.
+* Each description is asked with today's instruction, byte for byte, in a call of its own; the answer's end, the lookup
+  and the decode graphs are the same for every call.
+* Each box comes back under the description it was asked for, whatever the model called it. Boxes over one object
+  (IoU >= 0.7) under two descriptions are all ``ambiguous``, never a target (the owner, 2026-10-09: sorting places no
+  part by guess), and a box that holds two others at most half its size is a box round a pile or a bin, and goes.
 """
 
 from __future__ import annotations
@@ -23,15 +22,15 @@ from typing import Any
 
 import numpy as np
 
+from src.models.detection.types import Detection
 from src.models.vlm import parse_grounding_response
-from src.models.vlm.parsing import AMBIGUOUS_IOU, AMBIGUOUS_LABEL, CoordinateSpace
+from src.models.vlm.parsing import AMBIGUOUS_IOU, AMBIGUOUS_LABEL, CoordinateSpace, claimed_once
 from src.models.vlm.qwen import (
     CLASS_LIST_SEPARATOR,
     GROUNDING_INSTRUCTION,
     Qwen3VLGrounder,
     class_list_prompt,
     classes_of,
-    grounding_instruction,
 )
 
 #: Today's instruction around one description, spelled out here rather than read from the module: a change to the
@@ -41,25 +40,22 @@ TODAY = ("Locate every object matching this description and return ONLY a JSON a
          "Coordinates are absolute pixels in this image. "
          "If no object matches, return an empty array []. Do not guess.\n\n"
          "Description: ")
-#: The class-list instruction around two descriptions, spelled out as well.
-CLASS_LIST = ("Locate every object matching one of these descriptions and return ONLY a JSON array, no prose:\n"
-              '[{"bbox_2d": [x0, y0, x1, y1], "label": "<the description it matches, copied exactly>"}]\n'
-              "Coordinates are absolute pixels in this image. "
-              "Give each object once, in a box of its own, labelled with the one description it matches best; "
-              "leave out every object that matches none. "
-              "If no object matches, return an empty array []. Do not guess.\n\n"
-              'Descriptions: "green part"; "red part"')
-
 W, H = 640, 480
 #: The end token of the model double below.
 END = 1_000_001
 
 
-def _boxes(answer: str, *, classes: tuple[str, ...] = (),
-           prompt: str = "green part | red part") -> list[tuple[str, list[float]]]:
+def _boxes(answer: str, *, prompt: str = "green part") -> list[tuple[str, list[float]]]:
     """``(label, box)`` of every box read from ``answer``, its numbers taken as pixels."""
     return [(det.label, det.box) for det in parse_grounding_response(
-        answer, image_width=W, image_height=H, fallback_label=prompt, space=CoordinateSpace.ABSOLUTE, classes=classes)]
+        answer, image_width=W, image_height=H, fallback_label=prompt, space=CoordinateSpace.ABSOLUTE)]
+
+
+def _labels(*boxes: tuple[list[float], str]) -> list[str]:
+    """The labels :func:`claimed_once` leaves on ``(box, label)`` pairs, the class list being green and red parts."""
+    return [det.label for det in claimed_once(
+        [Detection(box=box, x_center=0.0, y_center=0.0, label=label, score=1.0) for box, label in boxes],
+        "green part | red part")]
 
 
 def _answer(*boxes: tuple[list[int], str | None]) -> str:
@@ -106,27 +102,6 @@ class AClassListPromptTests(unittest.TestCase):
         self.assertEqual((), classes_of(""))
 
 
-class TheInstructionTests(unittest.TestCase):
-    def test_one_description_is_asked_today_s_instruction_byte_for_byte(self) -> None:
-        for prompt in ("each separate grey cube", "yellow bin", 'a "quoted" {braced} part'):
-            with self.subTest(prompt=prompt):
-                self.assertEqual(TODAY + prompt, grounding_instruction(prompt))
-                self.assertEqual(GROUNDING_INSTRUCTION.format(prompt=prompt), grounding_instruction(prompt))
-
-    def test_a_class_list_is_asked_the_class_list_instruction(self) -> None:
-        self.assertEqual(CLASS_LIST, grounding_instruction("green part | red part"))
-        asked = grounding_instruction(class_list_prompt(["yellow bin", "blue bin", "red bin"]))
-        self.assertTrue(asked.endswith('Descriptions: "yellow bin"; "blue bin"; "red bin"'), asked)
-        for said in ("copied exactly", "Give each object once", "the one description it matches best",
-                     "leave out every object that matches none", "return an empty array []", "Do not guess"):
-            self.assertIn(said, asked)
-
-    def test_a_description_is_written_as_a_json_string_writes_it(self) -> None:
-        """The label the model copies into its JSON answer reads back as the description."""
-        asked = grounding_instruction(class_list_prompt(['5" pipe', "red part"]))
-        self.assertTrue(asked.endswith('Descriptions: "5\\" pipe"; "red part"'), asked)
-
-
 # --- the grounder, through doubles of the processor and the model ---------------------------------------------------
 
 
@@ -136,10 +111,11 @@ class _Batch(dict):  # type: ignore[type-arg]
 
 
 class _Processor:
-    """Keeps every conversation it was handed, and decodes every answer as ``answer``."""
+    """Keeps every conversation it was handed, and decodes the answers in turn, the last one again once they run out."""
 
-    def __init__(self, answer: str) -> None:
-        self.answer = answer
+    def __init__(self, answer: "str | list[str]") -> None:
+        self.answers = [answer] if isinstance(answer, str) else list(answer)
+        self.decoded = 0
         self.asked: list[Any] = []
         self.tokenizer = SimpleNamespace(convert_tokens_to_ids=lambda token: None, eos_token_id=END)
 
@@ -148,7 +124,9 @@ class _Processor:
         return _Batch(input_ids=np.arange(7).reshape(1, -1), attention_mask=np.ones((1, 7)))
 
     def batch_decode(self, ids: Any, skip_special_tokens: bool = False) -> list[str]:
-        return [self.answer]
+        answer = self.answers[min(self.decoded, len(self.answers) - 1)]
+        self.decoded += 1
+        return [answer]
 
 
 class _Model:
@@ -176,7 +154,7 @@ class _Torch:
     cuda = SimpleNamespace(empty_cache=lambda: None)
 
 
-def _grounder(answer: str, **settings: Any) -> tuple[Qwen3VLGrounder, _Processor, _Model]:
+def _grounder(answer: "str | list[str]", **settings: Any) -> tuple[Qwen3VLGrounder, _Processor, _Model]:
     processor, model = _Processor(answer), _Model()
     grounder = Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct", local=True, **settings)
     grounder._load = lambda: (processor, model, _Torch())  # type: ignore[method-assign]
@@ -200,13 +178,14 @@ class TheGrounderAsksTests(unittest.TestCase):
         grounder.detect_all(_image(), "each separate grey cube")
         self.assertEqual(TODAY + "each separate grey cube", _asked(processor))
 
-    def test_a_class_list_is_asked_in_one_call(self) -> None:
+    def test_a_class_list_is_asked_one_description_per_call(self) -> None:
         grounder, processor, model = _grounder("[]")
         grounder.detect_all(_image(), class_list_prompt(["green part", "red part"]))
-        self.assertEqual(CLASS_LIST, _asked(processor))
-        self.assertEqual(1, len(model.calls), "every description in one call")
+        self.assertEqual([TODAY + "green part", TODAY + "red part"], [_asked(processor, call) for call in (0, 1)])
+        self.assertEqual(2, len(model.calls), "one call per description")
+        self.assertEqual(GROUNDING_INSTRUCTION.format(prompt="green part"), _asked(processor, 0))
 
-    def test_both_end_at_the_array_and_take_the_same_lookup_and_graphs(self) -> None:
+    def test_every_call_ends_at_the_array_and_takes_the_same_lookup_and_graphs(self) -> None:
         grounder, _, model = _grounder("[]", prompt_lookup_tokens=10)
         taken: list[dict[str, Any]] = []
         greedy = grounder._greedy
@@ -220,90 +199,76 @@ class TheGrounderAsksTests(unittest.TestCase):
         grounder._greedy = spy  # type: ignore[method-assign]
         grounder.detect_all(_image(), "green part")
         grounder.detect_all(_image(), "green part | red part")
-        self.assertEqual(taken[0], taken[1])
+        self.assertEqual([taken[0]] * 3, taken)
         self.assertEqual(["_EndOfAnswer"], taken[0]["stops"])
-        self.assertEqual(["auto", "auto"], [each["graphs_mode"] for each in taken])
-        self.assertEqual([10, 10], [call["prompt_lookup_num_tokens"] for call in model.calls])
+        self.assertEqual("auto", taken[0]["graphs_mode"])
+        self.assertEqual([10, 10, 10], [call["prompt_lookup_num_tokens"] for call in model.calls])
 
 
 class TheAnswerFailsClosedTests(unittest.TestCase):
-    """What a class list's answer may not hand a rule: a part two descriptions claim, or one named by none."""
-
-    CLASSES = ("green part", "red part")
+    """What a class list's boxes may not hand a rule: a part two descriptions claim (``claimed_once``)."""
 
     def test_one_object_boxed_under_two_descriptions_is_ambiguous(self) -> None:
-        answer = _answer(([100, 100, 200, 200], "green part"), ([104, 100, 200, 200], "red part"),
-                         ([400, 100, 500, 200], "green part"))
         self.assertEqual([AMBIGUOUS_LABEL, AMBIGUOUS_LABEL, "green part"],
-                         [label for label, _ in _boxes(answer, classes=self.CLASSES)])
-
-    def test_the_boxes_stay_where_they_were(self) -> None:
-        """Relabelled, never dropped: an ambiguous part is an obstacle every grasp is planned around."""
-        answer = _answer(([100, 100, 200, 200], "green part"), ([104, 100, 200, 200], "red part"))
-        self.assertEqual([[100.0, 100.0, 200.0, 200.0], [104.0, 100.0, 200.0, 200.0]],
-                         [box for _, box in _boxes(answer, classes=self.CLASSES)])
+                         _labels(([100, 100, 200, 200], "green part"), ([104, 100, 200, 200], "red part"),
+                                 ([400, 100, 500, 200], "green part")))
 
     def test_two_parts_side_by_side_keep_their_descriptions(self) -> None:
-        answer = _answer(([100, 100, 200, 200], "green part"), ([150, 100, 250, 200], "red part"))
-        self.assertEqual(["green part", "red part"], [label for label, _ in _boxes(answer, classes=self.CLASSES)])
+        self.assertEqual(["green part", "red part"],
+                         _labels(([100, 100, 200, 200], "green part"), ([150, 100, 250, 200], "red part")))
 
     def test_the_overlap_that_makes_one_object_is_inclusive(self) -> None:
         self.assertEqual(0.7, AMBIGUOUS_IOU)
-        at = _answer(([0, 0, 100, 100], "green part"), ([0, 0, 70, 100], "red part"))      # IoU 0.70
-        below = _answer(([0, 0, 100, 100], "green part"), ([0, 0, 69, 100], "red part"))   # IoU 0.69
-        self.assertEqual([AMBIGUOUS_LABEL] * 2, [label for label, _ in _boxes(at, classes=self.CLASSES)])
-        self.assertEqual(["green part", "red part"], [label for label, _ in _boxes(below, classes=self.CLASSES)])
+        self.assertEqual([AMBIGUOUS_LABEL] * 2,
+                         _labels(([0, 0, 100, 100], "green part"), ([0, 0, 70, 100], "red part")))   # IoU 0.70
+        self.assertEqual(["green part", "red part"],
+                         _labels(([0, 0, 100, 100], "green part"), ([0, 0, 69, 100], "red part")))   # IoU 0.69
 
     def test_a_chain_of_overlaps_is_one_object(self) -> None:
         """A and B overlap, B and C overlap, A and C less: all three are the one object, and C names another
         description, so not even A keeps its own."""
-        answer = _answer(([0, 0, 100, 100], "green part"), ([0, 0, 100, 80], "green part"),
-                         ([0, 0, 100, 60], "red part"))
-        self.assertEqual([AMBIGUOUS_LABEL] * 3, [label for label, _ in _boxes(answer, classes=self.CLASSES)])
+        self.assertEqual([AMBIGUOUS_LABEL] * 3,
+                         _labels(([0, 0, 100, 100], "green part"), ([0, 0, 100, 80], "green part"),
+                                 ([0, 0, 100, 60], "red part")))
 
-    def test_one_description_boxed_twice_keeps_it(self) -> None:
-        """And the second box, the same object written again, goes (2026-10-12)."""
+    def test_one_description_boxed_twice_keeps_one(self) -> None:
+        """The second box, the same object written again, goes (2026-10-12)."""
         answer = _answer(([100, 100, 200, 200], "green part"), ([102, 100, 200, 200], "Green  Part"))
-        self.assertEqual(["green part"], [label for label, _ in _boxes(answer, classes=self.CLASSES)])
-
-    def test_a_box_named_by_none_is_ambiguous(self) -> None:
-        answer = _answer(([100, 100, 200, 200], None), ([400, 100, 500, 200], "red part"))
-        self.assertEqual([AMBIGUOUS_LABEL, "red part"], [label for label, _ in _boxes(answer, classes=self.CLASSES)])
-
-    def test_an_object_one_box_names_and_another_does_not_is_ambiguous(self) -> None:
-        answer = _answer(([100, 100, 200, 200], "green part"), ([101, 101, 200, 200], None))
-        self.assertEqual([AMBIGUOUS_LABEL] * 2, [label for label, _ in _boxes(answer, classes=self.CLASSES)])
-
-    def test_a_label_outside_the_list_is_kept_as_written(self) -> None:
-        """It names no description; the camera source maps it onto none and it stays an obstacle."""
-        answer = _answer(([100, 100, 200, 200], "orange part"), ([400, 100, 500, 200], "green part"))
-        self.assertEqual(["orange part", "green part"], [label for label, _ in _boxes(answer, classes=self.CLASSES)])
+        self.assertEqual(["green part"], [label for label, _ in _boxes(answer)])
 
     def test_one_description_reads_as_it_always_did(self) -> None:
-        answer = _answer(([100, 100, 200, 200], "cube"), ([104, 100, 200, 200], "grey cube"),
-                         ([400, 100, 500, 200], None))
+        answer = _answer(([100, 100, 200, 200], "cube"), ([300, 100, 400, 200], "grey cube"),
+                         ([400, 300, 500, 400], None))
         self.assertEqual(["cube", "grey cube", "grey cube"], [label for label, _ in _boxes(answer, prompt="grey cube")])
-        self.assertEqual(
-            parse_grounding_response(answer, image_width=W, image_height=H, fallback_label="grey cube"),
-            parse_grounding_response(answer, image_width=W, image_height=H, fallback_label="grey cube", classes=()),
-        )
 
 
 class TheGrounderLabelsTests(unittest.TestCase):
-    """Through ``detect_all``: the prompt says whether the answer is a class list's."""
+    """Through ``detect_all``: a class list's boxes, each description asked on its own."""
 
-    ANSWER = _answer(([100, 100, 300, 400], "green part"), ([110, 100, 300, 400], "red part"),
-                     ([600, 100, 800, 400], "red part"), ([600, 500, 800, 900], None))
-
-    def test_a_class_list_s_answer_fails_closed(self) -> None:
-        grounder, _, _ = _grounder(self.ANSWER)
+    def test_each_box_comes_under_the_description_it_was_asked_for(self) -> None:
+        grounder, _, _ = _grounder([_answer(([100, 100, 300, 400], "cube")), _answer(([600, 100, 800, 400], None))])
         found = grounder.detect_all(_image(), "green part | red part")
-        self.assertEqual([AMBIGUOUS_LABEL, AMBIGUOUS_LABEL, "red part", AMBIGUOUS_LABEL], [det.label for det in found])
+        self.assertEqual(["green part", "red part"], [det.label for det in found])
 
-    def test_the_same_answer_to_one_description_reads_as_ever(self) -> None:
-        grounder, _, _ = _grounder(self.ANSWER)
+    def test_one_object_both_descriptions_boxed_is_ambiguous_and_stays(self) -> None:
+        grounder, _, _ = _grounder([_answer(([100, 100, 300, 400], "green part"), ([600, 100, 800, 400], None)),
+                                    _answer(([110, 100, 300, 400], "red part"))])
+        found = grounder.detect_all(_image(), "green part | red part")
+        self.assertEqual([AMBIGUOUS_LABEL, "green part", AMBIGUOUS_LABEL], [det.label for det in found])
+
+    def test_a_box_round_two_parts_goes(self) -> None:
+        pile = ([50, 50, 450, 450], "green part")
+        grounder, _, _ = _grounder([_answer(pile, ([60, 60, 160, 160], "green part")),
+                                    _answer(([300, 300, 400, 400], "red part"))])
+        found = grounder.detect_all(_image(), "green part | red part")
+        # On Qwen's grid of 1000: the 640 x 480 picture's boxes, the pile's gone.
+        self.assertEqual([("green part", [38.4, 28.8, 102.4, 76.8]), ("red part", [192.0, 144.0, 256.0, 192.0])],
+                         [(det.label, [round(value, 1) for value in det.box]) for det in found])
+
+    def test_one_description_reads_as_ever(self) -> None:
+        grounder, _, _ = _grounder(_answer(([100, 100, 300, 400], "green part"), ([600, 100, 800, 400], None)))
         found = grounder.detect_all(_image(), "each separate part")
-        self.assertEqual(["green part", "red part", "red part", "each separate part"], [det.label for det in found])
+        self.assertEqual(["green part", "each separate part"], [det.label for det in found])
 
 
 if __name__ == "__main__":

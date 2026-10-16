@@ -48,6 +48,10 @@ __all__ = [
     "ORBIT_MAX_MOTIONS",
     "ORBIT_STEP_DEG",
     "SUPPORT_MARGIN_MM",
+    "DISTANCE_SCALES",
+    "ELEVATION_CHANGES_DEG",
+    "LEAST_ELEVATION_DEG",
+    "MOST_ELEVATION_DEG",
     "JawFace",
     "JawFacesSeen",
     "OrbitView",
@@ -55,6 +59,7 @@ __all__ = [
     "jaw_faces_seen",
     "orbit_target",
     "orbit_views",
+    "other_angles",
 ]
 
 # --------------------------------------------------------------------------------------------------
@@ -369,6 +374,17 @@ ORBIT_STEP_DEG = 5.0
 #: travel cap per joint, the cable window about home, a warning, the straight joint line only). Past
 #: half a turn a turn is the other way round's, which is why a larger bound is refused.
 ORBIT_MAX_DEG = 180.0
+#: The other angles of the judged look a generated view tries where no turn of it could be driven (the owner,
+#: 2026-10-16: "Mehr Blickwinkel"; on Thursday's cell every turn to the side no look faced was out of the arm's reach
+#: or its workspace, 4 of 4): the camera raised or lowered about the part by these degrees, flatter first, which shows a
+#: side more squarely, then steeper (:func:`other_angles`).
+ELEVATION_CHANGES_DEG = (-15.0, -30.0, 15.0)
+#: The distances from the part those angles are tried at too, as a share of the judged look's own: nearer, farther.
+DISTANCE_SCALES = (1.0, 0.85, 1.15)
+#: The flattest and the steepest any angle looks down at the part, degrees over the horizontal: flatter, the camera
+#: comes down beside the parts; steeper, it shows no side.
+LEAST_ELEVATION_DEG = 15.0
+MOST_ELEVATION_DEG = 80.0
 #: The most pre-screened candidates a pick moves toward before it gives up on a generated view. Each
 #: runs on its straight joint line alone and is given up when the line is not clear, so three bound
 #: how long a pick spends on one view it can do without, and how often the arm is asked to go far.
@@ -445,7 +461,9 @@ def away_from_views(target_mm: Any, camera_centres_mm: Sequence[Any]) -> np.ndar
 
 @dataclass(frozen=True, slots=True, eq=False)
 class OrbitView:
-    """One candidate: the judged look turned by ``azimuth_deg`` about the vertical through the target.
+    """One candidate: the judged look turned by ``azimuth_deg`` about the vertical through the target, and for another
+    angle of it (:func:`other_angles`) raised by ``elevation_deg`` about the target (negative lowers it, flatter) and
+    brought to ``distance_scale`` of its distance from it.
 
     ``tool_to_base_mm`` and ``camera_to_base_mm`` are 4x4 BASE transforms of the turned tool and
     camera, read-only. ``incidence_deg`` is the squarest incidence at which it shows a missing face.
@@ -456,6 +474,8 @@ class OrbitView:
     tool_to_base_mm: np.ndarray
     camera_to_base_mm: np.ndarray
     incidence_deg: float
+    elevation_deg: float = 0.0
+    distance_scale: float = 1.0
 
     def __post_init__(self) -> None:
         for name in ("tool_to_base_mm", "camera_to_base_mm"):
@@ -465,7 +485,12 @@ class OrbitView:
 
     @property
     def label(self) -> str:
-        return f"orbit {self.azimuth_deg:+g} deg"
+        label = f"orbit {self.azimuth_deg:+g} deg"
+        if self.elevation_deg:
+            label += f", {abs(self.elevation_deg):g} deg {'steeper' if self.elevation_deg > 0.0 else 'flatter'}"
+        if self.distance_scale != 1.0:
+            label += f", {self.distance_scale:g} x as far"
+        return label
 
     def pose(self) -> Pose:
         """The TCP pose this view is taken from, BASE, labelled with its turn."""
@@ -486,6 +511,123 @@ def _orbit(target: np.ndarray, azimuth_deg: float) -> np.ndarray:
     turn[:3, :3] = ((c, -s, 0.0), (s, c, 0.0), (0.0, 0.0, 1.0))
     turn[:3, 3] = target - turn[:3, :3] @ target
     return turn
+
+
+def _raised(target: np.ndarray, camera: np.ndarray, degrees: float) -> np.ndarray:
+    """The rigid motion that raises ``camera`` by ``degrees`` about the horizontal line through ``target`` across its
+    bearing (negative lowers it): the target stays where it stood in the camera's frame, so at the same pixel."""
+    sight = camera[:3, 3] - target
+    bearing = np.array([float(sight[0]), float(sight[1]), 0.0])
+    length = float(np.linalg.norm(bearing))
+    if length < _BEARING_MIN_MM or not degrees:
+        return np.eye(4)
+    across = np.cross(np.array([0.0, 0.0, 1.0]), bearing / length)
+    # About ``across`` (z cross the bearing) a positive turn lowers the camera, so the camera is raised by the opposite.
+    angle = math.radians(-float(degrees))
+    k = np.array([[0.0, -across[2], across[1]], [across[2], 0.0, -across[0]], [-across[1], across[0], 0.0]])
+    rotation = np.eye(3) + math.sin(angle) * k + (1.0 - math.cos(angle)) * (k @ k)
+    motion = np.eye(4)
+    motion[:3, :3] = rotation
+    motion[:3, 3] = target - rotation @ target
+    return motion
+
+
+def _elevation_deg(target: np.ndarray, camera: np.ndarray) -> float:
+    """How far over the horizontal ``camera`` stands as seen from ``target``, degrees."""
+    sight = camera[:3, 3] - target
+    return math.degrees(math.atan2(float(sight[2]), math.hypot(float(sight[0]), float(sight[1]))))
+
+
+def other_angles(
+    *,
+    target_mm: Any,
+    camera_to_base_mm: Any,
+    tool_to_base_mm: Any,
+    faces: Sequence[tuple[Any, Any]],
+    intrinsics: np.ndarray | None = None,
+    image_size: tuple[int, int] | None = None,
+    max_incidence_deg: float = MAX_INCIDENCE_DEG,
+    step_deg: float = ORBIT_STEP_DEG,
+    max_deg: float = ORBIT_MAX_DEG,
+    elevations_deg: Sequence[float] = ELEVATION_CHANGES_DEG,
+    distance_scales: Sequence[float] = DISTANCE_SCALES,
+) -> tuple[OrbitView, ...]:
+    """The other angles of the judged look that would show a missing face, for where no turn of it
+    (:func:`orbit_views`) can be driven (the owner, 2026-10-16: "Mehr Blickwinkel").
+
+    Each is a turn about the vertical through ``target_mm``, the judged look itself (no turn) among them, then the
+    camera raised or lowered about the target by one of ``elevations_deg`` (or not) across its bearing and brought to
+    one of ``distance_scales`` of its distance from the target, the plain turn at the look's own angle and distance
+    left to :func:`orbit_views`; camera and tool move as one rigid body, the target at the same pixel. One is kept where it
+    looks down at the target between :data:`LEAST_ELEVATION_DEG` and :data:`MOST_ELEVATION_DEG` and some face shows as
+    :func:`orbit_views` reads it. They are ordered by the size of the change of angle, then of distance, then of the
+    turn, then by incidence: the angle nearest the judged look first.
+    """
+    target = _vec3(target_mm, "target_mm")
+    camera0 = _rigid(camera_to_base_mm, "camera_to_base_mm")
+    tool0 = _rigid(tool_to_base_mm, "tool_to_base_mm")
+    step = _length(step_deg, "step_deg", positive=True)
+    reach = _length(max_deg, "max_deg")
+    turns = [0.0] + [sign * k * step for k in range(1, int(math.floor(min(reach, _HALF_TURN_DEG) / step
+                                                                        + _STEP_SLACK)) + 1)
+                     for sign in (1.0, -1.0) if not (sign < 0.0 and k * step >= _HALF_TURN_DEG - _STEP_SLACK)]
+    views: list[tuple[tuple[float, float, float, float], OrbitView]] = []
+    for elevation in (0.0, *elevations_deg):
+        for scale in distance_scales:
+            if not elevation and float(scale) == 1.0:
+                continue  # the plain turns: orbit_views'
+            for azimuth in turns:
+                turn = _orbit(target, azimuth)
+                turned = turn @ camera0
+                raised = _raised(target, turned, float(elevation))
+                camera = raised @ turned
+                shift = np.eye(4)
+                shift[:3, 3] = (float(scale) - 1.0) * (camera[:3, 3] - target)
+                camera = shift @ camera
+                if not LEAST_ELEVATION_DEG <= _elevation_deg(target, camera) <= MOST_ELEVATION_DEG:
+                    continue
+                incidence = _shown(target, camera, faces, intrinsics, image_size, max_incidence_deg)
+                if incidence is None:
+                    continue
+                view = OrbitView(azimuth, shift @ raised @ turn @ tool0, camera, incidence,
+                                 elevation_deg=float(elevation), distance_scale=float(scale))
+                views.append(((abs(float(elevation)), abs(float(scale) - 1.0), abs(azimuth), incidence), view))
+    views.sort(key=lambda row: (row[0], -row[1].azimuth_deg, row[1].elevation_deg, row[1].distance_scale))
+    return tuple(view for _key, view in views)
+
+
+def _shown(target: np.ndarray, camera: np.ndarray, faces: Sequence[tuple[Any, Any]], intrinsics: Any,
+           image_size: Any, max_incidence_deg: float) -> float | None:
+    """The squarest incidence at which ``camera`` shows one of ``faces``, as :func:`orbit_views` reads it; ``None``
+    where it shows none."""
+    lens = None if intrinsics is None else np.asarray(intrinsics, dtype=np.float64)
+    width, height = (float(v) for v in image_size) if image_size is not None else (0.0, 0.0)
+    horizontal = math.sin(math.radians(_VERTICAL_FACE_DEG))
+    cos_limit = math.cos(math.radians(float(max_incidence_deg))) - _COS_SLACK
+    to_camera = np.linalg.inv(camera)
+    squarest: float | None = None
+    for centre, normal in faces:
+        unit = _unit(normal, "face normal")
+        if math.hypot(float(unit[0]), float(unit[1])) < horizontal:
+            continue
+        point = _vec3(centre, "face centre")
+        sight = camera[:3, 3] - point
+        distance = float(np.linalg.norm(sight))
+        if distance < _ZERO_MM:
+            continue
+        cosine = float(unit @ sight) / distance
+        if cosine < cos_limit:
+            continue
+        local = to_camera[:3, :3] @ point + to_camera[:3, 3]
+        if local[2] <= 0.0:
+            continue
+        if lens is not None:
+            u, v, w = lens @ (local / local[2])
+            if not (0.0 <= u / w < width and 0.0 <= v / w < height):
+                continue
+        incidence = math.degrees(math.acos(min(1.0, cosine)))
+        squarest = incidence if squarest is None else min(squarest, incidence)
+    return squarest
 
 
 def orbit_views(

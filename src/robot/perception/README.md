@@ -40,7 +40,7 @@ weights, no robot, and exits 0 after the frame or 1 with one sentence for an unk
 
 | Noun | Built by | Verb | Returns |
 |---|---|---|---|
-| `Locator` | `from_tree(tree, camera=, tool_pose=)`, `for_cameras(tree, cameras, tool_pose=)` (one per camera over one backend: the models load once for the cell), `from_config(robot, models, camera=)`, `from_parts(camera=, backend=)` | `locate(prompt)`, a class list too (`"yellow bin \| blue bin"`: every description in one detector call, see below); `look_around(prompt, looks=None, robot=, both_faces=False, record_views=False, closing_axis=UNSET)`; `measure(points_base_mm)`, one new frame and no detector: the depth each BASE point should read, the depth measured at its pixel and that pixel's colour (`Measured`; a task checks its bin's rim with it, 2026-10-08), `located.measure(points, image_bgr)` the same on the frame a locate placed | `Located` |
+| `Locator` | `from_tree(tree, camera=, tool_pose=)`, `for_cameras(tree, cameras, tool_pose=)` (one per camera over one backend: the models load once for the cell), `from_config(robot, models, camera=)`, `from_parts(camera=, backend=)` | `locate(prompt)`, a class list too (`"yellow bin \| blue bin"`: every description in one detector call, see below); `look_around(prompt, looks=None, robot=, both_faces=False, closing_axis=UNSET)`; `measure(points_base_mm)`, one new frame and no detector: the depth each BASE point should read, the depth measured at its pixel and that pixel's colour (`Measured`; a task checks its bin's rim with it, 2026-10-08), `located.measure(points, image_bgr)` the same on the frame a locate placed | `Located` |
 | `Located` | `locator.locate(prompt)`, or `locator.look_around(...)` for a part to grip | `scene(i, robot_config)`, `keep_out(i)`, `set_down(i, grasp=, part_bottom_mm=)`, `split(prompt)` | object i as a grasp `Scene` with the others as obstacles; what the planner leaves out to reach it; where a held part is set down on it; which objects each description of a class list located, by index (`{"yellow bin": (0,), "blue bin": ()}`). A look around adds `looks`, `looks_fused`, `jaw_faces_seen`, `refused`, `hand_eye_gap_mm`, `generated_view_deg`, `views_file` and `closing_axis` |
 | `SetDown` | `located.set_down(i, grasp=, part_bottom_mm=scene.part_bottom_mm, air_mm=5.0)` | `pose`, `reason` | the place pose over the middle of object i's top: its top (95th percentile of the seen surface), plus the part's hang below the grasp, plus the air; `pose` is `None`, with the `reason`, where it cannot be measured |
 | `LocatedObject` | an entry of `located.objects` | | label, score, box, mask, points in BASE and their per-axis median centre |
@@ -113,7 +113,7 @@ before, at the wrist tolerances and with grazing points thinned ([multiview/](..
   disconnect (`Robot.connected()`, `Cell.connected()`). The next look around lets go of them before it moves
   (`LivePlannerWorld.holds_pick_views`), and a look around that raises lets them go itself. A retry after a
   failed pick looks around again first.
-- **`record_views=True`** writes one `.npz` for the look around under `logs/robot/views`, named after
+- **The looks are kept**: one `.npz` for the look around under `logs/robot/views`, named after
   `look_around-<prompt>` with the time; `views_file` says where. A file that cannot be written is said,
   and the look around answers all the same.
 - **One line per look.** The per-look INFO account ends `label agreed in N of M looks`: M the looks that saw

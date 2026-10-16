@@ -35,7 +35,7 @@ from src.robot.grasping.generation._support_footprint_stage import (
     support_footprint_breakdowns,
 )
 from src.robot.grasping.generation.depth_steps import pixels_behind_depth_steps
-from src.robot.grasping.generation.footprint_hull import hull_points, unread_pixels
+from src.robot.grasping.generation.footprint_hull import hull_points, mask_hole_xy, mask_outline_xy, unread_pixels
 from src.robot.grasping.generation.footprint_rim import footprint_rim
 from src.robot.core.gripper import FINGER_OPENING_SLACK_MM
 from src.robot.grasping.generation.scene_obstacles import (
@@ -776,6 +776,23 @@ class GraspCalculator:
                          int(np.count_nonzero(unread)), support_mm, prism.z1)
         return np.vstack([target_base, placed]) if placed.shape[0] else target_base
 
+    def _mask_at_its_top(self, mask: np.ndarray, intrinsics: CameraIntrinsics, camera_to_base: np.ndarray,
+                         measured: np.ndarray, support_mm: float) -> "tuple[np.ndarray | None, np.ndarray | None]":
+        """The part's mask outline and its holes in BASE at its top (``footprint_hull.mask_outline_xy`` and
+        ``mask_hole_xy``), the 98th percentile of the points ``measured`` over the floor the stage cuts; ``None`` for
+        both where the mask is empty or no point stands over it."""
+        if not np.asarray(mask).any():
+            return None, None
+        floor = support_mm + (DEFAULT_FLOOR_MARGIN_MM if self._support_footprint_floor_margin_mm is None
+                              else float(self._support_footprint_floor_margin_mm))
+        points = np.asarray(measured, dtype=np.float64).reshape(-1, 3)
+        over = points[np.isfinite(points).all(axis=1) & (points[:, 2] > floor), 2]
+        if not over.size:
+            return None, None
+        matrix = np.array([[intrinsics.fx, 0.0, intrinsics.cx], [0.0, intrinsics.fy, intrinsics.cy], [0.0, 0.0, 1.0]])
+        top = float(np.percentile(over, 98.0))
+        return (mask_outline_xy(mask, matrix, camera_to_base, top), mask_hole_xy(mask, matrix, camera_to_base, top))
+
     def _fused_footprint(self, fused: np.ndarray, footprint: Any, telemetry: dict) -> np.ndarray:
         """What SFE builds its footprint from where a fused cloud comes with its rim cut (``footprint_points_base_mm``,
         the pick loop's looks less :attr:`support_footprint_rim_mm`): that cloud, the points it holds fewer than the
@@ -1455,6 +1472,12 @@ class GraspCalculator:
                 sfe_jaw = self._support_footprint_jaw(gripper_model, min_table_clearance_mm)
                 sfe_support_mm = (float(support_plane.offset_mm) if scene_support_mm is None
                                   else max(float(support_plane.offset_mm), scene_support_mm))
+                # The points a camera measured, before the visual hull's join them: where the part is widest is read
+                # from these (``body_grasps._under_the_widest``); the mask's outline at the part's top, which how square
+                # a pad meets it is read on (``body_grasps._squared``), and its holes, where a bore is (L, 2026-10-15).
+                measured_base = target_base
+                outline_base, hole_base = self._mask_at_its_top(mask_bool, intrinsics, transform, measured_base,
+                                                                sfe_support_mm)
                 if hull_read is not None:
                     target_base = self._with_the_hull(
                         target_base, mask_bool, hull_read, intrinsics, transform, sfe_support_mm, telemetry)
@@ -1484,6 +1507,9 @@ class GraspCalculator:
                     batched=self.sfe_batched,
                     opens_as_needed=self.opens_as_needed,
                     inner_grasps=self.inner_grasps,
+                    measured_base_mm=measured_base,
+                    outline_base_mm=outline_base,
+                    hole_base_mm=hole_base,
                     **sfe_side,
                 )
                 telemetry.update(sfe_telemetry)

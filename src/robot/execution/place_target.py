@@ -14,8 +14,10 @@ no other look runs. What a task keeps of it (:class:`KeptTarget`) is measured, n
   percentiles of its rim band (the surface within 10 mm of the rim, its walls' tops) along its own axes;
 * its opening, the gap between the inner edges of its walls' tops along each of those axes where the inside reads lower
   than the rim (:data:`OPENING_MIN_MM` or more), read from the rim band alone across the middle half of the band's own
-  extent, so the inner faces and the floor a slanted camera sees fill nothing; a box with a flat top has none, and its
-  part is set down on that top.
+  extent, so the inner faces and the floor a slanted camera sees fill nothing; where one wall alone reaches the rim on
+  an axis and the bin's other end stands lower (a bin low in front, its lip under the rim band), from that wall's inner
+  edge to the band's end there (:func:`_open_end`): the owner's small bins of 2026-10-15 read "no opening seen" at every
+  look so, and were set down on as flat tops; a box with a flat top has none, and its part is set down on that top.
 
 Before every drop the camera looks at the bin again from that look (:func:`recheck`). First its rim band's depth and
 colour, in one frame with no detector (the owner, 2026-10-08: speed first): where the walls' tops read where they read
@@ -78,6 +80,9 @@ taught turn whole only where the pick reports no grasp, with the declared length
 * *Side by side on a flat place* (:class:`Spot`): the spots of a grid about a taught pose (:func:`grid_spots`) or over a
   target's top (:func:`top_spots`), the camera's reading first (:func:`views_spot_reader` from the pick's looks,
   :func:`top_spot_reader` from the check), then the spots the task has not filled (:func:`choose_spot`).
+* *Spread in a box*, always (the owner, 2026-10-16, no switch): over the freest spot of its inside the check read
+  (:func:`inside_spots`), the next where a spot's drop is refused, each again higher where every one is, then over its
+  middle; the frame the check read over the bin is kept beside the picks' (:func:`record_the_check`).
 * *The carry over the rim*, what the task reads for it off the pick's own looks: the bin checked on the frame of the
   look it was found from (:func:`the_bins_look`, :func:`recheck_on_look`: no detector, no new frame), and the highest
   thing on the way to it (:func:`highest_on_the_way`).
@@ -93,6 +98,8 @@ from __future__ import annotations
 import math
 import weakref
 from dataclasses import dataclass, field, replace
+from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 import numpy as np
@@ -123,6 +130,7 @@ __all__ = [
     "INSIDE_AIR_MM",
     "KEEP_OUT_MARGIN_MM",
     "MIN_TARGET_POINTS",
+    "INSIDE_SPOTS_TRIED",
     "OPENING_MARGIN_MM",
     "OPENING_MIN_MM",
     "RELOCATE_COLOUR_DELTA_E",
@@ -151,6 +159,7 @@ __all__ = [
     "drop_plan",
     "grid_spots",
     "highest_on_the_way",
+    "inside_spots",
     "located_image",
     "locators_for_service",
     "look_points",
@@ -159,6 +168,7 @@ __all__ = [
     "part_reach_mm",
     "pose_drop",
     "recheck",
+    "record_the_check",
     "recheck_on_look",
     "relocate",
     "rim_clearance_mm",
@@ -186,6 +196,9 @@ _FOOTPRINT_PERCENTILES = (1.0, 99.0)
 #: The narrowest gap between a bin's walls that counts as its opening, mm: anything narrower is the spacing of a flat
 #: top's points, or no opening a part goes through. A choice, not a measurement.
 OPENING_MIN_MM = 20.0
+#: How near the end of a bin's rim band along an axis its one wall at the rim stands, mm, to be that end's wall where the
+#: other end is low (:func:`_open_end`): a wall's own thickness and the band's percentile, never a part inside.
+_END_WALL_MM = 15.0
 #: A grasp whose approach is within this many degrees of straight down is dropped along the cell's natural closing axis
 #: (the build plan's item 6); any other keeps its own turn, so the part hangs as it was gripped.
 VERTICAL_WITHIN_DEG = 5.0
@@ -268,8 +281,10 @@ def _opening_gaps(along: np.ndarray, across: np.ndarray, z: np.ndarray,
     it. The band alone, and its own extent: a camera at a slant sees most of a bin as its far wall's inner face and its
     floor, and a strip read off every point's spread lands on a wall top that spans it, which no gap crosses. A part
     standing above the band inside the bin narrows the gap, never widens it, so the error goes toward a smaller
-    opening. ``None`` where the inside does not read lower than the rim (no point below the band), or a gap is under
-    :data:`OPENING_MIN_MM`.
+    opening. Along an axis where one wall alone stands in the strip, at one end of the band, and the bin's other end is
+    lower (its front lip under the band), the opening runs from that wall's inner edge to the band's end there
+    (:func:`_open_end`). ``None`` where the inside does not read lower than the rim (no point below the band), or a gap
+    is under :data:`OPENING_MIN_MM`.
     """
     if not bool(np.any(z < rim_mm - _RIM_BAND_MM)):
         return None
@@ -280,10 +295,29 @@ def _opening_gaps(along: np.ndarray, across: np.ndarray, z: np.ndarray,
         low, high = float(np.percentile(other[band], low_pct)), float(np.percentile(other[band], high_pct))
         middle, quarter = (low + high) / 2.0, (high - low) / 4.0
         strip = band & (other >= middle - quarter) & (other <= middle + quarter)
-        gaps.append(_largest_gap(axis[strip]))
+        gap = _largest_gap(axis[strip])
+        if gap[0] < OPENING_MIN_MM:
+            gap = _open_end(axis[strip], float(np.percentile(axis[band], low_pct)),
+                            float(np.percentile(axis[band], high_pct)))
+        gaps.append(gap)
     if min(gap for gap, _low, _high in gaps) < OPENING_MIN_MM:
         return None
     return gaps
+
+
+def _open_end(wall: np.ndarray, low: float, high: float) -> "tuple[float, float, float]":
+    """The opening along an axis where ``wall``, the rim band's points the middle strip holds, stands at one end of the
+    band (``low`` to ``high`` along the axis: the side walls' tops) and nothing reaches the rim at the other: from the
+    wall's inner edge to the band's end there, and the two edges. ``(0, nan, nan)`` where the wall stands at neither end
+    or leaves less than :data:`OPENING_MIN_MM`."""
+    if wall.shape[0] == 0:
+        return 0.0, math.nan, math.nan
+    near, far = float(np.min(wall)), float(np.max(wall))
+    if high - far <= _END_WALL_MM and near - low >= OPENING_MIN_MM:
+        return near - low, low, near
+    if near - low <= _END_WALL_MM and high - far >= OPENING_MIN_MM:
+        return high - far, far, high
+    return 0.0, math.nan, math.nan
 
 
 def _opening(along: np.ndarray, across: np.ndarray, z: np.ndarray, rim_mm: float) -> "tuple[float, float] | None":
@@ -403,12 +437,13 @@ class KeptTarget:
         return LocatedObject(label=self.label, score=self.score, box_px=None, mask=np.zeros((1, 1), dtype=bool),
                              points_base_mm=self.points_base_mm, centre_mm=centre)
 
-    def keep_out_region(self, margin_mm: float = KEEP_OUT_MARGIN_MM) -> ExclusionRegion:
-        """Its footprint, grown by ``margin_mm`` on every side, kept out of every pick for every label (Q4): no pick
-        takes the bin, or a part already inside it."""
+    def keep_out_region(self, margin_mm: float = KEEP_OUT_MARGIN_MM, *, label: str | None = None) -> ExclusionRegion:
+        """Its footprint, grown by ``margin_mm`` on every side, kept out of every pick (Q4): no pick takes the bin, or a
+        part already inside it. ``label`` keeps out only the parts of that label, the kind a sort's rule puts there (the
+        owner, 2026-10-15: a part that does not belong in a bin may be taken out of it); ``None``, every label."""
         return ExclusionRegion.rectangle(
             self.centre_xy_mm, (self.footprint_mm[0] + 2.0 * margin_mm, self.footprint_mm[1] + 2.0 * margin_mm),
-            yaw_rad=self.yaw_rad, reason=f"the {self.label} it places into")
+            yaw_rad=self.yaw_rad, label=label, reason=f"the {self.label} it places into")
 
     def __str__(self) -> str:
         """What ``print()`` shows: the text :meth:`render` returns."""
@@ -1231,7 +1266,7 @@ class InsideRead:
 
     ``kind`` is ``box`` for a target with an inside: ``top_mm`` is the highest the frame reads anything in it, its floor
     or the parts already in it, read at ``points_mm``, one place for each 10 mm cell of what the target showed of its
-    inside when it was last seen (the highest point of that cell). Each place is read upward from where it stood then,
+    inside when it was last seen (the highest point of that cell), and ``tops_mm`` the top read at each place. Each place is read upward from where it stood then,
     every :data:`_INSIDE_STEP_MM`: the lowest height from which the frame twice running reads nothing there (its ray goes
     on past by more than :data:`SURFACE_TOLERANCE_MM`) is the top of what stands there, and a place the frame never reads
     clear up to the rim (hidden, or no depth at all) is full to the rim. So every error goes up: a part with no depth, one
@@ -1248,6 +1283,7 @@ class InsideRead:
     covered: "np.ndarray | None" = field(default=None, repr=False)
     seen: "np.ndarray | None" = field(default=None, repr=False)
     said: str = ""
+    tops_mm: "np.ndarray | None" = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, eq=False)
@@ -1366,7 +1402,7 @@ def _inside_of(probes: "_Probes | None", gap: "np.ndarray | None") -> "InsideRea
     higher = int(np.count_nonzero(~found | (first > 2)))
     said = (f"its inside read at {probes.columns.shape[0]} place(s): the highest {top:.1f} mm, "
             f"{probes.rim_mm - top:.1f} mm under its rim; {higher} place(s) hold more than when it was last seen")
-    return InsideRead("box", probes.columns, top_mm=top, said=said)
+    return InsideRead("box", probes.columns, top_mm=top, said=said, tops_mm=np.asarray(tops, dtype=np.float64))
 
 
 def _inside_on(located: Any, target: KeptTarget, *, also: "Sequence[np.ndarray]" = ()) -> "InsideRead | None":
@@ -1673,6 +1709,34 @@ def _rim_read(locator: Any, last: KeptTarget, probes: "_Probes | None" = None) -
                 "farther, colour dE %.1f: %s", last.label, total, read.camera, 100.0 * seen_share, 100.0 * agree_share,
                 DEPTH_CHECK_TOLERANCE_MM, 100.0 * farther_share, delta_e, why or "it stands where it stood")
     return why, at_the_probes
+
+
+def record_the_check(locators: "Sequence[Any]", kept: KeptTarget, *, name: str) -> "Path | None":
+    """Keep the frame the check before a drop read over ``kept`` (the measure its rim was read with,
+    ``Locator.last_measured``) in ``record_views``' layout, its target cloud the bin's points, in a folder of its own
+    beside the picks' (``places``): the world the drop is judged in at that look is built from what it saw, so a drop
+    refused there can be read again (the owner, 2026-10-16: at 8:13 the day before a camera box no log could name refused
+    one). ``None`` where the locator that checks ``kept`` measured no frame.
+
+    Args:
+        locators: The task's locators; the one of the rig that saw ``kept`` checks it, as :func:`recheck` takes it.
+        kept: The bin.
+        name: What the file is named for.
+
+    Returns:
+        Path | None: The file written.
+    """
+    from src.robot.execution import record_views as views  # noqa: PLC0415
+
+    named = [locator for locator in locators if _rig_of(locator) == kept.camera]
+    locator = named[0] if named else (locators[0] if locators else None)
+    look = getattr(locator, "last_measured", None)
+    if look is None:
+        return None
+    labelled = SimpleNamespace(frame=look.frame, camera_to_base=look.camera_to_base, name=look.name,
+                               label=kept.look_label or "")
+    return views.record_views([labelled], target_cloud_base_mm=kept.points_base_mm, name=name,
+                              directory=Path(views.RECORD_VIEWS_DIR) / "places")
 
 
 def recheck(locators: "Sequence[Any]", kept: KeptTarget, *, last: "KeptTarget | None" = None,
@@ -2174,11 +2238,13 @@ _SPOT_LEVEL_MM = 5.0
 class Spot:
     """A spot of a flat place a part is laid on: its middle, BASE X and Y mm, how it was chosen (``camera``: the camera
     reads it free; ``grid``: the next the task has not filled, where no camera reads it), and how much higher than under
-    the taught pose the camera reads its support, mm (0 where it read none)."""
+    the taught pose the camera reads its support, mm (0 where it read none). In a box (:func:`inside_spots`), ``top_mm``
+    is the highest the camera reads within the part's reach of it, BASE z mm."""
 
     xy: "tuple[float, float]"
     by: str
     rise_mm: float = 0.0
+    top_mm: "float | None" = None
 
 
 def grid_spots(centre_xy: "Sequence[float]", heading_rad: float, *, rows: int, columns: int,
@@ -2205,6 +2271,52 @@ def top_spots(kept: KeptTarget, *, pitch_mm: float, reach_mm: float) -> "list[tu
     spots = grid_spots(kept.centre_xy_mm, kept.yaw_rad, rows=2 * counts[0] + 1, columns=2 * counts[1] + 1,
                        pitch_mm=pitch)
     return spots
+
+
+#: How far apart the spots of a box's inside are asked, mm (:func:`inside_spots`), and how many of them at most, the
+#: freest first: each asked costs a screen of its drop.
+_INSIDE_SPOT_PITCH_MM = 20.0
+INSIDE_SPOTS_TRIED = 6
+
+
+def inside_spots(kept: KeptTarget, inside: "InsideRead | None", *, reach_mm: float,
+                 margin_mm: float = OPENING_MARGIN_MM) -> "list[Spot]":
+    """The spots of ``kept``'s inside a part reaching ``reach_mm`` from the tool (it or the open hand) goes down to whole,
+    ``margin_mm`` inside the opening's inner edges, the freest first (the owner, 2026-10-16: "immer verteilen", built in,
+    no switch): each spot's top is the highest the check read (``inside``, its places' tops) within the reach of it, the
+    lowest first, the nearest the middle on a tie; at most :data:`INSIDE_SPOTS_TRIED`. Empty where ``kept`` shows no
+    opening or the check read nothing inside it: the part goes over the middle, as before.
+
+    Args:
+        kept: The box.
+        inside: What the check before the drop read inside it (:class:`InsideRead` of kind ``box``).
+        reach_mm: How far the part or the open hand reaches from the tool, millimetres.
+        margin_mm: How far inside the opening's inner edges it keeps, millimetres.
+
+    Returns:
+        list[Spot]: The spots, ``by`` ``camera``, each with its ``top_mm``.
+    """
+    edges = kept.inner_opening()
+    if edges is None or inside is None or inside.kind != "box" or inside.tops_mm is None or not len(inside.tops_mm):
+        return []
+    (a_low, a_high), (c_low, c_high) = edges
+    keep = float(reach_mm) + float(margin_mm)
+    places = np.asarray(inside.points_mm, dtype=np.float64).reshape(-1, 3)
+    tops = np.asarray(inside.tops_mm, dtype=np.float64)
+    p_along, p_across = _turned(places[:, :2], kept.yaw_rad)
+    c, s = math.cos(kept.yaw_rad), math.sin(kept.yaw_rad)
+    middle = ((a_low + a_high) / 2.0, (c_low + c_high) / 2.0)
+    found: list[tuple[float, float, float, float]] = []
+    for a in np.arange(a_low + keep, a_high - keep + 1e-9, _INSIDE_SPOT_PITCH_MM) if a_high - a_low > 2 * keep \
+            else [middle[0]]:
+        for b in np.arange(c_low + keep, c_high - keep + 1e-9, _INSIDE_SPOT_PITCH_MM) if c_high - c_low > 2 * keep \
+                else [middle[1]]:
+            near = np.hypot(p_along - a, p_across - b) <= float(reach_mm)
+            if not near.any():
+                continue
+            found.append((float(np.max(tops[near])), math.hypot(a - middle[0], b - middle[1]), float(a), float(b)))
+    found.sort()
+    return [Spot((c * a - s * b, s * a + c * b), "camera", top_mm=top) for top, _off, a, b in found[:INSIDE_SPOTS_TRIED]]
 
 
 def views_spot_reader(points: Any, support_model: Any,
@@ -2557,8 +2669,9 @@ def drop_plan(arm: Any, kept: KeptTarget, grasp: Pose, *, part_bottom_mm: float,
     cloud where it stood, BASE) turned as it will hang, must fit the opening (or the top), else it ``does_not_fit``.
     Without the cloud the fit is not judged, and said.
 
-    ``spot`` lays the part on a spot of a flat top (:func:`top_spots`, ``robot.place.side_by_side``) rather than over its
-    middle, at the same height. ``below_rim_mm`` sets a part going into a box down below its rim (``robot.place
+    ``spot`` lays the part on a spot of a flat top (:func:`top_spots`, ``robot.place.side_by_side``) or of a box's inside
+    (:func:`inside_spots`) rather than over its middle, at the same height; below a box's rim the part keeps
+    :data:`INSIDE_AIR_MM` over what the check read under that spot. ``below_rim_mm`` sets a part going into a box down below its rim (``robot.place
     .release_in_a_box: below_the_rim``, :func:`_below_the_rim`), what the check read of its inside (``inside``) the floor
     it keeps :data:`INSIDE_AIR_MM` over, the part from ``part_cloud_mm`` and the open hand (``hand``) kept
     ``opening_margin_mm`` inside its opening; where any of that cannot be, the drop over the rim stands, and says why.
@@ -2577,7 +2690,7 @@ def drop_plan(arm: Any, kept: KeptTarget, grasp: Pose, *, part_bottom_mm: float,
                                           float(set_down.top_mm) + float(air_mm) + hang]),
                     quaternion_xyzw=np.asarray(over.quaternion_xyzw, dtype=np.float64), frame=Frame.BASE,
                     label=over.label)
-    if spot is not None and kept.opening_mm is None:
+    if spot is not None:
         over = Pose(position_mm=np.array([spot.xy[0], spot.xy[1], float(over.position_mm[2])]),
                     quaternion_xyzw=np.asarray(over.quaternion_xyzw, dtype=np.float64), frame=Frame.BASE,
                     label=over.label)
@@ -2586,7 +2699,7 @@ def drop_plan(arm: Any, kept: KeptTarget, grasp: Pose, *, part_bottom_mm: float,
     plan = DropPlan(kind="camera", pose=pose, standoff_mm=float(standoff_mm), rim_mm=set_down.top_mm,
                     hang_mm=hang, air_mm=float(air_mm), verdict=screen.verdict, detail=screen.detail,
                     joints=screen.joints, nearby_deg=screen.nearby_deg, turned=turned, release="over_the_rim")
-    if spot is not None and kept.opening_mm is None:
+    if spot is not None:
         plan = replace(plan, spot_xy=spot.xy, spot_by=spot.by)
     if screen.is_error:
         return replace(plan, refusal="unreachable",
@@ -2598,18 +2711,20 @@ def drop_plan(arm: Any, kept: KeptTarget, grasp: Pose, *, part_bottom_mm: float,
     if below_rim_mm is None or kept.opening_mm is None:
         return plan
     return _below_the_rim(arm, kept, grasp, plan, below_rim_mm=float(below_rim_mm),
-                          inside=inside, margin_mm=float(opening_margin_mm), hand=hand, part_cloud_mm=part_cloud_mm)
+                          inside=inside, margin_mm=float(opening_margin_mm), hand=hand, part_cloud_mm=part_cloud_mm,
+                          under_mm=None if spot is None else spot.top_mm)
 
 
 def _below_the_rim(arm: Any, kept: KeptTarget, grasp: Pose, over: DropPlan, *,
                    below_rim_mm: float, inside: "InsideRead | None", margin_mm: float, hand: "OpenHand | None",
-                   part_cloud_mm: Any) -> DropPlan:
+                   part_cloud_mm: Any, under_mm: "float | None" = None) -> DropPlan:
     """The part set down below the rim of the box ``kept`` rather than let go over it (``over``, the drop over its rim,
     which stands, with why, wherever this cannot be): the owner's "1-5 cm unter dem Kistenrand" (2026-10-08 night).
 
     The part's bottom goes ``below_rim_mm`` under the rim (the tool, by the hang ``over`` holds: none where the cell
     declares no ``payload.length_mm``), never lower than :data:`INSIDE_AIR_MM` over the highest the
-    check read anything inside (``inside``: the floor, or the parts already in it), and at least
+    check read anything inside (``inside``: the floor, or the parts already in it; under a spot, ``under_mm``, what it
+    read within the part's reach of the spot), and at least
     :data:`BELOW_RIM_LEAST_MM` under the rim, or the box reads too full and the part goes over the rim. The tool stands
     over the same middle, turned as over the rim. Only a grasp within :data:`VERTICAL_WITHIN_DEG` of vertical goes
     below a rim, and only where, at the drop, the part as it hangs (its cloud, rigid in the jaws, turned only about the
@@ -2632,10 +2747,11 @@ def _below_the_rim(arm: Any, kept: KeptTarget, grasp: Pose, over: DropPlan, *,
     if inside is None or inside.kind != "box" or inside.top_mm is None:
         return stays_over("the camera did not read what stands inside the box")
     rim = float(kept.rim_mm)
-    bottom = max(rim - float(below_rim_mm), float(inside.top_mm) + INSIDE_AIR_MM)
+    under = float(inside.top_mm) if under_mm is None else float(under_mm)
+    bottom = max(rim - float(below_rim_mm), under + INSIDE_AIR_MM)
     depth = rim - bottom
     if depth < BELOW_RIM_LEAST_MM:
-        return stays_over(f"the camera reads the box full to {float(inside.top_mm):.0f} mm, {rim - float(inside.top_mm):.0f} "
+        return stays_over(f"the camera reads the box full to {under:.0f} mm, {rim - under:.0f} "
                           f"mm under its rim, and a part set down in it keeps {INSIDE_AIR_MM:g} mm over that")
     hang = float(over.hang_mm or 0.0)
     x, y, _z = (float(v) for v in over.pose.position_mm)
@@ -2649,7 +2765,7 @@ def _below_the_rim(arm: Any, kept: KeptTarget, grasp: Pose, over: DropPlan, *,
     if screen.is_error:
         return stays_over(f"no move goes to the drop {depth:.0f} mm under the rim: {screen.detail}")
     logger.info("drop: the part is set down %.1f mm under the %s's rim (the inside read to %.1f mm), over it where the "
-                "line in is refused", depth, kept.label, float(inside.top_mm))
+                "line in is refused", depth, kept.label, under)
     # The standoff stays where the drop over the rim has it: the part comes to the box as it always did, and only the
     # line in goes deeper.
     deeper = float(over.pose.position_mm[2]) - float(pose.position_mm[2])

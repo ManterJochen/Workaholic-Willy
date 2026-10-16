@@ -159,24 +159,27 @@ def _telemetry(points: int, z: float | None = None, anchor: float | None = None,
 #: ``body_kept``, ``body_refused``) are ``test_the_hand_grasps_the_parts_own_body``'s. Re-recorded 2026-10-14 evening:
 #: the pads hold a part at least ``body_grasps.HOLD_OVERLAP_MM`` (10 mm) under its top, 3 before, so the anchors stand
 #: on a grid 1 mm off the earlier one, and how they sit on the part weighs 0.6 of their third (the owner's cell:
-#: "sehr knapp an der Oberseite"); every block keeps its 12 grasps, the best about its middle.
+#: "sehr knapp an der Oberseite"); every block keeps its 12 grasps, the best about its middle. Re-recorded 2026-10-15:
+#: the hold read from the part's robust top (its 98th percentile), not its highest cell, and how the pads sit weighs 0.8
+#: of their third (the owner: deeper first), so the twelve offered stand up to 3 mm otherwise; every block keeps its 12
+#: grasps, the best about its middle.
 HEAD_STAGE: dict[str, tuple[str, dict[str, Any]]] = {
-    "top90_identity": ("12:cf555dcbc209bf7c", _telemetry(256, 90.0, 45.61, 38.89)),
-    "top90_flipped": ("12:86baa4ee10627a7a", _telemetry(256, 90.0, 45.61, 38.89)),
+    "top90_identity": ("12:e7585ee9d544c116", _telemetry(256, 90.0, 45.61, 34.89)),
+    "top90_flipped": ("12:c34de951143aebdc", _telemetry(256, 90.0, 45.61, 34.89)),
     "sparse50": ("0:e3b0c44298fc1c14", _telemetry(9, 50.0, kept=0)),
     "empty": ("0:e3b0c44298fc1c14", _telemetry(0, kept=0)),
-    "top50_palm0": ("12:594b9599f1d6833f", _telemetry(256, 50.0, 35.61, 18.89)),
-    "top50_palm1": ("12:594b9599f1d6833f", _telemetry(256, 50.0, 35.61, 18.89)),
-    "top60_palm0": ("12:e753476d72bb45a1", _telemetry(256, 60.0, 35.61, 22.89)),
-    "top60_palm1": ("12:e753476d72bb45a1", _telemetry(256, 60.0, 35.61, 22.89)),
-    "top70_palm0": ("12:7dc24b49be7079ba", _telemetry(256, 70.0, 35.61, 26.89)),
-    "top70_palm1": ("12:7dc24b49be7079ba", _telemetry(256, 70.0, 35.61, 26.89)),
-    "top90_palm0": ("12:cf555dcbc209bf7c", _telemetry(256, 90.0, 45.61, 38.89)),
-    "top90_palm1": ("12:cf555dcbc209bf7c", _telemetry(256, 90.0, 45.61, 38.89)),
-    "top120_palm0": ("12:81cf4ab6ce627d43", _telemetry(256, 120.0, 61.61, 58.89)),
-    "top120_palm1": ("12:81cf4ab6ce627d43", _telemetry(256, 120.0, 61.61, 58.89)),
+    "top50_palm0": ("12:645d70ec7288095f", _telemetry(256, 50.0, 35.61, 14.89)),
+    "top50_palm1": ("12:645d70ec7288095f", _telemetry(256, 50.0, 35.61, 14.89)),
+    "top60_palm0": ("12:9affb54781c67408", _telemetry(256, 60.0, 35.61, 16.89)),
+    "top60_palm1": ("12:9affb54781c67408", _telemetry(256, 60.0, 35.61, 16.89)),
+    "top70_palm0": ("12:94860e3fb91a21a3", _telemetry(256, 70.0, 35.61, 26.89)),
+    "top70_palm1": ("12:94860e3fb91a21a3", _telemetry(256, 70.0, 35.61, 26.89)),
+    "top90_palm0": ("12:e7585ee9d544c116", _telemetry(256, 90.0, 45.61, 34.89)),
+    "top90_palm1": ("12:e7585ee9d544c116", _telemetry(256, 90.0, 45.61, 34.89)),
+    "top120_palm0": ("12:9bda5d25c9ab6e84", _telemetry(256, 120.0, 61.61, 52.89)),
+    "top120_palm1": ("12:9bda5d25c9ab6e84", _telemetry(256, 120.0, 61.61, 52.89)),
     # The Hand-E's fingers come to 1 mm of the support (2026-10-06).
-    "hande_cylinder_wall_12": ("12:8aee849053ad6fe3", {
+    "hande_cylinder_wall_12": ("12:5a0da9b317bf7898", {
         "support_footprint_kept": 12, "support_footprint_points": 5593,
         "support_footprint_cloud_z_min_mm": 1.0, "support_footprint_cloud_z_max_mm": 60.0,
         "support_footprint_top_anchor_z_mm": 28.45, "support_footprint_best_clearance_mm": 28.0,
@@ -214,9 +217,10 @@ class TheLibraryCallerIsUnchangedTests(unittest.TestCase):
         self.assertTrue(breakdowns)
         self.assertIs(True, telemetry["support_footprint_side_approaches"])
         self.assertIs(True, telemetry["support_footprint_corridor_seen"])
-        # SFE leaned 30 degrees away from the wall for room. The part's own body (alone since 2026-10-14) leans only
-        # where the scene refuses a grasp straight down, and 12 mm off the wall it does not: straight down.
-        self.assertAlmostEqual(0.0, telemetry["support_footprint_top_tilt_deg"], places=1)
+        # SFE leaned 30 degrees away from the wall for room. The part's own body leans every grasp on SFE's whole ladder
+        # since 2026-10-16 (the owner: "alles von SFE"), a lean winning only with more room: its best grasp closes along
+        # the wall, straight down its open corridor keeps 15.2 mm from it, leaning 75 degrees away 16.0.
+        self.assertAlmostEqual(75.0, telemetry["support_footprint_top_tilt_deg"], places=1)
         _none, without = support_footprint_breakdowns(
             cloud, camera_to_base=_FLIPPED, support_height_mm=0.0, jaw=hande_jaw(), obstacle_points_base_mm=wall,
             max_candidates=12, side_approaches=True)

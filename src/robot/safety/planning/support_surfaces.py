@@ -46,6 +46,7 @@ __all__ = [
     "SupportSurface",
     "detection_step",
     "find_supports",
+    "lowest_tenth_mm",
     "support_ceiling_mm",
 ]
 
@@ -87,17 +88,42 @@ _BENCH_DEPTH_MM = 50.0
 _BENCH_CHECK_EXTRA_MM = 10.0
 #: The bench check says so where at least this many of its cells read lower than the allowance under the plane.
 BENCH_LOW_LEAST_CELLS = 16
-#: How far over the middle of a part's heights a support may read and still be what the part stands on, millimetres:
-#: the band a surface's own pixels spread over (``plane_clearance_mm``). A part stands on what lies under it, so a
-#: surface read higher than half of its points is one beside it that its cloud reaches over: the bottom of a crate turned
-#: over beside the part, 185 mm up, onto which a side look's mask had run, and every grasp of the part was refused as
-#: standing under its support (the owner's cell, 2026-10-12 10:14).
+#: How far over the lowest tenth of a part's heights (:data:`LOWEST_SHARE_PCT`) a support may read and still be what the
+#: part stands on, millimetres: the band a surface's own pixels spread over (``plane_clearance_mm``). A part stands on
+#: what lies under it and reaches no lower, so a surface read higher is one beside it that its cloud reaches over: the
+#: bottom of a crate turned over beside the part, 185 mm up, onto which a side look's mask had run, and every grasp of
+#: the part was refused as standing under its support (the owner's cell, 2026-10-12 10:14).
 UNDER_A_PART_MM = 5.0
+#: The share of a part's own heights, percent, that may lie under its support: a mask run a little down a neighbour's
+#: side. Read at the middle of its heights the ceiling let the tops of a dense pile beside a standing cylinder, one
+#: surface 81 mm up, stand under a part whose side the looks saw down to the mat at 61 mm; its top 7 mm were all its
+#: grasps held, and six slipped in a row (the owner's cell, 2026-10-15, 14:36 to 14:41).
+LOWEST_SHARE_PCT = 10.0
+#: How far a held target's own points reach under a surface that covers it, millimetres, for that surface to stand beside
+#: it and be no support (``_surface``): the tops of a pile round a part on the mat, 21 mm over its lowest tenth on the
+#: owner's cell (2026-10-15, 14:36). A flat thing a mask found on the mat reads a millimetre or two under it in the
+#: noise, and the mat stays the support.
+REACHES_UNDER_MM = 10.0
+
+
+def lowest_tenth_mm(points_mm: Any) -> float | None:
+    """How low a part's own points reach, BASE z millimetres: the lowest tenth of its heights (:data:`LOWEST_SHARE_PCT`),
+    so a few points a mask ran down a neighbour's side or onto the bench do not count; ``None`` for no point.
+
+    Args:
+        points_mm (Any): The part's own points, ``(N, 3)`` BASE millimetres.
+
+    Returns:
+        float | None: The height, millimetres, or ``None``.
+    """
+    heights = np.asarray(points_mm, dtype=np.float64).reshape(-1, 3)[:, 2]
+    heights = heights[np.isfinite(heights)]
+    return float(np.percentile(heights, LOWEST_SHARE_PCT)) if heights.size else None
 
 
 def support_ceiling_mm(points_mm: Any) -> float | None:
-    """The highest a support under a part may read, BASE z millimetres: the median of the part's heights and
-    :data:`UNDER_A_PART_MM`.
+    """The highest a support under a part may read, BASE z millimetres: the lowest tenth of the part's heights
+    (:func:`lowest_tenth_mm`) and :data:`UNDER_A_PART_MM`.
 
     Args:
         points_mm (Any): The part's own points, ``(N, 3)`` BASE millimetres.
@@ -105,9 +131,8 @@ def support_ceiling_mm(points_mm: Any) -> float | None:
     Returns:
         float | None: The ceiling, or ``None`` where no point has a finite height.
     """
-    heights = np.asarray(points_mm, dtype=np.float64).reshape(-1, 3)[:, 2]
-    heights = heights[np.isfinite(heights)]
-    return float(np.median(heights)) + UNDER_A_PART_MM if heights.size else None
+    low = lowest_tenth_mm(points_mm)
+    return None if low is None else low + UNDER_A_PART_MM
 
 
 def detection_step(pixel_stride: int) -> int:
@@ -415,7 +440,7 @@ class SupportModel:
 
         What the calculator takes as the support under a part, beside the part's own foot (the higher wins). Handed the
         part's own points, ``(N, 3)``, it takes no reading over :func:`support_ceiling_mm` of them: a surface higher
-        than half of the part is beside it, never under it. Handed ``(N, 2)`` BASE x and y, every reading counts.
+        than the part's lowest tenth is beside it, never under it. Handed ``(N, 2)`` BASE x and y, every reading counts.
 
         Args:
             foot (Any): The part's points, ``(N, 3)`` BASE millimetres, or their x and y alone, ``(N, 2)``.
@@ -933,8 +958,8 @@ def _ground_round(box: "KeepOutBox", points: np.ndarray, grid: _CellGrid, band: 
     :data:`_GROUND_SIDES` of the eight sides round the target or more, is the ground. Its plane is fitted to those
     pixels (level where it would tilt past :data:`MAX_SUPPORT_TILT_DEG`), and the region is their cells and the cells
     under the target, which stands on it. :func:`_surface` then holds it to every rule a found surface keeps: its own
-    pixels within the band, no window where something lower was seen, no target's own top, and 75 mm across and
-    100 x 100 mm at the least, so the top of a part under another is never a ground.
+    pixels within the band, no window where something lower was seen, no target's own top, no held target reaching under
+    it, and 75 mm across and 100 x 100 mm at the least, so the top of a part under another is never a ground.
     """
     matrix = np.asarray(box.box_to_base_mm, dtype=np.float64)
     half = np.asarray(box.half_extents_mm, dtype=np.float64)
@@ -974,7 +999,15 @@ def _surface(
     keep_out: "Sequence[KeepOutBox]",
 ) -> "tuple[list[SupportSolid], np.ndarray, dict[str, Any], str] | None":
     """A region's own pixels, its footprint, its pieces and their erasure solids (without the allowance);
-    ``None`` where it is a held target's own top or too thin to hold. The last item says why a piece was not built."""
+    ``None`` where it is a held target's own top, where a held target reaches under it, or where it is too thin to hold.
+    The last item says why a piece was not built.
+
+    A held target reaches under a surface whose footprint covers its box's centre and whose plane reads there more than
+    :data:`REACHES_UNDER_MM` over how low the target's own points reach (``KeepOutBox.low_mm``): the tops of parts round
+    it, which the solid under them would bury it in. On the owner's cell (2026-10-15, 14:36 to 14:41) the tops of a dense
+    pile round a cylinder standing on the mat read 81 mm, its points reached down to 61 mm, and the solid under them left
+    its grasps the top 7 mm. A box with no ``low_mm`` is not asked: the world carries a target's box down to the declared
+    plane, and its bottom is no part's foot (the mat of 2026-10-01 was lost under a folding rule's box so)."""
     from scipy import ndimage  # noqa: PLC0415 (kept out of import time)
     from scipy.spatial import Delaunay  # noqa: PLC0415
 
@@ -1006,6 +1039,14 @@ def _surface(
         inside_target = np.zeros(int(own.sum()), dtype=bool)
         for box in keep_out:
             inside_target |= box.contains(near_points[own])
+            if box.low_mm is None:
+                continue
+            centre = np.asarray(box.box_to_base_mm, dtype=np.float64)[:3, 3]
+            reading = float(coef[0] + coef[1] * centre[0] + coef[2] * centre[1])
+            ij = np.floor(centre[:2] / grid.cell).astype(np.int64) - grid.origin
+            if (0 <= ij[0] < span[0] and 0 <= ij[1] < span[1] and mask[ij[0] + 1, ij[1] + 1]
+                    and reading > float(box.low_mm) + REACHES_UNDER_MM):
+                return None
         if float(inside_target.mean()) > MAX_TARGET_SHARE:
             return None
     seen_views = np.unique(near_views[own])

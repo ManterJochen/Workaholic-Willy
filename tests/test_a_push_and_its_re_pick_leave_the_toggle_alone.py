@@ -1,9 +1,11 @@
 """A push and the pick after it leave the toggle alone: the real hand and the real execution policy (review of B2).
 
 The owner's Hand-E is ``jaw_io`` single_toggle on tool DO0: every change of DO0 moves the jaws once, nothing reads them
-back, and the program keeps the count. A push runs with the jaws standing open and never switches them (the owner,
-2026-09-29); the pick of the pushed part then closes them once, with the one change the real ``GraspExecutionPolicy``
-sends, and asks nobody. The end-to-end file (``tests/test_a_boxed_in_part_is_pushed_inside_the_pick.py``) drives a policy
+back, and the program keeps the count. With a push cell that plans the open hand, as a hand pushes that is neither a
+Robotiq nor a toggle, a push runs with the jaws standing open and never switches them (the owner, 2026-09-29); the
+pick of the pushed part then closes them once, with the one change the real ``GraspExecutionPolicy`` sends, and asks
+nobody. Since 2026-10-16 the toggle itself pushes closed (``tests/test_a_toggle_closes_for_its_push_and_opens_at_the_
+look.py``). The end-to-end file (``tests/test_a_boxed_in_part_is_pushed_inside_the_pick.py``) drives a policy
 double that executes nothing, so its re-pick never meets the hand. Here the re-pick runs on the real policy and the real
 ``JawIOGripper``, on a recording tool I/O whose writes share one log with the arm's motions, so the order of the push's
 legs and of the one close can be read off it.

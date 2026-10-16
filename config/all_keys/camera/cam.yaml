@@ -516,8 +516,8 @@ cameras:
         # Record for research (the owner, 2026-10-09: "alles in einem Schalter"). On, the camera also streams
         # both infrared images (infrared 1 and 2, Y8, at `depth_resolution` and `fps`, with the projector as
         # `enable_emitter` sets it, never toggled), and every frame carries them, the depth as the sensor sent
-        # it (before the filters and the alignment) and the camera's facts. The views file of every pick a
-        # program keeps (`record_views`; the console keeps every task's) then holds, per look, both infrared
+        # it (before the filters and the alignment) and the camera's facts. The views file every pick keeps
+        # (`record_views`) then holds, per look, both infrared
         # images with their lenses and extrinsics, the raw depth, the colour frame's exposure metadata and every
         # segmentation's mask (packed bits), box, label, score, SAM2's three predicted IoUs and which one was the
         # target, and once the camera's name, serial, firmware, depth units, filters, preset, colour settings as

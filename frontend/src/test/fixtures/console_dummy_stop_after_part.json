@@ -41,7 +41,6 @@
             "both_faces": false,
             "closing_axis": null,
             "push_mm": 30.0,
-            "record_views": false,
             "rim_air_mm": null,
             "pick_anything": false,
             "overlay": true
@@ -426,7 +425,6 @@
             "both_faces": false,
             "closing_axis": null,
             "push_mm": 30.0,
-            "record_views": false,
             "rim_air_mm": null,
             "pick_anything": false,
             "overlay": true
@@ -495,7 +493,6 @@
           "both_faces": false,
           "closing_axis": null,
           "push_mm": 30.0,
-          "record_views": false,
           "rim_air_mm": null,
           "pick_anything": false,
           "overlay": true

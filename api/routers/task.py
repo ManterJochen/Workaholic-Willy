@@ -305,7 +305,7 @@ def _plan(cell: Console, body: TaskIn) -> dict[str, Any]:
         "options": {"multi_view": options.multi_view, "every_look": options.every_look,
                     "both_faces": options.both_faces, "closing_axis": axis,
                     "push_mm": push_mm, "push_asked": options.push_mm is not None,
-                    "critical_parts": options.critical_parts, "record_views": options.record_views,
+                    "critical_parts": options.critical_parts,
                     "rescan": options.rescan, "push": options.push, "clear": options.clear,
                     "blocker_into_the_place": options.blocker_into_the_place,
                     "rim_air_mm": rim_air, "carry": options.carry, "pick_anything": options.pick_anything,

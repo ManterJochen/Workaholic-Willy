@@ -24,7 +24,7 @@ Two and three together are necessary and not sufficient. A field that fills the 
 plan in two and is gone in three exactly like a wall would be, which is why 4a.3 carries a decoy
 control and 4a.8 asks the sign directly.
 
-Then eight questions the installed planner answers and no unit test can, because the sidecar is never
+Then ten questions the installed planner answers and no unit test can, because the sidecar is never
 imported by the suite. Each carries the id its result is keyed by in the report:
 
   4a.1  Did every refresh of the chain say ok, and did the wall reach the planner as a field? REQUIRED.
@@ -46,6 +46,13 @@ imported by the suite. Each carries the id its result is keyed by in the report:
         magnitudes, with the same fields far away and no field at all as controls. RECORDED.
   4a.9  Is a field cut to a grid one voxel wider than the planner reserved refused, on the field request
         and on the one scene request, with both grids named, while the matching grid is taken? REQUIRED.
+  4a.10 Does the planner hold the fine grid about a goal on a second layer, where its own pose and voxel
+        put it, beside the field? A one voxel plane of the fine grid, 55 voxels high (which cuRobo counts
+        54 unless the sidecar pads the dims), and the field's plane with the fine grid beside it, sent as
+        the production sends them (their occupancy, the sidecar taking the distances on the GPU), each
+        swept toward the fixed arm against the same plane as a box, which it touches half a voxel later
+        (the distances run between voxel centres); touching, both grids set aside clear the arm and are
+        named. REQUIRED.
 
 And three where a camera cannot vouch for the cell and the refresh raises instead of refusing:
 
@@ -117,8 +124,11 @@ from src.robot.safety.planning.live_world import (  # noqa: E402
     _write_voxel_field,
     refresh_planner_world,
 )
+from src.robot.safety.planning._curobo_protocol import PERCEIVED_FIELD, PERCEIVED_NEAR_FIELD  # noqa: E402
 from src.robot.safety.planning.perceived import (  # noqa: E402
+    NEAR_VOXEL_MM,
     LinkCapsule,
+    PerceivedBox,
     SelfEnvelope,
     VoxelField,
     WorldBuildLimits,
@@ -357,6 +367,13 @@ def _block_points(low: Sequence[float], high: Sequence[float], step_mm: float = 
     return np.column_stack([g.reshape(-1) for g in grid]).astype(np.float64)
 
 
+def _block_box(low: Sequence[float], high: Sequence[float]) -> PerceivedBox:
+    """A block as the camera world's box, the field's input (``build_voxel_field``)."""
+    (x0, y0, z0), (x1, y1, z1) = (tuple(float(v) for v in corner) for corner in (low, high))
+    return PerceivedBox(name="seen_decoy", center_mm=((x0 + x1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0),
+                        dims_mm=(x1 - x0, y1 - y0, z1 - z0), yaw_rad=0.0, points=1, distance_mm=0.0)
+
+
 def _write_box_obj(path: Path, dims_m: Sequence[float]) -> None:
     """A closed box as OBJ, centred on its origin, in metres, faces wound outward."""
     hx, hy, hz = (float(d) / 2.0 for d in dims_m)
@@ -502,7 +519,7 @@ def _step_mesh_survives_field(client: CuroboPlanClient, tuning: WorldBuildTuning
         "pose": [_WALL_X_MM / 1000.0, 0.0, _WALL_HEIGHT_MM / 2000.0, 1.0, 0.0, 0.0, 0.0],
     }
     decoy = build_voxel_field(
-        _block_points(_DECOY_MIN_MM, _DECOY_MAX_MM), limits=_LIMITS, tuning=tuning
+        (_block_box(_DECOY_MIN_MM, _DECOY_MAX_MM),), limits=_LIMITS, tuning=tuning
     )
     if decoy is None:
         return {"passed": False, "why": "the decoy block built no field"}
@@ -551,7 +568,7 @@ def _step_grid_mismatch(client: CuroboPlanClient, tuning: WorldBuildTuning) -> d
     geometry somewhere the cell is not, so the refusal is the whole point and its reason must name both.
     """
     decoy = build_voxel_field(
-        _block_points(_DECOY_MIN_MM, _DECOY_MAX_MM), limits=_LIMITS, tuning=tuning
+        (_block_box(_DECOY_MIN_MM, _DECOY_MAX_MM),), limits=_LIMITS, tuning=tuning
     )
     if decoy is None:
         return {"passed": False, "why": "the decoy block built no field"}
@@ -1090,6 +1107,94 @@ def _step_sweep(
     return out
 
 
+def _step_fine_grid(
+    client: CuroboPlanClient, extent: "tuple[tuple[float, float, float], float]"
+) -> dict[str, Any]:
+    """4a.10: the fine grid about a goal (``VoxelField.near``) on a second layer, beside the field.
+
+    Each grid holds a one voxel plane in turn, the other free, as the production writes them: their
+    occupancy, whose distances the sidecar takes on the GPU (``_signed_distances``). The plane is swept
+    toward the fixed arm by its grid's pose, against the same plane as a box: a layer the planner drops,
+    places by another grid's numbers or reads in the wrong sign touches elsewhere or never. The fine grid
+    is 55 voxels high, which cuRobo counts 54 from its float32 dims unless the sidecar pads them
+    (``_field_block``). Then, the fine plane touching, the arm is judged with both grids set aside, as a
+    judgement of the camera's alone.
+    """
+    (dx, dy, dz), voxel = extent
+    fine = (round(540.0 / NEAR_VOXEL_MM) * NEAR_VOXEL_MM, round(540.0 / NEAR_VOXEL_MM) * NEAR_VOXEL_MM,
+            55 * NEAR_VOXEL_MM)
+    centre_z = float(_LIMITS.support_plane_top_mm or 0.0) + dz / 2.0
+    files = {"field": _FIELD_FILE, "near": _FIELD_FILE.with_name(_FIELD_FILE.stem + "_near.npy")}
+
+    def plane(dims: Sequence[float], size: float) -> "tuple[np.ndarray, float]":
+        """A one voxel plane across x, its occupancy, and where it stands from the grid's centre."""
+        shape = [int(round(d / size)) for d in dims]
+        index = shape[0] // 2
+        held = np.zeros(shape, dtype=bool)
+        held[index] = True
+        return held.reshape(-1), -dims[0] / 2.0 + (index + 0.5) * size
+
+    def grid(name: str, held: np.ndarray, dims: Sequence[float], size: float, x: float) -> dict[str, Any]:
+        np.save(files[name], np.packbits(held))
+        return {"path": str(files[name]), "dims_m": [d / 1000.0 for d in dims], "voxel_size_m": size / 1000.0,
+                "pose": [x / 1000.0, 0.0, centre_z / 1000.0, 1.0, 0.0, 0.0, 0.0]}
+
+    def free(dims: Sequence[float], size: float) -> np.ndarray:
+        return np.zeros(int(np.prod([round(d / size) for d in dims])), dtype=bool)
+
+    def sweep(swept: str) -> "tuple[float | None, float | None]":
+        """First contact of the box and of the grid ``swept`` holding the plane, the other grid free beside it."""
+        dims, size = (fine, NEAR_VOXEL_MM) if swept == "near" else ((dx, dy, dz), voxel)
+        values, offset = plane(dims, size)
+
+        def place_box(x: float) -> None:
+            client.set_world([_BENCH, planner_cuboid("probe_plane", (x, 0.0, centre_z), (size, dims[1], dims[2]))])
+
+        def place_grid(x: float) -> None:
+            at = {"field": _LIMITS.x_mm[0] + dx / 2.0, "near": _FAR_X_MM}
+            at[swept] = x - offset
+            field = grid("field", values if swept == "field" else free((dx, dy, dz), voxel), (dx, dy, dz), voxel,
+                         at["field"])
+            field["near"] = grid("near", values if swept == "near" else free(fine, NEAR_VOXEL_MM), fine,
+                                 NEAR_VOXEL_MM, at["near"])
+            client.set_scene([_BENCH], [], field)
+
+        window = {"start_mm": 1100.0, "stop_mm": 0.0}
+        client.set_voxels(None)
+        box = _first_contact(place_box, lambda: _start_is_clear(client), **window)
+        client.set_world([_BENCH])
+        return box, _first_contact(place_grid, lambda: _start_is_clear(client), **window)
+
+    out: dict[str, Any] = {"fine_dims_mm": list(fine)}
+    for swept in ("near", "field"):
+        box, contact = sweep(swept)
+        out[f"{swept}_box_contact_mm"], out[f"{swept}_contact_mm"] = box, contact
+        out[f"{swept}_minus_box_mm"] = None if box is None or contact is None else contact - box
+    # The fine plane where it touches: refused with both grids, free with both set aside, and both named.
+    touching = out["near_contact_mm"]
+    if touching is not None:
+        values, offset = plane(fine, NEAR_VOXEL_MM)
+        field = grid("field", free((dx, dy, dz), voxel), (dx, dy, dz), voxel, _LIMITS.x_mm[0] + dx / 2.0)
+        field["near"] = grid("near", values, fine, NEAR_VOXEL_MM, touching - offset)
+        client.set_scene([_BENCH], [], field)
+        out["refused_whole"] = bool(client.judge_joints([_START_Q]).refused)
+        aside = client.judge_joints([_START_Q], ignore_perceived=[PERCEIVED_FIELD, PERCEIVED_NEAR_FIELD])
+        out["refused_set_aside"] = bool(aside.refused)
+        out["set_aside"] = list(aside.perceived_ignored)
+    client.set_voxels(None)
+    client.set_world([_BENCH])
+    # A field's distances run between voxel centres, so the plane touches half a voxel after its box, one voxel thick
+    # (2026-10-15: 2.0 mm at 4 mm, 5.0 mm at 10 mm), to within the sweep's millimetre; a grid read a voxel off touches
+    # a voxel early or late (the fine grid's float plane unpadded: 4.0 mm early).
+    out["passed"] = (
+        out["near_minus_box_mm"] is not None and abs(out["near_minus_box_mm"] + NEAR_VOXEL_MM / 2.0) <= 1.0
+        and out["field_minus_box_mm"] is not None and abs(out["field_minus_box_mm"] + voxel / 2.0) <= 1.0
+        and out.get("refused_whole") is True and out.get("refused_set_aside") is False
+        and sorted(out.get("set_aside", ())) == sorted((PERCEIVED_FIELD, PERCEIVED_NEAR_FIELD))
+    )
+    return out
+
+
 def _step_hand(client: CuroboPlanClient) -> dict[str, Any]:
     """4a.7: the bundle hand where the guard places it, against the approach of the planner's tool0."""
     bundle = collision_mesh_bundle(_HAND_MODEL)
@@ -1254,13 +1359,14 @@ def main(argv: "list[str] | None" = None) -> int:
     try:
         if extent is None:
             skipped = {"passed": None, "why": "no voxel reservation, so there is no field to ask about"}
-            for key in ("4a.2", "4a.3", "4a.4", "4a.5", "4a.6", "4a.8", "4a.9"):
+            for key in ("4a.2", "4a.3", "4a.4", "4a.5", "4a.6", "4a.8", "4a.9", "4a.10"):
                 steps[key] = dict(skipped)
         else:
             steps["4a.2"] = _step_field_only(client, camera, source, empty_cell_path)
             steps["4a.6"] = _step_clearing(client, camera, source)
             steps["4a.3"] = _step_mesh_survives_field(client, tuning)
             steps["4a.9"] = _step_grid_mismatch(client, tuning)
+            steps["4a.10"] = _step_fine_grid(client, extent)
             steps["4a.8"] = _step_sign(client, extent)
             sweep = _step_sweep(client, extent)
             production = ("production_x_span_mm", "production_x_dims_mm", "production_centre_offset_mm")
@@ -1276,7 +1382,8 @@ def main(argv: "list[str] | None" = None) -> int:
         logging.getLogger("CuroboPlanClient").setLevel(logging.INFO)
         client.close()
 
-    required = ("4a.1", "4a.2", "4a.3", "4a.6", "4a.9", "4e.1", "4e.2", "4e.3", "5e.1", "5f.1", "7b.1", "7e.1")
+    required = ("4a.1", "4a.2", "4a.3", "4a.6", "4a.9", "4a.10", "4e.1", "4e.2", "4e.3", "5e.1", "5f.1", "7b.1",
+                "7e.1")
     report["steps"] = steps
     failing = [k for k in required if steps[k].get("passed") is False]
     report["required_failing"] = failing

@@ -73,6 +73,7 @@ __all__ = [
     "halt_refusal",
     "hand_of",
     "install",
+    "open_jaws",
     "pending",
     "uncleared_stop",
 ]
@@ -829,6 +830,69 @@ def check(console: "Console") -> JawsOut:
     finally:
         if flow is not None:
             seam.close_flow(flow, opened=False, refusal="the check ended without saying how")
+    return JawsOut(hand=hand_of(gripper), question=None)
+
+
+def open_jaws(console: "Console") -> JawsOut:
+    """``POST /v1/cell/jaws/open``: open the jaws where the arm stands, a person's click behind the console's confirm
+    (the owner's N, 2026-10-15: a Robotiq that held a part after a stop could only be emptied at the pendant, and "Backen
+    leer" was refused six times).
+
+    A toggle is asked as at a check (:func:`check`): its own question, "open now" the one change of its output. Any other
+    hand is told its widest opening once, after every gate a change of the jaws passes (:func:`before_change`): refused,
+    in this order, ``not_connected``, ``jaws_question_pending``, ``run_active``, ``halted``, ``controller_stopped`` and
+    ``cell_not_cleared``; and ``jaws_not_open`` where the hand refused, cannot be told a width, or measures its width and
+    does not stand open and empty by the end. A part it held falls out of it: the console's confirm says so, and a person holds it. Once
+    open, the next motion counts down (a person's hand was at the jaws) and the planner is told the hand is empty.
+    """
+    from src.robot.core import RobotConnectionError, RobotError  # noqa: PLC0415
+    from src.robot.core.gripper import (  # noqa: PLC0415
+        toggle_without_sensor_of,
+        why_not_known_open,
+        width_is_measured_of,
+    )
+
+    from api.lifecycle import CellTransitionError  # noqa: PLC0415
+
+    session = console.session
+    if not session.connected:
+        raise JawsRefused(RefusalCode.NOT_CONNECTED, "the cell is not connected, so there are no jaws to open")
+    gripper = session.gripper
+    try:
+        toggle = toggle_without_sensor_of(gripper) is not None
+    except Exception:  # noqa: BLE001 (a hand nobody can read is asked about as a toggle: it may move at a change)
+        toggle = True
+    if toggle:
+        return check(console)
+    if pending(console) is not None:
+        raise JawsRefused(RefusalCode.JAWS_QUESTION_PENDING, "a jaws question is in progress; the jaws were not opened")
+    _refuse_a_run(console, started=False)
+    gate = before_change(console)()
+    if gate:
+        arm = console.session.arm
+        code = (RefusalCode.HALTED if halt_refusal(arm, "") else RefusalCode.CONTROLLER_STOPPED if controller_stop(arm)
+                else RefusalCode.CELL_NOT_CLEARED)
+        raise JawsRefused(code, gate.replace("the output was not changed", "the jaws were not opened"))
+    widest = getattr(gripper, "max_width_mm", None)
+    if gripper is None or not callable(getattr(gripper, "set_width_mm", None)) or widest is None:
+        raise JawsRefused(RefusalCode.JAWS_NOT_OPEN, (
+            f"the hand ({type(gripper).__name__}) is told no width, so the console cannot open it: open it at the "
+            "pendant"))
+    try:
+        with session.while_connected():
+            gripper.set_width_mm(float(widest))
+            # A hand that measures its width says whether it stands open and empty; another is a person's word ("Backen
+            # leer") as before.
+            not_open = why_not_known_open(gripper) if width_is_measured_of(gripper) else ""
+    except (CellTransitionError, RobotConnectionError) as exc:
+        raise JawsRefused(RefusalCode.NOT_CONNECTED, (
+            f"the cell is no longer connected ({exc}): the jaws may not have opened")) from exc
+    except RobotError as exc:
+        raise JawsRefused(RefusalCode.JAWS_NOT_OPEN, f"the hand did not open ({type(exc).__name__}: {exc})") from exc
+    if not_open:
+        raise JawsRefused(RefusalCode.JAWS_NOT_OPEN, f"the hand was told to open, and {not_open}")
+    _ended_open(console, opened=True)
+    logger.info("The jaws were opened where the arm stands, at a person's click.")
     return JawsOut(hand=hand_of(gripper), question=None)
 
 

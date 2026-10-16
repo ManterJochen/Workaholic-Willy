@@ -25,14 +25,14 @@ Nothing here moves the arm, asks a person or touches the jaws.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Optional, Sequence, Union
 
 import numpy as np
 from numpy.typing import ArrayLike
 
 from src.robot.grasping.recovery.exclusion_zones import ExclusionZones
-from src.robot.grasping.recovery.push_budgets import PushBudgets
+from src.robot.grasping.recovery.push_budgets import SCENE_PUSHES_PER_CAMPAIGN, SCENE_PUSHES_PER_PICK, PushBudgets
 from src.robot.grasping.recovery.push_planner import (
     AxisBox,
     PushHand,
@@ -50,12 +50,14 @@ __all__ = [
     "TRIGGER_ALL_COLLIDED",
     "TRIGGER_APPROACH_BLOCKED",
     "TRIGGER_GRASPS_REFUSED_AHEAD",
+    "TRIGGER_NO_PART_GRASPABLE",
     "FailedPart",
     "PickPush",
     "PushCampaign",
     "PushCell",
     "PushGate",
     "support_points_of_views",
+    "toggles",
 ]
 
 #: A push is considered because every grasp candidate of the part collided (``ALL_COLLIDED``, at least one did).
@@ -65,6 +67,9 @@ TRIGGER_APPROACH_BLOCKED = "approach_path_blocked"
 #: The scene is changed because every grasp of the part was judged from the look and refused there, nothing moved (the
 #: joint window, the planner): a part no grasp can reach, as a part every grasp of which collided (2026-10-03).
 TRIGGER_GRASPS_REFUSED_AHEAD = "grasps_refused_ahead"
+#: The scene is pushed because no part a task taking every part wants has a grasp and none could be pushed on its own
+#: (the owner, 2026-10-15).
+TRIGGER_NO_PART_GRASPABLE = "no_part_graspable"
 #: The cell's push inputs could not be read from its config.
 REFUSED_PUSH_CELL_UNKNOWN = "push_cell_unknown"
 #: A stop was asked for (the console's Stop, ``should_cancel``) after the pick's looks and before the push began:
@@ -84,6 +89,26 @@ BESIDE_THE_PART_CLEARANCE_MM = 10.0
 _SUPPORT_ROWS = 180
 
 Vec3 = tuple[float, float, float]
+
+
+def toggles(robot: Any) -> bool:
+    """Whether the cell's hand is a toggle, a ``jaw_io`` single_toggle: one output, every change of it moves the jaws,
+    nothing reads them back (``core.gripper.TogglesWithoutSensor``, the owner's Hand-E on tool DO0).
+
+    Args:
+        robot: The cell's robot tree.
+
+    Returns:
+        bool: ``True`` for a hand whose driver drives its jaws over the arm's I/O, as its driver's spec says, and whose
+        ``jaw_io.actuation`` is ``single_toggle``.
+    """
+    from src.robot.grippers import gripper_driver  # noqa: PLC0415
+
+    gripper = getattr(robot, "gripper", None)
+    driver = gripper_driver(str(getattr(gripper, "vendor", "") or "").strip().lower())
+    jaws = getattr(gripper, "jaw_io", None)
+    return bool(driver is not None and driver.drives_jaws_over_io
+                and str(getattr(jaws, "actuation", "") or "") == "single_toggle")
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +131,12 @@ class PushCell:
     neighbour part the detector named on a rearranging push: where the guard holds a finger to such a part's measured
     surface (``perceived.fingers_touch_parts``), the 1 mm a grasp's finger keeps (``scene_obstacles.SOFT_SLACK_MM``,
     the owner, 2026-10-06); ``None`` keeps ``beside_part_clearance_mm`` for every neighbour.
+
+    ``closed_width_mm`` is how far apart the fingers stand once the hand closed its jaws in the air before it comes down
+    to push: a hand told a width at its closed end (the owner, 2026-10-15: a Robotiq pushes with its jaws closed), a
+    toggle at the closed band it reports, ``robot.gripper.min_width_mm``, one change of its output (the owner,
+    2026-10-16: "Ja, geschlossen"). ``hand`` then plans its fingers that close, 22 mm along the push where the open
+    Hand-E took 72 behind the part. ``None`` pushes with the jaws open as they stand: any other hand.
     """
 
     hand: PushHand
@@ -116,6 +147,7 @@ class PushCell:
     beside_part_mm: float = 15.0
     guard_distance_mm: float = 5.0
     named_part_clearance_mm: Optional[float] = None
+    closed_width_mm: Optional[float] = None
 
     def __post_init__(self) -> None:
         clearance = float(self.hand_clearance_mm)
@@ -132,11 +164,12 @@ class PushCell:
             if not math.isfinite(value) or value < 0.0:
                 raise ValueError(f"PushCell.{name} must be a non-negative number of mm, got {value!r}")
             object.__setattr__(self, name, value)
-        if self.named_part_clearance_mm is not None:
-            named = float(self.named_part_clearance_mm)
-            if not math.isfinite(named) or named < 0.0:
-                raise ValueError(f"PushCell.named_part_clearance_mm must be a non-negative number of mm, got {named!r}")
-            object.__setattr__(self, "named_part_clearance_mm", named)
+        for name in ("named_part_clearance_mm", "closed_width_mm"):
+            value = getattr(self, name)
+            if value is not None:
+                if not math.isfinite(float(value)) or float(value) < 0.0:
+                    raise ValueError(f"PushCell.{name} must be a non-negative number of mm, got {value!r}")
+                object.__setattr__(self, name, float(value))
 
     @classmethod
     def from_robot_config(cls, robot: Any) -> "Union[PushCell, PushRefusal]":
@@ -147,14 +180,23 @@ class PushCell:
         ``robot.safety.planning_world.perceived.margin_mm`` plus ``robot.safety.planned_motion.line_clearance_mm``;
         beside the part it is :data:`BESIDE_THE_PART_CLEARANCE_MM` within that ``margin_mm``, and the guard's distance
         is ``robot.safety.self_collision.perceived_min_distance_mm``. Beside a named part it is
-        ``scene_obstacles.SOFT_SLACK_MM`` where ``perceived.fingers_touch_parts`` is on, as at a grasp.
+        ``scene_obstacles.SOFT_SLACK_MM`` where ``perceived.fingers_touch_parts`` is on, as at a grasp. A hand told a
+        width (``calculator_factory.opens_as_needed``, a Robotiq) pushes closed to ``robot.gripper.closed_width_mm``, a
+        toggle (:func:`toggles`) closed to the band it reports, ``robot.gripper.min_width_mm``, the fingers planned that
+        far apart and :data:`~src.robot.core.gripper.FINGER_OPENING_SLACK_MM` more, as the guard is told them.
         """
+        from src.robot.core.gripper import FINGER_OPENING_SLACK_MM  # noqa: PLC0415
+        from src.robot.grasping.calculator_factory import opens_as_needed  # noqa: PLC0415
         from src.robot.grasping.generation.scene_obstacles import SOFT_SLACK_MM  # noqa: PLC0415
         from src.robot.grasping.recovery.push_hand import push_hand_from_robot_config  # noqa: PLC0415
 
         hand = push_hand_from_robot_config(robot)
         if isinstance(hand, PushRefusal):
             return hand
+        closed = (float(robot.gripper.closed_width_mm) if opens_as_needed(robot)
+                  else float(robot.gripper.min_width_mm) if toggles(robot) else None)
+        if closed is not None:
+            hand = replace(hand, open_width_mm=closed + FINGER_OPENING_SLACK_MM)
         try:
             limits = robot.workspace_limits
             workspace = AxisBox((float(limits.x_min), float(limits.y_min), float(limits.z_min)),
@@ -171,7 +213,7 @@ class PushCell:
             return cls(hand=hand, workspace=workspace, hand_clearance_mm=clearance, container_interior=interior,
                        beside_part_clearance_mm=BESIDE_THE_PART_CLEARANCE_MM, beside_part_mm=margin,
                        guard_distance_mm=float(safety.self_collision.perceived_min_distance_mm),
-                       named_part_clearance_mm=SOFT_SLACK_MM if touch else None)
+                       named_part_clearance_mm=SOFT_SLACK_MM if touch else None, closed_width_mm=closed)
         except (AttributeError, TypeError, ValueError) as exc:
             return PushRefusal(
                 code=REFUSED_PUSH_CELL_UNKNOWN,
@@ -192,13 +234,17 @@ class PushCampaign:
     recovery do (the owner, 2026-10-05: the console's ticks override the config for one run), ``None`` where the cell's
     ``recovery.allowed_actions`` stands. ``blocker_is_the_pick`` says that a blocker a pick takes away is the part it
     picks, set down by the caller where its parts go (the pick loop's ``blocker_is_the_pick``): a task that takes every
-    part into one place says so (the owner, 2026-10-06). One campaign is driven from one thread.
+    part into one place says so (the owner, 2026-10-06). ``every_part`` says the campaign takes every part it names
+    until none is left (a task's ``until_empty``): where no part it wants has a grasp, the scene is pushed, counted
+    against ``scene_budgets`` (3 per pick, 10 per campaign), and no blocker is set aside (the owner, 2026-10-15). One
+    campaign is driven from one thread.
     """
 
     def __init__(self, *, distance_mm: Optional[float], budgets: Optional[PushBudgets] = None,
                  zones: Optional[ExclusionZones] = None, longest_mm: Optional[float] = None,
                  critical_parts: Optional[bool] = None,
-                 recovery_actions: Optional[tuple[str, ...]] = None, blocker_is_the_pick: bool = False) -> None:
+                 recovery_actions: Optional[tuple[str, ...]] = None, blocker_is_the_pick: bool = False,
+                 every_part: bool = False) -> None:
         distance = None if distance_mm is None else float(distance_mm)
         if distance is not None and (not math.isfinite(distance) or distance <= 0.0):
             raise ValueError(f"a campaign's push distance is a positive number of mm, got {distance_mm!r}")
@@ -210,13 +256,17 @@ class PushCampaign:
         self.critical_parts = None if critical_parts is None else bool(critical_parts)
         self.recovery_actions = None if recovery_actions is None else tuple(str(a) for a in recovery_actions)
         self.blocker_is_the_pick = bool(blocker_is_the_pick)
+        self.every_part = bool(every_part)
         self.budgets = budgets if budgets is not None else PushBudgets()
+        self.scene_budgets = PushBudgets(per_part=SCENE_PUSHES_PER_PICK, per_pick=SCENE_PUSHES_PER_PICK,
+                                         per_campaign=SCENE_PUSHES_PER_CAMPAIGN)
         self.zones = zones if zones is not None else ExclusionZones()
 
     def start_pick(self) -> int:
         """A pick of this campaign starts: its own two pushes are available again, and zones past their lifetime
         are dropped. Returns the pick's index, 1 for the first."""
         self.zones.start_pick()
+        self.scene_budgets.start_pick()
         return self.budgets.start_pick()
 
 
@@ -232,7 +282,8 @@ class PushGate:
     ``critical_parts`` is the owner's switch (2026-10-03): ``False``, a boxed-in part is pushed first, and the push may
     rearrange the scene, with a blocker cleared where no push plans; ``True``, nothing is pushed, and a blocker is
     cleared instead. ``longest_mm`` is how far a push may go where the campaign's distance opens too little room
-    (``PushCampaign.longest_mm``).
+    (``PushCampaign.longest_mm``). ``every_part`` and ``scene_budgets`` are the campaign's: a pick of a task that takes
+    every part pushes the scene where none it wants has a grasp, and sets no blocker aside.
     """
 
     budgets: PushBudgets
@@ -243,6 +294,9 @@ class PushGate:
     blocker_grasp_tries: int = 3
     critical_parts: bool = False
     longest_mm: Optional[float] = None
+    every_part: bool = False
+    scene_budgets: PushBudgets = field(default_factory=lambda: PushBudgets(
+        per_part=SCENE_PUSHES_PER_PICK, per_pick=SCENE_PUSHES_PER_PICK, per_campaign=SCENE_PUSHES_PER_CAMPAIGN))
 
 
 @dataclass(frozen=True, slots=True)
@@ -250,7 +304,7 @@ class PickPush:
     """What one push a pick considered came to.
 
     ``trigger`` is why it was considered (:data:`TRIGGER_ALL_COLLIDED`, :data:`TRIGGER_APPROACH_BLOCKED`,
-    :data:`TRIGGER_GRASPS_REFUSED_AHEAD`). ``code``
+    :data:`TRIGGER_GRASPS_REFUSED_AHEAD`, :data:`TRIGGER_NO_PART_GRASPABLE` for a push of the scene). ``code``
     is what it came to: a ``PushOutcomeCode`` value where the push was driven or refused by
     :func:`~src.robot.grasping.recovery.push_motion.execute_push`; the planner's or the budgets' code, or a
     ``refused_*`` of the pick's own, where it was refused before that. ``sentence`` says it in words.

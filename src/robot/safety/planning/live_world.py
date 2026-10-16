@@ -56,7 +56,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
-from typing import Any, Protocol, Sequence, TypedDict
+from typing import Any, Callable, Protocol, Sequence, TypedDict
 
 import numpy as np
 
@@ -66,6 +66,7 @@ from src.robot.core.camera_world import CameraWorldStamp, UnseenSpace
 from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.core.keep_out import GoalKeepOut, KeepOutBox, KeepOutSummary
 from src.robot.safety._capsule import AxisAlignedBox, TurnedBox
+from src.robot.safety.planning._curobo_protocol import PERCEIVED_FIELD, PERCEIVED_NEAR_FIELD
 from src.robot.safety.planning.perceived import (
     DeclaredBody,
     DepthView,
@@ -374,6 +375,9 @@ class LivePlannerWorld:
     #: hold, millimetres at the goal's range. About a hand with its fingers open: the space the hand
     #: arrives in, which is what the planner is about to route through.
     goal_region_mm: float = 100.0
+    #: The clock a frame is aged by where a refresh names no time, `time.time` seconds: a replay of recorded frames
+    #: hands the time they were recorded at (``scripts/replay_bank``).
+    clock: Callable[[], float] = time.time
 
     _frames: dict[str, DepthSnapshot] = field(default_factory=dict, init=False, repr=False)
     #: Where the robot's body stood when each cached frame was taken, as its capsule end points
@@ -516,7 +520,7 @@ class LivePlannerWorld:
                 (str(label), np.asarray(mask).astype(bool)) for label, mask in labelled_masks
             )
             self._exclude[name] = tuple(np.asarray(mask).astype(bool) for mask in exclude_masks)
-        self._offer_stamps[name] = time.time() if timestamp is None else float(timestamp)
+        self._offer_stamps[name] = self.clock() if timestamp is None else float(timestamp)
         if hold:
             self._held.add(name)
         else:
@@ -701,7 +705,7 @@ class LivePlannerWorld:
             out of every view and the voxel field beside the held boxes, or the reason there is
             none, which the snapshot keeps.
         """
-        clock = time.time() if now is None else float(now)
+        clock = self.clock() if now is None else float(now)
         self._grab_ms = 0.0
         declared = tuple(dict(box) for box in self.declared)
         meshes = tuple(dict(mesh) for mesh in self.declared_meshes)
@@ -715,7 +719,7 @@ class LivePlannerWorld:
         # first reading is older than the frames it went out to fetch. Measured before this line
         # existed: a fresh frame reported as two milliseconds from the future.
         if now is None:
-            clock = time.time()
+            clock = self.clock()
 
         if verdict is not WorldVerdict.FRESH:
             # A refusal still reports an age where one is knowable, because the first thing an
@@ -838,10 +842,7 @@ class LivePlannerWorld:
                     views=all_views,
                     limits=self.limits,
                     tuning=self.tuning,
-                    self_body=SelfBody.from_frames(
-                        self_envelope.frames_mm, self_envelope.capsules,
-                        padding_mm=self_filter_padding(self.tuning.margin_mm),
-                    ),
+                    self_body=SelfBody.of(self_envelope, padding_mm=self_filter_padding(self.tuning.margin_mm)),
                     near_point_mm=near_point_mm,
                     keep_out=keep_out,
                     # Where the robot's body can be, not where its TCP may go: the links, the hand and
@@ -870,9 +871,11 @@ class LivePlannerWorld:
         self._hold_frames_of(frames, self_envelope)
         self._say_how_the_bench_reads(perceived, clock)
 
+        # With a field, the boxes it holds whole are the field's: the planner gets every column of them as the cameras
+        # measured it, not the boxes merged to fit its slots (owner, 2026-10-15).
         perceived_boxes = [
             planner_cuboid(box.name, box.center_mm, box.dims_mm, yaw_rad=box.yaw_rad, rotation=box.rotation)
-            for box in perceived.boxes
+            for box in perceived.boxes if box.name not in perceived.field_held
         ]
         summary = None
         if chosen(goal_keep_out) or held_keys:
@@ -1089,8 +1092,8 @@ class LivePlannerWorld:
                 intrinsics=np.array(frame.intrinsics, dtype=np.float64, copy=True),
                 tool_to_base_mm=np.array(frame.tool_to_base_mm, dtype=np.float64, copy=True),
             ),
-            envelope=SelfEnvelope(
-                frames_mm=tuple(np.array(pose, dtype=np.float64, copy=True) for pose in envelope.frames_mm),
+            envelope=replace(  # the robot mask rides along, so a held view loses the robot by it as well
+                envelope, frames_mm=tuple(np.array(pose, dtype=np.float64, copy=True) for pose in envelope.frames_mm),
                 capsules=tuple(envelope.capsules),
             ),
             body=np.array(body, dtype=np.float64, copy=True),
@@ -1143,10 +1146,7 @@ class LivePlannerWorld:
                 camera_to_base=held.camera_to_base,
                 name=held.name,
                 timestamp=held.frame.timestamp,
-                self_body=SelfBody.from_frames(
-                    held.envelope.frames_mm, held.envelope.capsules,
-                    padding_mm=self_filter_padding(self.tuning.margin_mm),
-                ),
+                self_body=SelfBody.of(held.envelope, padding_mm=self_filter_padding(self.tuning.margin_mm)),
                 **_placement_error(held.camera, held.frame),
             )
             for held in earlier
@@ -1802,7 +1802,8 @@ def refresh_planner_world(
         dropped_obstacles=dropped, reason=reason,
         guard_boxes=() if reason else _guard_boxes(snapshot.perceived),
         planner_seen=() if reason or snapshot.perceived is None else tuple(
-            str(box.name) for box in snapshot.perceived.boxes),
+            str(box.name) for box in snapshot.perceived.boxes if box.name not in snapshot.perceived.field_held)
+        + (_field_names(voxel_field) if voxels else ()),
         voxels_registered=voxels,
         cameras=snapshot.cameras, captured_at_s=snapshot.captured_at_s,
         keep_out=snapshot.keep_out,
@@ -1823,6 +1824,13 @@ def refresh_planner_world(
             else snapshot.perceived.supports.render()
         ),
     )
+
+
+def _field_names(field: "VoxelField | None") -> tuple[str, ...]:
+    """The names the planner holds ``field`` by, its fine grid about the goal beside it."""
+    if field is None:
+        return ()
+    return (PERCEIVED_FIELD,) if field.near is None else (PERCEIVED_FIELD, PERCEIVED_NEAR_FIELD)
 
 
 def _grab_ms_of(source: Any) -> float:
@@ -1868,24 +1876,34 @@ def _guard_boxes(perceived: PerceivedWorld | None) -> tuple[AxisAlignedBox, ...]
 
 
 def _write_voxel_field(client: Any, voxels: VoxelField) -> dict[str, Any]:
-    """Write the field where the planner reads it, in its sign and unit, and say where and on which grid.
+    """Write the field where the planner reads it, and say where and on which grid.
 
     The file is the client's own when it names one, so two arms in one process never write the
-    same file; a client without one falls back to one file per process. `VoxelField` is in
-    millimetres like the rest of this package and the planner reads metres, so the values are
-    divided by 1000 here and nowhere else. The same file is reused every refresh, because a new one
-    per motion would fill a temp directory at the rate the arm moves.
+    same file; a client without one falls back to one file per process. What it holds is the field's
+    occupancy, eight voxels to a byte (uint8), whose distances the planner takes itself on the GPU in
+    its sign and unit (``VoxelField``): 190 kB for the 1.5 million voxels of a field and its fine
+    grid, where their distances were 3 MB to read through the WSL mount. The same file is reused
+    every refresh, because a new one per motion would fill a temp directory at the rate the arm
+    moves. The fine grid about the goal (``VoxelField.near``) goes beside it, under ``near``, in a
+    file of its own.
     """
-    path = getattr(client, "live_scene_path", None) or os.path.join(
+    path = str(getattr(client, "live_scene_path", None) or os.path.join(
         tempfile.gettempdir(), f"willy_live_scene_{os.getpid()}.npy"
-    )
-    np.save(path, (voxels.field / 1000.0).astype(np.float16))
-    return {
-        "path": str(path),
-        "dims_m": [d / 1000.0 for d in voxels.dims_mm],
-        "voxel_size_m": voxels.voxel_size_mm / 1000.0,
-        "pose": [c / 1000.0 for c in voxels.center_mm] + [1.0, 0.0, 0.0, 0.0],
-    }
+    ))
+
+    def written(grid: VoxelField, to: str) -> dict[str, Any]:
+        np.save(to, np.packbits(grid.occupancy))
+        return {
+            "path": to,
+            "dims_m": [d / 1000.0 for d in grid.dims_mm],
+            "voxel_size_m": grid.voxel_size_mm / 1000.0,
+            "pose": [c / 1000.0 for c in grid.center_mm] + [1.0, 0.0, 0.0, 0.0],
+        }
+
+    payload = written(voxels, path)
+    if voxels.near is not None:
+        payload["near"] = written(voxels.near, path.removesuffix(".npy") + "_near.npy")
+    return payload
 
 
 def _send_voxel_field(
@@ -1911,6 +1929,9 @@ def _send_voxel_field(
             "this planner has no live-scene channel at all, which on the real sidecar means it was "
             "started without a voxel reservation",
         )
+    if snapshot.perceived.voxels.near is not None:
+        # The field leaves the square about the goal to its fine grid, and this channel carries one grid.
+        return True, None, "this planner takes one grid a request, and the field about the goal comes in two"
     payload = _write_voxel_field(client, snapshot.perceived.voxels)
     registered = setter(
         payload["path"],

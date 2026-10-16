@@ -1,5 +1,19 @@
 """Support-Footprint Enumeration (SFE): a geometry stage that plans the table clearance.
 
+**Marked for the cleanup (the owner, 2026-10-16: "wenn wir dann zum Löschen kommen, dass wir das dann rauswerfen").**
+The cell's grasps are the part's own body's (``body_grasps``) since 2026-10-14, and the body carries all of SFE's
+search since 2026-10-16: the ladder of side approaches to 90 degrees with the palm over the support (``palm_aware``),
+the fine pass every 7.5 degrees, the rolled closing axis on every tilt, the seen corridor from 15 degrees, robust first,
+vertical on a tie, a vertical kept listed, ``inflate_mm``. What goes then: the prism's own search
+(:func:`generate_support_footprint_grasps`, :func:`plan_support_footprint`, :func:`run_units`, :func:`rank_found`,
+``_build``, ``_build_many``, :func:`batched_builds_hold`, :func:`robust_to`, ``closing_axes``), and with it
+``workers.SfeWorkers``, ``scene.Scene.grasps``' SFE path, ``calculator_factory``'s batched-builds check,
+``datagen/eval/ladder.py``'s SFE rungs, ``scripts/checks/batched_builds.py`` and the tests of the prism search alone.
+What stays, moved beside the body search then: the hand (:class:`SupportFootprintJaw`), the candidate, ``HandFloor``,
+the obstacle sets and the room, the finger and palm geometry, ``_rolled``, ``_upright_first``, the low-fragment trim,
+:func:`reconstruct_support_prism` where the calculator and the pick loop read a part's footprint by it, and the
+constants the body reads.
+
 The shipped silhouette generator anchors a grasp on the visible surface and lets the collision filter
 throw it away afterwards. That is the wrong order when the constraint is the support surface: a
 filter can only refuse; it cannot move the grasp somewhere legal. On the D5 reference,
@@ -62,7 +76,7 @@ import functools
 import logging
 import math
 from collections.abc import Callable, Mapping, Sequence
-from typing import Any, Final
+from typing import Any, Final, Protocol, TypeVar
 
 import dataclasses
 from dataclasses import dataclass
@@ -1119,12 +1133,25 @@ class _Side:
     room: _Room
 
 
-def _upright_first(found: list["SupportFootprintCandidate"]) -> list["SupportFootprintCandidate"]:
+class _Ranked(Protocol):
+    """What :func:`_upright_first` ranks by: SFE's candidates and the body search's grasps alike."""
+
+    @property
+    def score(self) -> float: ...
+
+    @property
+    def approach(self) -> np.ndarray: ...
+
+
+_RankedT = TypeVar("_RankedT", bound=_Ranked)
+
+
+def _upright_first(found: list[_RankedT]) -> list[_RankedT]:
     """``found`` by score, each run within :data:`_TIE_SCORE` of its best ranked vertical first: the owner's approaches
     equal by geometry (2026-10-01), so vertical wins a tie. ``approach[2]`` is -cos(tilt) and rises with it; rounded, so
     float noise cannot reorder one rung of the ladder."""
     by_score = sorted(found, key=lambda c: -c.score)
-    ranked: list[SupportFootprintCandidate] = []
+    ranked: list[_RankedT] = []
     start = 0
     while start < len(by_score):
         end = start

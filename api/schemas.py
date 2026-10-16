@@ -582,8 +582,6 @@ class TaskOptionsIn(BaseModel):
     #: pick takes and sets it down where the parts go, then picks the part it blocked; false, a blocker is set aside on
     #: the support. Null: the cell's ``robot.grasping.recovery.blocker_into_the_place``.
     blocker_into_the_place: bool | None = None
-    #: Keep each pick's looks on disk. The console asks for them on every task it starts (the owner, 2026-10-08 night).
-    record_views: bool = False
     #: A camera place only: the air over the rim when the jaws open, 0-50 mm; null means the cell's
     #: ``robot.place.rim_air_mm`` (20 as shipped).
     rim_air_mm: float | None = Field(default=None, ge=0.0, le=50.0)
@@ -696,7 +694,6 @@ class TaskOptionsOut(BaseModel):
     clear: bool | None = None
     #: As asked (``TaskOptionsIn.blocker_into_the_place``); null, the cell's.
     blocker_into_the_place: bool | None = None
-    record_views: bool = False
     rim_air_mm: float | None = None
     #: As asked (``TaskOptionsIn.carry``); null, the cell's ``robot.place.carry``.
     carry: CarryName | None = None

@@ -40,7 +40,7 @@ if not rehearsed.ok:
 # Takes the cell lock and connects the arm alone. Before the arm is first freed the console shows the
 # payload the controller compensates for and asks whether it is right (hand + camera + bracket): a
 # wrong one makes the freed arm sink or rise in your hands. Every pose you count is also written to
-# calibration/real/eye_to_hand_overhead_stations.json, which 08 replays without hands.
+# calibration/real/eye_to_hand_overhead_stations.json in your tree's folder, which 08 replays without hands.
 report = calibration.run()
 print(report)  # every capture's verdict, the stations file, and the rig block to paste under camera.cameras.rigs
 raise SystemExit(report.exit_code)

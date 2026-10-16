@@ -45,7 +45,7 @@ desk on a dummy arm.
 | --- | --- | --- | --- |
 | `Robot` | `from_tree`, `from_config`, `from_parts` | `connected()`, `move`, `move_joints`, `home`, `grasp`, `release`, `pick`, `place`; `tool_down(x, y, z, *, yaw_deg, closing_axis)`, a BASE pose through the cell that moves nothing: straight down, the fingers along `robot.natural_closing_axis`, else along x, `yaw_deg` counted from that axis (on a `"-y"` cell `yaw_deg=90.0` closes along base x) | `MotionReport`, `HandReport`, `HandlingReport`; `tool_down` a `Pose`, `ValueError` for a value that names no axis, `TypeError` for another type |
 | `Cell` | `from_tree`, `from_robot_config`, `rehearsal` | `preflight()`, `start_planner()`, `build()`, `safety()`, `connected()` | `PreflightReport`, `PlannerStartReport`, `SafetyAttestation` |
-| `PickRun` | `from_cell` (it owns the connect), `from_service` (you do); `look=` where each pick looks from, `put_back=True` to put each lifted part back, `both_faces=True` to grip only on both jaw contact faces seen, `record_views=True` to keep each pick's looks, `push_mm=` how far a push moves a part | `execute()` | `PickRunReport`, with one `PickAttempt` per pick: its looks and the ones fused, the jaw faces seen, the generated view, the hand-eye check, `object_mm`, `grasp_pose`, put back and where its views were kept |
+| `PickRun` | `from_cell` (it owns the connect), `from_service` (you do); `look=` where each pick looks from, `put_back=True` to put each lifted part back, `both_faces=True` to grip only on both jaw contact faces seen, `push_mm=` how far a push moves a part | `execute()` | `PickRunReport`, with one `PickAttempt` per pick: its looks and the ones fused, the jaw faces seen, the generated view, the hand-eye check, `object_mm`, `grasp_pose`, put back and where its views were kept |
 | `PassRule` | `PassRule(fraction=1.0, confirm=None)` | `accepts(attempts)` | the verdict rule; the default is every pick |
 | `TaskPlan` | `TaskPlan(object, place=PlaceAt(pose=...) or PlaceAt(camera=...), return_to="home", scope="once" or "until_empty", options=TaskOptions(...), which="", source="", more_rules=())`; `which` the one part singled out, grounded alone, `source` where the parts lie (`pick_phrase`: "the gray cube on top of the other one", "each separate gray cube on the black mat"); `more_rules` up to `MAX_FURTHER_RULES` (3) `SortRule(object, place, which="", source="")` make it a sort, each kind to its rule's place (`plan.rules`, its own first) | `run_task(service, plan, hooks=, poses=, known_target=, known_targets=)` | `TaskReport`: why it ended (`TaskStop`), the parts placed, the picks, whether the arm is back, the bin each camera place followed last (`kept_targets`, by phrase), the parts a sort left unsorted; `TaskRefused` before anything moved |
 | `Recording` | `Recording.off()`, `Recording.to_file(path)` | | where a campaign appends one record per attempt |
@@ -89,11 +89,10 @@ being its home).
 
 `both_faces=True` asks every pick to see both jaw contact faces of its chosen grasp before it grips, for
 safety-critical parts: a pick no view showed both of ends `no_valid_grasp` with nothing gripped.
-`record_views=True` keeps each pick's looks for training: the RGB and depth of every look, the tool pose
-stamped at each, the intrinsics and the fused target cloud, one `.npz` per wrist pick under
-`logs/robot/views`, named after the pick's record (`attempt_id`) and the time; a fixed camera has no
-looks to keep, and a file that cannot be written is said while the campaign goes on. Both are off by
-default. Where the camera's rig records for research (`realsense.record_for_research`, the owner, 2026-10-09), the
+Off by default. Every pick keeps its looks for training, no switch (the owner, 2026-10-15): the RGB and depth of
+every look, the tool pose stamped at each, the intrinsics and the fused target cloud, one `.npz` per wrist pick under
+`logs/robot/views`, named after the pick's record (`attempt_id`) and the time; a fixed camera has no looks to keep,
+and a file that cannot be written is said while the campaign goes on. Where the camera's rig records for research (`realsense.record_for_research`, the owner, 2026-10-09), the
 file is format 2: per look also both infrared images, the depth as the sensor sent it, the colour frame's exposure
 metadata and every segmentation's packed mask, box, label, score, SAM2's predicted IoUs and which one the pick went
 for, and once the camera's facts; a file without them is format 1, byte for byte as before. A task on a real cell
@@ -395,7 +394,7 @@ a pick.
 | `pick_run.py` | `PickRun`, `PickRunReport`, `PassRule`, `Recording`, `PickAttempt`, `PickOutcome`, `configured_looks_of` |
 | `looks.py` | where a camera looks from before a pick: the joints a program declares, the cell profile's, or home, and the move there, none where the arm already stands there |
 | `generated_view.py` | the one view a wrist pick generates and its move back (`go_to_generated_view`, `move_back_to_look`): straight joint lines only, run only against the planner world that holds every frame of the pick; with no live world, no wrist camera in it, a `without_camera_world` decline, or a camera world that reads `DECLINED`, `MISSING` or `UNPLANNED`, no view is generated and the move back is refused |
-| `record_views.py` | the `.npz` layout `PickRun(record_views=True)` and `Locator.look_around(record_views=True)` write under `logs/robot/views`: format 1, and format 2 where the camera records for research (`realsense.record_for_research`: infrared images, raw depth, every mask, box, label, score, SAM2's IoUs and target per look) |
+| `record_views.py` | the `.npz` layout every pick and `Locator.look_around` write under `logs/robot/views`: format 1, and format 2 where the camera records for research (`realsense.record_for_research`: infrared images, raw depth, every mask, box, label, score, SAM2's IoUs and target per look) |
 | `lifecycle.py` | connecting and taking down a cell as one transaction, `NoRealGripper`, `TeardownReport` |
 | `cell_lock.py` | `CellLock`, `CellBusy`: one owner per controller, shared with the operator console |
 | `robot_parts.py` | the arm and the hand a robot section describes, with the readiness gate and every substitution; what a hand needs of the arm and how it is built are its driver's spec (`grippers/spec.py`), looked up by vendor |

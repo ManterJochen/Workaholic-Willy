@@ -57,6 +57,19 @@ def post_jaws_answer(cell: Annotated[Console, Depends(console)], body: JawAnswer
     return JawsOut(hand=browser_jaws.hand_of(cell.session.gripper), question=question)
 
 
+@router.post("/open", response_model=JawsOut, summary="Open the jaws where the arm stands (a person's click)")
+def post_jaws_open(cell: Annotated[Console, Depends(console)]) -> JawsOut:
+    """The stop card's "Greifer öffnen", behind its confirm (the owner, 2026-10-15): a hand told a width opens to its
+    widest where the arm stands, and a part it held falls out of it; a toggle is asked as at ``POST /v1/cell/jaws/check``.
+    Refused, in order: ``not_connected``, ``jaws_question_pending``, ``run_active``, ``halted``, ``controller_stopped``,
+    ``cell_not_cleared``, and ``jaws_not_open`` where the hand did not open. Once open, the next motion counts down.
+    """
+    try:
+        return browser_jaws.open_jaws(cell)
+    except browser_jaws.JawsRefused as refused:
+        raise _refuse(refused) from refused
+
+
 @router.post("/check", response_model=JawsOut, summary="Ask where the jaws stand now (blocks until answered)")
 def post_jaws_check(cell: Annotated[Console, Depends(console)]) -> JawsOut:
     """Always asks, even where the count says open. A hand that is not a toggle answers at once, asking nothing.

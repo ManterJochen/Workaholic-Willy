@@ -158,15 +158,17 @@ URSim has no camera and moves no part, so two things stand in, and nothing else:
   world read the same frame. Nothing nearer than 200 mm reads a depth: on 2026-10-01 the owner's D415 read no depth on
   about half its pixels at the pre-grasp, and 200 mm reads 40 to 60 % there.
 - **The parts.** A part the jaws close on is carried with the TCP and set down where they open. After a push the
-  part stands where the plan put it. The detector and the segmenter ground the prompt on the render's target mask.
+  part stands where the plan put it, and what a rearranging push shoves stands just ahead of it. The detector and the segmenter ground the prompt on the render's target mask; in
+  `scene` they ground every part, the target under the prompt's words and every other under its own kind.
 
 Step 0 renders the push scene from each look, finds the supports and asks `plan_push` as the pick would; it reports
 and does not gate. Then the scenarios, each a whole pick, the owner's switch set as each needs it (2026-10-03):
 
 | Scenario | The scene | Held where |
 | --- | --- | --- |
-| `blocker` | critical parts: a 30 mm block, an L of two 30 mm blocks 28 mm off its -x and +y sides | a block gripped and set down on a free spot, then the part gripped; DO0 closed, open, closed; nothing pushed |
-| `push` | not critical: the 40 mm cylinder, a 60 mm block 20 mm off its -x side, shifted 20 mm toward +y | the push comes first and may brush the block; every leg judged; DO0 untouched through it; back to the look, a fresh look, the cylinder gripped |
+| `blocker` | critical parts: a 30 mm block in a U of three 30 mm blocks 3 mm off its -x, +y and -y sides (an L of two left it a grasp across its corner) | a block gripped and set down on a free spot, then the part gripped; DO0 closed, open, closed; nothing pushed |
+| `push` | not critical: the 40 mm cylinder, a 60 mm block off its -x side, shifted 20 mm toward +y; the trigger forced until a push ran | the push comes first and may brush the block; the toggle closed once in the air before the line down (the owner, 2026-10-16), every leg judged, DO0 untouched through the legs, opened once at the look; a fresh look, the cylinder gripped: DO0 closed, open, closed |
+| `scene` | every part taken (a task until empty), the detector naming each kind: the cylinder at y -700 in a U of three 30 mm blocks 3 mm off its -x, +x and -y sides; the trigger forced until a push ran (below) | no push of the cylinder alone plans, so the scene is pushed (at most three a pick): the cylinder with the block ahead of it shoved along; the toggle closed once in the air before each push and opened once at the look after it, every leg judged; a fresh look, the cylinder gripped |
 | `cancel` | the push scene | a stop asked for during the push leg: nothing more commanded, a person decides |
 | `pstop` | the push scene | a protective stop during the push leg: the same |
 | `refusal` | a 40 mm cube beside the cylinder; asked for alone | no motion toward the part, nothing switched |
@@ -179,9 +181,13 @@ connection and every change of it is counted. The result is `<work>/p_result.jso
 names each that did not, 2 means refused before anything connected. Before each run, put the arm back at the cell's
 home and clear a protective stop the last run left (`pstop` leaves one).
 
-`--push-stand-in` is the plan's stand-in for the push scenarios, and the result says where it was used: the
-calculator answers the part `ALL_COLLIDED` until a push ran, and `plan_push`, where it refuses on the pick's own
-inputs, is asked again with the part's whole surface and the mat round it. The plan's execution, the guard, the world,
+`push`, `cancel`, `pstop` and `scene` force their trigger until a push ran, and say so: since the owner's levers of
+2026-10-05 the calculator grasps the cylinder beside the 60 mm block, and on a rendered scene it finds the scene
+push's cylinder a grasp over neighbours lower than it, where the fingers may come up to a named part's surface; what
+the scenarios prove is the push's own plan, its legs, the guard and the stops. Every scene but `refusal` stands at
+y -700, where a push's landing lies on table the stand-in camera reads. `--push-stand-in` adds the plan's
+perception stand-in for the push scenarios, and the result says where it was used: `plan_push`, where it refuses
+on the pick's own inputs, is asked again with the part's whole surface and the mat round it. The plan's execution, the guard, the world,
 the toggle and the stops stay the cell's own. Without it a push plans only where the cell's looks see the part's foot
 and the table all round its landing.
 

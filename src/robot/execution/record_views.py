@@ -1,9 +1,9 @@
-"""Keep what the looks of one pick saw, for training: one ``.npz`` per pick, off unless a program asks for it.
+"""Keep what the looks of one pick saw, for training: one ``.npz`` per pick, every pick's.
 
-The owner, 2026-09-29 (addendum 7.7): an opt-in lever, ``record_views``, that stores per pick the frames of its looks
-(RGB and depth), the tool pose stamped at each shutter, the intrinsics, and the target cloud the looks fused. Nothing
-records unless asked: ``PickRun(record_views=True)`` writes one file per pick of a wrist camera, and
-``Locator.look_around(..., record_views=True)`` one per look around, through :func:`record_views` alike.
+The owner, 2026-09-29 (addendum 7.7): ``record_views`` stores per pick the frames of its looks (RGB and depth), the
+tool pose stamped at each shutter, the intrinsics, and the target cloud the looks fused; since 2026-10-15 always, no
+switch. ``PickRun`` writes one file per pick of a wrist camera, a task one per pick, and ``Locator.look_around`` one per
+look around, through :func:`record_views` alike.
 
 Why not the corpus ``datagen`` already reads: a datagen scene is a folder of per-view PNGs with per-instance masks, a
 scene payload and a ground-truth grasp table (``datagen/corpus/clouds.py``), none of which a real pick has. Inventing

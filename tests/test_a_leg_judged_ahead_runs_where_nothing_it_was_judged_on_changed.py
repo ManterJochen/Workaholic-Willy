@@ -41,7 +41,7 @@ from tests.test_a_grasp_judged_ahead_runs_as_it_was_judged import (
     _STANDOFF,
     _at_the_part,
     _configuration,
-    _moved_1_mm,
+    _moved_2_mm,
     _refreshes,
     _shifted,
     _stand,
@@ -84,7 +84,7 @@ class TheLineOutJudgedWhileTheJawsOpenTests(unittest.TestCase):
         arm, events, solved = _at_the_part()
         with arm.held_world("the drop"):
             self.assertIsNone(arm.judge_line_ahead(_STANDOFF))
-            _moved_1_mm(arm)
+            _moved_2_mm(arm)
             gated = events.count("gate_joint_path")
             self.assertTrue(arm.move(_STANDOFF, linear=True).ok)
         self.assertEqual(gated + 1, events.count("gate_joint_path"))
@@ -163,7 +163,7 @@ class TheJointMoveDeclaredNextTests(unittest.TestCase):
 
     def test_an_arm_moved_a_millimetre_has_the_carry_judged_again(self) -> None:
         arm, events, look, _said = self._ready()
-        _moved_1_mm(arm)
+        _moved_2_mm(arm)
         self._judged_again(arm, events, look)
 
     def test_a_refresh_in_between_has_the_carry_judged_again(self) -> None:

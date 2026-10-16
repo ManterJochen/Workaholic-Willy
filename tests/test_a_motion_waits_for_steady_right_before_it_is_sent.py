@@ -3,12 +3,12 @@
 On the cell the steady gate cost 0.54 to 0.61 s every time it directly followed a motion: the controller's
 ``is_steady()`` takes that long to say "at rest", and the judgement of the next motion waited behind it (map4 F5). With
 ``robot.safety.dwell.gate_at: send`` the cuRobo UR judges first and gates its own sends: it waits for steady right
-before the ``moveJ`` or ``moveL``, and where the arm then stands more than 0.5 mm from where the motion was judged from,
+before the ``moveJ`` or ``moveL``, and where the arm then stands more than 1 mm from where the motion was judged from,
 it judges the motion again from there. Pinned here, on the real UR driver, its real guard and planner glue, over the
 test bench's camera and sidecar (the fixture of ``test_a_grasp_judged_ahead_runs_as_it_was_judged``):
 
 * the order: the judgement, then the gate, then the send, for a route, a line, a joint move and a joint path;
-* an arm that came to rest more than 0.5 mm off is judged again; one within it is sent the judged motion;
+* an arm that came to rest more than 1 mm off is judged again; one within it is sent the judged motion;
 * a timeout at the gate, and a halt during it, send nothing;
 * a route whose first waypoint is where the gate found the arm skips that zero-length first ``moveJ``;
 * in ``"verb"``, the default, the arm waits once at the start of its verb, before it judges anything (P0e E9), and no
@@ -36,7 +36,7 @@ from tests.test_a_grasp_judged_ahead_runs_as_it_was_judged import (
     _cell,
     _configuration,
     _judged_ahead,
-    _moved_1_mm,
+    _moved_2_mm,
     _stand,
 )
 from tests.test_every_verb_meets_the_camera_world import _mesh_backend_available
@@ -112,7 +112,7 @@ class TheGateWaitsRightBeforeTheSendTests(unittest.TestCase):
             events.append("steady")
             if not moved["once"]:
                 moved["once"] = True
-                _moved_1_mm(arm)
+                _moved_2_mm(arm)
             return True
 
         arm._conn.wait_until_steady.side_effect = settles_off
@@ -124,7 +124,7 @@ class TheGateWaitsRightBeforeTheSendTests(unittest.TestCase):
         first = list(arm._conn.moveJ.call_args_list[0].args[0])
         self.assertNotEqual(here, first, "the zero-length first moveJ went out")
 
-    def test_an_arm_that_came_to_rest_within_half_a_millimetre_runs_the_judged_route(self) -> None:
+    def test_an_arm_that_came_to_rest_within_a_millimetre_runs_the_judged_route(self) -> None:
         arm, events, _solved = _cell()
         _sending(arm, events)
         radii = arm._preflight.joint_radii_mm(arm)
@@ -132,7 +132,7 @@ class TheGateWaitsRightBeforeTheSendTests(unittest.TestCase):
         def settles_near(*_asked: Any) -> bool:
             events.append("steady")
             here = [float(v) for v in arm._conn.get_joint_positions()]
-            here[5] += 0.3 / float(radii[5])
+            here[5] += 0.8 / float(radii[5])
             arm._conn.get_joint_positions.return_value = here
             return True
 
@@ -170,7 +170,7 @@ class TheGateWaitsRightBeforeTheSendTests(unittest.TestCase):
         _sending(arm, events)
 
         def keeps_moving(*_asked: Any) -> bool:
-            _moved_1_mm(arm)
+            _moved_2_mm(arm)
             return True
 
         arm._conn.wait_until_steady.side_effect = keeps_moving
@@ -198,7 +198,7 @@ class TheGateWaitsRightBeforeTheSendTests(unittest.TestCase):
             events.append("steady")
             if not moved["once"]:
                 moved["once"] = True
-                _moved_1_mm(arm)
+                _moved_2_mm(arm)
             return True
 
         arm._conn.wait_until_steady.side_effect = settles_off

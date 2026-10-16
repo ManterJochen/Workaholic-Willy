@@ -18,8 +18,8 @@
  * A reading that singles out one part starts once, whatever mode the settings set: it names one part.
  *
  * The console declutters (the owner, 2026-10-08 night): how each pick looks is one choice, the first look only, when
- * needed or every look, which the settings set and the card may change; every task the console starts keeps its picks'
- * looks on disk (`record_views`, no switch); "Beide Backenflächen" is a program's switch, which a card made from a run's
+ * needed or every look, which the settings set and the card may change; every pick keeps its looks on disk, the
+ * library's own rule (2026-10-15); "Beide Backenflächen" is a program's switch, which a card made from a run's
  * plan keeps as it ran; and "Direkt über die Kante tragen" overrides the cell's carry to a bin for one task.
  *
  * A sort (the owner, 2026-10-09: "Grüne Teile in die gelbe Kiste, rote in die blaue") is several rules, each a kind of
@@ -512,7 +512,6 @@ export function taskOf(draft: Draft): TaskIn {
       rescan: draft.options.rescan,
       push: draft.options.push,
       clear: draft.options.clear,
-      record_views: true,
       // A pose place has no rim: the library refuses air for one (`PlaceAt` in src/robot/execution/place_target.py).
       rim_air_mm: camera ? draft.options.rimAirMm : null,
       // The carry is to a bin the camera finds; a pose place takes none.
@@ -565,7 +564,6 @@ export function taskOfPlan(plan: TaskPlanOut, place: 'same' | 'default' = 'same'
       both_faces: options?.both_faces ?? false,
       closing_axis: options?.closing_axis ?? null,
       push_mm: options?.push_mm ?? null,
-      record_views: true,
       rim_air_mm: camera ? (options?.rim_air_mm ?? null) : null,
       carry: camera ? (options?.carry ?? null) : null,
       pick_anything: options?.pick_anything ?? false,

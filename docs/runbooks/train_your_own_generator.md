@@ -380,8 +380,8 @@ different experiment and should not wear the old run's card. A checkpoint that d
 architecture is refused rather than loaded partly, and the report records where the weights came
 from.
 
-**Views from your own cell.** `PickRun(..., record_views=True)` and
-`Locator.look_around(..., record_views=True)` keep what a wrist camera's looks saw: colour, depth, the
+**Views from your own cell.** Every pick and every `Locator.look_around` keeps what a wrist camera's
+looks saw: colour, depth, the
 tool pose at each shutter, the lens and the fused part cloud, one `.npz` per pick or look around
 under `logs/robot/views`. It is a layout of its own, not a corpus: it carries no grasp labels, and
 nothing here turns it into scenes `train-set` reads yet.

@@ -230,6 +230,23 @@ class CheckTouchesNothingTests(unittest.TestCase):
         self.assertFalse(hasattr(SweepOptions(), "poses"))
         self.assertFalse(hasattr(SweepOptions(), "aim"))
 
+    def test_a_sweep_built_from_a_tree_writes_beside_that_tree(self) -> None:
+        """The owner's cell, 2026-10-15: whatever tree was named, the calibration landed in the repository's
+        calibration/real, where a second cell's would have written over it. A sweep that knows its tree's folder
+        writes where that tree's artifact_path is read; one that knows none writes where it always did."""
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as folder:
+            calibration = HandEyeCalibration.from_config(_app(), rig_id="overhead", mode="eye_to_hand",
+                                                         data_dir=folder)
+            self.assertEqual(Path(folder, "calibration", "real").as_posix(), calibration.out_dir)
+            chosen = HandEyeCalibration.from_config(_app(), rig_id="overhead", mode="eye_to_hand", data_dir=folder,
+                                                    options=SweepOptions(out_dir="bench"))
+            self.assertEqual("bench", chosen.out_dir)
+        self.assertEqual("calibration/real",
+                         HandEyeCalibration.from_config(_app(), rig_id="overhead", mode="eye_to_hand").out_dir)
+
     def test_a_chosen_option_wins_over_the_tree_and_the_tree_over_the_code(self) -> None:
         tree = HandEyeConfig.model_validate({"eye_to_hand": {"marker_length_mm": 48.0, "aruco_dict_name": "DICT_4X4_50"}})
         from_tree = HandEyeCalibration.from_config(_app(hand_eye=tree), rig_id="overhead", mode="eye_to_hand")

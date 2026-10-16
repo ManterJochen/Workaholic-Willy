@@ -184,6 +184,10 @@ logger = create_robot_logger(__name__, "task.log")
 # ---------------------------------------------------------------------------------------------------------------------
 
 
+#: How much higher than the rim air a drop into a box is asked again where every spot of it was refused, mm: a box the
+#: guard reads at a finger over the rim (the owner's 8:13 of 2026-10-15) is left 15 mm higher.
+_HIGHER_MM = 15.0
+
 class TaskStop(StrEnum):
     """Why a task ended: each a stop code of the console (``api.codes.StopCode``), in one of four classes
     (:attr:`stop_class`). A task that ends ``done``, ``operator`` or ``ask`` returns to its return pose first; a
@@ -507,7 +511,6 @@ class TaskOptions:
             longer where it opens too little room (default: None).
         critical_parts (bool | None): The owner's switch for this task: ``True`` clears a blocker and pushes nothing;
             ``None`` the cell's ``recovery.critical_parts`` (default: None).
-        record_views (bool): Keep each pick's looks for training (default: False).
         overlay (bool): Render the grasp overlay during the task (default: True).
         pick_anything (bool): An empty object means anything the camera sees, bin walls included (default: False).
         rescan (bool | None): The run's word on the ``rescan`` recovery; ``None`` keeps the cell's (default: None).
@@ -533,7 +536,6 @@ class TaskOptions:
     closing_axis: str | None = None
     push_mm: float | None = None
     critical_parts: bool | None = None
-    record_views: bool = False
     overlay: bool = True
     pick_anything: bool = False
     rescan: bool | None = None
@@ -887,11 +889,11 @@ class _Place:
     2026-10-09).
 
     A camera place keeps the bin its survey found (``surveyed``, what every check measures against, a bin found again
-    in its stead), the sighting the drops go to now (``kept``), the region of it kept out of the picks (``region``, as
-    ``keep_out_region`` returned it: a check of this place replaces it alone), what its last check read where the part
-    goes (``inside``), the air over its rim (``air_mm``), and whether its bin was lost and found nowhere (``lost``). A
-    pose place keeps where its taught pose puts the tool (``tcp``) and the circle about its drop ("until empty",
-    ``region``). Either keeps the spots of a flat place this task laid a part on, each its middle and how far the part
+    in its stead), the sighting the drops go to now (``kept``), the regions of it kept out of the picks (``regions``, as
+    ``keep_out_region`` returned them, one per kind its rules put there on a sort, else one for every label: a check of
+    this place replaces them alone), what its last check read where the part goes (``inside``), the air over its rim
+    (``air_mm``), and whether its bin was lost and found nowhere (``lost``). A pose place keeps where its taught pose puts
+    the tool (``tcp``) and the circles about its drop ("until empty", ``regions``). Either keeps the spots of a flat place this task laid a part on, each its middle and how far the part
     reached from it (``spots``)."""
 
     at: PlaceAt
@@ -899,7 +901,7 @@ class _Place:
     air_mm: float
     surveyed: "KeptTarget | None" = None
     kept: "KeptTarget | None" = None
-    region: "ExclusionRegion | None" = None
+    regions: "tuple[ExclusionRegion, ...]" = ()
     inside: Any = None
     spots: "list[tuple[tuple[float, float], float]]" = field(default_factory=list)
     tcp: "Pose | None" = None
@@ -1100,6 +1102,12 @@ class _Task:
                     return self._finish(TaskStop.NOTHING_LEFT, (
                         f"nothing to pick is left: the part placed last was the only {self._what()} its pick's first "
                         f"look counted, and the check look from there saw none, or only where the task keeps out; "
+                        f"{self.parts_placed} part(s) placed") + self._unsorted_after(report))
+                if kept_out and self.sorts:
+                    # Each bin keeps out the kind its rule puts there alone (the owner, 2026-10-15): a sort whose look
+                    # saw only parts kept out saw every part where its rule puts it, and says so at once.
+                    return self._finish(TaskStop.NOTHING_LEFT, (
+                        f"nothing to sort is left: every part the look saw already lies where its rule puts it; "
                         f"{self.parts_placed} part(s) placed") + self._unsorted_after(report))
                 if empty >= self.plan.empty_looks_to_end:
                     return self._finish(TaskStop.NOTHING_LEFT, (
@@ -1323,6 +1331,10 @@ class _Task:
                                 "blocker_into_the_place", True))
         if into and not self.plan.object.strip():
             started["blocker_is_the_pick"] = True
+        # A task that takes every part pushes the scene where none it wants has a grasp, and sets no neighbour aside,
+        # which is a part it takes next (the owner, 2026-10-15).
+        if self.plan.scope == "until_empty":
+            started["every_part"] = True
         try:
             self.service.start_campaign(**started)
         except ValueError as exc:
@@ -1372,8 +1384,9 @@ class _Task:
                 continue
             if _kinematic(self.arm):
                 drop_xy = (float(place.tcp.position_mm[0]), float(place.tcp.position_mm[1]))
-                place.region = zones.keep_out_region(ExclusionRegion.circle(
-                    drop_xy, self.plan.pose_keep_out_mm, reason=f"the drop at pose {place.at.pose!r}"))
+                place.regions = tuple(zones.keep_out_region(ExclusionRegion.circle(
+                    drop_xy, self.plan.pose_keep_out_mm, label=kind, reason=f"the drop at pose {place.at.pose!r}"))
+                    for kind in self._kinds_of(place))
             else:
                 # An fk that answers where the arm stands says nothing of where the pose puts the tool: a circle about
                 # it would keep out whatever lies under the arm now (the rehearsal's one part), not the drop.
@@ -1381,6 +1394,14 @@ class _Task:
                     "task: no keep-out circle about the drop at pose %r: %s has no forward kinematics of its own "
                     "(has_native_fk is False), so where the pose puts the tool is not known, and a part set down "
                     "there may be picked again", place.at.pose, type(self.arm).__name__)
+
+    def _kinds_of(self, place: _Place) -> "tuple[str | None, ...]":
+        """The labels ``place``'s regions keep out of the picks: on a sort, the kinds of the rules that put their parts
+        there, so a part of another kind in its bin may be taken out of it (the owner, 2026-10-15); ``(None,)``, every
+        label, for a task of one rule and for a rule that names no kind."""
+        rules = self.plan.rules
+        kinds = tuple(rules[index].object.strip() for index in place.rules) if len(rules) > 1 else ()
+        return kinds if kinds and all(kinds) else (None,)
 
     def _sort_prompt(self, prompt_type: Any) -> Any:
         """What a sort's picks ground (the owner, 2026-10-09): every rule's kind in one call, each a phrase of one class
@@ -1518,9 +1539,8 @@ class _Task:
         self.last_report = report
         # What the next pick follows: this pick's first look, less the part it gripped, or nothing on a trigger.
         self.memory = self._kept_after(report)
-        if options.record_views:
-            report = self._with_views(report)
-            self.last_report = report
+        report = self._with_views(report)
+        self.last_report = report
         if bool(getattr(report, "succeeded", False)):
             self.holding = True
         self.hooks.pick_done(self.part_number, self.picks, report)
@@ -1861,6 +1881,10 @@ class _Task:
             known = one.known if one.known is not None and one.known.followed else None
             said = f"Found the {kept.label}" + ("" if kept.score is None else f" ({kept.score:.2f})")
             said += f" at look {kept.look_label}" if kept.look_label else " with the fixed camera"
+            kinds = [kind for kind in self._kinds_of(place) if kind is not None]
+            if kinds:
+                said += (f"; kept out of the picks for the {' and the '.join(kinds)} alone, so a part of another kind "
+                         "in it is taken out")
             if known is not None and known.by == "depth":
                 said += ", where the last task left it: its rim reads in depth and colour as it did"
             elif known is not None:
@@ -1873,7 +1897,8 @@ class _Task:
             if not nominal.ok:
                 self._finish(TaskStop.TARGET_UNREACHABLE, f"{nominal.reason}; nothing was picked")
             place.kept = place.surveyed = kept
-            place.region = zones.keep_out_region(kept.keep_out_region())
+            place.regions = tuple(zones.keep_out_region(kept.keep_out_region(label=kind))
+                                  for kind in self._kinds_of(place))
 
     def _check(self, place: _Place) -> TargetCheck:
         # Against the bin the survey found (or found again in its stead), never a later sighting: a bin that creeps is
@@ -1882,8 +1907,7 @@ class _Task:
         assert place.kept is not None and place.surveyed is not None  # only a camera place checks its target
         before = self._detector_failures()
         try:
-            check = recheck(self.locators, place.surveyed, last=place.kept, inside=self._reads_where_the_part_goes(),
-                            together=self._others(place))
+            check = recheck(self.locators, place.surveyed, last=place.kept, inside=True, together=self._others(place))
         except (RobotError, RuntimeError, OSError, ValueError) as exc:
             self._problem(TaskStop.CELL_FAULT, f"the camera could not look at the {place.kept.label} again "
                                                f"({type(exc).__name__}: {exc})")
@@ -1912,16 +1936,10 @@ class _Task:
         every other place's region kept (the sorting map's F4, 2026-10-09: no pick takes a sorted part back out of
         another rule's bin), and the sighting the drops go to."""
         zones = self.service.campaign.zones
-        if place.region is not None:
-            zones.forget_region(place.region)
-        place.region = zones.keep_out_region(kept.keep_out_region())
+        for region in place.regions:
+            zones.forget_region(region)
+        place.regions = tuple(zones.keep_out_region(kept.keep_out_region(label=kind)) for kind in self._kinds_of(place))
         place.kept = kept
-
-    def _reads_where_the_part_goes(self) -> bool:
-        """Whether a check of the camera place's target reads where the part goes on the frame it checks on: a box's
-        inside for a part set down below its rim (``robot.place.release_in_a_box``), a flat top's spots for parts laid
-        side by side (``robot.place.side_by_side``)."""
-        return self.rules.release_in_a_box == "below_the_rim" or bool(self.rules.side_by_side)
 
     def _check_a_fixed_cameras_target(self) -> None:
         """A fixed camera's targets are looked at again before each pick, while the arm stands clear of its view: every
@@ -1965,7 +1983,7 @@ class _Task:
         surveyed, last = place.surveyed, place.kept
         assert surveyed is not None and last is not None  # a camera place found its bin before its first pick
         label = last.label
-        avoid = [other.region for other in self.places if other is not place and other.region is not None]
+        avoid = [other.regions[0] for other in self.places if other is not place and other.regions]
         search = relocate(self.locators, surveyed, looks=self._task_looks(), check=check, last=last, avoid=avoid,
                           together=self._others(place))
         before = self._detector_failures()
@@ -2069,6 +2087,7 @@ class _Task:
                         f"the arm's world could not hold the frames of look {kept.look_label}, so the {kept.label}'s "
                         "walls would not be in the world the part goes in against"))
                 check = self._check(place)
+                self._record_the_check(place)
                 if check.kept is not None:
                     self._drop_into(report, place)
                     return
@@ -2079,6 +2098,21 @@ class _Task:
             found = self._found_again(place, check)
             if found is None or found.kept is None:
                 self._lost_at_the_drop(report, place, kept, check, nowhere=True)
+
+    def _record_the_check(self, place: _Place) -> None:
+        """Keep the frame the check read over ``place``'s bin (``place_target.record_the_check``); a file that cannot be
+        written is said and costs the drop nothing."""
+        from src.robot.execution.place_target import record_the_check  # noqa: PLC0415
+
+        kept = place.kept
+        assert kept is not None
+        try:
+            written = record_the_check(self.locators, kept, name=f"place-{kept.label}")
+        except (OSError, ValueError, TypeError) as exc:
+            logger.warning("task: the frame over the %s could not be kept (%s: %s)", kept.label, type(exc).__name__, exc)
+            return
+        if written is not None:
+            logger.info("task: the frame over the %s is kept in %s", kept.label, written)
 
     def _lost_at_the_drop(self, report: Any, place: _Place, kept: KeptTarget, check: TargetCheck, *,
                           nowhere: bool = False) -> None:
@@ -2104,10 +2138,11 @@ class _Task:
 
     def _camera_drop(self, report: Any, place: _Place, *, inside: Any = UNSET) -> DropPlan:
         """The drop into ``place``'s target (``place_target.drop_plan``), the hang from what the part stood on
-        (:meth:`_part_bottom`): below a box's rim (``robot.place.release_in_a_box``) from what the last check read inside
-        it (``inside``, the check's where given), at the next free spot of a flat top (``robot.place.side_by_side``);
-        straight down with the declared length where the pick reported no grasp. Where the cell declares no
-        ``payload.length_mm`` the tool, not the part's bottom, stands the air over the rim."""
+        (:meth:`_part_bottom`): into a box over the freest spot of its inside the last check read (``inside``, the
+        check's where given; :meth:`_into_the_box`), below its rim where ``robot.place.release_in_a_box`` says so; at the
+        next free spot of a flat top (``robot.place.side_by_side``); straight down with the declared length where the
+        pick reported no grasp. Where the cell declares no ``payload.length_mm`` the tool, not the part's bottom, stands
+        the air over the rim."""
         kept = place.kept
         assert kept is not None
         grasp = report.grasp_pose
@@ -2119,11 +2154,13 @@ class _Task:
             "part_bottom_mm": self._part_bottom(grasp).mm, "air_mm": place.air_mm, "standoff_mm": self.standoff_mm,
             "natural_axis": self.natural, "part_cloud_mm": cloud,
             "hang_mm": None if self.length_mm is not None else 0.0}
+        read = place.inside if not chosen(inside) else inside
         if self.rules.release_in_a_box == "below_the_rim":
-            keywords.update(below_rim_mm=float(self.rules.below_the_rim_mm),
-                            inside=place.inside if not chosen(inside) else inside,
+            keywords.update(below_rim_mm=float(self.rules.below_the_rim_mm), inside=read,
                             opening_margin_mm=float(self.rules.opening_margin_mm), hand=self.open_hand)
-        if not (self.rules.side_by_side and kept.opening_mm is None):
+        if kept.opening_mm is not None:
+            return self._into_the_box(kept, grasp, cloud, read, keywords)
+        if not self.rules.side_by_side:
             return drop_plan(self.arm, kept, grasp, **keywords)
         from src.robot.execution.place_target import top_spot_reader, top_spots  # noqa: PLC0415
 
@@ -2137,6 +2174,43 @@ class _Task:
         read = top_spot_reader(place.inside if not chosen(inside) else inside)
         return self._at_a_spot(candidates, reach, part, read, "camera", f"the {kept.label}",
                                lambda spot: drop_plan(self.arm, kept, grasp, spot=spot, **keywords), place.spots)
+
+    def _into_the_box(self, kept: KeptTarget, grasp: Any, cloud: Any, read: Any,
+                      keywords: "dict[str, Any]") -> DropPlan:
+        """The drop into the box ``kept`` over the freest spot of its inside the check read (``read``,
+        ``place_target.inside_spots``: the owner, 2026-10-16, the parts spread, never piled), the next where a spot's
+        drop is refused, each again :data:`_HIGHER_MM` higher where every one is (the rim air at most
+        ``place_target.RIM_AIR_MAX_MM``), then over its middle, as before: only then does the part go back. Over the middle
+        where nothing says how far the part reaches or the check read nothing inside. A part that does not fit the
+        opening fits no spot of it."""
+        from src.robot.execution.place_target import inside_spots  # noqa: PLC0415
+
+        part, reach = self._reach(grasp, cloud)
+        spots: "list[Any]" = ([] if reach is None else
+                              inside_spots(kept, read, reach_mm=reach, margin_mm=float(self.rules.opening_margin_mm)))
+        if not spots:
+            logger.info("task: the part goes over the middle of the %s: %s", kept.label,
+                        "nothing says how far the part reaches" if reach is None
+                        else "the check read nothing inside it where the part fits")
+        air = float(keywords["air_mm"])
+        airs = [air] + ([min(air + _HIGHER_MM, RIM_AIR_MAX_MM)] if air + 1e-6 < RIM_AIR_MAX_MM else [])
+        refused: "DropPlan | None" = None
+        for over in airs:
+            for spot in [*spots, None]:
+                drop = drop_plan(self.arm, kept, grasp, spot=spot, **{**keywords, "air_mm": over})
+                if drop.ok:
+                    where = ("its middle" if spot is None else
+                             f"({spot.xy[0]:.0f}, {spot.xy[1]:.0f}) mm, the freest spot the camera read in it "
+                             f"(up to {spot.top_mm:.0f} mm there)")
+                    logger.info("task: the part goes into the %s over %s, %.0f mm of air over its rim", kept.label,
+                                where, over)
+                    return drop if spot is None else dataclasses.replace(drop, spot_reach_mm=part if part is not None
+                                                                         else reach)
+                if drop.refusal == "does_not_fit":
+                    return drop
+                refused = drop
+        assert refused is not None  # the middle is always asked
+        return refused
 
     def _pose_drop(self, report: Any, place: _Place) -> DropPlan:
         """The drop at ``place``'s taught pose (``place_target.pose_drop``), the hang from what the part stood on
@@ -2291,7 +2365,7 @@ class _Task:
         if view is None:
             return via_the_look(f"none of the pick's looks was look {kept.look_label}, where the {kept.label} was found")
         try:
-            check, unsure = recheck_on_look(view, surveyed, last=kept, inside=self._reads_where_the_part_goes())
+            check, unsure = recheck_on_look(view, surveyed, last=kept, inside=True)
         except (RobotError, RuntimeError, OSError, ValueError) as exc:
             return via_the_look(f"the pick's look could not be read again ({type(exc).__name__}: {exc})")
         if check is None:

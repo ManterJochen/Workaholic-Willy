@@ -220,14 +220,13 @@ class ATasksViewsTests(unittest.TestCase):
         self.assertIn("the looks of pick-0456 was not written: OSError: disk full", said.output[0])
 
     def test_a_task_hands_its_views_to_the_writer_on_a_cell_that_writes_in_the_background(self) -> None:
-        from src.robot.execution.task import TaskOptions
         from tests._task_fakes import TaskService, run
 
         for background in (True, False):
             with self.subTest(background=background), \
                     mock.patch.object(TaskService, "writes_in_the_background", background, create=True), \
                     mock.patch("src.robot.execution.task.keep_pick_views", return_value="D:/views/a.npz") as kept:
-                run(["part"], options=TaskOptions(record_views=True))
+                run(["part"])
             writer = kept.call_args.kwargs["writer"]
             self.assertIs(background_writer() if background else None, writer)
 

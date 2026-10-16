@@ -1,6 +1,7 @@
 """One locate of a class list finds every bin a task still looks for, and splits them by label.
 
-``Locator.locate(class_list_prompt(["yellow bin", "blue bin"]))`` asks the detector once. The camera source maps each
+``Locator.locate(class_list_prompt(["yellow bin", "blue bin"]))`` asks the detector once (the VLM asks its model once
+per description, 2026-10-15). The camera source maps each
 box's words onto the descriptions (``object_labels``: case, plurals and gray or grey aside, the most specific
 description whose every word the label holds), and ``Located.split(prompt)`` says which objects each description
 located. What no description clearly claims belongs to none and stays in the frame as an obstacle: a label of another
@@ -167,10 +168,10 @@ class WhatNoDescriptionClaimsTests(unittest.TestCase):
 
     def test_an_object_boxed_under_two_descriptions_is_no_one_s(self) -> None:
         """Through the real grounder and parser: the model double boxed the yellow bin twice, once as the blue one."""
-        answer = _grid_answer((YELLOW_BIN, "yellow bin"), ((4, 4, 20, 19), "blue bin"), (BLUE_BIN, "blue bin"))
-        grounder, model = _grounder(answer)
+        grounder, model = _grounder({"yellow bin": _grid_answer((YELLOW_BIN, "yellow bin")),
+                                     "blue bin": _grid_answer(((4, 4, 20, 19), "blue bin"), (BLUE_BIN, "blue bin"))})
         located = _locate(BINS, TwoStageBackend(detector=grounder, segmenter=_BoxSegmenter()))
-        self.assertEqual(1, len(model.calls), "one call for both bins")
+        self.assertEqual(2, len(model.calls), "one model call per bin")
         self.assertEqual([AMBIGUOUS_LABEL, AMBIGUOUS_LABEL, "blue bin"], [obj.label for obj in located.objects])
         self.assertEqual({"yellow bin": (), "blue bin": (2,)}, located.split(BINS))
 
@@ -211,15 +212,19 @@ class _Batch(dict):  # type: ignore[type-arg]
 
 
 class _Processor:
-    def __init__(self, answer: str) -> None:
+    def __init__(self, answer: "str | dict[str, str]") -> None:
         self.answer = answer
+        self.asked = ""
         self.tokenizer = SimpleNamespace(convert_tokens_to_ids=lambda token: None, eos_token_id=None)
 
     def apply_chat_template(self, messages: Any, **_: Any) -> _Batch:
+        self.asked = str(messages[0]["content"][1]["text"]).rsplit("Description: ", 1)[-1]
         return _Batch(input_ids=np.arange(7).reshape(1, -1), attention_mask=np.ones((1, 7)))
 
     def batch_decode(self, ids: Any, skip_special_tokens: bool = False) -> list[str]:
-        return [self.answer]
+        if isinstance(self.answer, str):
+            return [self.answer]
+        return [self.answer.get(self.asked, "[]")]
 
 
 class _Model:
@@ -243,7 +248,8 @@ class _Torch:
     cuda = SimpleNamespace(empty_cache=lambda: None)
 
 
-def _grounder(answer: str) -> tuple[Qwen3VLGrounder, _Model]:
+def _grounder(answer: "str | dict[str, str]") -> tuple[Qwen3VLGrounder, _Model]:
+    """The real grounder over the model double: ``answer`` to every question, or one answer per description asked."""
     model = _Model()
     grounder = Qwen3VLGrounder(model_id="Qwen/Qwen3-VL-4B-Instruct", local=True)
     grounder._load = lambda: (_Processor(answer), model, _Torch())  # type: ignore[method-assign]

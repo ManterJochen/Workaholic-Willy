@@ -37,7 +37,8 @@ if not rehearsed.ok:
     raise SystemExit(rehearsed.exit_code)
 
 # The payload the controller compensates for is shown and asked about before the arm is first freed.
-# Every pose you count is written to calibration/real/eye_in_hand_wrist_stations.json: 10 replays it
+# Every pose you count is written to calibration/real/eye_in_hand_wrist_stations.json in your tree's folder (where its
+# artifact_path is read; a tree in D:/cells/line3 writes D:/cells/line3/calibration/real): 10 replays it
 # without hands, and with adjust you fine-tune each one again next time. That replay never writes over
 # the file it reads: its adjusted stations go to eye_in_hand_wrist_stations.adjusted.json beside it.
 report = calibration.run()

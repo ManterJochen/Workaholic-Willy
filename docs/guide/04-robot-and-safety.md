@@ -827,7 +827,11 @@ its move back to the look that saw the part, run on the **straight joint line al
 screened before anything moves, by `nearest_configuration` (the inverse kinematics, the cable window, the
 workspace box, the joint limits, self-collision), then by **150 degrees of travel per joint** from where
 the arm stands and **half a turn from home** on every joint. A line that is not clear skips that turn,
-smallest turn first, three lines at most. A move past **120 degrees**, of the turn about the part or of
+smallest turn first, three lines at most. Where no turn can be driven, the **other angles** of the judged
+look follow (the owner, 2026-10-16), screened and capped the same way: the camera lowered 15 and 30
+degrees about the part or raised 15, and nearer (0.85 of its distance) or farther (1.15), each with every
+turn, the angle nearest the judged look first, never flatter than 15 degrees over the table or steeper
+than 80. A move past **120 degrees**, of the turn about the part or of
 any joint, is logged as a WARNING once the arm stands there. The move back is held to the same line, the
 same 150-degree cap and the same warning; refused, the approach starts from where the arm stands, planned
 and judged as every approach is. Both run only against the camera world that holds every frame of the

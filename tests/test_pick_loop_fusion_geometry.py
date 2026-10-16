@@ -496,6 +496,44 @@ class NeighbourSceneTests(unittest.TestCase):
         self.assertLess(float(np.max(scene[:, 0])), 0.0)
 
 
+class TheOtherCamerasVouchForTheWayInTests(unittest.TestCase):
+    """The owner, 2026-10-16: several cameras joined. The other cameras the pick fused reach the calculator's scene views
+    beside the pick's looks, so a point any of them saw counts as seen (``SeenInAnyFrame``): a fixed camera at a slant
+    vouches for the way under a tilted part."""
+
+    def test_the_fused_cameras_view_reaches_the_calculator(self) -> None:
+        from src.robot.grasping.types.feedback import GraspResult
+
+        class _Recording:
+            render_debug_images = False
+
+            def __init__(self) -> None:
+                self.kwargs: list[dict] = []
+
+            def compute_result(self, *_args: object, **kwargs: object) -> GraspResult:
+                self.kwargs.append(dict(kwargs))
+                return GraspResult(candidates=(), reasons=(), telemetry={})
+
+        calculator = _Recording()
+        rig = _Rig((CameraObservation(camera_id="left", frame=_frame(boxes=((10, 22),))),))
+        orch = BinPickingOrchestrator(
+            arm=SimpleNamespace(),  # type: ignore[arg-type]
+            calculator=calculator,  # type: ignore[arg-type]
+            perception=SimpleNamespace(acquire=lambda: _frame()),  # type: ignore[arg-type]
+            frame_resolver=SimpleNamespace(  # type: ignore[arg-type]
+                camera_to_base_for_frame=lambda *_a, **_k: _IDENTITY
+            ),
+            multi_camera_perception=rig,
+            camera_frame_resolvers={"left": _Resolver()},
+            fusion_geometry_config=_enabled(),
+        )
+
+        orch._best_result_over_segmentations(_frame(boxes=((10, 22),)))
+
+        views = calculator.kwargs[0].get("scene_views")
+        self.assertEqual(1, len(views or ()), "the fused camera's view did not reach the calculator")
+        np.testing.assert_allclose(_frame().depth_map, views[0].depth_mm)
+
 class StandDownIsNeverSilentTests(unittest.TestCase):
     """Every way the rig can fall short has to be loud or refused."""
 

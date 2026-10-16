@@ -1093,11 +1093,11 @@ class TheGeneratedViewAndTheMoveBackTests(unittest.TestCase):
         self.assertEqual(WEST.tool.to_matrix().tolist(), arm.get_tcp_pose().to_matrix().tolist())
 
 
-class TheFramesOfTheLooksAreKeptOnlyWhenAskedTests(unittest.TestCase):
-    """Addendum 7.7: ``record_views`` keeps the frames of the looks for training, through the one writer ``PickRun`` uses
-    (``src/robot/execution/record_views.py``); off by default."""
+class TheFramesOfTheLooksAreKeptTests(unittest.TestCase):
+    """Addendum 7.7: a look around keeps the frames of its looks for training, through the one writer every pick uses
+    (``src/robot/execution/record_views.py``); always, since 2026-10-15."""
 
-    def test_a_look_around_asked_to_keeps_its_looks_in_the_campaigns_layout(self) -> None:
+    def test_a_look_around_keeps_its_looks_in_the_campaigns_layout(self) -> None:
         # A file none of whose looks a camera recorded for research is format 1, byte for byte (format 2, 2026-10-09).
         from src.robot.execution.record_views import RECORD_VIEWS_FORMAT_WITHOUT_RESEARCH
 
@@ -1105,7 +1105,7 @@ class TheFramesOfTheLooksAreKeptOnlyWhenAskedTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder, \
                 mock.patch("src.robot.execution.record_views.RECORD_VIEWS_DIR", folder):
             located = _locator(_Wrist(built)).look_around("a part", [EAST.joints, WEST.joints], robot=_robot(built),
-                                                          both_faces=True, record_views=True)
+                                                          both_faces=True)
             written = Path(located.views_file)
             self.assertEqual([written], sorted(Path(folder).glob("*.npz")))
             self.assertTrue(written.name.startswith("look_around-a_part"), written.name)
@@ -1123,20 +1123,11 @@ class TheFramesOfTheLooksAreKeptOnlyWhenAskedTests(unittest.TestCase):
                                                atol=1e-6)
                 np.testing.assert_allclose(located.objects[0].points_base_mm, views["target_cloud_base_mm"], atol=1e-3)
 
-    def test_off_by_default_nothing_is_kept(self) -> None:
-        built = _arm(EAST)
-        with tempfile.TemporaryDirectory() as folder, \
-                mock.patch("src.robot.execution.record_views.RECORD_VIEWS_DIR", folder):
-            located = _locator(_Wrist(built)).look_around("a part", [EAST.joints], robot=_robot(built))
-            self.assertEqual([], list(Path(folder).iterdir()))
-        self.assertEqual("", located.views_file)
-
     def test_a_file_that_cannot_be_written_is_said_and_the_look_around_answers_all_the_same(self) -> None:
         built = _arm(EAST)
         with mock.patch("src.robot.execution.record_views.record_views", side_effect=OSError("disk full")), \
                 self.assertLogs(_LOGGER, level=logging.WARNING) as said:
-            located = _locator(_Wrist(built)).look_around("a part", [EAST.joints], robot=_robot(built),
-                                                          record_views=True)
+            located = _locator(_Wrist(built)).look_around("a part", [EAST.joints], robot=_robot(built))
         self.assertEqual("", located.views_file)
         self.assertEqual("", located.refused)
         self.assertTrue(any("disk full" in line for line in said.output), said.output)

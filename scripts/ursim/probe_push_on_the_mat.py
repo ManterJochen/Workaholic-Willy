@@ -15,19 +15,28 @@ else: one recorded look of the owner's mat (Track K's crop of P1) with the scene
 stands at each grab, through the rig's own calibration. The detector and the segmenter ground the target on that
 render; the calculator, the camera world, S's support model, the blocker choice, ``plan_push``, ``push_motion``, the
 exact guard, the planner, the toggle and the budgets are the cell's own. After a push the part stands where the plan
-put it; a part the jaws close on is carried and set down where they open.
+put it, and what a rearranging push shoves just ahead of it; a part the jaws close on is carried and set down where
+they open.
 
 Step 0, offline, before anything connects: the push scene rendered from each look, S's model, and ``plan_push`` as the
 pick asks it. It reports and does not gate. Then the scenarios, on URSim, each a whole pick of the cell's service:
 
 * ``refusal`` (P-2): the cylinder beside a 40 mm cube: no motion toward the part, ``ALL_COLLIDED`` and the push's
   refusal in the record, no change of the tool output.
-* ``blocker`` (R, the owner's critical parts): a 30 mm block between two 30 mm blocks in an L. The parts are critical
-  (``critical_parts``): nothing is pushed, each blocker is gripped and set down on a free spot the camera saw, then
-  the block gripped.
+* ``blocker`` (R, the owner's critical parts): a 30 mm block in a U of three 30 mm blocks 3 mm off. The parts are
+  critical (``critical_parts``): nothing is pushed, each blocker is gripped and set down on a free spot the camera saw,
+  then the block gripped.
 * ``push`` (P-1, items 1-4, 7, 8), ``cancel`` (item 5: a stop asked for while the push leg runs) and ``pstop`` (item 6:
-  a protective stop while the push leg runs): the cylinder beside a 60 mm block the hand cannot grip. The parts are not
-  critical: the push comes first, and it may rearrange the scene.
+  a protective stop while the push leg runs): the cylinder beside a 60 mm block the hand cannot grip, the trigger
+  forced until a push ran (the calculator grasps the cylinder there since 2026-10-05). The parts are not critical: the
+  push comes first, and it may rearrange the scene. Every scene but ``refusal`` stands at y -700 (``SCENARIO_AT``).
+* ``scene`` (the scene push, 2026-10-16): the cylinder in a U of three 30 mm blocks 3 mm off its sides, the task
+  taking every part it names (``every_part``) and the detector naming the blocks by their own kinds. The calculator
+  answers the cylinder ``ALL_COLLIDED`` until a push ran (the trigger forced, said in the result): on a rendered scene
+  it finds a grasp, over neighbours lower than the part, where the fingers may come up to a named part's surface, and
+  into the gaps no camera saw beside taller ones, which the guard refuses at the line down. No push of the cylinder
+  alone plans, so the scene is pushed, a part with what stands ahead of it, and the pick goes on. The scene push's
+  plan, its legs, the guard, the world and the pick after it are the cell's own.
 
 ``--scene NAME=NEIGHBOURS@GAP@X,Y[@TARGET]`` places a scenario's target (``cylinder`` or ``block30``) and its neighbours
 (``name[:side[:gap]],...``); ``NAME#n`` runs a scenario again on a scene of its own. ``--looks first`` hands every pick
@@ -36,10 +45,11 @@ from wherever it stands (``--recorded-bench`` projects P1's recorded look instea
 starts with the cell's own push distance, which may go longer where it opens too little room, unless ``--push-mm`` asks
 for one.
 
-``--push-stand-in`` is the plan's stand-in for P-1, said in the result wherever it was used: in ``push``, ``cancel`` and
-``pstop`` the calculator answers the part ``ALL_COLLIDED`` until a push ran, handing on its own metadata (Track A's
-arrays), and ``plan_push``, where it refuses on the pick's own inputs, is asked again with the part's whole surface and
-the mat round it, what cameras all round would see. Every other input, the plan's execution, the guard, the world, the
+``push``, ``cancel``, ``pstop`` and ``scene`` force their trigger (``SCENARIO_FORCED``): the calculator answers the part
+``ALL_COLLIDED`` until a push ran, handing on its own metadata (Track A's arrays). ``--push-stand-in`` is the plan's
+perception stand-in for P-1, said in the result wherever it was used: in ``push``, ``cancel`` and ``pstop``
+``plan_push``, where it refuses on the pick's own inputs, is asked again with the part's whole surface and the mat
+round it, what cameras all round would see. Every other input, the plan's execution, the guard, the world, the
 toggle and the stops stay the cell's own. Without it a push plans only where the cell's own looks see the part's foot
 and the table all round its landing.
 
@@ -57,6 +67,7 @@ import argparse
 import json
 import math
 import os
+import pickle
 import shutil
 import socket
 import sys
@@ -116,17 +127,36 @@ NEIGHBOURS = {"cube25": (25.0, 25.0, 25.0), "block30": (30.0, 30.0, 30.0), "cube
               "block60": (60.0, 60.0, 40.0)}
 #: The targets a scene stands: the 40 mm cylinder, or a 30 mm block (sizes x, y, z).
 TARGET_SHAPES = {"cylinder": ("cylinder", CYLINDER_MM), "block30": ("box", (30.0, 30.0, 30.0))}
-#: The blocker scene's L stands 28 mm off the block: it leaves the block no grasp (its fingers need 31 mm, the guard's
-#: 20 mm and a finger), and each blocker one along its other axis, 20 to 30 mm from the block (2026-10-03). The push scenes'
-#: 60 mm block stands 20 mm toward +y of the cylinder: a push of 50 mm at most (the owner's cap) takes
-#: the cylinder past its end, where a block centred on it would leave less room than a finger needs.
-SCENARIO_NEIGHBOUR = {"refusal": "cube40", "blocker": "block30:-x:28,block30:+y:28", "push": "block60:-x::20",
-                      "cancel": "block60:-x::20", "pstop": "block60:-x::20"}
+#: The blocker scene's U stands 3 mm off the block's -x, +y and -y sides: it leaves the block no grasp, and the blocker
+#: off its -x side one along y; taken away, the block has one along x (2026-10-16). An L of two (-x and +y) left the
+#: block a grasp across its corner, the finger past the -x block's end; 28 mm off until 2026-10-16, when the guard kept
+#: 20 mm and a finger needed 31, the block had a grasp inside the L. The push scenes' 60 mm block stands 20 mm toward +y
+#: of the cylinder: a push of 50 mm at most (the owner's cap) takes the cylinder past its end, where a block centred on
+#: it would leave less room than a finger needs.
+#: The scene push's U (2026-10-16): a 30 mm block 3 mm off the cylinder's -x, +x and -y sides. No push of the cylinder
+#: alone plans (the finger finds no room behind it); pushed with the block ahead of it shoved along, it comes out of the U
+#: with room on both its x faces. In a ring of four blocks 2 mm off, every push that opened a face shoved the cylinder
+#: into the next block, and at 8 mm a push opened less than the 10 mm a scene push asks.
+SCENARIO_NEIGHBOUR = {"refusal": "cube40", "blocker": "block30:-x:3,block30:+y:3,block30:-y:3",
+                      "push": "block60:-x::20", "cancel": "block60:-x::20", "pstop": "block60:-x::20",
+                      "scene": "block30:-x:3,block30:+x:3,block30:-y:3"}
 SCENARIO_TARGET = {"refusal": "cylinder", "blocker": "block30", "push": "cylinder", "cancel": "cylinder",
-                   "pstop": "cylinder"}
+                   "pstop": "cylinder", "scene": "cylinder"}
 #: The owner's switch per scenario (2026-10-03): the blocker scene's parts are critical, cleared and never pushed.
-SCENARIO_CRITICAL = {"refusal": False, "blocker": True, "push": False, "cancel": False, "pstop": False}
-DEFAULT_SCENARIOS = ("blocker", "push", "cancel", "pstop")
+SCENARIO_CRITICAL = {"refusal": False, "blocker": True, "push": False, "cancel": False, "pstop": False, "scene": False}
+#: Where a scenario's target stands where it is not the shared ``--at``: nearer the mat's middle, as at y -760 a push's
+#: landing, and the block the scene push shoves, lay past the table the stand-in camera reads (its D415 depth of
+#: 2026-10-07).
+SCENARIO_AT = {name: (-150.0, -700.0) for name in ("blocker", "push", "cancel", "pstop", "scene")}
+#: The scenarios whose trigger is forced until a push ran (:func:`_force_the_trigger`): since the owner's levers of
+#: 2026-10-05 the calculator grasps the cylinder beside the 60 mm block, and on a rendered scene it finds the scene
+#: push's cylinder a grasp (``scene``); what these prove is the push's own plan, its legs, the guard and the stops.
+SCENARIO_FORCED = ("push", "cancel", "pstop", "scene")
+#: The scenarios whose task takes every part it names until none is left (``every_part``, a task "until empty", the
+#: owner, 2026-10-15): the detector names the neighbours by their own kinds, and where no part it wants has a grasp the
+#: scene is pushed.
+SCENARIO_EVERY_PART = ("scene",)
+DEFAULT_SCENARIOS = ("blocker", "push", "scene", "cancel", "pstop")
 #: The yellow bin in P1 (BASE x, y): its walls stand from x 90 on.
 BIN_X_MIN_MM = 90.0
 #: The push leg runs at 25 mm/s (push_motion's cap); a moveL at this speed is the push leg.
@@ -481,6 +511,7 @@ class Recorder:
     verbs: list[dict[str, Any]] = field(default_factory=list)
     samples: list[dict[str, Any]] = field(default_factory=list)
     plans: list[dict[str, Any]] = field(default_factory=list)
+    scene_plans: list[dict[str, Any]] = field(default_factory=list)
     pushes: list[dict[str, Any]] = field(default_factory=list)
     floors: list[dict[str, Any]] = field(default_factory=list)
     questions: list[dict[str, Any]] = field(default_factory=list)
@@ -614,13 +645,16 @@ class Bed:
         """The neighbours, their gap, where the target stands and what it is for ``scenario`` (``NAME`` or ``NAME#n``):
         ``--scene``, else the defaults."""
         base = _base(scenario)
-        return self.scenes.get(scenario, (SCENARIO_NEIGHBOUR[base], self.gap_mm, self.at_xy, SCENARIO_TARGET[base]))
+        return self.scenes.get(scenario, (SCENARIO_NEIGHBOUR[base], self.gap_mm, SCENARIO_AT.get(base, self.at_xy),
+                                          SCENARIO_TARGET[base]))
 
     def start_campaign(self, scenario: str) -> None:
-        """A new campaign for ``scenario``: the cell's own push distance unless ``--push-mm`` asked for one, and the
-        owner's switch as the scenario sets it (:data:`SCENARIO_CRITICAL`)."""
+        """A new campaign for ``scenario``: the cell's own push distance unless ``--push-mm`` asked for one, the
+        owner's switch as the scenario sets it (:data:`SCENARIO_CRITICAL`), and every part taken where it says so
+        (:data:`SCENARIO_EVERY_PART`)."""
         asked = {} if self.push_mm is None else {"push_mm": self.push_mm}
-        self.service.start_campaign(critical_parts=SCENARIO_CRITICAL[_base(scenario)], **asked)
+        self.service.start_campaign(critical_parts=SCENARIO_CRITICAL[_base(scenario)],
+                                    every_part=_base(scenario) in SCENARIO_EVERY_PART, **asked)
 
     @property
     def orchestrator(self) -> Any:
@@ -823,6 +857,13 @@ def run_on_ursim(tree: Any, copied: Path, work: Path, crop: Path, *, scenarios: 
         rec.plans.append(row)
         return plan
 
+    original_plan_scene_push = push_planner.plan_scene_push
+
+    def plan_scene_push_spy(**kwargs: Any) -> Any:
+        answer = original_plan_scene_push(**kwargs)
+        rec.scene_plans.append({"t": time.time(), "kwargs": kwargs, "answer": answer})
+        return answer
+
     def execute_push_spy(arm: Any, plan: Any, **kwargs: Any) -> Any:
         row: dict[str, Any] = {"t": time.time(), "plan": plan}
         rec.pushes.append(row)
@@ -865,6 +906,7 @@ def run_on_ursim(tree: Any, copied: Path, work: Path, crop: Path, *, scenarios: 
                                               classmethod(spec_from_config)))
         stack.enter_context(mock.patch.object(JawIOGripper, "_question", lambda self: _person_answer(holder)))
         stack.enter_context(mock.patch.object(push_planner, "plan_push", plan_push_spy))
+        stack.enter_context(mock.patch.object(push_planner, "plan_scene_push", plan_scene_push_spy))
         stack.enter_context(mock.patch.object(push_motion, "execute_push", execute_push_spy))
         stack.enter_context(mock.patch.object(BinPickingOrchestrator, "_finger_floor_mm", staticmethod(floor_spy)))
         stack.enter_context(mock.patch.object(SelfCollisionGuard, "_evaluate_fcl", evaluate_spy))
@@ -907,8 +949,8 @@ def run_on_ursim(tree: Any, copied: Path, work: Path, crop: Path, *, scenarios: 
 
 
 def _force_the_trigger(bed: Bed, force: dict[str, Any]) -> None:
-    """The plan's calculator stand-in (Track P, P-1), used only by ``--push-stand-in``: while it is on and nothing has
-    been pushed in the pick, the cell's calculator answers the part with no grasp, ``ALL_COLLIDED``, and hands on its own
+    """The plan's calculator stand-in (Track P, P-1), used by ``--push-stand-in`` and by ``scene``: while it is on and
+    nothing has been pushed in the pick, the cell's calculator answers the part with no grasp, ``ALL_COLLIDED``, and hands on its own
     metadata (Track A's arrays, contract 2), so the pick's evidence finds the neighbour it saw. A blocker's own grasp
     (the segmentation the pick labels ``blocker``) is answered by the calculator itself."""
     import dataclasses  # noqa: PLC0415
@@ -934,6 +976,14 @@ def _force_the_trigger(bed: Bed, force: dict[str, Any]) -> None:
     calculator.compute_result = compute_result
 
 
+def _closed_in_the_air(changes: list[dict[str, Any]], contact: list[dict[str, Any]]) -> bool:
+    """Whether the toggle closed for its push as the owner asked (2026-10-16: "Ja, geschlossen"): one change of DO0, to
+    closed, before the first contact leg was commanded, and none while the legs ran."""
+    if [c["jaws"] for c in changes] != ["closed"]:
+        return False
+    return not contact or changes[0]["t"] <= contact[0]["t"]
+
+
 def _brief(scenario: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in scenario.items() if k in ("held", "checks", "raised", "report")}
 
@@ -952,14 +1002,18 @@ def _start(bed: Bed, scenario: str) -> dict[str, Any]:
     neighbour, gap, at_xy, target = bed.scene_of(scenario)
     bed.cancel["asked_at"] = None
     stand_in = bool(bed.force.get("allowed")) and _base(scenario) in ("push", "cancel", "pstop")
-    bed.force.update({"trigger": stand_in, "perception": stand_in, "pushed": False})
+    every = _base(scenario) in SCENARIO_EVERY_PART
+    bed.force.update({"trigger": _base(scenario) in SCENARIO_FORCED, "perception": stand_in, "pushed": False})
     bed.rec.on_command.clear()
     if bed.output.closed:
         bed.cell.gripper.set_closed(False)  # the last pick's part let go, before this scenario counts
         time.sleep(0.5)
     placed = place_scene(bed.scene, neighbour, gap, at_xy=at_xy, target=target)
+    if bed.backend is not None:
+        bed.backend.all_parts = bed.backend.others_by_name = every
     bed.start_campaign(scenario)
     placed["critical_parts"] = SCENARIO_CRITICAL[_base(scenario)]
+    placed["every_part"] = every
     return placed
 
 
@@ -1019,7 +1073,7 @@ def scenario_refusal(bed: Bed) -> dict[str, Any]:
 
 
 def scenario_blocker(bed: Bed) -> dict[str, Any]:
-    """R, the owner's critical parts: a 30 mm block between two 30 mm blocks in an L. Nothing is pushed; each blocker is
+    """R, the owner's critical parts: a 30 mm block in a U of three 30 mm blocks. Nothing is pushed; each blocker is
     gripped and set down on a free spot the camera saw, and the block gripped; one change of the tool output per
     command."""
     placed = _start(bed, bed.current or "blocker")
@@ -1157,10 +1211,10 @@ def _push_checks(bed: Bed, t0: float, t1: float, checks: dict[str, Any]) -> dict
     pushes = [p for p in bed.rec.pushes if t0 <= p["t"] <= t1]
     if pushes:
         p = pushes[0]
-        before = bed.output.changes_since(t0, p["t_end"])
+        through = bed.output.changes_since(t0, p["t_end"])
         per_leg = [len(bed.output.changes_since(t0, leg["t"])) for leg in contact]
-        _check(checks, "item4_no_do0_change_through_the_push", not before and not any(per_leg),
-               {"changes_until_push_end": before, "count_before_each_leg": per_leg})
+        _check(checks, "item4_do0_closed_once_in_the_air_none_through_the_legs", _closed_in_the_air(through, contact),
+               {"changes_until_push_end": through, "count_before_each_leg": per_leg})
     record = _last_record(bed)
     text = json.dumps(record) if record else ""
     log_text = _robot_log(bed)
@@ -1175,7 +1229,8 @@ def _push_checks(bed: Bed, t0: float, t1: float, checks: dict[str, Any]) -> dict
 
 
 def _stand_in_said(bed: Bed, t0: float, t1: float) -> dict[str, Any]:
-    """Whether the scenario ran with ``--push-stand-in``, and what the planner said on the pick's own inputs first."""
+    """Whether the scenario forced the trigger (``--push-stand-in``, or ``scene``), and what the planner said on the pick's
+    own inputs first."""
     if not bed.force.get("trigger"):
         return {"used": False}
     rows = [p for p in bed.rec.plans if t0 <= p["t"] <= t1]
@@ -1243,9 +1298,99 @@ def scenario_push(bed: Bed) -> dict[str, Any]:
             "outcome": rep["outcome"]})
     _check(checks, "item7_one_push_per_part_two_per_pick", len(moved) <= 1, {"pushes_that_moved": len(moved)})
     changes = bed.output.changes_since(t0, t1)
-    _check(checks, "do0_only_the_final_grasp", [c["jaws"] for c in changes] == ["closed"], changes)
+    jaws = [c["jaws"] for c in changes]
+    _check(checks, "do0_closed_for_the_push_opened_at_the_look_closed_on_the_part",
+           jaws == ["closed", "open", "closed"] and bool(after) and changes[1]["t"] >= after[0]["t_end"], changes)
     return {"held": all(c["held"] for c in checks.values()), "checks": checks, "scene": placed, "report": rep,
             "push": detail, "blockers": blockers, "scene_events": events, "seconds": round(t1 - t0, 1),
+            "commands": len(_within(bed.rec.commands, t0, t1)), "stand_in": _stand_in_said(bed, t0, t1)}
+
+
+def scenario_scene(bed: Bed) -> dict[str, Any]:
+    """The scene push (the owner, 2026-10-15): the cylinder in a U of three 30 mm blocks 3 mm off its sides, the
+    blocks named by their own kinds and not wanted, the task taking every part it names, the trigger forced until a
+    push ran (:func:`_force_the_trigger`). No push of the cylinder alone plans, so the scene is pushed to open room for
+    it: every leg of every push judged, the toggle closed once in the air before each and opened once at the look after
+    it (the owner, 2026-10-16), a fresh look after each, at most three a pick, and the pick goes on to the cylinder in
+    the jaws."""
+    from src.robot.execution.autonomous_grasp.prompt import PickPrompt  # noqa: PLC0415
+    from src.robot.grasping.recovery.push_budgets import SCENE_PUSHES_PER_PICK  # noqa: PLC0415
+    from src.robot.grasping.recovery.push_gate import TRIGGER_NO_PART_GRASPABLE  # noqa: PLC0415
+
+    placed = _start(bed, bed.current or "scene")
+    events_before = len(bed.scene.events)
+    # The prompt a task naming the cylinder sets (``task.py``): the cylinder the target, every other kind a neighbour.
+    previous = bed.service.set_prompt(PickPrompt(phrase=PROMPT, target_label=PROMPT, object_labels=(PROMPT,)))
+    try:
+        report, t0, t1 = _pick(bed)
+    finally:
+        bed.service.set_prompt(previous)
+    orch = bed.orchestrator
+    rep = _report_dict(report)
+    checks: dict[str, Any] = {}
+    pushes = _pushes(orch)
+    scene_pushes = [p for p in pushes if p.get("trigger") == TRIGGER_NO_PART_GRASPABLE]
+    moved = [p for p in scene_pushes if p.get("motion_started")]
+    events = bed.scene.events[events_before:]
+    pushed_parts = [e.get("part") for e in events if e["event"] == "pushed"]
+    shoved_parts = [e.get("part") for e in events if e["event"] == "shoved"]
+    # Each part the scene push asked plan_push of (a rearranging push judged by a wanted part's room), and its answer;
+    # what each scene push was asked on, kept in the work folder to be asked again offline.
+    asked = [row["plan"] for row in bed.rec.plans
+             if t0 <= row["t"] <= t1 and "wanted_parts" in row["kwargs"]]
+    for n, row in enumerate(r for r in bed.rec.scene_plans if t0 <= r["t"] <= t1):
+        with (bed.work / f"scene_push_{n}.pkl").open("wb") as handle:
+            pickle.dump(row, handle)
+    _check(checks, "a_scene_push_moved_the_scene", bool(moved) and bool(pushed_parts),
+           {"scene_pushes": [{k: p.get(k) for k in ("code", "motion_started", "sentence")} for p in scene_pushes],
+            "pushed_parts": pushed_parts, "shoved_parts": shoved_parts,
+            "every_push": [{k: p.get(k) for k in ("trigger", "code")} for p in pushes],
+            "each_part_asked": [plan.to_dict() for plan in asked]})
+    _check(checks, "scene_pushes_within_their_budget", len(moved) <= SCENE_PUSHES_PER_PICK,
+           {"scene_pushes_that_moved": len(moved), "per_pick": SCENE_PUSHES_PER_PICK})
+    runs = [p for p in bed.rec.pushes if t0 <= p["t"] <= t1]
+    judged: list[dict[str, Any]] = []
+    for run in runs:
+        legs = _push_legs(bed, run["t"], run["t_end"])
+        for leg in legs:
+            mins = _min_clearances(bed, [s for s in leg.pop("_samples") if s["accepted"]])
+            leg["least_mm"] = min((m["least_mm"] for m in mins if m["least_mm"] is not None), default=None)
+            leg["support_held"] = bool(mins) and all(m.get("support_held") for m in mins)
+            leg["bench_held"] = bool(mins) and all(m.get("bench_held") for m in mins)
+        contact = legs[1:5]
+        held = (bool(legs) and bool(legs[0].get("ok")) and legs[0].get("samples", 0) > 0 and len(contact) == 4
+                and all(leg.get("ok") and leg["samples"] >= 2 and leg["rejected"] == 0 and leg["support_held"]
+                        and leg["bench_held"] for leg in contact))
+        judged.append({"held": held, "do0_changes": bed.output.changes_since(run["t"], run["t_end"]), "contact": contact,
+                       "legs": [{k: leg.get(k) for k in ("leg", "ok", "samples", "rejected", "least_mm",
+                                                          "support_held", "bench_held")} for leg in legs]})
+    for row in judged:
+        row["closed_in_the_air"] = _closed_in_the_air(row["do0_changes"], row.pop("contact"))
+    _check(checks, "every_leg_of_every_push_judged", bool(judged) and all(j["held"] for j in judged), judged)
+    _check(checks, "do0_closed_once_in_the_air_through_each_push", bool(judged) and all(
+        j["closed_in_the_air"] for j in judged), [j["do0_changes"] for j in judged])
+    after: list[dict[str, Any]] = []
+    for run in runs:
+        back = [v for v in bed.rec.verbs if v["t"] >= run["t_end"] and v["verb"] in (
+            "move_to_joints", "move_to_joints_on_the_line", "move")][:1]
+        looked = 0 if bed.backend is None else sum(1 for c in bed.backend.calls if c["t"] >= run["t_end"])
+        after.append({"move_back": back[:1], "fresh_looks": looked})
+    gripped = [e.get("part") for e in events if e["event"] == "gripped"]
+    _check(checks, "back_to_the_look_fresh_look_pick_goes_on",
+           bool(after) and all(a["move_back"] and a["move_back"][0].get("ok") and a["fresh_looks"] > 0 for a in after)
+           and gripped[-1:] == [TARGET] and rep["outcome"] == "succeeded",
+           {"after_each_push": after, "gripped": gripped, "outcome": rep["outcome"]})
+    changes = bed.output.changes_since(t0, t1)
+    _check(checks, "do0_closed_and_opened_for_each_push_closed_on_the_part",
+           [c["jaws"] for c in changes] == ["closed", "open"] * len(moved) + ["closed"], changes)
+    record = _last_record(bed)
+    text = json.dumps(record) if record else ""
+    said = "no part the task wants has a grasp: pushing part" in _robot_log(bed)
+    _check(checks, "record_and_log_carry_the_scene_push", TRIGGER_NO_PART_GRASPABLE in text and said,
+           {"record_names_the_trigger": TRIGGER_NO_PART_GRASPABLE in text, "robot_log_says_it": said,
+            "record_excerpt": _record_excerpt(record)})
+    return {"held": all(c["held"] for c in checks.values()), "checks": checks, "scene": placed, "report": rep,
+            "pushes": pushes, "scene_events": events, "seconds": round(t1 - t0, 1),
             "commands": len(_within(bed.rec.commands, t0, t1)), "stand_in": _stand_in_said(bed, t0, t1)}
 
 
@@ -1322,7 +1467,7 @@ def scenario_pstop(bed: Bed) -> dict[str, Any]:
 
 SCENARIOS: dict[str, Callable[[Bed], dict[str, Any]]] = {
     "refusal": scenario_refusal, "blocker": scenario_blocker, "push": scenario_push, "cancel": scenario_cancel,
-    "pstop": scenario_pstop,
+    "pstop": scenario_pstop, "scene": scenario_scene,
 }
 
 
@@ -1364,8 +1509,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                          "name[:side[:gap[:along]]],... "
                          "(for example blocker=cube40@8@-150,-760 or blocker=block30:-x,block30:+y@8@-150,-700@block30)")
     ap.add_argument("--push-stand-in", action="store_true",
-                    help="push, cancel and pstop force the trigger (the plan's calculator stand-in) and hand plan_push "
-                         "the part's whole surface and the mat round it; said in the result")
+                    help="push, cancel and pstop hand plan_push the part's whole surface and the mat round it where it "
+                         "refuses on the pick's own inputs; said in the result")
     ap.add_argument("--offline", action="store_true", help="step 0 only: nothing connects")
     ap.add_argument("--recorded-bench", action="store_true",
                     help="the stand-in camera projects P1's recorded look, as before 2026-10-03, not the whole bench")

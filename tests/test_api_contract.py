@@ -75,6 +75,7 @@ _CONTRACT: tuple[tuple[str, str, str | None, str, int, tuple[str, ...]], ...] = 
     ("GET", "/v1/cell/jaws", None, "JawsOut", 200, ()),
     ("POST", "/v1/cell/jaws/answer", "JawAnswerIn", "JawsOut", 200, ()),
     ("POST", "/v1/cell/jaws/check", None, "JawsOut", 200, ()),
+    ("POST", "/v1/cell/jaws/open", None, "JawsOut", 200, ()),
     ("GET", "/v1/camera/live", None, "LiveFrameOut", 200, ("rig", "max_width")),
     ("GET", "/v1/runs/{run_id}/overlays/{n}", None, "image/png", 200, ()),
     ("GET", "/v1/runs/{run_id}/target/overlay", None, "image/png", 200, ()),

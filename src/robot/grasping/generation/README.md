@@ -179,9 +179,15 @@ edge reads as its curvature, a box a few degrees off the closing axis by its fac
 both sides turn steeply, as a corner. The
 rest of the scene is asked as the guard holds it: the support's clearance, the solids the guard holds under the
 hand (`HandFloor`), the neighbours' points and the guard's boxes of them (`SeenEnvelope`), and an open finger over the
-part's outline only through space a ray of the frame reached. Where the scene refuses a grasp straight down for a
-neighbour, a wall or a solid under the hand, the same contacts are asked leaning 15, 30 and 45 degrees about the closing
-axis, the least tilt first, at most 48 a tilt, one of each place across the part before a second. A closing line
+part's outline only through space a ray of the frame reached. Every grasp, kept straight down or refused there for a
+neighbour, a wall or a solid under the hand, is asked again leaning on SFE's whole ladder, 15 to 90 degrees either way
+about the closing axis (the owner, 2026-10-16: "alles von SFE"), the least tilt first, at most 48 a tilt, one of each
+place across the part before a second, its palm kept over the support (SFE's `palm_aware`: past 45 degrees the palm is
+the hand's lowest part) and its way in seen from 15 degrees on; a lean wins only with more room, vertical on a tie, and
+a vertical grasp stays listed. Where that leaves fewer than three square grasps, SFE's fine pass: the leans every 7.5
+degrees between the ladder's, and the part searched again in the frames of the hand rolled 10, 20 and 30 degrees about
+its binormal, each rolled grasp leaning on the ladder too. `inflate_mm` pushes the body's faces out as it pushed SFE's
+prism's. A closing line
 within a cell of the part's centre of mass is moved onto it. A part lower than the pads hold it with the fingertips the
 clearance over the support counts a `table` refusal, and the result says it is too short for this hand. The grasps are
 ranked robust first, by score (with side approaches on, upright weighs nothing and the room a grasp keeps counts more);

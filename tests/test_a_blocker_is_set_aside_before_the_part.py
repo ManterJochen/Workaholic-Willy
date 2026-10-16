@@ -222,6 +222,8 @@ class _Boxed:
 
 #: A second post 7 mm off the cube's +x face, as the first stands off its -x face.
 POST_PLUS_X = Box((27.0, -715.0, 0.0), (55.0, -685.0, 40.0), "post_plus_x")
+#: A third post off the cube's +x, +y corner, toward the camera and clear of the cube in its view, 13 mm from the second.
+POST_PLUS_Y = Box((27.0, -672.0, 0.0), (55.0, -645.0, 40.0), "post_plus_y")
 
 
 class _TwoPosts(_Boxed):
@@ -499,6 +501,24 @@ class ClearingTheBlockerStopsWithAReasonTests(unittest.TestCase):
         self.assertIs(PickOutcome.EXECUTED, report.outcome)
         # Each post closed on and set down, then the part closed on and held.
         self.assertEqual(["close", "open", "close", "open", "close"], cell.hand.commands)
+
+    def test_three_posts_that_free_the_part_only_all_together_are_all_taken_away(self) -> None:
+        """A post on three sides of the part: no one alone and no two together free a grasp, all three do. They are
+        taken away one by one, each from a look taken again, and the part is picked (the owner, 2026-10-15: "Bis 3
+        zusammen")."""
+        cell = _Cell()
+        cell.scene = _Scene((CUBE, POST, POST_PLUS_X, POST_PLUS_Y))
+        cell.camera.scene = cell.scene
+        cell.calculator = _TwoPosts(cell.camera, cell.scene)
+        cell.orchestrator.calculator = cell.calculator  # type: ignore[assignment]
+        cell.hand.scene = cell.scene
+
+        report = cell.run()
+
+        codes = [record.code for record in cell.orchestrator.blockers]
+        self.assertEqual(["set_aside"] * 3, codes[:3], codes)
+        self.assertIs(PickOutcome.EXECUTED, report.outcome)
+        self.assertEqual(["close", "open"] * 3 + ["close"], cell.hand.commands)
 
     def test_without_the_push_gate_nothing_is_cleared(self) -> None:
         cell = _Cell(gate=False)

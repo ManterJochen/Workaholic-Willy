@@ -796,6 +796,49 @@ class AHandThatIsNotAToggleIsAskedNothingTests(ScratchCell):
         self.assertEqual((409, "not_connected"), (refused.status_code, refused.json()["code"]))
 
 
+class TheStopCardOpensTheJawsTests(ScratchCell):
+    """The owner's N (2026-10-15): the stop card's "Greifer öffnen", a person's click behind a confirm, opens a hand told
+    a width where the arm stands; on Thursday a Robotiq holding a part was refused "Backen leer" six times and could only
+    be opened at the pendant."""
+
+    def _connected(self) -> Any:
+        self.build()
+        self.assertEqual(200, self.client.post("/v1/cell/connect", json={"token": self.token()}).status_code)
+        hand = self.cell.session.gripper
+        hand.set_width_mm(10.0)
+        return hand
+
+    def test_a_hand_told_a_width_opens_to_its_widest_and_the_next_motion_counts_down(self) -> None:
+        hand = self._connected()
+        opened = self.client.post("/v1/cell/jaws/open")
+        self.assertEqual(200, opened.status_code, opened.text)
+        self.assertAlmostEqual(float(hand.max_width_mm), float(hand.get_width_mm()), places=3)
+        self.assertIsNone(opened.json()["question"])
+        self.assertIsNotNone(self.cell.jaws_opened_at, "a person's hand was at the jaws: the next motion counts down")
+        self.assertEqual("jaws_opened", self.cell.countdown_because())
+
+    def test_nothing_is_opened_before_the_cell_is_said_clear_or_while_it_is_down(self) -> None:
+        refused = self.client.post("/v1/cell/jaws/open")
+        self.assertEqual((409, "not_connected"), (refused.status_code, refused.json()["code"]))
+        hand = self._connected()
+        with patch("api.jaws.uncleared_stop", return_value="the task run r1 stopped where the arm stands"):
+            refused = self.client.post("/v1/cell/jaws/open")
+        self.assertEqual((409, "cell_not_cleared"), (refused.status_code, refused.json()["code"]))
+        self.assertIn("the jaws were not opened", refused.json()["message"])
+        self.assertAlmostEqual(10.0, float(hand.get_width_mm()), places=3)
+        self.assertIsNone(self.cell.jaws_opened_at)
+
+    def test_a_toggle_is_asked_as_at_the_check(self) -> None:
+        from api.schemas import HandOut, JawsOut
+
+        self._connected()
+        asked = JawsOut(hand=HandOut(kind="toggle", driver="JawIOGripper", jaws="open"), question=None)
+        with patch("src.robot.core.gripper.toggle_without_sensor_of", return_value=object()),                 patch("api.jaws.check", return_value=asked) as checked:
+            opened = self.client.post("/v1/cell/jaws/open")
+        self.assertEqual(200, opened.status_code, opened.text)
+        checked.assert_called_once()
+
+
 class TheSeamItselfTests(unittest.TestCase):
     """``api.jaws.BrowserJawQuestions`` on its own, as the hand calls it: every way a question ends without a person's
     answer is ``EOFError``, which the hand takes as no answer, never "open"."""

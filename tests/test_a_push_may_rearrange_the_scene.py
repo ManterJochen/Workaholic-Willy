@@ -287,6 +287,55 @@ class BesideANamedPartTheFingersComeDownAsAGraspsDoTests(unittest.TestCase):
         self.assertIsNone(cell.named_part_clearance_mm)
 
 
+#: A low post 3 mm off the part's +y face, beside its trailing half: the neighbour that blocked the grasp, which the
+#: fingers brush past along +x.
+CLOSE = _block(centre_xy=(-7.0, 23.0), size_xy=(10.0, 10.0), height=20.0)
+#: A part 70 mm tall 15 mm beside the push line's +y side, ahead of where the housing comes down: out of the part's
+#: and the fingers' way, in the housing's.
+TALL_AHEAD = _block(centre_xy=(5.0, 35.0), size_xy=(10.0, 10.0), height=70.0)
+
+
+class TheHousingMayShoveAPartTheDetectorNamedTests(unittest.TestCase):
+    """The owner, 2026-10-15 (K): pushing, the housing may shove neighbours along the push; bin walls, what nobody
+    named and the guard stay."""
+
+    def _plan(self, *pieces: tuple[np.ndarray, bool]) -> PushPlan | Any:
+        points = np.vstack([CLOSE, *(cloud for cloud, _named in pieces)])
+        named = np.concatenate([np.zeros(len(CLOSE), dtype=bool),
+                                *(np.full(len(cloud), flag) for cloud, flag in pieces)])
+        return _plan(neighbour_points_mm=points, neighbour_named=named, push_axes_xy=X_ONLY, push_distance_mm=50.0,
+                     may_shove=True, **BESIDE)
+
+    def test_a_named_part_ahead_of_the_housing_is_shoved_along_and_held_out_whole(self) -> None:
+        plan = _planned(self, self._plan((TALL_AHEAD, True)))
+        np.testing.assert_allclose(plan.direction[:2], (1.0, 0.0), atol=1e-9)
+        self.assertTrue(plan.shoves)
+        tall = [held for held in plan.kept_out_neighbours_mm if float(held[:, 2].max()) > 60.0]
+        self.assertEqual(1, len(tall), "the tall part is not held out of the world")
+        # Held out whole, and swept as far as the housing's front drives its near face, from x = 0 to where the front
+        # ends, x = 35: its far face, at x = 10, to 45.
+        self.assertAlmostEqual(10.0 + 35.0, float(tall[0][:, 0].max()), delta=1.5)
+
+    def test_what_nobody_named_stays_in_the_guards_world_and_blocks_the_housing(self) -> None:
+        refusal = _refused(self, self._plan((TALL_AHEAD, False)), "no_free_direction")
+        self.assertEqual("hand_blocked", _verdict(refusal, (1.0, 0.0)))
+
+    def test_a_named_part_joined_to_a_wall_is_the_wall(self) -> None:
+        # A wall 12 mm past the tall part, out of the hand's reach: the world joins the two, and a wall is never shoved.
+        wall = _block(centre_xy=(5.0, 56.0), size_xy=(10.0, 10.0), height=70.0)
+        _planned(self, self._plan((TALL_AHEAD, True), (_block(centre_xy=(5.0, 120.0), size_xy=(10.0, 10.0),
+                                                                     height=70.0), False)))
+        refusal = _refused(self, self._plan((TALL_AHEAD, True), (wall, False)), "no_free_direction")
+        self.assertEqual("hand_blocked", _verdict(refusal, (1.0, 0.0)))
+
+    def test_where_the_housing_comes_down_a_named_part_still_blocks_it(self) -> None:
+        beside_the_descent = _block(centre_xy=(-45.0, 35.0), size_xy=(10.0, 10.0), height=70.0)
+        plan = self._plan((beside_the_descent, True))
+        verdicts = {tuple(round(v, 6) for v in candidate.direction_xy): candidate.verdict
+                    for candidate in plan.candidates}
+        self.assertEqual("hand_blocked", verdicts[(1.0, 0.0)])
+
+
 def _brushing_plan() -> PushPlan:
     plan = _plan(may_shove=True, neighbour_points_mm=np.vstack([SIDE, BRUSHED]), push_axes_xy=X_ONLY,
                  push_distance_mm=50.0, **BESIDE)

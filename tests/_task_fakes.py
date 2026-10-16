@@ -436,11 +436,12 @@ class TaskService:
         return self._needs_person
 
     def start_campaign(self, *, push_mm: Any = UNSET, critical_parts: Any = UNSET,
-                       recovery_actions: Any = UNSET, blocker_is_the_pick: Any = UNSET) -> Any:
+                       recovery_actions: Any = UNSET, blocker_is_the_pick: Any = UNSET, every_part: Any = UNSET) -> Any:
         self.campaigns.append({"push_mm": push_mm if chosen(push_mm) else None,
                                **({"critical_parts": critical_parts} if chosen(critical_parts) else {}),
                                **({"recovery_actions": recovery_actions} if chosen(recovery_actions) else {}),
-                               **({"blocker_is_the_pick": blocker_is_the_pick} if chosen(blocker_is_the_pick) else {})})
+                               **({"blocker_is_the_pick": blocker_is_the_pick} if chosen(blocker_is_the_pick) else {}),
+                               **({"every_part": every_part} if chosen(every_part) else {})})
         self._campaign = SimpleNamespace(zones=ExclusionZones(), distance_mm=push_mm if chosen(push_mm) else 30.0)
         self._needs_person = ""
         self.log.append(("campaign",))

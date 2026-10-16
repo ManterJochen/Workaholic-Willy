@@ -440,7 +440,7 @@ def library_plan(plan: Mapping[str, Any]) -> "tuple[TaskPlan, dict[str, JointPos
                             critical_parts=options.critical_parts,
                             rescan=options.rescan, push=options.push, clear=options.clear,
                             blocker_into_the_place=options.blocker_into_the_place,
-                            record_views=options.record_views, overlay=options.overlay,
+                            overlay=options.overlay,
                             pick_anything=options.pick_anything, every_look=options.every_look,
                             carry=options.carry),
         first_motion=resolved.first_motion,

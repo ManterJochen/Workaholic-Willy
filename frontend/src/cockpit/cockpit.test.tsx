@@ -266,7 +266,7 @@ describe('Start', () => {
       return_to: 'home',
       scope: 'until_empty',
       // The looks when needed, and every task the console starts keeps its looks (the owner, 2026-10-08 night).
-      options: { multi_view: true, every_look: false, both_faces: false, record_views: true, pick_anything: false },
+      options: { multi_view: true, every_look: false, both_faces: false, pick_anything: false },
       command: { text: 'Räum alle grünen Würfel auf die Ablage links', source: 'typed', parsed: true, edited: [] },
     })
     // The 202 answer is followed at once: a run that ends between two cell polls is still drawn.
@@ -886,7 +886,9 @@ describe('the stop card', () => {
     cockpit()
     const card = await screen.findByRole('region', { name: /Angehalten/ })
     const empty = await within(card).findByRole('button', { name: 'Backen leer' })
-    expect(within(card).getByText('Hält die Hand ein Teil: die Hand leeren, dann bestätigen.')).toBeTruthy()
+    expect(within(card).getByText('Hält die Hand ein Teil: das Teil festhalten, den Greifer öffnen, die Hand leeren, dann bestätigen.')).toBeTruthy()
+    // A hand told a width is opened from here, behind its confirm (the owner, 2026-10-15).
+    expect(within(card).getByRole('button', { name: 'Greifer öffnen' })).toBeTruthy()
     expect(within(card).queryByText('Kein Teil in der Hand.')).toBeNull()
     const restart = await within(card).findByRole('button', { name: /Neustart – geplante Fahrt nach Home/ })
     expect(restart.hasAttribute('disabled')).toBe(true)
@@ -1836,7 +1838,7 @@ describe('the Advanced drawer and the numbers', () => {
     fireEvent.change(looks, { target: { value: 'every' } })
     await waitFor(() => expect(within(card).getByText(/Blicke: alle Posen/)).toBeTruthy())
     expect(within(card).getByText(/Jede eingestellte Pose anfahren/)).toBeTruthy()
-    expect(await startFrom(card, calls)).toMatchObject({ options: { multi_view: true, every_look: true, record_views: true } })
+    expect(await startFrom(card, calls)).toMatchObject({ options: { multi_view: true, every_look: true } })
   })
 
   it('sends the first look alone as multi-view off', async () => {

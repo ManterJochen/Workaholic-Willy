@@ -28,13 +28,18 @@ So the body is built from the files the guard and the planner check against:
 * all of it placed with the model and the base yaw the self-collision guard uses, so the filter and
   the guard stand the arm in one place.
 
+Beside it the second robot mask (owner, 2026-10-15: "die Kugeln so fitten, dass diese nicht herausragen"): the robot
+as spheres inside its bodies, every point of it within the maps' gap of one (``scripts/arms/fit.py --mask``), on the
+same frames (:func:`mask_spheres`). A point within the gap and :data:`MASK_NOISE_MM` of one is the robot's whatever the
+padding, and nothing farther from the robot is.
+
 The padding is added where the world is built, from ``perceived.margin_mm``.
 """
 
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
@@ -48,6 +53,7 @@ from src.config.arms import load_arm
 from src.contracts import chosen
 
 from .._ur_kinematics import arm_link_transforms_mm
+from ._declared_body import Box, inner_box_spheres
 from .environment import collision_mesh_bundle, hand_mesh_bundle
 from .perceived import DeclaredBody, LinkCapsule, SelfEnvelope
 
@@ -58,8 +64,8 @@ if TYPE_CHECKING:  # pragma: no cover (typing only)
     from .hand import PlannerHand
 
 __all__ = [
-    "ROBOT_BASES", "BaseShape", "arm_capsules", "base_capsule", "carried_part_box", "goal_keep_out", "hand_spheres",
-    "payload_capsule", "self_envelope", "yawed_link_transforms_mm",
+    "MASK_NOISE_MM", "ROBOT_BASES", "BaseShape", "arm_capsules", "base_capsule", "carried_part_box", "goal_keep_out",
+    "hand_spheres", "mask_spheres", "payload_capsule", "self_envelope", "yawed_link_transforms_mm",
 ]
 
 
@@ -111,6 +117,11 @@ _MOUNTING_FACE: Final = "mounting_face"
 #: stacks.
 _MODEL_APPROACH: Final = (0.0, 1.0, 0.0)
 _IDENTITY_ROWS: Final = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0))
+#: What a depth reads off a surface beside the mask's gap, millimetres, as the fine world allows a look
+#: (``fine_world.FINE_MARGIN_MM``): a point within the gap and this of a mask sphere is the robot's.
+MASK_NOISE_MM: Final = 2.0
+#: The committed sphere maps, the robot mask's among them.
+_MAPS: Final = Path(__file__).resolve().parent / "robot"
 
 
 def _point(vector: np.ndarray) -> tuple[float, float, float]:
@@ -286,6 +297,106 @@ def _held_spheres(
     return tuple((_point(centre), float(radius)) for centre, radius in zip(centres, grown, strict=True))
 
 
+@lru_cache(maxsize=32)
+def _mask_map(path: str) -> "tuple[float, dict[str, tuple[int, np.ndarray]]] | None":
+    """A committed mask map: the gap it keeps, millimetres, and each block's DH frame (-1 for a hand's one list) and
+    spheres, ``(K, 4)`` centre and radius in millimetres; ``None`` where none is committed. Read only."""
+    file = Path(path)
+    if not file.is_file():
+        return None
+    document = yaml.load(file.read_text(encoding="utf-8"), Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader)) or {}
+    blocks: dict[str, tuple[int, np.ndarray]] = {}
+    for name, block in (document.get("collision_spheres") or {}).items():
+        listed = block["spheres"] if isinstance(block, dict) else block
+        blocks[str(name)] = (int(block.get("frame", -1)) if isinstance(block, dict) else -1,
+                             np.asarray([[*s["center"], s["radius"]] for s in listed], dtype=np.float64) * 1000.0)
+    return float((document.get("_provenance") or {}).get("gap_mm") or 0.0), blocks
+
+
+@lru_cache(maxsize=16)
+def _bundle_origin(bundle: str) -> "str | None":
+    """Where a hand's bundle starts (``gripper__origin``), as the guard reads it: ``""`` where it says nothing, ``None``
+    where there is no bundle."""
+    if not Path(bundle).is_file():
+        return None
+    with np.load(bundle) as data:
+        return str(np.asarray(data[_ORIGIN_KEY]).reshape(-1)[0]) if _ORIGIN_KEY in data.files else ""
+
+
+def _on(frame: int, spheres: np.ndarray) -> list[LinkCapsule]:
+    """``(K, 4)`` spheres, millimetres, as zero-length capsules on ``frame``."""
+    return [LinkCapsule(frame=frame, start_mm=_point(row[:3]), end_mm=_point(row[:3]), radius_mm=float(row[3]))
+            for row in spheres]
+
+
+def mask_spheres(
+    hand: PlannerHand, model: str, wrist_bodies: Sequence[Any] = (),
+) -> "tuple[tuple[LinkCapsule, ...], float] | None":
+    """The second robot mask of ``model`` carrying ``hand`` and ``wrist_bodies`` (owner, 2026-10-15): spheres inside the
+    robot's bodies on the frames that carry them, and how far from one a point is the robot's, millimetres; or ``None``
+    where the arm or the hand has no committed mask map, the two keep different gaps, or the hand has no placement, and
+    the self filter takes the robot alone, as before.
+
+    The arm's spheres in its links' DH frames (``robot/<arm>_arm_mask_spheres.yml``); the hand's on the flange, placed as
+    the guard places the hand, one plate out along its approach where its bundle starts at the mounting face and turned
+    by the declared tool frame's rotation (``robot/<hand>_gripper_mask_spheres.yml``); a wrist camera's boxes filled from
+    inside (``_declared_body.inner_box_spheres``) at the same gap, its rig's margin taken off them first, on the flange
+    where the rig places the camera. A wrist body that cannot say its boxes is not masked, and the self filter still
+    holds it. Every sphere lies inside its body and every point of its surface within the gap of one, so the reach, the
+    gap and :data:`MASK_NOISE_MM`, takes nothing farther from the robot than that.
+    """
+    if not chosen(hand.placement):
+        return None
+    wrists = tuple(key for key in (_wrist_key(wrist) for wrist in wrist_bodies) if key is not None)
+    return _mask_spheres(model.lower(), str(hand.model), float(hand.coupling_mm), hand.placement.rotation, wrists)
+
+
+def _wrist_key(wrist: Any) -> "tuple[Any, ...] | None":
+    """A wrist body as the mask reads it, hashable: its placement on the flange, its boxes and its rig's margin."""
+    try:
+        return (tuple(tuple(float(v) for v in row) for row in wrist.placement_mm), tuple(wrist.boxes),
+                float(wrist.margin_mm))
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+@lru_cache(maxsize=16)
+def _mask_spheres(
+    model: str, hand: str, coupling_mm: float, rotation: tuple[tuple[float, float, float], ...],
+    wrists: tuple[tuple[Any, ...], ...],
+) -> "tuple[tuple[LinkCapsule, ...], float] | None":
+    """:func:`mask_spheres`, once for every arm, hand, plate, placement and set of wrist bodies."""
+    arm = _mask_map(str(_MAPS / f"{model}_arm_mask_spheres.yml"))
+    held = _mask_map(str(_MAPS / f"{hand}_gripper_mask_spheres.yml"))
+    if arm is None or held is None or arm[0] <= 0.0 or held[0] != arm[0] or "tool0" not in held[1]:
+        return None
+    origin = _bundle_origin(str(hand_mesh_bundle(hand)))
+    if origin is None:
+        return None
+    gap = arm[0]
+    described = load_arm(model)
+    spheres: list[LinkCapsule] = []
+    for part, _link, frame in described.collision_links:
+        block = arm[1].get(part)
+        if block is None or block[0] != frame:
+            return None
+        spheres.extend(_on(frame, block[1]))
+    flange = described.dof
+    tool = held[1]["tool0"][1]
+    shift = np.asarray(_MODEL_APPROACH, dtype=np.float64) * coupling_mm if origin == _MOUNTING_FACE else np.zeros(3)
+    spheres.extend(_on(flange, np.column_stack(((tool[:, :3] + shift) @ np.asarray(rotation, dtype=np.float64).T,
+                                                tool[:, 3]))))
+    for placement_mm, boxes, margin_mm in wrists:
+        placement = np.asarray(placement_mm, dtype=np.float64)
+        for box in boxes:
+            inner = np.asarray([[*s["center"], s["radius"]] for s in inner_box_spheres(Box(
+                name=box.name, centre_mm=box.centre_mm,
+                half_extents_mm=tuple(float(v) - margin_mm for v in box.half_extents_mm)), gap_mm=gap)]) * 1000.0
+            spheres.extend(_on(flange, np.column_stack((inner[:, :3] @ placement[:3, :3].T + placement[:3, 3],
+                                                        inner[:, 3]))))
+    return tuple(spheres), gap + MASK_NOISE_MM
+
+
 def _approach(hand: PlannerHand) -> tuple[float, float, float]:
     """The hand's approach in tool0 axes, as its placement derives it. A refused placement has none."""
     if not chosen(hand.placement):
@@ -395,14 +506,17 @@ def self_envelope(
         body = body + (base,)
     # A wrist camera's housing and bracket, the fill the planner carries, so a fixed camera does not
     # register the housing as an obstacle beside the arm.
+    wrists = tuple(preflight.wrist_bodies(arm))
     body = body + tuple(
         LinkCapsule(frame=spheres[0].frame, start_mm=centre, end_mm=centre, radius_mm=radius)
-        for wrist in preflight.wrist_bodies(arm) for centre, radius in wrist.envelope_spheres_mm()  # type: ignore[attr-defined]
+        for wrist in wrists for centre, radius in wrist.envelope_spheres_mm()  # type: ignore[attr-defined]
     )
     if payload is not None:
         body = body + (payload_capsule(hand, spheres, length_mm=payload[0], lateral_margin_mm=payload[1]),)
+    mask = mask_spheres(hand, model, wrists)
     # The base's shape also rides on its own, so the support detection leaves the disc round the base out.
-    return SelfEnvelope(frames_mm=tuple(frames), capsules=body, base=ROBOT_BASES.get(str(model).lower()))
+    return SelfEnvelope(frames_mm=tuple(frames), capsules=body, base=ROBOT_BASES.get(str(model).lower()),
+                        mask=() if mask is None else mask[0], mask_reach_mm=0.0 if mask is None else mask[1])
 
 
 def goal_keep_out(preflight: Any, arm: Any, tcp_to_base_mm: Any) -> "GoalKeepOut":

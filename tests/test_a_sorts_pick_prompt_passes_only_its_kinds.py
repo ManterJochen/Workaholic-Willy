@@ -1,12 +1,12 @@
-"""A sort's pick prompt grounds every rule's kind in one call, and the pick loop's label gate passes those kinds alone.
+"""A sort's pick prompt grounds every rule's kind, and the pick loop's label gate passes those kinds alone.
 
 The owner's sort (2026-10-09): "Grüne Teile in die gelbe Kiste, rote in die blaue". The pick prompt is a class list,
-``"each separate green part | each separate red part"`` (``class_list_prompt``); the camera source maps each box's
-words onto the kinds (``object_labels=("green part", "red part")``); the pick loop takes any of them
-(``target_labels``, with ``target_label`` ``None``). What no rule clearly claims is no target and stays a neighbour: an
-object the model boxed under both descriptions, which the parser made ``ambiguous``, and a word no rule names ("orange
-part"). The report says which kind the pick went for (``target_label``) and what no rule claimed at its first look
-(``unclaimed_labels``), on the service's report too.
+``"each separate green part | each separate red part"`` (``class_list_prompt``), each description grounded on its own
+(2026-10-15); the camera source maps each box's words onto the kinds (``object_labels=("green part", "red part")``);
+the pick loop takes any of them (``target_labels``, with ``target_label`` ``None``). What no rule clearly claims is no
+target and stays a neighbour: an object the model boxed under both descriptions, which the grounder made
+``ambiguous``. The report says which kind the pick went for (``target_label``) and what no rule claimed at its first
+look (``unclaimed_labels``), on the service's report too.
 
 End to end: the real grounder and parser over a model double, the real two-stage backend over a box-cutting segmenter,
 the real camera source with its colour check on painted parts, and the real pick loop and service, with a calculator
@@ -59,11 +59,10 @@ def _grid_answer(*boxes: tuple[tuple[int, int, int, int], str]) -> str:
     return "[" + ", ".join(items) + "]"
 
 
-#: What the model double answers: each kind under its description, one part boxed under both (a box a pixel shorter
-#: under the second), and a part under a word no rule names.
-ANSWER = _grid_answer((GREEN, "each separate green part"), (RED, "each separate red part"),
-                      (BOTH, "each separate green part"), ((4, 23, 18, 36), "each separate red part"),
-                      (ORANGE, "orange part"))
+#: What the model double answers each description: its kind, and one part boxed under both (a box a pixel shorter
+#: under the second); the orange part under neither.
+ANSWER = {"each separate green part": _grid_answer((GREEN, "green part"), (BOTH, "green part")),
+          "each separate red part": _grid_answer((RED, "red part"), ((4, 23, 18, 36), "red part"))}
 
 
 class _Streamer:
@@ -122,14 +121,14 @@ class _Policy:
 
 
 class TheSourceLabelsEachBoxByItsKindTests(unittest.TestCase):
-    def test_one_call_labels_the_kinds_and_what_no_rule_claims(self) -> None:
+    def test_each_kind_is_asked_on_its_own_and_labelled_and_what_no_rule_claims(self) -> None:
         source, model = _source()
         frame = source.acquire()
-        self.assertEqual(1, len(model.calls), "every kind in one call")
+        self.assertEqual(2, len(model.calls), "one model call per kind")
         self.assertEqual(("each separate green part", "each separate red part"), classes_of(PROMPT))
-        self.assertEqual(["green part", "red part", AMBIGUOUS_LABEL, AMBIGUOUS_LABEL, "orange part"],
+        self.assertEqual(["green part", AMBIGUOUS_LABEL, "red part", AMBIGUOUS_LABEL],
                          [seg.label for seg in frame.segmentations],
-                         "each kind mapped onto its rule, the doubly claimed part and the other word onto none")
+                         "each kind mapped onto its rule, the doubly claimed part onto none")
 
 
 class TheGatePassesOnlyTheKindsTests(unittest.TestCase):
@@ -149,9 +148,8 @@ class TheGatePassesOnlyTheKindsTests(unittest.TestCase):
     def test_the_report_names_the_kind_it_took_and_what_no_rule_claimed(self) -> None:
         report, _, _ = self._run()
         self.assertEqual("red part", report.target_label)
-        self.assertEqual((AMBIGUOUS_LABEL, "orange part"), report.unclaimed_labels,
-                         "one entry per part no rule claims, in the camera's order: the part both descriptions "
-                         "boxed is one part")
+        self.assertEqual((AMBIGUOUS_LABEL,), report.unclaimed_labels,
+                         "one entry per part no rule claims: the part both descriptions boxed is one part")
 
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -251,10 +249,10 @@ class TheServicesReportCarriesTheKindTests(unittest.TestCase):
         self.assertIs(AutonomousGraspOutcome.SUCCEEDED, report.outcome, report.render())
         assert report.pick_report is not None
         self.assertEqual("red part", report.pick_report.target_label)
-        self.assertEqual((AMBIGUOUS_LABEL, "orange part"), report.pick_report.unclaimed_labels)
+        self.assertEqual((AMBIGUOUS_LABEL,), report.pick_report.unclaimed_labels)
         wire = report.to_dict()
         self.assertEqual("red part", wire["target_label"])
-        self.assertEqual([AMBIGUOUS_LABEL, "orange part"], wire["unclaimed_labels"])
+        self.assertEqual([AMBIGUOUS_LABEL], wire["unclaimed_labels"])
 
     def test_a_one_kind_pick_names_its_label_and_nothing_unclaimed(self) -> None:
         service, _ = _service()

@@ -1,6 +1,6 @@
 """The replay bank: the cell's recorded picks judged again by the code of today, offline (the owner, 2026-10-12).
 
-A pick the cell recorded (``robot.grasping.record_views``) holds every look it took: the colour, the measured and the
+A pick the cell recorded (``record_views``, every pick's) holds every look it took: the colour, the measured and the
 surface depth, the camera's matrix, CAMERA and TOOL to BASE, the joints, the segmentations the detector gave (from
 2026-10-12 on) and the target's cloud fused over the looks. The bank builds the owner's cell from a config tree, the UR
 driver on the bench's instant controller (``scripts/bench/instant_ur.py``) with its preflight and exact guard, the
@@ -86,9 +86,22 @@ class RecordedPick:
     target_cloud_mm: np.ndarray
 
     @property
+    def judged_index(self) -> int:
+        """Which look the pick is judged on: the last whose detector named the target, the last look where none did. A
+        pick whose last look named no target is judged where the target was named (the owner, 2026-10-16): projecting
+        the fused cloud into a look that did not see the target made a sliver of a mask of it."""
+        named = [index for index, look in enumerate(self.looks) if look.target is not None]
+        return named[-1] if named else len(self.looks) - 1
+
+    @property
+    def judged(self) -> Look:
+        """The look the pick is judged on (:attr:`judged_index`)."""
+        return self.looks[self.judged_index]
+
+    @property
     def target_label(self) -> str:
-        """The detector's word for the target on the last look, ``"target"`` where it named none there."""
-        last = self.looks[-1]
+        """The detector's word for the target on the judged look, ``"target"`` where it named none there."""
+        last = self.judged
         return last.labels[last.target] if last.target is not None and last.target < len(last.labels) else "target"
 
     def target_mask(self, look: Look) -> np.ndarray:
@@ -198,9 +211,13 @@ class _NoCamera:
 #: owner, 2026-10-14: with SFE alone the cell needed many more poses). ``oracle`` measures how far the
 #: calculator's mirror of the guard falls short: the body's grasps alone, every one the part itself admits (its own
 #: body, its unseen outline) offered to the guard, :data:`ORACLE_TRIES` of them, the scene judged by the guard alone.
-LEVERS = ("ground", "parts_beside", "fine_world", "scene_views", "unseen", "oracle", "later_looks")
+#: ``robot_mask``: the robot taken out by the self filter alone, without the spheres inside its bodies
+#: (``self_envelope.mask_spheres``, the owner, 2026-10-15).
+LEVERS = ("ground", "parts_beside", "fine_world", "scene_views", "unseen", "oracle", "later_looks", "robot_mask")
 #: How many grasps an ``oracle`` run offers the guard a pick.
 ORACLE_TRIES = 60
+#: How many of a pick's admitted grasps a ``plan`` run routes to their standoff, in the order the cell tries them.
+PLAN_TRIES = 3
 
 
 class ReplayCell:
@@ -208,7 +225,8 @@ class ReplayCell:
     guard, camera world, calculator, orchestrator and policy; ``off`` the :data:`LEVERS` it runs without."""
 
     def __init__(self, config_dir: "str | Path" = BANK / "robominds_config" / "config",
-                 off: "tuple[str, ...]" = ()) -> None:
+                 off: "tuple[str, ...]" = (), *, plan: bool = False, plan_from_home: bool = False,
+                 values: "dict[str, Any] | None" = None, push: bool = False, views: bool = False) -> None:
         import instant_ur  # noqa: PLC0415 (scripts/bench)
 
         from src.config.tree import load_tree  # noqa: PLC0415
@@ -216,6 +234,9 @@ class ReplayCell:
         from src.geometry.matrix import position_quaternion_to_matrix  # noqa: PLC0415
 
         tree = load_tree(None, root=str(config_dir))
+        if values:
+            # Values given in memory for one run, loaded as a load loads them (``LoadedTree.with_values``).
+            tree = tree.with_values(values)
         if not tree.ok:
             raise RuntimeError(f"the bank's config tree does not load: {tree.error}")
         self.tree = tree
@@ -241,6 +262,20 @@ class ReplayCell:
         if unknown:
             raise ValueError(f"no lever {unknown} to switch off; the bank knows {LEVERS}")
         self.off = tuple(off)
+        #: Whether each pick's first admitted grasps are routed to their standoff with the cell's planner (the GPU
+        #: sidecar, :meth:`route`); without it cuRobo is not asked.
+        self.plan = bool(plan)
+        #: Whether each pick's first admitted grasps are also planned by cuRobo from the cell's home, the straight line
+        #: not taken, and every sample of the plan judged by the guard (:meth:`plan_from`): the planner's world, measured.
+        self.plan_from_home = bool(plan_from_home)
+        #: Whether a pick with no admitted grasp asks the pick loop what it would push (the part, then the scene of a
+        #: task taking every part) and which view it would generate (:meth:`considered`): nothing moves for the first,
+        #: the instant controller stands in for the second.
+        self.push = bool(push)
+        self.views = bool(views)
+        #: What the last :meth:`grasps` ranked: the orchestrator, the frame, the look, the result, the target's index,
+        #: the ordering and the service.
+        self._ranked: "tuple[Any, ...] | None" = None
         if "ground" in self.off:
             from src.robot.safety.planning import support_surfaces  # noqa: PLC0415
 
@@ -253,6 +288,10 @@ class ReplayCell:
             camera_world_wiring.FINE_REACH_MM = 0.0  # type: ignore[misc]
             scene_obstacles.FINE_REACH_MM = 0.0  # type: ignore[misc]
             support_footprint.SEEN_POINTS_CELL_MM = 4.0  # type: ignore[misc]
+        if "robot_mask" in self.off:
+            from src.robot.safety.planning import self_envelope as envelopes  # noqa: PLC0415
+
+            envelopes.mask_spheres = lambda *args, **kwargs: None  # type: ignore[assignment]
         if "scene_views" in self.off:
             from src.robot.grasping.loop.pick_loop import BinPickingOrchestrator  # noqa: PLC0415
 
@@ -331,6 +370,8 @@ class ReplayCell:
 
         world = _live_planner_world(self.robot, [CameraView(name="EIH_Cam", depth_source=_Wrist(),
                                                             camera_to_tool=looks[0].camera_to_tool)])
+        # A refresh that names no time (the arm's own, before a route) ages the frames on the recording's clock.
+        world.clock = lambda: self.last_look_s + _ASKED_AFTER_S
         if len(looks) > 1:
             world.hold_pick_views()
         for index, look in enumerate(looks):
@@ -356,14 +397,15 @@ class ReplayCell:
             segs = segs + (_Seg(mask=pick.target_mask(look).astype(np.uint8), label="target"),)
         return PerceptionFrame(depth_map=look.depth_mm, surface_depth_map=look.surface_depth_mm,
                                intrinsics=look.intrinsics, segmentations=segs, rgb=look.rgb,
-                               timestamp=_STAMP_S + len(pick.looks) - 1,
+                               timestamp=_STAMP_S + next(i for i, taken in enumerate(pick.looks) if taken is look),
                                tool_pose=Pose.from_matrix(look.tool_to_base, frame=Frame.BASE))
 
     def grasps(self, pick: RecordedPick, world: Any) -> "tuple[Any, Any, Any]":
-        """The target's grasps on the pick's last look as the cell's orchestrator ranks them, the frame they were
-        ranked on, and the orchestrator; the world then holds what the cell offers it for the attempt: the target's
-        fused cloud kept out, every other named part and every part beside named by its points."""
-        look = pick.looks[-1]
+        """The target's grasps on the pick's judged look (:attr:`RecordedPick.judged`: the last whose detector named
+        the target) as the cell's orchestrator ranks them, the frame they were ranked on, and the orchestrator; the
+        world then holds what the cell offers it for the attempt: the target's fused cloud kept out, every other named
+        part and every part beside named by its points."""
+        look = pick.judged
         service, resolver = self._service(look.intrinsics)
         orchestrator = service.runtime.orchestrator
         frame = self.frame_of(pick, look)
@@ -372,18 +414,19 @@ class ReplayCell:
         self.state.teleport(list(look.joints_rad))
         orchestrator.target_label = pick.target_label
         orchestrator.target_labels = ()
-        # The pick's earlier looks, as the cell's loop holds them when it ranks the last: what the supports are found on
-        # and what a point any look saw past is seen by.
+        # The pick's other looks, as the cell's loop holds them when it ranks the judged one: what the supports are
+        # found on and what a point any look saw past is seen by.
         from src.robot.grasping.loop.pick_loop import _LookView  # noqa: PLC0415
 
         orchestrator._look_views = [  # noqa: SLF001
             _LookView(label=earlier.name, pose=None, name=earlier.name, frame=self.frame_of(pick, earlier),
                       camera_to_base=earlier.camera_to_base, depth=earlier.surface_depth_mm)
-            for earlier in pick.looks[:-1]]
+            for index, earlier in enumerate(pick.looks) if index != pick.judged_index]
         beside = orchestrator._with_the_parts_beside(frame)  # noqa: SLF001 (what every acquired frame carries)
         if beside is not frame:
             resolver.by_frame[id(beside)] = look.camera_to_base
-        result, index, _ = orchestrator._best_result_over_segmentations(beside)  # noqa: SLF001
+        result, index, ordering = orchestrator._best_result_over_segmentations(beside)  # noqa: SLF001
+        self._ranked = (orchestrator, beside, look, result, index, ordering, service)
         from src.robot.grasping.loop.pick_loop import _named_points_base  # noqa: PLC0415
 
         named = _named_points_base(beside, tuple(beside.segmentations), index, look.camera_to_base)
@@ -400,8 +443,69 @@ class ReplayCell:
             mask = np.asarray(beside.segmentations[index].mask).astype(bool)
             held = to_base_mm(mask, look.surface_depth_mm, look.intrinsics, look.camera_to_base)
         world.offer_segmentation(target_points_base_mm=held, target_label=pick.target_label,
-                                 hold=True, timestamp=_STAMP_S + len(pick.looks) - 1, named_points_base_mm=named)
+                                 hold=True, timestamp=_STAMP_S + pick.judged_index, named_points_base_mm=named)
         return result, beside, orchestrator
+
+    def considered(self) -> dict[str, Any]:
+        """What the cell's own pick loop would do next on the look :meth:`grasps` ranked last, where it admits no grasp
+        (the owner, 2026-10-16): its judgement of the look, then, with :attr:`push`, the push of the part it would plan
+        (``_considered_push``, as every grasp collided) and the push of the scene a task taking every part would plan
+        (``_considered_scene_push``), and with :attr:`views` the view it would generate (``_aim`` and
+        ``generated_view.go_to_generated_view`` on the instant controller: screened by the arm's inverse kinematics,
+        the travel cap and the cable window, its straight joint line judged against the camera world). Nothing moves
+        anything real."""
+        from src.geometry import Frame, Transform  # noqa: PLC0415
+        from src.robot.grasping.recovery.push_gate import TRIGGER_ALL_COLLIDED, PushCell, PushGate  # noqa: PLC0415
+
+        if self._ranked is None:
+            return {}
+        orchestrator, frame, look, result, index, ordering, service = self._ranked
+        transform = Transform.from_matrix(look.camera_to_base, from_frame=Frame.CAMERA, to_frame=Frame.BASE)
+        view = orchestrator._look_view(look.name, None, frame, transform)  # noqa: SLF001
+        judged = orchestrator._judge(view, result, index, ordering, None)  # noqa: SLF001
+        orchestrator._look_views.append(view)  # noqa: SLF001 (the push reads the table every look saw)
+        if judged is None:
+            return {"considered": "the look judged no part"}
+        out: dict[str, Any] = {}
+        if self.push:
+            cell = service.push_cell
+            if not isinstance(cell, PushCell):
+                out["push"] = {"planned": False, "code": "no_push_cell", "sentence": str(getattr(cell, "sentence", ""))}
+            else:
+                campaign = service.start_campaign(every_part=True)
+                gate = PushGate(budgets=campaign.budgets, distance_mm=float(campaign.distance_mm or 30.0), cell=cell,
+                                longest_mm=campaign.longest_mm, every_part=True, scene_budgets=campaign.scene_budgets)
+                if index is not None:
+                    out["push"] = _push_said(orchestrator._considered_push(  # noqa: SLF001
+                        gate, judged, index, 0, trigger=TRIGGER_ALL_COLLIDED))
+                out["scene_push"] = _push_said(orchestrator._considered_scene_push(gate, judged, 0))  # noqa: SLF001
+        if self.views:
+            out["view"] = self._generated(orchestrator, judged)
+        return out
+
+    def _generated(self, orchestrator: Any, judged: Any) -> dict[str, Any]:
+        """The view the pick loop would generate for ``judged``: where it stands, or why none."""
+        from src.robot.execution.generated_view import go_to_generated_view  # noqa: PLC0415
+
+        aim, why = orchestrator._aim(judged)  # noqa: SLF001
+        tool = getattr(judged.frame, "tool_pose", None)
+        if aim is None or tool is None or judged.look.camera_to_base is None:
+            return {"generated": False, "why": why or "the frame carries no tool pose or camera placement"}
+        height, width = np.asarray(judged.frame.depth_map).shape[:2]
+        try:
+            generated = go_to_generated_view(
+                self.arm, aim=aim, camera_to_base_mm=judged.look.camera_to_base, tool_to_base_mm=tool.to_matrix(),
+                intrinsics=np.asarray(judged.frame.intrinsics, dtype=np.float64), image_size=(int(width), int(height)),
+                here=self.arm.get_joint_positions(), home=getattr(self.arm, "home_joint_positions", None),
+                holding=True)
+        except Exception as exc:  # noqa: BLE001 (a view the bank cannot ask is said, never a crash of the run)
+            return {"generated": False, "why": f"{type(exc).__name__}: {exc}"[:200]}
+        label = generated.label
+        stopped = generated.stopped
+        return {"generated": generated.moved, "label": label, "why": generated.skipped[:200],
+                "given_up": len(generated.tried), "aim": aim.what,
+                "other_angle": any(word in label for word in ("flatter", "steeper", "x as far")),
+                **({"stopped": f"{stopped.status.value}: {stopped.message}"[:200]} if stopped is not None else {})}
 
     # -------------------------------------------------------------- the guard's word on each grasp
     def _flange(self, tcp: np.ndarray) -> np.ndarray:
@@ -518,6 +622,92 @@ class ReplayCell:
         return {"verdict": "admitted", "boxes": len(boxes)}
 
 
+    def route(self, grasp: Any, policy: Any, seed: Any) -> dict[str, Any]:
+        """The cell's route from where the arm stood at the last look to ``grasp``'s standoff, planned and judged as the
+        cell plans and judges it (``PlannedArm._route_to_the_nearest_goal``): the straight joint line where it is clear,
+        else cuRobo's plan to the nearest configurations, every sample judged by the guard and the planner's world, the
+        camera's boxes set aside where only they refuse. Asks the GPU sidecar; a ``plan`` run only."""
+        from src.robot.core import MotionResult  # noqa: PLC0415
+        from src.robot.grasping.motion.execution_policy import _fingers_as_planned  # noqa: PLC0415
+
+        standoff = policy._build_waypoints(grasp)[0]  # noqa: SLF001 (the poses the cell would command)
+        self.state.teleport([float(v) for v in self._into_window(np.asarray(seed, dtype=np.float64))])
+        started = time.perf_counter()
+        with _fingers_as_planned(self.arm, grasp):
+            try:
+                route = self.arm._route_to_the_nearest_goal(  # noqa: SLF001 (the cell's own route)
+                    self.arm._curobo_planner(), self.arm._pose_to_flange(standoff), standoff,  # noqa: SLF001
+                    velocity=float(self.robot.motion_limits.max_velocity))
+            except Exception as exc:  # noqa: BLE001 (a route the bank cannot ask is said, never a crash of the run)
+                return {"route": "not asked", "route_why": f"{type(exc).__name__}: {exc}"[:200],
+                        "route_s": round(time.perf_counter() - started, 2)}
+        seconds = round(time.perf_counter() - started, 2)
+        if isinstance(route, MotionResult):
+            return {"route": "refused", "route_why": str(route.message)[:300], "route_s": seconds}
+        return {"route": "planned" if route.planned else "straight", "route_s": seconds}
+
+    def plan_from(self, grasp: Any, policy: Any, start: Any) -> dict[str, Any]:
+        """cuRobo's own plan from ``start`` to ``grasp``'s standoff, the straight line not taken, and the exact guard's
+        word on every sample of it: how often the planner's world finds a way the guard admits, how long it takes and
+        how long the way is (``plan_from_home`` runs, the GPU sidecar)."""
+        from src.robot.core import MotionCommand  # noqa: PLC0415
+        from src.robot.grasping.motion.execution_policy import _fingers_as_planned  # noqa: PLC0415
+        from src.robot.safety.path_samples import PathSamples, joint_path_samples  # noqa: PLC0415
+        from src.robot.safety.planning.self_envelope import goal_keep_out  # noqa: PLC0415
+
+        standoff = policy._build_waypoints(grasp)[0]  # noqa: SLF001 (the poses the cell would command)
+        tcp = np.asarray(standoff.to_matrix(), dtype=np.float64)
+        begin = self._into_window(np.asarray(start, dtype=np.float64))
+        at = self._goal(tcp, begin)
+        if at is None:
+            return {"plan": "no IK at the standoff"}
+        self.state.teleport([float(v) for v in begin])
+        planner = self.arm._curobo_planner()  # noqa: SLF001
+        started = time.perf_counter()
+        with _fingers_as_planned(self.arm, grasp):
+            try:
+                path = planner.plan_joint([float(v) for v in at], start_ur=[float(v) for v in begin],
+                                          near_point_mm=[float(v) for v in self._flange(tcp)[:3, 3]],
+                                          goal_keep_out=goal_keep_out(self.preflight, self.arm, tcp))
+            except Exception as exc:  # noqa: BLE001 (a plan the bank cannot ask is said, never a crash of the run)
+                return {"plan": "not asked", "plan_why": f"{type(exc).__name__}: {exc}"[:200],
+                        "plan_s": round(time.perf_counter() - started, 2)}
+            seconds = round(time.perf_counter() - started, 2)
+            if not path:
+                refusal = getattr(planner, "last_refusal", None)
+                return {"plan": "none", "plan_why": refusal.render()[:300] if refusal is not None else "",
+                        "plan_s": seconds}
+            radii = self.preflight.joint_radii_mm(self.arm)
+            step = float(self.preflight.path_step_mm or 5.0)
+            joints = [[float(v) for v in begin], *[[float(v) for v in waypoint] for waypoint in path]]
+            configs: list[tuple[float, ...]] = [tuple(joints[0])]
+            for before, after in zip(joints, joints[1:]):
+                configs.extend(joint_path_samples(before, after, reach_mm=radii, max_step_mm=step).configs[1:])
+            refused = self.preflight.gate_joint_path(PathSamples(configs=tuple(configs), step_bound_mm=step),
+                                                     arm=self.arm, command=MotionCommand.MOVE_TO)
+        length = float(sum(np.linalg.norm(np.subtract(after, before)) for before, after in zip(joints, joints[1:])))
+        return {"plan": "admitted" if refused is None else "refused by the guard",
+                "plan_why": "" if refused is None else str(refused.message)[:300], "plan_s": seconds,
+                "plan_rad": round(length, 3), "plan_waypoints": len(path)}
+
+    def close(self) -> None:
+        """Give the planner's sidecar back, where a ``plan`` run started one."""
+        self.arm.disconnect()
+
+
+def _push_said(answer: Any) -> dict[str, Any]:
+    """A push the pick loop considered, as the record says it: the plan's distance, direction, the room it opens and
+    how many parts it moves, or the refusal's code and sentence."""
+    if isinstance(answer, tuple):
+        plan = answer[0]
+        return {"planned": True, "distance_mm": round(float(plan.push_distance_mm), 1),
+                "direction": [round(float(v), 3) for v in plan.direction[:2]],
+                "room_mm": [round(float(plan.clearance_before_mm), 1), round(float(plan.clearance_after_mm), 1)],
+                "parts_moved": int(getattr(plan, "parts_moved", 1))}
+    return {"planned": False, "code": str(getattr(answer, "code", answer)),
+            "sentence": str(getattr(answer, "sentence", ""))[:300]}
+
+
 def _cause(message: str) -> str:
     """A refusal's kind, read off its sentence: what met what."""
     text = message.lower()
@@ -542,7 +732,9 @@ def replay(cell: ReplayCell, path: "str | Path") -> dict[str, Any]:
     if "later_looks" in cell.off:
         pick = replace(pick, looks=pick.looks[:1])
     record: dict[str, Any] = {"pick": pick.name, "day": pick.day, "looks": len(pick.looks),
-                              "target": pick.target_label, "segmented": bool(pick.looks and pick.looks[-1].masks)}
+                              "target": pick.target_label, "segmented": bool(pick.looks and pick.judged.masks)}
+    if pick.looks and pick.judged_index != len(pick.looks) - 1:
+        record["judged_look"] = pick.judged_index
     if not pick.looks or pick.target_cloud_mm.shape[0] < 50:
         record["skipped"] = "no target was recorded"
         return record
@@ -557,7 +749,7 @@ def replay(cell: ReplayCell, path: "str | Path") -> dict[str, Any]:
         record["no_grasp"] = ", ".join(str(getattr(r, "value", r)) for r in reasons) or "no result"
         record["said"] = str((getattr(result, "telemetry", {}) or {}).get("no_grasp_said", ""))[:200] if result else ""
     verdicts = []
-    seed = pick.looks[-1].joints_rad
+    seed = pick.judged.joints_rad
     for grasp in candidates:
         try:
             verdicts.append(cell.judge(world, grasp, orchestrator.policy, seed))
@@ -581,5 +773,16 @@ def replay(cell: ReplayCell, path: "str | Path") -> dict[str, Any]:
             kind = _cause(verdict.get("why", verdict["verdict"]))
             causes[kind] = causes.get(kind, 0) + 1
     record["refused"] = causes
+    if (cell.push or cell.views) and not admitted:
+        record.update(cell.considered())
+    if cell.plan:
+        routes = [cell.route(candidates[index], orchestrator.policy, seed) for index in admitted[:PLAN_TRIES]]
+        record["routes"] = routes
+        record["routed"] = sum(route["route"] in ("straight", "planned") for route in routes)
+    if cell.plan_from_home:
+        home = cell.robot.home_joint_positions
+        plans = [cell.plan_from(candidates[index], orchestrator.policy, home) for index in admitted[:PLAN_TRIES]]
+        record["plans"] = plans
+        record["planned"] = sum(plan["plan"] == "admitted" for plan in plans)
     record["seconds"] = round(time.perf_counter() - started, 1)
     return record

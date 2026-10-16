@@ -109,6 +109,64 @@ class TheGraspsFromInside(unittest.TestCase):
         self.assertEqual([], inner_grasps(_surface(_cube, 20.0), support_height_mm=0.0, jaw=jaw, corridor_seen=_seen))
 
 
+def _disk(radius_mm: float, step_mm: float = 0.7) -> np.ndarray:
+    """A hole of the colour mask met at the part's top: a disk about the origin, BASE x and y."""
+    grid = np.arange(-radius_mm, radius_mm + 1e-9, step_mm)
+    xy = np.array([(x, y) for x in grid for y in grid])
+    return xy[np.hypot(xy[:, 0], xy[:, 1]) <= radius_mm]
+
+
+def _mixed(bore: float, *, n: int = 4000, seed: int = 5) -> np.ndarray:
+    """What the depth reads inside a bore of the ring: its wall's mixed pixels, anywhere in it, 12 to 19 mm high."""
+    rng = np.random.default_rng(seed)
+    angle, radius = rng.uniform(0.0, 2.0 * np.pi, n), (bore / 2.0 - 2.0) * np.sqrt(rng.uniform(0.0, 1.0, n))
+    return np.column_stack([radius * np.cos(angle), radius * np.sin(angle), rng.uniform(12.0, 19.0, n)])
+
+
+class TheBoreReadOffTheMasksHole(unittest.TestCase):
+    """The owner's L (2026-10-15): the depth inside a bore reads its wall's mixed pixels, the colour mask does not."""
+
+    def test_the_hole_lands_at_the_parts_top(self) -> None:
+        from src.robot.grasping.generation.footprint_hull import mask_hole_xy
+
+        k = np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
+        looking_down = np.array([[1.0, 0.0, 0.0, 0.0], [0.0, -1.0, 0.0, 0.0], [0.0, 0.0, -1.0, 1000.0],
+                                 [0.0, 0.0, 0.0, 1.0]])
+        rows, cols = np.mgrid[0:480, 0:640]
+        r_px = np.hypot(cols - 320.0, rows - 240.0)
+        # A ring 90 mm across with a 60 mm bore, its top 50 mm over BASE z 0: 950 mm under the camera.
+        ring = (r_px <= 500.0 * 45.0 / 950.0) & (r_px >= 500.0 * 30.0 / 950.0)
+        hole = mask_hole_xy(ring, k, looking_down, 50.0)
+        reach = np.hypot(hole[:, 0], hole[:, 1])
+        self.assertGreater(len(hole), 100)
+        self.assertLessEqual(float(reach.max()), 30.5)
+        self.assertGreaterEqual(float(reach.max()), 28.0)
+        self.assertEqual(0, len(mask_hole_xy(r_px <= 20.0, k, looking_down, 50.0)), "a disc encloses no hole")
+
+    def test_a_bore_the_mixed_pixels_fill_is_found_by_the_hole(self) -> None:
+        from src.robot.grasping.generation.inner_grasps import hole_cells
+
+        jaw = _jaw()
+        cloud = np.vstack([_ring_cloud(90.0, 60.0), _mixed(60.0)])
+        body = body_map(cloud, 0.0, floor_margin_mm=2.0)
+        assert body is not None
+        blind = bores(body, deeper_than_mm=body_least_height_mm(jaw))
+        self.assertTrue(not blind or blind[0].diameter_mm < 30.0, [bore.diameter_mm for bore in blind])
+        found = bores(body, deeper_than_mm=body_least_height_mm(jaw), hollow=hole_cells(body, _disk(30.0)))
+        self.assertEqual(1, len(found))
+        self.assertGreaterEqual(found[0].diameter_mm, 52.0)
+        self.assertLessEqual(found[0].diameter_mm, 60.0)
+
+    def test_the_ring_is_gripped_from_inside_once_the_hole_says_where_its_bore_is(self) -> None:
+        jaw = _jaw()
+        cloud = np.vstack([_ring_cloud(90.0, 60.0), _mixed(60.0)])
+        self.assertEqual([], inner_grasps(cloud, support_height_mm=0.0, jaw=jaw, corridor_seen=_seen))
+        found = inner_grasps(cloud, support_height_mm=0.0, jaw=jaw, corridor_seen=_seen, hole_xy_mm=_disk(30.0))
+        self.assertTrue(found)
+        np.testing.assert_allclose(found[0].candidate.position_mm[:2], [0.0, 0.0], atol=2.0)
+        self.assertGreater(found[0].bore_mm, 50.0, "opened onto the wall, not onto a mixed pixel")
+
+
 class EveryGraspFromInsideRanksLast(unittest.TestCase):
     def _stage(self, inner: bool) -> tuple[list[Any], dict]:
         from src.robot.grasping.generation._support_footprint_stage import support_footprint_breakdowns

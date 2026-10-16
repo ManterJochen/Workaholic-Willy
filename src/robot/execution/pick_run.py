@@ -47,11 +47,11 @@ primary camera's window with the attempt's outcome, and says that outcome on eve
 only: a window closed, or a view that raises, changes nothing the campaign does, and the view reads the
 cameras through their display path, which changes nothing the picks measure.
 
-Two switches of 2026-09-29, both off by default. ``both_faces`` asks every pick to see both jaw contact
-faces of its chosen grasp before it grips, for safety-critical processes: a wrist camera looks on for them, and
-a pick no view showed both of ends ``no_valid_grasp`` with nothing gripped, on a fixed camera as on the wrist.
-``record_views`` keeps each pick's looks for training, one file per pick
-(`src.robot.execution.record_views`), named after the pick's record.
+A switch of 2026-09-29, off by default: ``both_faces`` asks every pick to see both jaw contact faces of its
+chosen grasp before it grips, for safety-critical processes: a wrist camera looks on for them, and a pick no view
+showed both of ends ``no_valid_grasp`` with nothing gripped, on a fixed camera as on the wrist. Every pick's looks
+are kept for training, one file per pick (`src.robot.execution.record_views`), named after the pick's record: the
+owner's of 2026-10-15, no switch.
 
 And one of 2026-09-30: a campaign is what a cell's recovery counts across (``service.start_campaign``): the push
 budgets of ``nudge_target`` (1 per part, 2 per pick, 5 per campaign) and the parts ``next_target`` skips.
@@ -255,7 +255,7 @@ class PickAttempt:
             jaw 2); ``None`` where no grasp was judged (default: None).
         hand_eye_gap_mm (float | None): The hand-eye check of a wrist pick: how far apart two looks measure the part, in
             millimetres; ``None`` where fewer than two looks shared enough of it (default: None).
-        views_file (str): Where this pick's looks were kept, with ``record_views``; empty otherwise (default: "").
+        views_file (str): Where this pick's looks were kept; empty where it took none (default: "").
         generated_view_deg (float | None): How far the one view a wrist pick generated turned about the part, in
             degrees; ``None`` where none was generated (default: None).
     """
@@ -299,7 +299,7 @@ class PickAttempt:
     #: The hand-eye check of a wrist pick, mm (the service report's `hand_eye_gap_mm`). `None` where fewer than two
     #: looks shared enough of the part.
     hand_eye_gap_mm: float | None = None
-    #: Where this pick's looks were kept, on a campaign that keeps them (`PickRun.record_views`). Empty otherwise.
+    #: Where this pick's looks were kept. Empty where it took none (a fixed camera) or they could not be written.
     views_file: str = ""
     #: How far the one view a wrist pick generated, once its declared looks were used up, turned about the part,
     #: degrees (the service report's `generated_view_deg`); its look is among `looks`. `None` where none was generated.
@@ -586,7 +586,6 @@ class PickRun:
         put_back (bool): Put each lifted part back (default: False).
         view (Any): A ``LiveView``, or ``None`` (default: None).
         both_faces (bool): Grip only once both jaw faces were seen (default: False).
-        record_views (bool): Keep each pick's looks (default: False).
         push_mm (Maybe[float]): How far a push moves a part, in millimetres (default: UNSET).
     """
 
@@ -639,11 +638,6 @@ class PickRun:
     #: (`GraspMotion(align_closing_to_base_x=True)`) would grip faces nobody judged: its first pick raises before anything
     #: moves, and the campaign stops on it.
     both_faces: bool = False
-    #: Keep each pick's looks for training (`src.robot.execution.record_views`): the frames of its looks (RGB and
-    #: depth), the tool pose stamped at each, the intrinsics and the target cloud the looks fused, one file per pick
-    #: under `RECORD_VIEWS_DIR`, named after the pick's record (`attempt_id`). Off by default. A fixed camera has no looks
-    #: to keep; a file that cannot be written is said and the campaign goes on.
-    record_views: bool = False
     #: How far a push of a failed part moves it, in mm, on a cell whose recovery pushes (`nudge_target`, dense_clutter):
     #: unset, the config's `recovery.fixture.push_distance_mm` (30 mm, also where no fixture is declared). A request up
     #: to the cell's `recovery.fixture.max_nudge_mm` (the hard cap without a fixture) is taken as asked; above it,
@@ -671,7 +665,6 @@ class PickRun:
         put_back: bool = False,
         view: Any = None,
         both_faces: bool = False,
-        record_views: bool = False,
         push_mm: "Maybe[float]" = UNSET,
     ) -> "PickRun":
         """A campaign that builds, connects, drives and takes down a cell.
@@ -707,8 +700,6 @@ class PickRun:
                 ``None``. Display only; the caller closes it (default: None).
             both_faces (bool): Grip only once both jaw contact faces of the chosen grasp were seen: the switch for
                 safety-critical processes; a wrist camera looks on for both (default: False).
-            record_views (bool): Keep each pick's looks for training (frames, tool poses, intrinsics, the fused cloud),
-                one file per pick under ``RECORD_VIEWS_DIR`` (default: False).
             push_mm (Maybe[float]): How far a push of a failed part moves it, in millimetres, on a cell whose recovery
                 pushes; unset is the config's ``recovery.fixture.push_distance_mm`` (default: UNSET).
 
@@ -732,7 +723,6 @@ class PickRun:
             put_back=bool(put_back),
             view=view,
             both_faces=bool(both_faces),
-            record_views=bool(record_views),
             push_mm=_checked_push_mm(push_mm),
         )
 
@@ -752,7 +742,6 @@ class PickRun:
         put_back: bool = False,
         view: Any = None,
         both_faces: bool = False,
-        record_views: bool = False,
         push_mm: "Maybe[float]" = UNSET,
     ) -> "PickRun":
         """A campaign on a service that is already connected; the caller owns the connect and the teardown, so the
@@ -784,8 +773,6 @@ class PickRun:
                 ``None``. Display only; the caller closes it (default: None).
             both_faces (bool): Grip only once both jaw contact faces of the chosen grasp were seen: the switch for
                 safety-critical processes; a wrist camera looks on for both (default: False).
-            record_views (bool): Keep each pick's looks for training (frames, tool poses, intrinsics, the fused cloud),
-                one file per pick under ``RECORD_VIEWS_DIR`` (default: False).
             push_mm (Maybe[float]): How far a push of a failed part moves it, in millimetres, on a cell whose recovery
                 pushes; unset is the config's ``recovery.fixture.push_distance_mm`` (default: UNSET).
 
@@ -808,7 +795,6 @@ class PickRun:
             put_back=bool(put_back),
             view=view,
             both_faces=bool(both_faces),
-            record_views=bool(record_views),
             push_mm=_checked_push_mm(push_mm),
         )
 
@@ -905,12 +891,10 @@ class PickRun:
         return service.pick(**keywords)
 
     def _keep_views(self, service: Any, report: Any, index: int) -> str:
-        """Keep the looks of the pick that just ran, on a campaign that asked (`record_views`); where, or `""`.
+        """Keep the looks of the pick that just ran; where, or `""`.
 
         :func:`keep_pick_views`, named `run<index>` where the pick's record names it nothing.
         """
-        if not self.record_views:
-            return ""
         return keep_pick_views(service, report, name=f"run{index:03d}")
 
     def _put_back(self, service: Any, report: Any) -> "tuple[HandlingReport | None, str]":
@@ -1144,8 +1128,8 @@ def keep_pick_views(service: Any, report: Any, *, name: str, writer: Any = None)
     Only a pick that says it looked (`report.looks`), from what the service's pick loop kept of those looks, so a pick
     that ended before its first look, or a fixed camera's, writes nothing and never another pick's looks. The file is
     named after the pick's record (`attempt_id`), else `name`. One that cannot be written is said, and the caller goes
-    on: the views are for training, and the pick they record is over. What a campaign (`PickRun(record_views=True)`)
-    and a task (`TaskOptions(record_views=True)`) keep alike.
+    on: the views are for training, and the pick they record is over. What a campaign (`PickRun`) and a task keep
+    alike, every pick's.
 
     With ``writer`` (the process's background writer, `record_logging.background_writer`, a task's on a cell that writes
     in the background) the looks are taken now, before the next pick lets them go, and written by it once the pick has

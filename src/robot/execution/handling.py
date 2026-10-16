@@ -999,15 +999,15 @@ class _Handling:
             self._command_gripper(float(opening), close=False)
             if float(opening) < float(self.gripper.max_width_mm) - 1e-6:
                 # Opened no wider than a width short of the stroke: the guard holds the fingers where the hand reads
-                # them back until the verb ends (lever G, ``execution_policy._the_guard_holds_the_fingers_at``), and the
+                # them back until the verb ends (lever G, ``core.gripper.guard_holds_the_fingers_at``), and the
                 # space between the jaws at the goal is that wide.
-                from src.robot.grasping.motion.execution_policy import _the_guard_holds_the_fingers_at  # noqa: PLC0415
+                from src.robot.core.gripper import guard_holds_the_fingers_at  # noqa: PLC0415
 
-                if _the_guard_holds_the_fingers_at(self.arm, self.gripper, float(opening)):
+                if guard_holds_the_fingers_at(self.arm, self.gripper, float(opening)):
                     try:
                         return self._picked_from(standoff_pose=self._standoff(), close_to=close_to, width_mm=width_mm)
                     finally:
-                        _the_guard_holds_the_fingers_at(self.arm, None, None)
+                        guard_holds_the_fingers_at(self.arm, None, None)
         return self._picked_from(standoff_pose=self._standoff(), close_to=close_to, width_mm=width_mm)
 
     def _picked_from(self, *, standoff_pose: Pose, close_to: float, width_mm: float) -> HandlingReport:

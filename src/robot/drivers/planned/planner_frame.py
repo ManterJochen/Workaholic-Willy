@@ -94,6 +94,8 @@ class PlannerFrameClient:
         def set_scene(cuboids: Sequence[Mapping[str, Any]], meshes: "Sequence[Mapping[str, Any]] | None",
                       voxels: "Mapping[str, Any] | None") -> Any:
             field = None if voxels is None else dict(voxels, pose=planner_pose(voxels["pose"]))
+            if field is not None and field.get("near") is not None:  # the fine grid about the goal
+                field["near"] = dict(field["near"], pose=planner_pose(field["near"]["pose"]))
             return inner(_turned_bodies(cuboids), _turned_bodies(meshes), field)
 
         return set_scene

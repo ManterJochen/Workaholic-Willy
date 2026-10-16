@@ -92,6 +92,29 @@ LEAST_OUTSIDE_PX: int = 25
 _KEPT_ROUND_PX: int = 3
 #: How wide a ring round the painted pixels gives their colour, pixels: what the parts stand on, round the region.
 _RING_PX: int = 6
+#: A mask whose pieces hold at least this share of its pixels each, two or more of them, is the mask of a box drawn round
+#: several parts, not of one part (the owner, 2026-10-15): a grounded frame drops it, and what it covered stays in the
+#: depth as what nobody named.
+BODY_SHARE: float = 0.2
+
+
+def bodies_of(mask: np.ndarray) -> int:
+    """How many pieces of ``mask`` (4-connected) hold :data:`BODY_SHARE` of its pixels or more each.
+
+    Args:
+        mask: One segmentation's mask, any dtype, nonzero inside.
+
+    Returns:
+        int: How many such pieces, 0 for an empty mask.
+    """
+    from scipy.ndimage import label  # noqa: PLC0415
+
+    inside = np.asarray(mask).astype(bool)
+    pieces, count = label(inside)
+    if count < 2:
+        return int(count)
+    sizes = np.bincount(np.asarray(pieces).ravel())[1:]
+    return int(np.count_nonzero(sizes >= BODY_SHARE * float(inside.sum())))
 
 
 def _singular(word: str) -> str:
@@ -525,7 +548,7 @@ class RealSenseVisionPerceptionSource:
                                        tool_pose=tool_pose) if hide is not None else None
             perceived = (self._backend.perceive(bgr, phrase) if copy is None
                          else self._backend.perceive(bgr, phrase, detect_on=copy))
-            segmentations = self._segmented(bgr, perceived)
+            segmentations = self._segmented(bgr, perceived, whole=True)
             if kind and refused is not None:
                 segmentations, said = refused.where_they_stood(segmentations)
                 why = self._last_route[1] if self._last_route is not None else "not followed"
@@ -558,14 +581,19 @@ class RealSenseVisionPerceptionSource:
             research=_research_of(rgbd),
         )
 
-    def _segmented(self, bgr: np.ndarray, perceived: Any) -> list[Any]:
+    def _segmented(self, bgr: np.ndarray, perceived: Any, *, whole: bool = False) -> list[Any]:
         """The segmentations of ``perceived`` (``(detection, segmentation)`` pairs) as a frame carries them: each label
-        mapped onto the object labels, its colour judged, its mask completed as the policy says."""
+        mapped onto the object labels, its colour judged, its mask completed as the policy says. ``whole`` (a frame the
+        detector grounded) drops a mask that splits into bodies (:func:`bodies_of`): a box drawn round several parts."""
         segmentations: list[Any] = []
         for obj in perceived:
             det, seg = obj.detection, obj.segmentation
             said = getattr(seg, "label", "") or ""
             raw = np.asarray(seg.mask).astype(bool)
+            if whole and bodies_of(raw) >= 2:
+                _LOG.warning("the mask of %r at %s splits into %d bodies, a box drawn round several parts: dropped",
+                             said, [round(float(v)) for v in getattr(det, "box", ())], bodies_of(raw))
+                continue
             # The colour the label names, judged on the mask as segmented, before any fusion reads it: a part of
             # another colour keeps its mask, its depth and its place in the planner world under a label no object
             # carries, so it stays a neighbour for every check and is never a target (the owner, 2026-10-08).

@@ -92,19 +92,29 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from src.models.constants import MODELS_LOG_DIR, VLM_GROUNDER_LOG_FILE
 from src.models.detection.types import Detection
 from src.utility.log_cfg import create_logger
 
-from .parsing import AMBIGUOUS_LABEL, REPEAT_IOU, CoordinateSpace, box_iou, parse_grounding_response
+from .parsing import (
+    AMBIGUOUS_LABEL,
+    LADDER_RUN,
+    REPEAT_IOU,
+    CoordinateSpace,
+    box_iou,
+    claimed_once,
+    parse_grounding_response,
+    walked,
+    without_groups,
+)
 
 __all__ = [
-    "CLASS_LIST_SEPARATOR", "DECODE_GRAPHS", "GROUNDING_CLASS_LIST_INSTRUCTION", "GROUNDING_INSTRUCTION",
-    "GROUNDING_MAX_NEW_TOKENS", "Qwen3VLGrounder", "REPEATED_BOXES_TO_STOP", "answer_array_closed", "answer_loops",
-    "answer_object_closed", "class_list_prompt", "classes_of", "grounding_instruction",
+    "CLASS_LIST_SEPARATOR", "DECODE_GRAPHS", "GROUNDING_INSTRUCTION", "GROUNDING_MAX_NEW_TOKENS", "Qwen3VLGrounder",
+    "REPEATED_BOXES_TO_STOP", "answer_array_closed", "answer_loops", "answer_object_closed", "class_list_prompt",
+    "classes_of",
 ]
 
 #: A file sink: nothing in this repo configures the root logger, so a bare ``getLogger`` would
@@ -147,23 +157,6 @@ GROUNDING_INSTRUCTION = (
 #: log and on the camera's window.
 CLASS_LIST_SEPARATOR = " | "
 
-#: The instruction wrapped around a class list (:func:`class_list_prompt`): several kinds of part found in one call,
-#: each box under the one description it matches best, copied exactly, so a box's label says which description
-#: claims it. It is :data:`GROUNDING_INSTRUCTION` with a list of descriptions in place of one: the same answer format,
-#: the same sentence on coordinates, the same empty array and the same "Do not guess". A box the model names by none,
-#: or one object it boxes under two, is read as no description's (``parsing.AMBIGUOUS_LABEL``). How well the cell's 8B
-#: keeps two colours apart in one call is not measured yet (``tests/test_vlm_class_list_inference.py``).
-GROUNDING_CLASS_LIST_INSTRUCTION = (
-    "Locate every object matching one of these descriptions and return ONLY a JSON array, no prose:\n"
-    '[{{"bbox_2d": [x0, y0, x1, y1], "label": "<the description it matches, copied exactly>"}}]\n'
-    "Coordinates are absolute pixels in this image. "
-    "Give each object once, in a box of its own, labelled with the one description it matches best; "
-    "leave out every object that matches none. "
-    "If no object matches, return an empty array []. Do not guess.\n\n"
-    "Descriptions: {descriptions}"
-)
-
-
 def _said_once(text: str) -> str:
     """A description as two of them are compared: case and spacing aside, as the parser compares labels."""
     return " ".join(text.casefold().split())
@@ -171,7 +164,8 @@ def _said_once(text: str) -> str:
 
 def class_list_prompt(phrases: Iterable[str]) -> str:
     """One grounding prompt for several descriptions, ``"green part | red part"``: every rule's kind of part, or every
-    place a task still looks for, found in one call and told apart by label (:func:`classes_of` reads it back).
+    place a task still looks for, grounded one description at a time and told apart by label (:func:`classes_of` reads
+    it back).
 
     Each phrase is stripped, and a phrase given twice (case and spacing aside) is one description, kept as it was first
     written. One description is no list: it comes back as it is and is grounded with today's instruction, byte for
@@ -203,8 +197,7 @@ def classes_of(prompt: str) -> tuple[str, ...]:
 
     The prompt is split at the separator's bar, each piece stripped; an empty piece is left out and a piece said twice
     (case and spacing aside) is one description. Fewer than two descriptions left is no list. This is what tells the
-    grounder to ask with :data:`GROUNDING_CLASS_LIST_INSTRUCTION` and the locator to map each box onto the description
-    it names.
+    grounder to ask each description on its own and the locator to map each box onto the description it names.
     """
     bar = CLASS_LIST_SEPARATOR.strip()
     if bar not in str(prompt):
@@ -215,18 +208,6 @@ def classes_of(prompt: str) -> tuple[str, ...]:
         if text and _said_once(text) not in {_said_once(description) for description in descriptions}:
             descriptions.append(text)
     return tuple(descriptions) if len(descriptions) >= 2 else ()
-
-
-def grounding_instruction(prompt: str) -> str:
-    """The text a grounding call asks beside its image: :data:`GROUNDING_INSTRUCTION` around a prompt of one
-    description, byte for byte as ever, and :data:`GROUNDING_CLASS_LIST_INSTRUCTION` around the descriptions of a class
-    list (:func:`classes_of`), each in double quotes as a JSON string writes it, so the label the model copies into its
-    answer reads back as the description."""
-    descriptions = classes_of(prompt)
-    if not descriptions:
-        return GROUNDING_INSTRUCTION.format(prompt=prompt)
-    return GROUNDING_CLASS_LIST_INSTRUCTION.format(
-        descriptions="; ".join(json.dumps(description, ensure_ascii=False) for description in descriptions))
 
 
 def answer_array_closed(text: str) -> bool:
@@ -272,16 +253,20 @@ def answer_array_closed(text: str) -> bool:
 
 def answer_loops(text: str) -> bool:
     """Whether a grounding answer has begun to loop, so it may end here: its last :data:`REPEATED_BOXES_TO_STOP` boxes
-    each the same object as a box written before it (``parsing.REPEAT_IOU``). The parser reads the whole boxes before
-    the cut and drops the repeats among them, so the answer reads as the boxes it had written before the loop.
+    each the same object as a box written before it (``parsing.REPEAT_IOU``), or its newest box a step of a walk across
+    the picture (``parsing.walked``: a ladder or a tiling, the cell's Thursday of 2026-10-15). The parser reads the
+    whole boxes before the cut and drops the repeats and the walks among them, so the answer reads as the boxes it had
+    written before the loop.
 
     Args:
         text (str): The answer as written so far.
 
     Returns:
-        bool: True once the newest boxes only repeat earlier ones.
+        bool: True once the newest boxes only repeat earlier ones, or walk.
     """
     boxes = [[float(value) for value in match.groups()] for match in _BBOX_2D.finditer(text)]
+    if len(boxes) >= LADDER_RUN and walked(boxes)[-1]:
+        return True
     run = 0
     for index in range(len(boxes) - 1, 0, -1):
         if not any(box_iou(boxes[index], earlier) >= REPEAT_IOU for earlier in boxes[:index]):
@@ -1130,14 +1115,13 @@ class Qwen3VLGrounder:
         return self._processor, model, self._torch
 
     def _generate(self, image_rgb: Any, prompt: str) -> tuple[str, int]:
-        """``(answer, tokens written)`` for one grounding question, written as :meth:`configure` set: asked with today's
-        instruction for one description and with the class-list instruction for several (:func:`grounding_instruction`);
-        the answer's end, the lookup and the decode graphs are the same for both."""
+        """``(answer, tokens written)`` for one grounding question of one description, written as :meth:`configure`
+        set: :data:`GROUNDING_INSTRUCTION` around it."""
         messages = [{
             "role": "user",
             "content": [
                 {"type": "image", "image": image_rgb},
-                {"type": "text", "text": grounding_instruction(prompt)},
+                {"type": "text", "text": GROUNDING_INSTRUCTION.format(prompt=prompt)},
             ],
         }]
         with self._generate_lock:
@@ -1350,9 +1334,11 @@ class Qwen3VLGrounder:
     def detect_all(self, image_bgr: Any, prompt: str) -> list[Detection]:
         """Ground ``prompt``; ``[]`` when nothing matches. Same contract as the phrase detectors.
 
-        A class list (:func:`class_list_prompt`) is grounded in this one call, each box under the description the model
-        copied for it; a box it named by none, and every box of one object it boxed under two descriptions, comes back
-        ``ambiguous`` (``parsing.AMBIGUOUS_LABEL``): an obstacle, never a target."""
+        A class list (:func:`class_list_prompt`) is grounded one description at a time, each box under the description
+        it was asked for (the owner, 2026-10-15: every loop, group box and box written twice of the cell's Thursday came
+        from a class list asked in one call, none from a description asked alone); every box of one object two
+        descriptions boxed comes back ``ambiguous`` (``parsing.AMBIGUOUS_LABEL``): an obstacle, never a target. A box
+        that holds two others is a box round a pile or a bin, and is dropped (``parsing.without_groups``)."""
         self._ensure_loaded()
         import numpy as np  # noqa: PLC0415
 
@@ -1366,15 +1352,28 @@ class Qwen3VLGrounder:
         # several frames away from anything naming this file.
         image_rgb = np.ascontiguousarray(array[..., ::-1])
 
+        descriptions = classes_of(prompt)
+        if not descriptions:
+            detections, _dropped = without_groups(self._grounded(image_rgb, prompt, width, height))
+            return detections
+        found: list[Detection] = []
+        for description in descriptions:
+            found += [replace(detection, label=description)
+                      for detection in self._grounded(image_rgb, description, width, height)]
+        detections, _dropped = without_groups(claimed_once(found, prompt))
+        return detections
+
+    def _grounded(self, image_rgb: Any, prompt: str, width: int, height: int) -> list[Detection]:
+        """One grounding call of one description on the RGB image, its boxes parsed, and one line said of it."""
         # Timed around generate and parse together, because that span is what a caller waits for.
         started = time.perf_counter()
         answer, tokens = self._generate(image_rgb, prompt)
         if answer_loops(answer):
-            _LOG.warning("VLM %s began to loop on %r: the same object written again %d times in a row, so the answer "
-                         "ends there after %d token(s)", self.model_id, prompt, REPEATED_BOXES_TO_STOP, tokens)
+            _LOG.warning("VLM %s began to loop on %r: the same object written again %d times in a row, or a walk across "
+                         "the picture, so the answer ends there after %d token(s)", self.model_id, prompt,
+                         REPEATED_BOXES_TO_STOP, tokens)
         detections = parse_grounding_response(
-            answer, image_width=width, image_height=height, fallback_label=prompt,
-            space=self.coordinate_space, classes=classes_of(prompt),
+            answer, image_width=width, image_height=height, fallback_label=prompt, space=self.coordinate_space,
         )
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         if not detections:

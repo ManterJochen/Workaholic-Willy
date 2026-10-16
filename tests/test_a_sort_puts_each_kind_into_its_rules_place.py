@@ -207,9 +207,34 @@ class TwoBinsTests(unittest.TestCase):
         for regions in ran.service.zones_seen:
             self.assertEqual(["the blue bin it places into", "the yellow bin it places into"],
                              sorted(region.reason for region in regions), "a check forgot another bin's region")
+        # Each bin keeps out the kind its rule puts there alone (the owner, 2026-10-15): a green part in the blue bin
+        # does not belong there and may be taken out of it; a red part there stays. The survey says so.
+        from src.robot.grasping.recovery.exclusion_zones import ExclusionZones
+
+        zones = ExclusionZones()
+        for region in ran.service.zones_seen[-1]:
+            zones.keep_out_region(region)
+        self.assertEqual({"the yellow bin it places into": "green part", "the blue bin it places into": "red part"},
+                         {region.reason: region.label for region in ran.service.zones_seen[-1]})
+        self.assertFalse(zones.excludes(label="green part", centre_mm=(*BLUE_CENTRE, 0.0)))
+        self.assertTrue(zones.excludes(label="red part", centre_mm=(*BLUE_CENTRE, 0.0)))
+        found = [ran.hooks.said[index] for index, name in enumerate(ran.names()) if name == "task.target_found"]
+        self.assertIn("kept out of the picks for the red part alone, so a part of another kind in it is taken out",
+                      found[1])
         self.assertEqual(4, do0_changes(ran.log))
         self.assertNotIn("task.unsorted", ran.names())
         self.assertIn("'green part' or 'red part'", ran.report.sentence)
+
+    def test_a_sort_whose_look_sees_every_part_in_its_rules_bin_says_so_at_once(self) -> None:
+        """The owner, 2026-10-15 (J): where everything already lies right, the sort says so at its first look."""
+        from src.robot.execution.task import TaskStop
+
+        ran = _sort([SortPick("excluded", label="red part"), "empty"])
+
+        self.assertIs(TaskStop.NOTHING_LEFT, ran.report.stop, ran.report.sentence)
+        self.assertIn("every part the look saw already lies where its rule puts it", ran.report.sentence)
+        self.assertEqual(0, ran.report.parts_placed)
+        self.assertEqual(1, len(ran.hooks.of("task.nothing_found")), "it ended at the first look")
 
     def test_the_picks_ground_every_rules_kind_in_one_call(self) -> None:
         from src.robot.execution.autonomous_grasp.prompt import PickPrompt
@@ -290,7 +315,10 @@ class TwoBinsTests(unittest.TestCase):
         self.assertEqual(1, len(ran.hooks.of("task.target_found")))
         self.assertEqual([(1, "target:yellow bin"), (0, "target:yellow bin")],
                          [(rule["rule"], rule["place"]) for rule in ran.hooks.of("task.rule")])
-        self.assertEqual(1, len(ran.service.zones_seen[-1]), "one bin is one region")
+        regions = ran.service.zones_seen[-1]
+        self.assertEqual(({"the yellow bin it places into"}, {"green part", "red part"}),
+                         ({region.reason for region in regions}, {region.label for region in regions}),
+                         "one bin kept out for both kinds its rules put there")
         self.assertEqual(2, ran.report.parts_placed)
 
 

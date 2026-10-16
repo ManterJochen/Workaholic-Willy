@@ -100,6 +100,32 @@ class APickIsReadBackTests(unittest.TestCase):
             np.testing.assert_array_equal(shot.hit == index, mask)
 
 
+class APickIsJudgedWhereItsTargetWasNamedTests(unittest.TestCase):
+    """The owner, 2026-10-16: a pick whose last look named no target is judged on the last look that named it, as the
+    cell went on with that look; projecting the fused cloud into a look that did not see the target made a sliver of a
+    mask of it."""
+
+    @staticmethod
+    def _pick(targets: "tuple[int | None, ...]") -> Any:
+        empty = np.zeros((4, 4))
+        looks = tuple(bank.Look(name=f"look{index}", joints_rad=(0.0,) * 6, rgb=None, depth_mm=empty,
+                                surface_depth_mm=empty, intrinsics=np.eye(3), camera_to_base=np.eye(4),
+                                tool_to_base=np.eye(4), masks=(np.ones((4, 4), dtype=bool),),
+                                labels=(f"part {index}",), target=target) for index, target in enumerate(targets))
+        return bank.RecordedPick(name="pick-x", day="2026-10-14", looks=looks, target_cloud_mm=np.zeros((0, 3)))
+
+    def test_the_last_look_that_named_the_target_is_the_judged_one(self) -> None:
+        pick = self._pick((0, 0, None, None))
+        self.assertEqual(1, pick.judged_index)
+        self.assertIs(pick.looks[1], pick.judged)
+        self.assertEqual("part 1", pick.target_label)
+
+    def test_a_pick_whose_looks_named_none_is_judged_on_its_last_look(self) -> None:
+        pick = self._pick((None, None))
+        self.assertEqual(1, pick.judged_index)
+        self.assertEqual("target", pick.target_label)
+
+
 class ARefusalIsNamedByWhatMetWhatTests(unittest.TestCase):
     def test_a_finger_a_support_and_a_joint_limit(self) -> None:
         said = {

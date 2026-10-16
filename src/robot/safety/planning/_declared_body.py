@@ -30,7 +30,8 @@ from typing import Any
 
 import numpy as np
 
-__all__ = ["Box", "box_mesh", "box_spheres", "boxes_to_parts", "cover_refusal", "inflated", "stacked_boxes"]
+__all__ = ["Box", "box_mesh", "box_spheres", "boxes_to_parts", "cover_refusal", "inflated", "inner_box_spheres",
+           "stacked_boxes"]
 
 #: How far a sphere circumscribing a cube of side ``s`` reaches past that cube's face: ``s * (sqrt(3) - 1) / 2``.
 #: Inverted below to pick the cell size from the reach the caller allows, which is the whole fit.
@@ -184,19 +185,49 @@ def box_spheres(box: Box, *, reach_mm: float) -> "list[dict[str, Any]]":
             f"a sphere cover needs a reach it is allowed to have; got {reach:g} mm. Zero reach would need "
             f"infinitely many spheres, because a sphere is not a corner."
         )
+    half = _volume(box)
+    counts, cell = _cells(half, reach / _CUBE_REACH_PER_SIDE)
+    return _cell_spheres(box, counts, cell, float(np.linalg.norm(cell) / 2.0))
+
+
+def inner_box_spheres(box: Box, *, gap_mm: float) -> "list[dict[str, Any]]":
+    """Spheres inside ``box``, every point of it within ``gap_mm`` of one, in metres, in the shape a cuRobo body link
+    reads: the second robot mask's half of :func:`box_spheres` (owner, 2026-10-15: no sphere reaches past the body).
+
+    Each cell holds its inscribed sphere, and the cells are cut until a cell's corner, the point of it farthest from that
+    sphere, stands within the gap of it: a cube of side ``s`` at ``s * (sqrt(3) - 1) / 2``, a thin plate's cell nearer.
+    """
+    gap = float(gap_mm)
+    if gap <= 0.0:
+        raise ValueError(f"spheres inside a box leave a gap at its corners; got {gap:g} mm")
+    half = _volume(box)
+    side = gap / _CUBE_REACH_PER_SIDE
+    counts, cell = _cells(half, side)
+    while (np.linalg.norm(cell) - cell.min()) / 2.0 > gap:
+        side *= 0.9
+        counts, cell = _cells(half, side)
+    return _cell_spheres(box, counts, cell, float(cell.min() / 2.0))
+
+
+def _volume(box: Box) -> np.ndarray:
     half = np.asarray(box.half_extents_mm, dtype=np.float64)
     if half.shape != (3,) or not np.all(half > 0.0):
         raise ValueError(f"{box.name!r} has no volume to cover: half extents {box.half_extents_mm!r}")
+    return half
 
-    side = reach / _CUBE_REACH_PER_SIDE
+
+def _cells(half: np.ndarray, side: float) -> "tuple[np.ndarray, np.ndarray]":
+    """How many cells along each axis cut a box of ``half`` into cells no longer than ``side``, and a cell's sizes."""
     counts = np.maximum(np.ceil(2.0 * half / side).astype(int), 1)
-    cell = 2.0 * half / counts
-    radius = float(np.linalg.norm(cell) / 2.0)
+    return counts, 2.0 * half / counts
 
-    centre = np.asarray(box.centre_mm, dtype=np.float64)
+
+def _cell_spheres(box: Box, counts: np.ndarray, cell: np.ndarray, radius_mm: float) -> "list[dict[str, Any]]":
+    """A sphere of ``radius_mm`` at the centre of every cell of ``box``, metres."""
+    centre, half = np.asarray(box.centre_mm, dtype=np.float64), np.asarray(box.half_extents_mm, dtype=np.float64)
     axes = [centre[i] - half[i] + cell[i] * (np.arange(counts[i]) + 0.5) for i in (0, 1, 2)]
     grid = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
-    return [{"center": [float(v) / 1000.0 for v in point], "radius": radius / 1000.0} for point in grid]
+    return [{"center": [float(v) / 1000.0 for v in point], "radius": radius_mm / 1000.0} for point in grid]
 
 
 def boxes_to_parts(boxes: "list[Box] | tuple[Box, ...]", *, frame: int) -> "dict[str, np.ndarray]":

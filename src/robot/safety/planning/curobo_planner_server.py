@@ -46,7 +46,8 @@ prints a ``[timing]`` line per request on stderr.
              {"cmd":"check_js","joints":[[6 rad],...],"clearance_m":float?,"report_refused":bool?,"name_pairs":bool?,
               "ignore_perceived":[name,...]?}
              {"cmd":"explain_js","joints":[[6 rad],...]}
-             {"cmd":"set_world","cuboids":[...],"meshes":[...],"voxels":{"path","dims_m","voxel_size_m","pose"}|null}
+             {"cmd":"set_world","cuboids":[...],"meshes":[...],
+              "voxels":{"path","dims_m","voxel_size_m","pose","near":{"path","dims_m","voxel_size_m","pose"}?}|null}
              {"cmd":"set_voxels","path":str|null,"dims_m":[...],"voxel_size_m":float,"pose":[...]}
   reply   -> {"success":bool,"trajectory":[[6 rad]...],"dt":float}  |  {"success":false,"reason":str}
              {"fk_pos_m":[...],"fk_quat_wxyz":[...]}
@@ -63,7 +64,10 @@ prints a ``[timing]`` line per request on stderr.
 A field is a signed distance in metres over the grid reserved at start, negative inside an
 obstacle and positive in free space, in the planner's voxel order. Written the other way
 round, every voxel that is not an obstacle reads as inside one and the whole grid blocks,
-as ``scripts/curobo/probe_live_world.py`` measures.
+as ``scripts/curobo/probe_live_world.py`` measures. Its file holds those distances (float16)
+or the field's occupancy, eight voxels to a byte (uint8), whose distances this sidecar takes
+on the GPU (``_signed_distances``). Its fine grid about a motion's goal (``near``) goes on a
+second layer, in the second grid the reservation names.
 
 A refusal block is {"where":"default_q"|"start"|"goal"|"path", "kind":"self_collision"|"joint_limit"|"world",
 "joints":[6 rad], "pair":[link,link]?, "depth_mm":float?, "clearance_mm":float?}. The pair is named from sphere
@@ -145,8 +149,11 @@ _WARMUP_ITERATIONS = max(1, int(os.environ.get("WILLY_CUROBO_WARMUP_ITERATIONS",
 CUBOID_CACHE = int(sys.argv[2]) if len(sys.argv) > 2 else 16
 MESH_CACHE = int(os.environ.get("WILLY_CUROBO_MESH_CACHE", "0") or 0)
 #: `x,y,z,voxel` in metres: the size of the volume a live scene can occupy and how finely
-#: it is cut. Unset leaves the planner with no voxel storage, which changes nothing.
+#: it is cut, and after a `;` the largest fine grid about a goal the field sends beside it.
+#: Unset leaves the planner with no voxel storage, which changes nothing.
 VOXEL_GRID = os.environ.get("WILLY_CUROBO_VOXEL_GRID", "").strip()
+#: Each grid VOXEL_GRID names, (x, y, z, voxel) in metres: the field's own, then its fine grid about the goal.
+GRIDS = [tuple(float(v) for v in part.split(",")) for part in VOXEL_GRID.split(";") if part.strip()]
 
 
 #: The id of the request being answered. Without it a late reply is indistinguishable
@@ -208,64 +215,122 @@ def _emit(obj: dict) -> None:
 
 
 def _grid_refusal(voxels: dict) -> str:
-    """Why a field cannot go into the grid this planner reserved, or an empty string when it can.
+    """Why a field cannot go into the grids this planner reserved, or an empty string when it can.
 
-    cuRobo allocates voxel storage once, for exactly the dims and voxel size it was started
-    with. A field cut to any other grid registers without an error and puts its geometry
-    somewhere the cell is not. The client rounds the reservation to four decimals, so the
-    tolerance is 1e-4 m.
+    cuRobo allocates voxel storage once, for the grids it was started with. A field cut to any
+    other grid than the first puts its geometry somewhere the cell is not; its fine grid about the
+    goal (``near``) is cut to the second, as wide and no higher, for it stands as high as what it
+    holds. The client rounds the reservation to four decimals, so the tolerance is 1e-4 m.
     """
     if _collision_cache.get("voxel") is None:
         return ("this planner was started with no voxel storage; set WILLY_CUROBO_VOXEL_GRID before "
                 "it starts")
-    dims = [float(v) for v in voxels.get("dims_m") or ()]
-    size = float(voxels.get("voxel_size_m") or 0.0)
-    want_dims = [float(v) for v in _collision_cache["voxel"]["dims"]]
-    want_size = float(_collision_cache["voxel"]["voxel_size"])
-    fits = len(dims) == 3 and all(abs(a - b) <= 1e-4 for a, b in zip(dims, want_dims))
-    if not fits or abs(size - want_size) > 1e-4:
-        return (f"this field is {dims} m at {size} m voxels and the planner reserved {want_dims} m at "
-                f"{want_size} m voxels, so it cannot be registered; restart the planner with the grid "
-                "the cell builds")
+    for index, grid in enumerate((voxels, voxels.get("near"))):
+        if grid is None:
+            continue
+        what = "this field" if index == 0 else "its fine grid about the goal"
+        if index >= len(GRIDS):
+            return f"{what} has no grid this planner reserved; restart the planner with the grids the cell builds"
+        dims = [float(v) for v in grid.get("dims_m") or ()]
+        size = float(grid.get("voxel_size_m") or 0.0)
+        *want_dims, want_size = GRIDS[index]
+        fits = (len(dims) == 3 and all(abs(a - b) <= 1e-4 for a, b in zip(dims[:2], want_dims[:2]))
+                and (abs(dims[2] - want_dims[2]) <= 1e-4 if index == 0 else 0.0 < dims[2] <= want_dims[2] + 1e-4))
+        if not fits or abs(size - want_size) > 1e-4:
+            return (f"{what} is {dims} m at {size} m voxels and the planner reserved {want_dims} m at "
+                    f"{want_size} m voxels, so it cannot be registered; restart the planner with the grid "
+                    "the cell builds")
     return ""
 
 
 def _field_block(voxels: dict) -> "tuple[dict[str, Any], int]":
-    """The voxel entry of a scene for a field on disk, and how many values it holds."""
+    """The voxel entries of a scene for a field on disk and its fine grid about the goal, and how many values they
+    hold.
+
+    A file of uint8 is a field's occupancy, eight voxels to a byte, whose signed distances are taken here on the GPU
+    (:func:`_signed_distances`); a file of float16 holds them already, in metres.
+
+    cuRobo counts a grid's voxels as its dims over its voxel in float32, cut off: 0.22 m at 4 mm
+    reads 54.999996, 54 voxels, and every row of the grid then lands where another belongs. A
+    thousandth of a voxel more counts whole, and cuRobo reads the dims for nothing else.
+    """
     import numpy as _np  # type: ignore[import-not-found]
 
-    values = _np.load(voxels["path"])
-    block = {
-        "scene": {
-            "dims": list(voxels["dims_m"]),
-            "pose": list(voxels["pose"]),
-            "voxel_size": float(voxels["voxel_size_m"]),
-            "feature_tensor": torch.as_tensor(values, dtype=torch.float16, device="cuda"),
-        }
-    }
-    return block, int(values.shape[0])
+    block: dict[str, Any] = {}
+    for name, grid in ((PERCEIVED_FIELD, voxels), (PERCEIVED_NEAR_FIELD, voxels.get("near"))):
+        if grid is not None:
+            size = float(grid["voxel_size_m"])
+            shape = [round(float(d) / size) for d in grid["dims_m"]]
+            values = _np.load(grid["path"])
+            if values.dtype == _np.uint8:
+                occupied = _np.unpackbits(values, count=int(_np.prod(shape))).astype(bool).reshape(shape)
+                features = _signed_distances(torch.as_tensor(occupied, device="cuda"), size)
+            else:
+                features = torch.as_tensor(values, device="cuda")
+            block[name] = {
+                "dims": [(count + 1e-3) * size for count in shape],
+                "pose": list(grid["pose"]),
+                "voxel_size": size,
+                "feature_tensor": features.to(torch.float16).reshape(-1),
+            }
+    return block, sum(int(entry["feature_tensor"].numel()) for entry in block.values())
+
+
+def _signed_distances(occupied: Any, voxel_m: float) -> Any:
+    """The exact signed distance transform of ``occupied``, a boolean grid on the GPU (x slowest), in metres, flat:
+    negative inside, positive outside, free everywhere farther off than the grid is long.
+
+    cuRobo's own exact transform (its parallel banding, the one its Mapper takes an ESDF with) twice: each voxel's
+    nearest occupied voxel, and an occupied voxel's nearest free one. It packs a voxel's coordinates 10 bits an axis.
+    On grids of the cell's sizes it is scipy's exact transform to within 0.0001 mm, in 1 to 3 ms where scipy takes 50
+    to 95 (2026-10-15).
+    """
+    from curobo._src.perception.mapper.esdf.edt_parallel_banding import (  # type: ignore[import-not-found]
+        ParallelBandingEDT,
+    )
+
+    shape = tuple(int(n) for n in occupied.shape)
+    if max(shape) > 1023:
+        raise ValueError(f"a grid of {shape} voxels has more than the 1023 an axis cuRobo's transform counts")
+    if not bool(occupied.any()):
+        return torch.full((occupied.numel(),), voxel_m * float(sum(n * n for n in shape)) ** 0.5, device="cuda")
+    x, y, z = torch.meshgrid(*(torch.arange(n, device="cuda", dtype=torch.int32) for n in shape), indexing="ij")
+    codes = x | (y << 10) | (z << 20)
+    transform = ParallelBandingEDT(shape, voxel_m, torch.device("cuda"))
+
+    def nearest(seeds: Any) -> Any:
+        site = torch.where(seeds, codes, torch.full_like(codes, -1)).contiguous()
+        transform.propagate(site)
+        return torch.sqrt(((x - (site & 1023)) ** 2 + (y - ((site >> 10) & 1023)) ** 2
+                           + (z - ((site >> 20) & 1023)) ** 2).float())
+
+    inside = nearest(~occupied) if not bool(occupied.all()) else torch.full(shape, float(max(shape)), device="cuda")
+    return ((nearest(occupied) - inside) * voxel_m).reshape(-1)
 
 
 class _PlannerCuboids:
-    """The planner's own box storage, as ``_curobo_perceived.SetAside`` reads and switches it.
+    """The planner's own box and field storage, as ``_curobo_perceived.SetAside`` reads and switches it.
 
-    The names and the flags are cuRobo's cuboid storage, which every judgement of this sidecar reads
-    (``_CHECKER`` shares the planner's scene), and the switch is cuRobo's own ``enable_obstacle``.
-    Only cuboids: a mesh or a distance field is never set aside.
+    The names and the flags are cuRobo's cuboid storage and its voxel storage, which every judgement of this sidecar
+    reads (``_CHECKER`` shares the planner's scene), and the switch is cuRobo's own ``enable_obstacle``. The camera's
+    distance field (``PERCEIVED_FIELD``) and its fine grid about the goal (``PERCEIVED_NEAR_FIELD``) are the camera's as
+    its boxes are, and go aside with them; a mesh never does.
     """
 
     def __init__(self, scene: Any) -> None:
-        boxes = getattr(getattr(scene, "data", None), "cuboids", None)
+        data = getattr(scene, "data", None)
+        boxes = getattr(data, "cuboids", None)
         if boxes is None:
             raise RuntimeError("this planner holds no box storage, so no box the camera saw can be set aside")
         self._scene = scene
-        self._boxes: Any = boxes
+        self._stores: list = [store for store in (boxes, getattr(data, "voxels", None)) if store is not None]
 
     def names(self) -> list:
-        return [str(name) for name in self._boxes.get_names(0)]
+        return [str(name) for store in self._stores for name in store.get_names(0)]
 
     def enabled(self, name: str) -> bool:
-        return int(self._boxes.enable[0, self._boxes.get_idx(name, 0)].item()) == 1
+        store = next(store for store in self._stores if name in [str(held) for held in store.get_names(0)])
+        return int(store.enable[0, store.get_idx(name, 0)].item()) == 1
 
     def set_enabled(self, name: str, enabled: bool) -> None:
         self._scene.enable_obstacle(name, enable=bool(enabled), env_idx=0)
@@ -288,9 +353,10 @@ try:
     _collision_cache: dict = {"cuboid": max(1, CUBOID_CACHE)}
     if MESH_CACHE > 0:
         _collision_cache["mesh"] = MESH_CACHE
-    if VOXEL_GRID:
-        _dx, _dy, _dz, _vs = (float(v) for v in VOXEL_GRID.split(","))
-        _collision_cache["voxel"] = {"layers": 1, "dims": [_dx, _dy, _dz], "voxel_size": _vs}
+    if GRIDS:
+        # A layer a grid, each as large as the largest: cuRobo reserves every layer one size.
+        _dx, _dy, _dz, _vs = max(GRIDS, key=lambda g: round(g[0] / g[3]) * round(g[1] / g[3]) * round(g[2] / g[3]))
+        _collision_cache["voxel"] = {"layers": len(GRIDS), "dims": [_dx, _dy, _dz], "voxel_size": _vs}
     from curobo._src.util.config_io import resolve_config  # type: ignore[import-not-found]
 
     # The composition lives in sibling modules, so it is importable from the python 3.11
@@ -345,7 +411,9 @@ try:
         KIND_WORLD,
         NAME_PAIRS_KEY,
         PAIRS_NAMED_KEY,
+        PERCEIVED_FIELD,
         PERCEIVED_IGNORED_KEY,
+        PERCEIVED_NEAR_FIELD,
         PERCEIVED_PREFIX,
         REFUSED_KEY,
         REPORT_REFUSED_KEY,
@@ -569,6 +637,16 @@ try:
         if _TIMING:
             said = ", ".join(f"{name} {float(took):.1f} ms" for name, took in parts)
             print(f"[timing] {what}: {said}{f' ({note})' if note else ''}", file=sys.stderr, flush=True)
+
+    if GRIDS:
+        # cuRobo compiles its distance transform the first time it runs: here, so no refresh waits for it.
+        _warmed = time.perf_counter()
+        _seed = torch.zeros((8, 8, 8), dtype=torch.bool, device="cuda")
+        _seed[3, 3, 3] = True
+        _signed_distances(_seed, 0.01)
+        torch.cuda.synchronize()
+        print(f"[field] cuRobo's distance transform ready in {(time.perf_counter() - _warmed) * 1000.0:.0f} ms",
+              file=sys.stderr, flush=True)
 
     # One judgement, asked three times: by the ready gate below, by the start and goal checks
     # in front of each plan, and by check_js. Three separate copies of it would be three
@@ -874,9 +952,9 @@ for _line in sys.stdin:
         # A request that names the camera's boxes (ignore_perceived) is judged with them set aside:
         # the UR driver asks it where only those boxes may refuse its world, so the exact guard,
         # which holds the same boxes, decides them (the owner's Option 1). Every one of them this
-        # sidecar holds, by cuRobo's own enable flag, and every flag put back before the reply. The
-        # bench, the declared fixtures and meshes and a distance field stay in. Never while a part
-        # may be carried: only this planner models it.
+        # sidecar holds, the camera's distance field with them, by cuRobo's own enable flag, and every
+        # flag put back before the reply. The bench, the declared fixtures and meshes stay in. Never
+        # while a part may be carried: only this planner models it.
         try:
             _began = _clock()
             _clearance = requested_clearance_m(req)
@@ -1124,6 +1202,11 @@ for _line in sys.stdin:
                     print(f"[world] {_refused_in_place}", file=sys.stderr, flush=True)
             if _how != "in place":
                 _planner.update_world(SceneCfg.create(world_scene))
+                _grids = _planner.scene_collision_checker.scene_model.voxel or []
+                if len(_grids) > 1:
+                    # cuRobo loads a scene's grids one at a time, each in place of the last
+                    # (SceneData.load_from_scene_cfg): the field and its fine grid go in together, a layer each.
+                    _planner.scene_collision_checker.data.voxels.load_batch(_grids, 0)
             # Remembered because registering voxels replaces the world too, and the
             # declared world has to go back underneath them or the bench disappears the
             # moment a camera speaks.

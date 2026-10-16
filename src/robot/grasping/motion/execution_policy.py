@@ -10,7 +10,9 @@ Capability-aware close verification
 The policy queries :meth:`ObjectDetectingGripper.is_object_detected` if
 and only if the configured gripper advertises the
 :class:`ObjectDetectingGripper` capability, and a ``False`` ends the pick
-as :attr:`PolicyOutcome.OBJECT_NOT_DETECTED`. A ``True`` is only a
+as :attr:`PolicyOutcome.OBJECT_NOT_DETECTED`: right after the close, and
+again once the lift is done, since a part held at the close that slipped
+out on the way up is no part carried (the owner, 2026-10-15). A ``True`` is only a
 measurement where the gripper's :class:`ReportsHoldEvidence` does not say
 UNMEASURED: a jaw with no feedback wired answers ``is_object_detected``
 with its own command, so :attr:`PolicyReport.object_detected` is then
@@ -131,12 +133,12 @@ from src.robot.core.arm_capabilities import (
 from src.robot.core.camera_world import weakest_camera_world
 from src.robot.core.errors import CameraWorldUnavailable
 from src.robot.core.gripper import (
-    FINGER_OPENING_SLACK_MM,
     GripsFromInside,
     HoldEvidence,
     OpensAndCloses,
     ReportsHoldEvidence,
     closes_onto_the_part_of,
+    guard_holds_the_fingers_at,
     hold_evidence_of,
     toggle_without_sensor_of,
     width_is_measured_of,
@@ -443,9 +445,9 @@ class GraspExecutionPolicy:
                         force=None,
                     )
                     if held is not None:
-                        told_the_guard = _the_guard_holds_the_fingers_at(self.arm, self.gripper, max(opening, held))
+                        told_the_guard = guard_holds_the_fingers_at(self.arm, self.gripper, max(opening, held))
             except Exception as exc:  # noqa: BLE001 (a gripper fault is the report, never an escaping raise)
-                _the_guard_holds_the_fingers_at(self.arm, None, None)
+                guard_holds_the_fingers_at(self.arm, None, None)
                 return _gripper_fault(exc, line_motion=line_motion)
         try:
             return self._approach_held(grasp, waypoints, reading, line_motion)
@@ -453,7 +455,7 @@ class GraspExecutionPolicy:
             if told_the_guard:
                 # Fully open again for the guard before anything opens the hand wider: a release, a back out, the next
                 # pick (the guard's fingers stand as baked).
-                _the_guard_holds_the_fingers_at(self.arm, None, None)
+                guard_holds_the_fingers_at(self.arm, None, None)
 
     def _approach_held(self, grasp: GraspPoint, waypoints: Sequence[Pose], reading: "LineReading | None",
                        line_motion: "LineMotion | None") -> PolicyReport:
@@ -571,7 +573,7 @@ class GraspExecutionPolicy:
                     # small.
                     cast("GripsFromInside", self.gripper).grip_from_inside(speed=self.close_speed,
                                                                            force=self.close_force_n)
-                    _the_guard_holds_the_fingers_at(self.arm, self.gripper, fingers_held_at(grasp))
+                    guard_holds_the_fingers_at(self.arm, self.gripper, fingers_held_at(grasp))
                 elif isinstance(self.gripper, OpensAndCloses):
                     # The grasp width read against closed_below_mm opens a two-state gripper when the part is wider
                     # than the threshold, and the loop then reported object_not_detected on jaws it never closed
@@ -660,6 +662,24 @@ class GraspExecutionPolicy:
                     line_motion=line_motion,
                 )
             commanded.append(pose)
+
+        # Asked again once the part is lifted (the owner, 2026-10-15): a part the jaws held at the close and lost on the
+        # way up leaves them closed on nothing, and was carried to the place as gripped.
+        if self.gripper is not None and object_detected is not False:
+            try:
+                lifted = _hold_after_close(self.gripper)
+            except Exception:  # noqa: BLE001 (a read that fails after the lift proves no drop; the place reads again)
+                lifted = None
+            if lifted is False:
+                return PolicyReport(
+                    outcome=PolicyOutcome.OBJECT_NOT_DETECTED,
+                    waypoints=tuple(commanded),
+                    object_detected=False,
+                    motion_status=last_status,
+                    motion_message="the part was held at the close and slipped out of the jaws as they lifted it",
+                    camera_worlds=tuple(stamps),
+                    line_motion=line_motion,
+                )
 
         return PolicyReport(
             outcome=PolicyOutcome.EXECUTED,
@@ -883,9 +903,11 @@ class GraspExecutionPolicy:
         gripper = self.gripper
         min_w = getattr(gripper, "min_width_mm", 0.0) or 0.0
         if closes_onto_the_part_of(gripper):
-            # As far closed as the hand goes: its fingers stop on the part by their own force, and the stop is the grip
-            # (``ClosesOntoThePart``); a part a little narrower than it read is held all the same.
-            return float(min_w)
+            # As far closed as the hand goes, its closed end and not the planner's floor: its fingers stop on the part by
+            # their own force, and the stop is the grip (``ClosesOntoThePart``); a part a little narrower than it read is
+            # held all the same, and so is a soft one the jaws squeeze flatter than the floor (the owner's velcro band,
+            # 2026-10-15, held at 5.1 mm on a close to 5 and counted as nothing).
+            return float(getattr(gripper, "closed_width_mm", min_w))
         # Adaptive: squeeze ``close_squeeze_mm`` below the predicted grip width, 1 mm by default, but
         # never below the minimum opening of the gripper. A larger margin clamps thin objects firmly.
         return float(max(min_w, float(grasp.grip_width_mm) - float(self.close_squeeze_mm)))
@@ -1087,35 +1109,13 @@ def _fingers_as_planned(arm: Any, grasp: "GraspPoint") -> "Iterator[None]":
     ``FINGER_OPENING_SLACK_MM`` wider: a judgement ahead of the pre-open, with nothing moved. Elsewhere a block that
     changes nothing; after it the fingers stand fully open for the guard again."""
     planned = fingers_held_at(grasp)
-    if planned is None or not _the_guard_holds_the_fingers_at(arm, None, planned):
+    if planned is None or not guard_holds_the_fingers_at(arm, None, planned):
         yield
         return
     try:
         yield
     finally:
-        _the_guard_holds_the_fingers_at(arm, None, None)
-
-
-def _the_guard_holds_the_fingers_at(arm: Any, gripper: Any, commanded_mm: float | None) -> bool:
-    """Tell ``arm``'s guard where the fingers stand: the wider of what was commanded and what the hand reads back, and
-    ``FINGER_OPENING_SLACK_MM``; ``None`` (``commanded_mm``) stands them fully open again. Whether the guard was told: an arm
-    that cannot say it judges the fingers fully open, as before, which is never nearer the part than they are."""
-    setter = getattr(arm, "set_finger_opening", None)
-    if not callable(setter):
-        return False
-    if commanded_mm is None:
-        setter(None)
-        return True
-    reading = None
-    read = getattr(gripper, "get_width_mm", None)
-    if callable(read):
-        try:
-            reading = float(read())
-        except Exception:  # noqa: BLE001 (a hand that cannot read back is held at its command and the slack)
-            reading = None
-    width = max(float(commanded_mm), reading if reading is not None else float(commanded_mm)) + FINGER_OPENING_SLACK_MM
-    setter(width)
-    return True
+        guard_holds_the_fingers_at(arm, None, None)
 
 
 def _gripper_fault(

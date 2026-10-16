@@ -1112,9 +1112,9 @@ def _asked_open(prompt: str | None, classes: Iterable[str] | None,
     reads, and the one class every box is found as, where the call names one thing.
 
     Exactly one of ``prompt`` and ``classes``. A prompt is free text, and every box found for it is that prompt's;
-    a prompt holding a class list (``"red cube | blue bin"``) is read as one. ``classes`` are descriptions found in
-    one call, joined as the cell joins them (``class_list_prompt``), each box under the description the model gave it;
-    one description is a prompt. Refuses neither, both, an empty prompt, and what ``class_list_prompt`` refuses.
+    a prompt holding a class list (``"red cube | blue bin"``) is read as one. ``classes`` are descriptions, joined as
+    the cell joins them (``class_list_prompt``), each box under its description (the VLM asks each on its own); one
+    description is a prompt. Refuses neither, both, an empty prompt, and what ``class_list_prompt`` refuses.
     """
     from src.models.vlm.qwen import class_list_prompt, classes_of  # noqa: PLC0415 (imports no torch)
 

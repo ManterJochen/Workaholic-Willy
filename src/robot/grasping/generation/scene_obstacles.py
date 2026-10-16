@@ -1619,8 +1619,11 @@ def why_no_grasp(telemetry: Mapping[str, Any]) -> "tuple[tuple[GraspFailureReaso
       any tilt or on its body (:func:`least_part_height_mm`), that it is too short for this hand;
     * the part's own low fragments alone: ``NO_VALID_GRASP``.
 
-    The refusals are both stages' (:func:`refusal_counts`): a part whose body met a neighbour is boxed in too.
-    ``RESCAN_RECOMMENDED`` comes last on every one, as before.
+    The refusals are both stages' (:func:`refusal_counts`): a part whose body met a neighbour is boxed in too. What the
+    part itself refused the rest for is said after a neighbour, and alone where nothing reached the scene: the cause it
+    refused the most for (:data:`_PART_SAID`). The owner's tilted cube of 2026-10-15 held the pads on 20 of 22,000
+    grasps; "every grasp the hand fits meets a neighbour" blamed the parts beside it. ``RESCAN_RECOMMENDED`` comes last
+    on every one, as before.
     """
     from src.robot.grasping.types.feedback import GraspFailureReason as R  # noqa: PLC0415, N817
 
@@ -1668,10 +1671,15 @@ def why_no_grasp(telemetry: Mapping[str, Any]) -> "tuple[tuple[GraspFailureReaso
             reasons.append(R.NO_VALID_GRASP)
     elif count("seen_fingers", "seen_corridor"):
         reasons.append(R.ALL_COLLIDED)
-        said = f"every grasp the hand fits meets a neighbour the camera saw beside the part{beside}"
+        unseen = " or space no camera saw" if count("unseen_corridor") else ""
+        said = f"every grasp that holds on the part meets a neighbour the camera saw beside the part{beside}{unseen}"
+        # The part's own refusals are said where they outnumber the scene's: a few spans too wide among a crate's
+        # neighbours say nothing of why it has no grasp.
+        if count(*_PART_SAID) > sum(counts.values()) - count(*_PART_SAID):
+            said += f"; everywhere else {_part_said(counts)}"
     elif count("declared_fingers", "declared_corridor"):
         reasons.append(R.ALL_TABLE_CONFLICT)
-        said = "every grasp the hand fits meets the declared walls beside the part"
+        said = "every grasp that holds on the part meets the declared walls beside the part"
     elif count("table"):
         reasons.append(R.ALL_TABLE_CONFLICT)
         height = telemetry.get("scene_part_height_mm")
@@ -1684,15 +1692,30 @@ def why_no_grasp(telemetry: Mapping[str, Any]) -> "tuple[tuple[GraspFailureReaso
                     "the support the part stands on")
     elif count("own_fragments"):
         reasons.append(R.NO_VALID_GRASP)
-        said = "every grasp the hand fits meets the part's own low fragments"
+        said = "every grasp that holds on the part meets the part's own low fragments"
     else:
         reasons.append(R.NO_VALID_GRASP)
-        if count("aperture"):
-            said = "the part is wider than the hand opens, or thinner than it closes"
+        if count(*_PART_SAID):
+            said = _part_said(counts)
         elif int(telemetry.get("support_footprint_points", 0) or 0) and not any(int(v or 0) for v in counts.values()):
             said = "too few of the part's points stand over its support to plan a grasp on"
     reasons.append(R.RESCAN_RECOMMENDED)
     return tuple(dict.fromkeys(reasons)), said
+
+
+#: What the part itself refuses a grasp for, said by the cause it refused the most for: the span (``aperture``), the open
+#: fingers on the part (``prism``), the pads off square or on a slope (``cone``: the friction cone, where the part is
+#: widest, a pad on an edge).
+_PART_SAID: Final[Mapping[str, str]] = {
+    "aperture": "the part is wider than the hand opens, or thinner than it closes",
+    "prism": "the open fingers come down on the part itself",
+    "cone": "the part's faces lean or round away from the pads too far for them to hold it",
+}
+
+
+def _part_said(counts: Mapping[str, int]) -> str:
+    """The sentence of the cause of :data:`_PART_SAID` the part refused the most grasps for."""
+    return _PART_SAID[max(_PART_SAID, key=lambda cause: int(counts.get(cause, 0) or 0))]
 
 
 def _number(telemetry: Mapping[str, Any], key: str) -> float:

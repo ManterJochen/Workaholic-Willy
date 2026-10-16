@@ -2,14 +2,14 @@
 
 The Advanced drawer's switches are the task's, never the cell's: multi-view (on: the looks as configured; off: the first
 look only, no generated view), both jaw faces, the closing axis (an opt-in filter the pick loop reads off the policy),
-the push distance (the campaign's), recordings of each pick's looks, and the grasp overlay (on for the task, a
-measuring aid). Each is set before the first pick and put back as found when the task ends, whatever ended it, as the
-prompt is: ``set_prompt`` and ``set_closing_axis`` return what they replaced, and the overlay switch reads back.
+the push distance (the campaign's), and the grasp overlay (on for the task, a measuring aid). Each is set before the
+first pick and put back as found when the task ends, whatever ended it, as the prompt is: ``set_prompt`` and
+``set_closing_axis`` return what they replaced, and the overlay switch reads back.
 
-A pick's looks are kept for training where the task asks (``record_views``), through the same function a campaign uses
-(``pick_run.keep_pick_views``, lifted out of ``PickRun`` with no change of behaviour): one file per pick, named after the
-pick's record, and a file that cannot be written is said and the task goes on. Where it went rides on the report the
-console is handed (``telemetry['views_file']``).
+Every pick's looks are kept for training (``record_views``, no switch since 2026-10-15), through the same function a
+campaign uses (``pick_run.keep_pick_views``, lifted out of ``PickRun`` with no change of behaviour): one file per pick,
+named after the pick's record, and a file that cannot be written is said and the task goes on. Where it went rides on
+the report the console is handed (``telemetry['views_file']``).
 """
 
 from __future__ import annotations
@@ -75,8 +75,7 @@ class KeepPickViewsTests(unittest.TestCase):
                                        telemetry={"attempt_id": "pick-1"}, failure_summary=lambda: "")
 
         with mock.patch("src.robot.execution.pick_run.keep_pick_views", return_value="kept") as kept:
-            run_report = PickRun.from_service(_Service(), runs=1, recording=Recording.off(),
-                                              record_views=True).execute()
+            run_report = PickRun.from_service(_Service(), runs=1, recording=Recording.off()).execute()
 
         self.assertEqual("kept", run_report.attempts[0].views_file)
         self.assertEqual("run000", kept.call_args.kwargs["name"])
@@ -221,25 +220,23 @@ class ThePickIsHandedTheSwitchesTests(unittest.TestCase):
         self.assertEqual("home", bare.service.calls[0]["look"])
         self.assertNotIn("look", fixed.service.calls[0])
 
-    def test_the_looks_of_every_pick_are_kept_where_the_task_asks_and_said_on_its_report(self) -> None:
-        from src.robot.execution.task import TaskOptions
+    def test_the_looks_of_every_pick_are_kept_and_said_on_its_report(self) -> None:
 
         hooks = RecordingHooks()
         with mock.patch("src.robot.execution.task.keep_pick_views", return_value="D:/views/a.npz") as kept:
-            run(["part", Pick("empty"), "empty"], scope="until_empty", hooks=hooks,
-                options=TaskOptions(record_views=True))
+            run(["part", Pick("empty"), "empty"], scope="until_empty", hooks=hooks)
 
         self.assertEqual(3, kept.call_count)
         self.assertEqual(["task-part1-pick1", "task-part2-pick2", "task-part2-pick3"],
                          [call.kwargs["name"] for call in kept.call_args_list])
         self.assertEqual("D:/views/a.npz", hooks.picks[0][2].telemetry["views_file"])
 
-    def test_no_looks_are_kept_unless_asked(self) -> None:
+    def test_a_pick_whose_looks_were_not_kept_says_no_file(self) -> None:
         hooks = RecordingHooks()
-        with mock.patch("src.robot.execution.task.keep_pick_views") as kept:
+        with mock.patch("src.robot.execution.task.keep_pick_views", return_value="") as kept:
             run(["part"], hooks=hooks)
 
-        kept.assert_not_called()
+        kept.assert_called_once()
         self.assertNotIn("views_file", hooks.picks[0][2].telemetry)
 
 

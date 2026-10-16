@@ -31,7 +31,8 @@ fixed_poses = [
     Pose.tool_down(400.0, -100.0, 450.0, yaw_deg=60.0, label="down_1"),
 ]
 # Or read them from disk: SweepOptions(fixed_poses="examples/real_robot/eth_fixed_poses.json"), a
-# template of tool-down poses, or the file 07 wrote: "calibration/real/eye_to_hand_overhead_stations.json".
+# template of tool-down poses, or the file 07 wrote in your tree's folder (its report names it):
+# "<tree>/calibration/real/eye_to_hand_overhead_stations.json".
 # adjust=True frees the arm at each station for you to fine-tune it by hand (10 shows it).
 # The arm drives itself carrying every wrist camera body your tree declares; one not calibrated yet
 # refuses the check until 09 calibrates it or SweepOptions(unmodelled_wrist_body="<why>") says why.

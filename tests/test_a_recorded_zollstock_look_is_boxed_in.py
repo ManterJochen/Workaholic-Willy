@@ -25,6 +25,7 @@ of them, inside that box).
 
 from __future__ import annotations
 
+import math
 import unittest
 from functools import lru_cache
 from types import SimpleNamespace
@@ -161,11 +162,13 @@ class ARecordedZollstockLookIsBoxedInTests(unittest.TestCase):
                 today = _compute(recorded, scene=False)
                 # Three until 2026-10-05, six since SFE stands its fingers at the anchor and tries the part's middle.
                 self.assertGreaterEqual(len(today.candidates), 3)
-                # What the camera world keeps beside the part: every one of today's grasps has an open finger in it.
+                # What the camera world keeps beside the part: every one of today's grasps straight down has an open
+                # finger in it. A lean planned with no scene is the scene's to judge (the next test); some miss it.
                 world = _compute(recorded, scene=True, model=_model(recorded)).metadata[
                     "scene_points_world_rule_base_mm"]
-                held = [_in_open_fingers(grasp, world) for grasp in today.candidates]
-                self.assertTrue(all(n > 0 for n in held), held)
+                held = [_in_open_fingers(grasp, world) for grasp in today.candidates
+                        if float(np.asarray(grasp.approach)[2]) <= -math.cos(math.radians(1.0))]
+                self.assertTrue(held and all(n > 0 for n in held), held)
 
     def test_with_the_scene_the_prism_is_boxed_in_and_no_open_finger_meets_a_neighbour(self) -> None:
         from tests._cell_2026_10_01 import look

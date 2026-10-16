@@ -300,7 +300,11 @@ the block, a change of branch a WARNING as ever.
 owner's cuRobo UR). On URSim (2026-10-03) a grasp that lifted wrist 1 out of the cable window was refused
 only once the hand stood at the part. Judged ahead, it moves nothing: it is a try with the message
 `judged ahead: ...`, and the next grasp follows. Where every try was refused that way, the scene is changed
-as for a part every grasp of which collided (the trigger `grasps_refused_ahead`, below). The arm judges each
+as for a part every grasp of which collided (the trigger `grasps_refused_ahead`, below): the part pushed first,
+then, for a task taking every part, the scene (the owner, 2026-10-16: "ja er soll dann schieben"). Where the guard
+refused the last grasp at its standoff, before its line down was sent, once the camera stood nearer, and the arm
+stands at the look again, the pick does not end: it looks again (an attempt `rescan`), its world holding the nearer
+frame, and where that look's grasps are refused ahead the part or the scene is pushed. The arm judges each
 of the three once, the line in first and the route last, and runs the route it judged where nothing changed
 since (the judge chain of 2026-10-08, [guide 05](../../../../docs/guide/05-pick-loop.md) 6.4).
 
@@ -316,7 +320,7 @@ Two recovery actions reach into the loop, and only where the service arms them
   run): parts that are not critical are **pushed first**, and the push may rearrange the scene; where no
   push plans, a blocker is cleared. **Critical parts are never pushed**, and a blocker is cleared instead.
   Both run on a part that failed `ALL_COLLIDED` and on one whose every grasp was refused ahead
-  (`grasps_refused_ahead`).
+  (`grasps_refused_ahead`); a task taking every part pushes the scene there instead of clearing a blocker.
 - **Clear the blocker** (the owner, 2026-10-02) has a neighbour taken away where one can be
   (`_clear_the_blockers`, the rules in [recovery/blocker.py](../recovery/blocker.py)): a separate object
   among Track A's obstacle points, on what the part stands on (where no look saw its foot, the support seen

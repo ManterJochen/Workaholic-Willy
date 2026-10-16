@@ -6,7 +6,10 @@ judged look turned about the vertical through the part (``unseen_side.orbit_view
 the chosen grasp that no view showed, or at the side no look faced when there is no grasp at all. It may turn up to half
 a turn, because the face behind a 45 degree look is 135 degrees round, and so it is secured the more it turns:
 
-* smallest turn first, and at most ``unseen_side.ORBIT_MAX_MOTIONS`` motions tried;
+* smallest turn first, and at most ``unseen_side.ORBIT_MAX_MOTIONS`` motions tried; where no turn can be driven, the
+  other angles of the judged look (``unseen_side.other_angles``, the owner, 2026-10-16: "Mehr Blickwinkel"): the
+  camera lowered 15 and 30 degrees about the part or raised 15, and nearer (0.85 of its distance) or farther (1.15),
+  each with every turn, the angle nearest the judged look first, screened and driven as every turn is;
 * every candidate screened before anything moves toward it: the arm's own ``nearest_configuration``
   (``ChoosesConfigurations``: the inverse kinematics, the cable window, the workspace box, the joint limits,
   self-collision), then no joint travelling more than :data:`MAX_JOINT_TRAVEL_DEG` from where it stands, and every joint
@@ -63,6 +66,7 @@ from src.robot.grasping.multiview.unseen_side import (
     away_from_views,
     orbit_target,
     orbit_views,
+    other_angles,
 )
 
 __all__ = [
@@ -283,8 +287,11 @@ def _a_long_way(target: list[float], here: list[float], *, turn: float | None = 
     turned = abs(turn) if turn is not None else 0.0
     if turned <= WARN_BEYOND_DEG and travel <= WARN_BEYOND_DEG:
         return ""
-    about = f"a turn of {turned:.0f} deg about the part, " if turn is not None else ""
-    return f"{about}joint {worst + 1} travelling {travel:.1f} deg, past {WARN_BEYOND_DEG:g} deg"
+    # "past" follows what went past it: the turn, the joint or both.
+    past = f", past {WARN_BEYOND_DEG:g} deg"
+    about = (f"a turn of {turned:.0f} deg about the part{past if turned > WARN_BEYOND_DEG else ''}, "
+             if turn is not None else "")
+    return f"{about}joint {worst + 1} travelling {travel:.1f} deg{past if travel > WARN_BEYOND_DEG else ''}"
 
 
 def _on_the_line(arm: Any, joints: JointPositions) -> MotionReport:
@@ -318,7 +325,8 @@ def go_to_generated_view(
     """Move ``arm`` to the one generated view, on the straight joint line only, or say why not. Nothing is perceived.
 
     The candidates are the judged look turned about ``aim.target_mm`` so that some face of ``aim`` shows
-    (``unseen_side.orbit_views``, up to ``ORBIT_MAX_DEG`` either way, smallest turn first): ``camera_to_base_mm`` is
+    (``unseen_side.orbit_views``, up to ``ORBIT_MAX_DEG`` either way, smallest turn first), then its other angles
+    (``unseen_side.other_angles``: lower, higher, nearer, farther, each with every turn): ``camera_to_base_mm`` is
     the judged frame's camera, ``tool_to_base_mm`` the tool pose stamped at its shutter, ``intrinsics`` (3x3) and
     ``image_size`` (width, height) its lens and image, all BASE millimetres. For each, in order, before anything moves
     toward it: ``arm.nearest_configuration`` (a ``RobotKinematicsError`` gives the turn up), then no joint more than
@@ -344,15 +352,14 @@ def go_to_generated_view(
     if why:
         return _skipped(why)
     try:
-        views = orbit_views(
-            target_mm=aim.target_mm, camera_to_base_mm=camera_to_base_mm, tool_to_base_mm=tool_to_base_mm,
-            faces=aim.faces, intrinsics=intrinsics, image_size=image_size,
-        )
+        asked = dict(target_mm=aim.target_mm, camera_to_base_mm=camera_to_base_mm, tool_to_base_mm=tool_to_base_mm,
+                     faces=aim.faces, intrinsics=intrinsics, image_size=image_size)
+        views = orbit_views(**asked) + other_angles(**asked)
     except ValueError as exc:
         return _skipped(f"the judged look cannot be turned: {exc}")
     if not views:
-        return _skipped(f"no turn about the part within {ORBIT_MAX_DEG:g} deg shows {aim.what} at "
-                        f"{MAX_INCIDENCE_DEG:g} deg of incidence or less, inside the image")
+        return _skipped(f"no turn about the part within {ORBIT_MAX_DEG:g} deg, nor another angle of it, shows "
+                        f"{aim.what} at {MAX_INCIDENCE_DEG:g} deg of incidence or less, inside the image")
     start, centre = _degrees(here), _degrees(home)
     tried: list[tuple[float, str]] = []
     motions = 0
@@ -397,7 +404,7 @@ def go_to_generated_view(
     if motions >= max_motions:
         why = f"{motions} motion(s) tried, the most a generated view may, and none ran"
     else:
-        why = f"no turn that shows {aim.what} could be driven"
+        why = f"no view that shows {aim.what} could be driven"
     first = f"; the first, {tried[0][0]:+g} deg: {tried[0][1]}" if tried else ""
     return _skipped(f"{why} ({len(tried)} turn(s) given up){first}", tried)
 

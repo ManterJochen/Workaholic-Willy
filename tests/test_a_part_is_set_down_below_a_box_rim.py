@@ -413,23 +413,29 @@ class ATaskSetsItsPartDownBelowTheRimTests(unittest.TestCase):
         self.assertEqual(2, do0_changes(ran.log))
         self.assertEqual(("home",), motions(ran.log)[-1])
 
-    def test_a_box_a_tall_part_fills_takes_the_next_part_over_its_rim(self) -> None:
+    def test_a_tall_part_in_the_box_sends_the_next_one_below_the_rim_at_the_freest_spot_beside_it(self) -> None:
+        """The owner, 2026-10-16: the parts spread, never piled. A part filling the box to 5 mm under its rim where it
+        stands leaves the next part the rest of it: set down below the rim at the freest spot the check read, farther
+        from the tall part than the box's middle is (it took the box's middle over the rim before)."""
         scene = BinScene()
+        tall = (BIN_CENTRE[0] + 60.0, BIN_CENTRE[1])
         ran = _below_task((Pick("part", cloud=cube_cloud(), then=lambda: scene.in_front.append(
-            ((BIN_CENTRE[0] + 60.0, BIN_CENTRE[1], 55.0), (20.0, 20.0, 50.0)))),), scene=scene)
+            ((tall[0], tall[1], 55.0), (20.0, 20.0, 50.0)))),), scene=scene)
 
         line_in = _place_moves(ran)[1]
-        self.assertAlmostEqual(BIN_RIM_MM + 20.0 + GRASP_Z_MM, line_in[1][2], delta=0.5)
-        self.assertNotIn("release", ran.hooks.of("task.drop_planned")[0])
-        self.assertIn("full", ran.hooks.said[ran.names().index("task.drop_planned")])
+        self.assertAlmostEqual(BIN_RIM_MM - 30.0 + GRASP_Z_MM, line_in[1][2], delta=0.5)
+        self.assertEqual("below_the_rim", ran.hooks.of("task.drop_planned")[0]["release"])
+        self.assertGreater(math.hypot(line_in[1][0] - tall[0], line_in[1][1] - tall[1]), 60.0)
 
-    def test_as_shipped_the_part_is_let_go_over_the_rim_and_the_inside_is_not_read(self) -> None:
+    def test_as_shipped_the_part_is_let_go_over_the_rim_and_the_inside_is_read_in_the_same_frame(self) -> None:
+        """Over the rim, as shipped; the check reads the box's inside in the frame its rim is read in, always since
+        2026-10-16, for where the part goes in it."""
         ran = _below_task(release="over_the_rim")
 
         self.assertAlmostEqual(BIN_RIM_MM + 20.0 + GRASP_Z_MM, _place_moves(ran)[1][1][2], delta=0.5)
         self.assertNotIn("below_the_rim", ran.hooks.of("task.placed")[0])
-        self.assertEqual([ran.report.kept_target.rim_band_mm.shape[0]], ran.locator.measured,
-                         "the check read more than the rim band")
+        self.assertEqual(1, len(ran.locator.measured), "the inside cost a frame of its own")
+        self.assertGreater(ran.locator.measured[0], ran.report.kept_target.rim_band_mm.shape[0])
 
     def test_a_line_into_the_box_the_guard_refuses_lets_the_part_go_over_the_rim_from_the_same_standoff(self) -> None:
         from src.robot.execution.task import TaskStop

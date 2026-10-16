@@ -1222,7 +1222,7 @@ class AutonomousGraspService:
 
         The looks visited and fused, the judgement the pick went on with (its target cloud, fused over the looks) and
         every look's frame whole (``views``: RGB, depth, the tool pose stamped at its shutter, the intrinsics), which
-        is what ``PickRun(record_views=True)`` keeps. Readable after the pick: taking its looks back holds nothing.
+        is what every pick keeps (``record_views``). Readable after the pick: taking its looks back holds nothing.
         """
         return getattr(getattr(self.runtime, "orchestrator", None), "looked_around", None)
 
@@ -1697,7 +1697,8 @@ class AutonomousGraspService:
     def start_campaign(self, *, push_mm: "Maybe[float]" = UNSET,
                        critical_parts: "Maybe[bool | None]" = UNSET,
                        recovery_actions: "Maybe[tuple[str, ...] | None]" = UNSET,
-                       blocker_is_the_pick: "Maybe[bool]" = UNSET) -> "PushCampaign":
+                       blocker_is_the_pick: "Maybe[bool]" = UNSET,
+                       every_part: "Maybe[bool]" = UNSET) -> "PushCampaign":
         """Start a campaign of picks: fresh push budgets (1 per part, 2 per pick, 5 per campaign), no part skipped, and
         the push distance settled.
 
@@ -1714,6 +1715,9 @@ class AutonomousGraspService:
                 none; unset or ``None`` keeps the cell's list (default: UNSET).
             blocker_is_the_pick (Maybe[bool]): A blocker a pick takes away is the part it picks, set down where the
                 parts go; unset sets it aside (default: UNSET).
+            every_part (Maybe[bool]): The campaign takes every part it names until none is left: where none it wants
+                has a grasp the scene is pushed, and no blocker is set aside; unset takes them one by one, as a pick
+                of one part (default: UNSET).
 
         Returns:
             PushCampaign: The campaign the picks now belong to.
@@ -1733,7 +1737,8 @@ class AutonomousGraspService:
                                       critical_parts=None if critical is None else bool(critical),
                                       recovery_actions=None if actions is None else tuple(actions),
                                       blocker_is_the_pick=bool(blocker_is_the_pick) if chosen(blocker_is_the_pick)
-                                      else False)
+                                      else False,
+                                      every_part=bool(every_part) if chosen(every_part) else False)
         self.acknowledge_needs_person()
         return self._campaign
 
@@ -2154,7 +2159,8 @@ class AutonomousGraspService:
             budgets=campaign.budgets, distance_mm=campaign.distance_mm, cell=cell, operator_box=operator_box,
             on_approach_blocked=bool(getattr(cfg, "approach_validation_enabled", False)),
             blocker_grasp_tries=int(cfg.recovery_orchestrator.blocker_grasp_tries) if cfg is not None else 3,
-            critical_parts=critical, longest_mm=campaign.longest_mm,
+            critical_parts=critical, longest_mm=campaign.longest_mm, every_part=campaign.every_part,
+            scene_budgets=campaign.scene_budgets,
         )
 
     @staticmethod

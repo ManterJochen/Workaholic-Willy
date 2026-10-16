@@ -3,10 +3,13 @@
 The bench runs the owner's own stack on an instant controller and a rendered scene (the owner, 2026-10-05). Pinned here:
 
 * the instant controller's kinematics are the stack's own: a TCP pose read back through its IK lands on the same joints,
-  a ``moveL`` lands where it was sent, and a tool output that changes is handed on with the TCP it changed at;
+  a ``moveL`` lands where it was sent, a move a cell with ``brake_on_halt`` watches arrives as on a cell, and a tool
+  output that changes is handed on with the TCP it changed at;
 * a packed pile keeps every part apart by at least the gap it drew (touching allowed, never through each other), inside
   the bin's walls, and dense: the 30-part bin holds all 30;
 * a bin's walls and floor are fixed: the jaws never grip them, a push never moves them;
+* a rearranging push takes along what stands ahead of the part in its lane, just ahead of where the part stops,
+  and nothing beside the lane (2026-10-16); a push that shoves nothing moves the part alone;
 * the stand-in detector grounds every movable part where a scene asks for all of them, and the target alone otherwise.
 """
 
@@ -59,6 +62,28 @@ class TheInstantControllerTests(unittest.TestCase):
             goal[:3, 3] += [10.0, -20.0, -30.0]
             self.assertTrue(control.moveL(instant_ur.ur_pose(goal), 0.1, 0.1))
             np.testing.assert_allclose(state.tcp_mm()[:3, 3], goal[:3, 3], atol=1e-6)
+        finally:
+            instant_ur.remove(before)
+
+    def test_a_watched_move_arrives_as_on_a_cell(self) -> None:
+        """A cell with ``robot.ur.brake_on_halt`` sends each move asynchronously and waits to see its operation in the
+        progress register (2026-10-16: the bank's generated views ended in an AttributeError there, the register
+        carrying no operation id)."""
+        state = self._state()
+        before = instant_ur.install(state)
+        try:
+            from src.robot.drivers.ur import connection
+
+            link = connection.URConnection("127.0.0.1", brake_on_halt=True)
+            link.connect()
+            try:
+                target = [q + 0.05 for q in LOOK0]
+                self.assertTrue(link.moveJ(target, 0.1, 0.1))
+                np.testing.assert_allclose(state.joints, target, atol=1e-9)
+                self.assertIs(connection.MoveEnd.ARRIVED, link.last_move_end)
+                self.assertEqual(1, state.operations)
+            finally:
+                link.disconnect()
         finally:
             instant_ur.remove(before)
 
@@ -128,6 +153,45 @@ class TheBinIsFixedTests(unittest.TestCase):
         scene.keep_height_on_push = True
         scene.pushed(_Plan(), ("push",), None)
         np.testing.assert_allclose(wall.frame, before)
+
+
+class ARearrangingPushShovesWhatStandsAheadTests(unittest.TestCase):
+    """The scene push's U on URSim (``probe_push_on_the_mat.py``, scene): the cylinder pushed 50 mm along -y out of
+    three 30 mm blocks 3 mm off its -x, +x and -y sides."""
+
+    def _pushed(self, shoves: bool) -> "dict[str, np.ndarray]":
+        static = _static()
+        scene = ms.Scene(static)
+        at = np.array([-150.0, -700.0])
+        parts = [ms.cylinder("cylinder", *scene.foot_on_mat(at), radius_mm=20.0, height_mm=50.0)]
+        for name, offset in (("ahead", (0.0, -38.0)), ("beside", (38.0, 0.0)), ("behind_x", (-38.0, 0.0))):
+            parts.append(ms.box(name, *scene.foot_on_mat(at + np.array(offset)), size_mm=(30.0, 30.0, 30.0)))
+        scene.set_parts(parts, target="cylinder")
+
+        class _Plan:
+            target_centre_mm = (float(at[0]), float(at[1]), 0.0)
+            direction = (0.0, -1.0, 0.0)
+            push_distance_mm = 50.0
+            contact_start_tcp_mm = (float(at[0]), float(at[1]) + 30.0, 0.0)
+
+        plan = _Plan()
+        plan.shoves = shoves  # type: ignore[attr-defined]
+        scene.pushed(plan, ("push",), None)
+        return {name: part.frame[:2, 3].copy() for name, part in scene.parts.items()}
+
+    def test_the_block_ahead_ends_just_ahead_of_the_part_and_the_blocks_beside_stay(self) -> None:
+        where = self._pushed(True)
+        np.testing.assert_allclose(where["cylinder"], [-150.0, -750.0], atol=0.01)
+        # The cylinder's front is 20 mm past its centre, the block's centre 15 mm past its own face (the mat's 1 degree
+        # tilts the block's frame, a micrometre in plan).
+        np.testing.assert_allclose(where["ahead"], [-150.0, -785.0], atol=0.01)
+        np.testing.assert_allclose(where["beside"], [-112.0, -700.0], atol=0.01)
+        np.testing.assert_allclose(where["behind_x"], [-188.0, -700.0], atol=0.01)
+
+    def test_a_push_that_shoves_nothing_moves_the_part_alone(self) -> None:
+        where = self._pushed(False)
+        np.testing.assert_allclose(where["cylinder"], [-150.0, -750.0], atol=0.01)
+        np.testing.assert_allclose(where["ahead"], [-150.0, -738.0], atol=0.01)
 
 
 class TheStandInDetectorTests(unittest.TestCase):

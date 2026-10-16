@@ -1,4 +1,4 @@
-"""Real weights, real GPU: one call grounds two colours of part (the `inference` tier).
+"""Real weights, real GPU: a class list grounds two colours of part, one call per description (the `inference` tier).
 
     python -m pytest tests/test_vlm_class_list_inference.py -m inference -q
 
@@ -7,12 +7,11 @@ a model load of 9 GB (the 4B) or more and seconds of GPU time per call. The chec
 environment names another: on the cell its 8B, by id and by the path its weights lie at (``WILLY_VLM_MODEL_ID``,
 ``WILLY_VLM_MODEL_PATH``).
 
-WHAT THIS EXISTS TO CATCH. ``tests/test_vlm_class_list.py`` pins what the grounder asks for a class list and what the
-parser makes of a given answer. Only this file can tell whether the model answers the class-list instruction as it is
-asked: each square once, under the one description it matches, copied exactly; a square of a third colour under neither
-description; no box for a description the scene does not hold; and no square boxed under two descriptions, which the
-parser would make ``ambiguous`` and no rule could take. Not measured on any checkpoint yet (2026-10-09): how well the
-cell's 8B keeps two colours apart in one call. Until it passes there, a task of one rule keeps today's prompt.
+WHAT THIS EXISTS TO CATCH. ``tests/test_vlm_class_list.py`` pins what the grounder asks for a class list, one
+description per call since 2026-10-15, and what it makes of given answers. Only this file can tell whether the model,
+asked each description on its own, boxes each square once under its own description; a square of a third colour under
+neither; nothing for a description the scene does not hold; and no square under two descriptions, which the grounder
+would make ``ambiguous`` and no rule could take.
 """
 
 from __future__ import annotations
@@ -90,7 +89,7 @@ def _said(label: str) -> str:
 
 @unittest.skipUnless(_cuda_available(), "no CUDA in this interpreter")
 @unittest.skipUnless(_weights_present(), f"{MODEL_ID} not on this box (scripts/model_weights/fetch.py)")
-class OneCallForTwoColoursTests(unittest.TestCase):
+class TwoColoursTests(unittest.TestCase):
     """One model load for the whole class, unloaded after it."""
 
     grounder: Any
@@ -151,7 +150,7 @@ class OneCallForTwoColoursTests(unittest.TestCase):
         self.assertGreaterEqual(max((_iou(det.box, GREEN_GT) for det in found if _said(det.label) == "green square"),
                                     default=0.0), MIN_IOU, boxes)
 
-    def test_three_colours_in_one_call(self) -> None:
+    def test_three_colours(self) -> None:
         found = self._found(["green square", "red square", "blue square"])
         boxes = [(det.label, [round(v) for v in det.box]) for det in found]
         for description, truth in (("green square", GREEN_GT), ("red square", RED_GT), ("blue square", BLUE_GT)):

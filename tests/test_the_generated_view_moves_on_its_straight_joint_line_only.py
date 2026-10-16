@@ -281,8 +281,8 @@ class TheGeneratedViewTests(unittest.TestCase):
 
         self.assertEqual(20.0, view.azimuth_deg)
         (warning,) = [line for line in said.output if line.startswith("WARNING")]
-        self.assertIn("joint 6 travelling 130.0 deg", warning)
-        self.assertIn("a turn of 20 deg", warning)
+        self.assertIn("joint 6 travelling 130.0 deg, past 120 deg", warning)
+        self.assertIn("a turn of 20 deg about the part, joint", warning)  # the joint went past 120 degrees, not the turn
 
     def test_a_turn_past_120_degrees_is_a_warning_however_little_the_joints_travel(self) -> None:
         """An arm whose base turns half as far as the view turns about the part: the turn is said."""
@@ -296,8 +296,9 @@ class TheGeneratedViewTests(unittest.TestCase):
 
         self.assertEqual(_FIRST, view.azimuth_deg)
         (warning,) = [line for line in said.output if line.startswith("WARNING")]
-        self.assertIn("a turn of 140 deg", warning)
+        self.assertIn("a turn of 140 deg about the part, past 120 deg", warning)
         self.assertIn("joint 1 travelling 70.0 deg", warning)
+        self.assertNotIn("70.0 deg, past", warning)  # the turn went past 120 degrees, not the joint
 
     def test_a_long_turn_whose_line_is_refused_is_no_warning_of_a_drive(self) -> None:
         """Nothing drove: every straight line round the part is refused before anything was sent, and the log does not

@@ -1048,6 +1048,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/cell/jaws/open": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Open the jaws where the arm stands (a person's click)
+         * @description The stop card's "Greifer öffnen", behind its confirm (the owner, 2026-10-15): a hand told a width opens to its
+         *     widest where the arm stands, and a part it held falls out of it; a toggle is asked as at ``POST /v1/cell/jaws/check``.
+         *     Refused, in order: ``not_connected``, ``jaws_question_pending``, ``run_active``, ``halted``, ``controller_stopped``,
+         *     ``cell_not_cleared``, and ``jaws_not_open`` where the hand did not open. Once open, the next motion counts down.
+         */
+        post: operations["post_jaws_open_v1_cell_jaws_open_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/cell/jaws/check": {
         parameters: {
             query?: never;
@@ -2991,11 +3014,6 @@ export interface components {
             clear?: boolean | null;
             /** Blocker Into The Place */
             blocker_into_the_place?: boolean | null;
-            /**
-             * Record Views
-             * @default false
-             */
-            record_views: boolean;
             /** Rim Air Mm */
             rim_air_mm?: number | null;
             /** Carry */
@@ -3050,11 +3068,6 @@ export interface components {
             clear?: boolean | null;
             /** Blocker Into The Place */
             blocker_into_the_place?: boolean | null;
-            /**
-             * Record Views
-             * @default false
-             */
-            record_views: boolean;
             /** Rim Air Mm */
             rim_air_mm?: number | null;
             /** Carry */
@@ -4734,6 +4747,35 @@ export interface operations {
                 "application/json": components["schemas"]["JawAnswerIn"];
             };
         };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JawsOut"];
+                };
+            };
+            /** @description The one failure envelope. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    post_jaws_open_v1_cell_jaws_open_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             /** @description Successful Response */
             200: {

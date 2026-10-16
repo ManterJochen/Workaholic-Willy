@@ -119,7 +119,7 @@ class TheExecutionTellsTheGuard(unittest.TestCase):
             return self.reads
 
     def test_open_to_the_plan_tell_the_wider_reading_then_none(self) -> None:
-        from src.robot.core.gripper import FINGER_OPENING_SLACK_MM
+        from src.robot.core.gripper import FINGER_OPENING_SLACK_MM, guard_holds_the_fingers_at
         from src.robot.grasping.motion import execution_policy as policy
 
         told: list[Any] = []
@@ -127,7 +127,7 @@ class TheExecutionTellsTheGuard(unittest.TestCase):
         hand = self._Hand(reads=24.3)
         grasp = SimpleNamespace(metadata={"score_components": {"support_footprint": {"open_width_mm": 24.0}}})
         self.assertEqual(policy._planned_opening(grasp), 24.0)  # noqa: SLF001
-        self.assertTrue(policy._the_guard_holds_the_fingers_at(arm, hand, 24.0))  # noqa: SLF001
+        self.assertTrue(guard_holds_the_fingers_at(arm, hand, 24.0))
         self.assertAlmostEqual(told[-1], 24.3 + FINGER_OPENING_SLACK_MM)
         with policy._fingers_as_planned(arm, grasp):  # noqa: SLF001
             self.assertAlmostEqual(told[-1], 24.0 + FINGER_OPENING_SLACK_MM)

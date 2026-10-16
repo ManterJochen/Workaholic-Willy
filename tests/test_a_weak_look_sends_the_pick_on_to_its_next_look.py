@@ -79,13 +79,21 @@ def _poses() -> dict[JointPositions, Any]:
 @dataclass(eq=False)
 class _HolesIn(WristCamera):
     """The wrist D415, whose depth on the frames in ``holes`` is missing on every third and fourth of ten pixels of the
-    parts it sees: 30 % of each part's mask, as a shiny or clear part reads."""
+    parts it sees: 30 % of each part's mask, as a shiny or clear part reads; and whose masks run ``rim_px`` pixels past
+    each part onto what lies round it, as SAM2's run onto the mat."""
 
     holes: tuple[int, ...] = field(default_factory=tuple)
+    rim_px: int = 0
 
     def acquire(self) -> PerceptionFrame:
         number = len(self.taken)
         frame = super().acquire()
+        if self.rim_px:
+            from scipy import ndimage
+
+            frame = replace(frame, segmentations=[
+                replace(seg, mask=ndimage.binary_dilation(np.asarray(seg.mask, dtype=bool), iterations=self.rim_px))
+                for seg in frame.segmentations])
         if number not in self.holes:
             return frame
         rows, cols = np.indices(frame.depth_map.shape)
@@ -106,11 +114,12 @@ class _Policy:
 
 
 def _loop(*, looks: tuple[JointPositions, ...], boxes: tuple[Box, ...] = (CUBE,), holes: tuple[int, ...] = (),
-          weak_look: bool = True, fixed: bool = False) -> tuple[BinPickingOrchestrator, _HolesIn, _Policy]:
+          weak_look: bool = True, fixed: bool = False, rim_px: int = 0,
+          ) -> tuple[BinPickingOrchestrator, _HolesIn, _Policy]:
     """The real pick loop on the looking arm and the wrist camera (or a fixed one), the parts standing on a declared
     support at the bench, the cell's trigger as ``weak_look`` says."""
     arm = LookingArm(_poses())
-    camera = _HolesIn(arm, boxes=boxes, holes=holes)
+    camera = _HolesIn(arm, boxes=boxes, holes=holes, rim_px=rim_px)
     policy = _Policy()
     resolver: Any = (StaticCameraToBaseResolver(transform=Transform.from_matrix(
         camera_looking_at(bearing_deg=0.0), from_frame=Frame.CAMERA, to_frame=Frame.BASE)) if fixed
@@ -176,6 +185,18 @@ class AWeakLookGoesOnTests(unittest.TestCase):
         looked = orchestrator.looked_around
         self.assertEqual((_label(LOOK_PLUS_X),), looked.visited)
         self.assertEqual((), looked.weak)
+        self.assertEqual(1, len(camera.taken))
+
+    def test_a_mask_run_onto_the_bench_round_the_cube_makes_no_second_plateau(self) -> None:
+        """The owner's first part of 2026-10-15 (8:02): its mask's rim read the mat at 61 mm beside its top at 93, two
+        plateaus, and every look of the pick and an orbit were judged weak. What the part stands on is no plateau."""
+        orchestrator, camera, _ = _loop(looks=(LOOK_PLUS_X, LOOK_MINUS_X), rim_px=10)
+
+        orchestrator.run()
+
+        looked = orchestrator.looked_around
+        self.assertEqual((), looked.weak)
+        self.assertEqual((_label(LOOK_PLUS_X),), looked.visited)
         self.assertEqual(1, len(camera.taken))
 
     def test_off_by_default_a_part_with_little_depth_stops_at_the_first_look_as_before(self) -> None:

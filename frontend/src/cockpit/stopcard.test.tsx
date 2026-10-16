@@ -234,3 +234,42 @@ describe('the stop card names the way out by hand', () => {
     })
   }
 })
+
+describe('the stop card opens a hand told a width (the owner, 2026-10-15)', () => {
+  const ROBOTIQ = { ...HAND, kind: 'width', driver: 'RobotiqGripper', where: '', jaws: 'not_counted', no_sensor: false, commands_sent: null }
+
+  function aRobotiqHoldingAPart() {
+    const { record, run } = stopped('run-held', 'task', 'part_still_held', 'the pick failed and the gripper measures a part')
+    const cleared = { ...record, holding: true, cleared_at: record.at + 1 }
+    return server(cleared, run, {
+      '/v1/cell': { state: 'connected', arm: 'URRobotArm', gripper: 'RobotiqGripper', vendor: 'ur', profile: 'ur10_cell',
+        active_run_id: null, needs_person: '', halted: null, payload_model: 'none', recovery: cleared, jaws_confirmed_at: null,
+        countdown_due: false, jaws_question: false, hand: ROBOTIQ, planner: { state: 'ready' } },
+      '/v1/cell/readiness': { ready: false, lights: LIGHTS, blockers: [{ code: 'part_still_held', message: '' }, { code: 'cell_not_cleared', message: '' }] },
+      'POST /v1/cell/jaws/open': { hand: ROBOTIQ, question: null },
+    })
+  }
+
+  it('asks first, then opens it with one request, and "Backen leer" stays the word of a person', async () => {
+    const calls = aRobotiqHoldingAPart()
+    cockpit()
+    const card = await screen.findByRole('region', { name: /Teil/ })
+    const open = await within(card).findByRole('button', { name: 'Greifer öffnen' })
+    expect(within(card).getByRole('button', { name: 'Backen leer' })).toBeTruthy()
+    act(() => open.click())
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).toMatch(/fällt es heraus: das Teil festhalten/)
+    expect(calls.filter((c) => c.method === 'POST' && c.path === '/v1/cell/jaws/open')).toHaveLength(0)
+    act(() => within(dialog).getByRole('button', { name: /Greifer öffnen – die Backen fahren/ }).click())
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST' && c.path === '/v1/cell/jaws/open')).toHaveLength(1))
+  })
+
+  it('offers no such button for a toggle, whose question opens it', async () => {
+    const { record, run } = stopped('run-held', 'task', 'part_still_held', 'held')
+    server({ ...record, cleared_at: record.at + 1 }, run)
+    cockpit()
+    const card = await screen.findByRole('region', { name: /Teil/ })
+    await within(card).findByRole('button', { name: 'Backen prüfen' })
+    expect(within(card).queryByRole('button', { name: 'Greifer öffnen' })).toBeNull()
+  })
+})
