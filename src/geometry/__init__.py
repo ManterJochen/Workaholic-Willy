@@ -20,12 +20,6 @@ Numerics, on every public value:
 
 from __future__ import annotations
 
-from .conversions import (
-    axis_angle_to_quaternion_xyzw,
-    matrix_to_transform,
-    quaternion_xyzw_to_axis_angle,
-    transform_to_matrix,
-)
 from .exceptions import (
     FrameMismatchError,
     GeometryError,
@@ -63,15 +57,11 @@ from .serialization import (
 from .transform import Transform
 
 __all__ = [
-    # Quaternion utilities
     "IDENTITY_QUAT_XYZW",
-    # Serialization
     "POSE_SCHEMA",
     "TRANSFORM_SCHEMA",
-    # Core types
     "Frame",
     "FrameMismatchError",
-    # Exceptions
     "GeometryError",
     "InvalidMatrixError",
     "InvalidPoseError",
@@ -80,19 +70,15 @@ __all__ = [
     "Pose",
     "Transform",
     "angle_between",
-    # Conversions
-    "axis_angle_to_quaternion_xyzw",
     "canonicalise",
     "conjugate",
     "from_axis_angle",
     "from_euler",
     "from_rotation_matrix",
     "matrix_to_rotation_vector",
-    "matrix_to_transform",
     "multiply",
     "pose_from_dict",
     "pose_to_dict",
-    "quaternion_xyzw_to_axis_angle",
     "rotate_vector",
     "rotation_vector_to_matrix",
     "to_axis_angle",
@@ -100,5 +86,4 @@ __all__ = [
     "to_rotation_matrix",
     "transform_from_dict",
     "transform_to_dict",
-    "transform_to_matrix",
 ]

@@ -32,7 +32,6 @@ __all__ = [
     "capsule_capsule_distance_mm",
     "capsule_box_distance_mm",
     "segment_segment_distance_mm",
-    "segment_point_distance_mm",
 ]
 
 
@@ -103,18 +102,6 @@ class AxisAlignedBox:
     #: The exact mesh guard judges the hull where its engine builds one (Coal) and the enclosure where it does not;
     #: the capsule proxy judges the enclosure, the safe side. ``None`` for every box.
     hull_mm: np.ndarray | None = None
-
-
-def segment_point_distance_mm(p0: np.ndarray, p1: np.ndarray, q: np.ndarray) -> float:
-    """Closest distance from point ``q`` to segment ``(p0, p1)``."""
-    d = p1 - p0
-    denom = float(d @ d)
-    if denom <= 1e-12:
-        return float(np.linalg.norm(q - p0))
-    t = float((q - p0) @ d) / denom
-    t = max(0.0, min(1.0, t))
-    closest = p0 + t * d
-    return float(np.linalg.norm(q - closest))
 
 
 def segment_segment_distance_mm(

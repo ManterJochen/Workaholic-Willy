@@ -29,7 +29,7 @@ __all__ = ["ArmBaseSpec", "ArmFlangeSpec", "ArmJointSpec", "ArmPlannerSpec", "Ar
 #: A bundle part: ``__`` separates a part from its array (``<part>__v``) in a bundle, so a part may not hold one.
 _PART_PATTERN = r"^[a-z0-9]+(?:_[a-z0-9]+)*$"
 #: The parts every arm bundle also carries for the hand (``safety/planning/_hand_bundle.HAND_PARTS``, which this
-#: layer cannot import; ``tests/test_inlined_link_tables.py`` ties the two).
+#: layer cannot import; ``tests/repo/test_inlined_link_tables.py`` ties the two).
 _HAND_PARTS = ("gripper", "lfinger", "rfinger")
 
 #: Nothing on any arm this stack drives is longer than this, in metres. A bound, not a measurement: it catches a

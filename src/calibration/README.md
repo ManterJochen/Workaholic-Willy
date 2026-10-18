@@ -47,7 +47,7 @@ are in [`docs/cli.md`](../../docs/cli.md).
 | `EyeToHandCalibrator`, `EyeInHandCalibrator` | `EyeToHandCalibrator(settings=)` | `add_sample(...)`, then `calibrate()` | `EyeHandCalibrationResult`; see [`eye_hand/`](eye_hand/README.md) |
 | `RigCalibration` | `camera.calibration()`, `RigCalibration.from_config(rig_id, extrinsics)` | `camera_to_base()`, `camera_to_tool()` | a frame-tagged `Transform` in millimetres |
 | `Extrinsics` | `result.to_extrinsics(rig_id=)`, `load_extrinsics(path)` | `save_extrinsics(path, extrinsics)` | CAMERA to BASE with its residuals and quality label |
-| `StereoCam3D` | `StereoCapturePipeline(...).run()` in [`src/camera`](../camera/README.md) | `rectify`, `compute_depth_map`, `estimate_marker_pose_left` | rectified images, depth in millimetres, marker poses |
+| `StereoCam3D` | `StereoCam3D(rigs, calibration)`: a `StereoRigConfig` per rig and `camera.cameras.stereo_calibration`; a [`src/camera`](../camera/README.md) catalogue rectifies with it | `rectify`, `compute_depth_map`, `estimate_marker_pose_left` | rectified images, depth in millimetres, marker poses |
 
 `HandEyeCalibration` and `SweepOptions` come from `willy` ([`hand_eye.py`](../robot/execution/hand_eye.py));
 everything else here imports from `src.calibration`.
@@ -147,9 +147,9 @@ The legend is the guide's [evidence levels](../../docs/guide/README.md#what-veri
 |---|---|
 | Eye-to-hand and eye-in-hand calibration through the sweep | measured in simulation ([guide 03, section 6](../../docs/guide/03-calibration.md)) |
 | `HandEyeCalibration` at a real cell, behind the `calibrate` command and examples 07 to 10 | run on a physical cell: a wrist D415 on a UR10 (CB3), against one printed ArUco marker; no fixed camera yet. `--check` and `--dry-run` command no motion |
-| The solvers, the frame checks and the file round trips | measured in simulation within the sweep; also pinned by [`test_calibration_core.py`](../../tests/test_calibration_core.py) |
-| `RGBDArucoMarkerSource`, the marker source of an RGB-D cell | run on a physical cell: the same wrist D415 and marker, with no residual kept here; the suite poses a rendered marker ([`test_rgbd_marker_source.py`](../../tests/test_rgbd_marker_source.py)) |
-| `CharucoPoseEstimator`, a ChArUco board as the sweep's target | never touched hardware; posed a board rendered with a known camera and pose to within 1 mm at 520 mm, 0.30 px ([`test_calibration_targets.py`](../../tests/test_calibration_targets.py)) |
+| The solvers, the frame checks and the file round trips | measured in simulation within the sweep; also pinned by [`test_calibration_core.py`](../../tests/calibration/test_calibration_core.py) |
+| `RGBDArucoMarkerSource`, the marker source of an RGB-D cell | run on a physical cell: the same wrist D415 and marker, with no residual kept here; the suite poses a rendered marker ([`test_rgbd_marker_source.py`](../../tests/calibration/test_rgbd_marker_source.py)) |
+| `CharucoPoseEstimator`, a ChArUco board as the sweep's target | never touched hardware; posed a board rendered with a known camera and pose to within 1 mm at 520 mm, 0.30 px ([`test_calibration_targets.py`](../../tests/calibration/test_calibration_targets.py)) |
 
 ## Files
 
@@ -176,6 +176,6 @@ The package imports no torch, so it runs on any machine.
 - Calibrating a real cell step by step: [`docs/calibration-setup.md`](../../docs/calibration-setup.md).
 - The same sweep in simulation: `run_eth_calibrate.py` and `run_eih_calibrate.py` in [`src/willy_sim/`](../willy_sim/README.md).
 - The capture layer that feeds these runtimes: [`src/camera/`](../camera/README.md).
-- Tests: [`test_calibration_core.py`](../../tests/test_calibration_core.py),
-  [`test_hand_eye_calibration.py`](../../tests/test_hand_eye_calibration.py),
-  [`test_rig_extrinsics.py`](../../tests/test_rig_extrinsics.py).
+- Tests: [`test_calibration_core.py`](../../tests/calibration/test_calibration_core.py),
+  [`test_hand_eye_calibration.py`](../../tests/robot/execution/test_hand_eye_calibration.py),
+  [`test_rig_extrinsics.py`](../../tests/calibration/test_rig_extrinsics.py).

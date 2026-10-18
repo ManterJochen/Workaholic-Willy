@@ -7,7 +7,7 @@
 #
 # The derived half comes from Universal Robots' own description, vendored under
 # scripts/arms/ur_ros2_description, pinned by the upstream block below and held byte for byte by its
-# sha256 manifest. tests/test_arm_descriptions_are_urs_numbers.py proves every one of those numbers still
+# sha256 manifest. tests/robot/safety/test_arm_descriptions_are_urs_numbers.py proves every one of those numbers still
 # equals UR's, and names the two axes where this file differs from UR's file on purpose.
 #
 # The measured half is this repository's own, and each key below says who measured it and how.
@@ -23,7 +23,7 @@ arm:
   source: >-
     Universal Robots' pinned description, the upstream block below, for the joints, and this repository's own exact-mesh bundle for the geometry. Described and not admitted: it has no Isaac asset, and safety/data/bundles.json records that its bundle exists so admitting it later is a config question rather than a geometry one.
   # The pin the joints were read from, as data. scripts/arms/fetch.py and its manifest hold the bytes, and
-  # tests/test_the_description_names_its_upstream.py holds this block to them for every arm.
+  # tests/scripts/arms/test_the_description_names_its_upstream.py holds this block to them for every arm.
   upstream:
     adapter: "ur"
     repo: "https://github.com/UniversalRobots/Universal_Robots_ROS2_Description.git"
@@ -43,7 +43,7 @@ arm:
     controller_yaw_deg: 180
   # The link a hand hangs from and the axis a hand bolted there approaches along, in that link's frame. UR's own
   # description (ur_macro.xacro) puts tool0 on the flange as "Z+ front", and tool0 is the DH chain's last frame
-  # (tests/test_ur_urdf_renders_the_dh_chain.py). The planner hangs the hand here; the desk checklist warns on
+  # (tests/robot/safety/test_ur_urdf_renders_the_dh_chain.py). The planner hangs the hand here; the desk checklist warns on
   # a declared tool frame that approaches along another axis.
   flange:
     link: "tool0"

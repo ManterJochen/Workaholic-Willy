@@ -82,7 +82,7 @@ runs it on any image you name.
 
 **The masks are the cell's masks.** Of the three masks SAM2 proposes for a box the first is kept, and cleaned as
 `Sam2Segmenter` cleans its one (opened, closed, its largest piece kept), so a box cut in the batch comes out as the
-cell's segmenter cuts it alone; `tests/test_one_sam2_pass_cuts_what_one_pass_per_box_cuts.py` holds the two paths
+cell's segmenter cuts it alone; `tests/models/detection/test_one_sam2_pass_cuts_what_one_pass_per_box_cuts.py` holds the two paths
 together through the real transformers SAM2 at toy size. A box where SAM2 cut nothing has an all-`False` mask.
 
 **`to_dict()`** is plain data `json.dumps` takes as it is. Each mask is COCO's uncompressed run-length encoding,
@@ -140,12 +140,12 @@ apply to it as well.
 | --- | --- |
 | `ObjectDetector`: every class, the filter, the refusals, one SAM2 call for every box | unit tests on a CPU with stand-ins, the real RT-DETR and SAM2 classes at toy size, and the loading of a `DetectorTraining`-shaped folder |
 | `ObjectDetector` with a prompt or classes: the VLM, and `from_config` building each backend from its block | unit tests with stand-ins for the models |
-| SAM2-large on a GPU cutting a batch as it cuts each box alone | `tests/test_an_object_detector_on_real_weights_inference.py`, written and not run yet |
+| SAM2-large on a GPU cutting a batch as it cuts each box alone | `tests/models/detection/test_an_object_detector_on_real_weights_inference.py`, written and not run yet |
 | The VLM on real weights through this door | not run yet; the cell runs the same model through its own perception every pick |
 | A chess board, or any real camera frame | never touched |
 
-Tests: `tests/test_an_object_detector_finds_every_class_at_once.py`,
-`tests/test_an_object_detector_finds_what_a_prompt_names_on_every_backend.py`,
-`tests/test_an_object_detector_cuts_every_box_in_one_sam2_pass.py`,
-`tests/test_one_sam2_pass_cuts_what_one_pass_per_box_cuts.py`,
-`tests/test_a_detector_folder_loads_its_best_or_last_epoch_and_anything_else_is_refused.py`.
+Tests: `tests/models/detection/test_an_object_detector_finds_every_class_at_once.py`,
+`tests/models/detection/test_an_object_detector_finds_what_a_prompt_names_on_every_backend.py`,
+`tests/models/detection/test_an_object_detector_cuts_every_box_in_one_sam2_pass.py`,
+`tests/models/detection/test_one_sam2_pass_cuts_what_one_pass_per_box_cuts.py`,
+`tests/scripts/model_weights/test_a_detector_folder_loads_its_best_or_last_epoch_and_anything_else_is_refused.py`.

@@ -223,7 +223,7 @@ def hand_geometry_model(
     (``SelfCollisionGuard.model_for`` asks the same ``described_ur_model`` of the model the arm
     reports). The two agree wherever the builder passes the model its arm will report, which every
     builder of an arm that exists does (the UR driver ``robot.ur.model``, the Isaac cell
-    ``robot.sim.robot_model``; ``tests/test_the_arm_says_what_it_is.py`` holds them to it). A
+    ``robot.sim.robot_model``; ``tests/robot/test_the_arm_says_what_it_is.py`` holds them to it). A
     preflight names its arm always since P0e (``arm_model`` is required, ``None`` for an arm the
     registry does not describe), and its guard refuses an arm that reports another UR, so the hand
     this decided is the hand the guard judges (``SelfCollisionGuard.refusal_for``). The capsule

@@ -1004,7 +1004,6 @@ def _stopped_at_the_part(
     )
 
 
-
 def _planned_opening(grasp: "GraspPoint") -> float | None:
     """How wide the jaws open before they close, where the grasp was planned for jaws that open only as needed (lever G,
     ``score_components["support_footprint"]["open_width_mm"]``), millimetres; ``None`` where it was planned for jaws that
@@ -1103,13 +1102,6 @@ def _quaternion_from_axes(closing: np.ndarray, approach: np.ndarray) -> np.ndarr
     binormal /= binormal_norm
     R = np.column_stack([closing, binormal, approach])
     return np.asarray(from_rotation_matrix(R), dtype=np.float64)
-
-
-def _grasp_point_to_quaternion(grasp: GraspPoint) -> np.ndarray:
-    """Rebuild a unit XYZW quaternion from the closing and approach axes of a ``GraspPoint``."""
-    return _quaternion_from_axes(
-        np.asarray(grasp.axis, dtype=np.float64), np.asarray(grasp.approach, dtype=np.float64)
-    )
 
 
 def _yaw_axes_to_base_x(

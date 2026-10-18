@@ -153,9 +153,9 @@ with them a camera introducing an object the primary did not see (`promote_unmat
   [`generation/`](../generation/README.md) receives the fused clouds.
 - [Calibration](../../../calibration/README.md) for one calibration per camera, declared on its rig.
 - [Guide 01](../../../../docs/guide/01-configuration.md) for the `eth2` profile.
-- Tests: `tests/test_multiview_association.py`, `tests/test_pick_loop_fusion_geometry.py`,
-  `tests/test_scene_objects.py`, `tests/test_a_fused_pick_waits_for_every_camera_but_the_primary.py`,
-  `tests/test_a_pick_says_which_cameras_it_fused.py`, `tests/test_both_jaw_faces_are_seen.py`,
-  `tests/test_the_generated_view_orbits_to_the_unseen_face.py`,
-  `tests/test_the_generated_view_tries_other_angles_where_no_turn_can_be_driven.py`,
-  `tests/test_a_wrist_pick_looks_until_its_grasp_is_safe.py`.
+- Tests: `tests/robot/grasping/multiview/test_multiview_association.py`, `tests/robot/grasping/types/test_pick_loop_fusion_geometry.py`,
+  `tests/robot/grasping/multiview/test_scene_objects.py`, `tests/robot/execution/autonomous_grasp/test_a_fused_pick_waits_for_every_camera_but_the_primary.py`,
+  `tests/robot/test_a_pick_says_which_cameras_it_fused.py`, `tests/robot/grasping/test_both_jaw_faces_are_seen.py`,
+  `tests/robot/grasping/multiview/test_the_generated_view_orbits_to_the_unseen_face.py`,
+  `tests/robot/grasping/multiview/test_the_generated_view_tries_other_angles_where_no_turn_can_be_driven.py`,
+  `tests/robot/grasping/types/test_a_wrist_pick_looks_until_its_grasp_is_safe.py`.

@@ -4,7 +4,7 @@
  *
  * The fields stop typing here, and a counter shows the room left once a field is 80 % full, so a long description is
  * never refused at Start with "Die Anfrage ist ungültig." (the morning of 2026-10-08: 85 characters into the card's
- * 80). `tests/test_api_text_limits.py` reads these two numbers and compares them with the server's: the reader's
+ * 80). `tests/api/test_api_text_limits.py` reads these two numbers and compares them with the server's: the reader's
  * `MAX_SENTENCE_CHARS` (`CommandIn.text`, `CommandProvenanceIn.text`) and `MAX_FIELD_CHARS` (`TaskIn.object`,
  * `CameraPlaceIn.phrase`). A text over its limit is refused anyway, 422 `text_too_long` with the limit.
  */

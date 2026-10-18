@@ -11,9 +11,9 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, BinaryIO, Callable
+from typing import Any
 
-__all__ = ["atomic_write_bytes", "atomic_write_text", "dump_json", "load_json"]
+__all__ = ["atomic_write_text", "dump_json", "load_json"]
 
 
 def load_json(path: os.PathLike[str] | str) -> Any:
@@ -77,44 +77,3 @@ def atomic_write_text(
         raise
 
 
-def atomic_write_bytes(
-    path: os.PathLike[str] | str,
-    write: "Callable[[BinaryIO], None]",
-    *,
-    fsync: bool = True,
-) -> None:
-    """Write binary content to ``path`` atomically, by handing ``write`` an open file.
-
-    ``atomic_write_text`` takes a finished string; this takes a writer, because
-    a torch checkpoint is produced by one, ``torch.save(payload, handle)``, and
-    can be tens of megabytes that a finished string would hold twice.
-
-    ``fsync`` before the rename is what makes the guarantee survive a power loss
-    rather than only a crashed process: ``os.replace`` publishes the directory
-    entry, and without the flush that entry can be durable while the contents
-    are not.
-
-    On Windows ``os.replace`` raises ``PermissionError``, winerror 5, if any
-    process holds the destination open, and this helper lets it propagate: for
-    an artifact a silent non-write is worse. A caller for whom a failed write
-    must not end the work, a training checkpoint being one, catches ``OSError``
-    itself.
-    """
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-
-    fd, tmp_name = tempfile.mkstemp(prefix=target.name + ".", suffix=".tmp", dir=str(target.parent))
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            write(handle)
-            handle.flush()
-            if fsync:
-                os.fsync(handle.fileno())
-        os.replace(tmp, target)
-    except Exception:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise

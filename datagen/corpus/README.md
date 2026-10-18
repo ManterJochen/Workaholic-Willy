@@ -104,7 +104,7 @@ units at the edge, so everything past [sources.py](sources.py) is millimetres.
 
 | Capability | Evidence |
 |---|---|
-| The gate's column statistics | measured in simulation: `tests/test_corpus_gate.py` holds them equal to the RL readiness check's |
+| The gate's column statistics | measured in simulation: `tests/datagen/corpus/test_corpus_gate.py` holds them equal to the RL readiness check's |
 | Clouds from a rendered dataset | measured in simulation: CI runs `examples/offline/datagen/04_extract_a_corpus.py` |
 | A model trained on these corpora at a physical cell | never touched hardware |
 
@@ -126,5 +126,5 @@ units at the edge, so everything past [sources.py](sources.py) is millimetres.
 - [datagen](../README.md), the scenes; [grasps/](../grasps/README.md), the labels and the physics join's source.
 - [src/robot/grasping/deep/](../../src/robot/grasping/deep/README.md), the generator these clouds train, and
   [train_your_own_generator.md](../../docs/runbooks/train_your_own_generator.md), the procedure.
-- Tests: `tests/test_corpus_gate.py`, `tests/test_corpus_physics_join.py`, `tests/test_datagen_ranker_service.py`,
-  `tests/test_datagen_grasp_tables.py`.
+- Tests: `tests/datagen/corpus/test_corpus_gate.py`, `tests/datagen/corpus/test_corpus_physics_join.py`, `tests/datagen/test_datagen_ranker_service.py`,
+  `tests/datagen/corpus/test_datagen_grasp_tables.py`.

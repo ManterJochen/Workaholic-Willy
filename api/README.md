@@ -157,7 +157,7 @@ with. **Moves** says what a route can do to the arm and the hand.
 | `GET /v1/history/runs` | this session's runs, from memory | no |
 | `GET /v1/history/runs.csv`, `GET /v1/history/records.csv` | one row per run, and one row per attempt | no |
 
-`tests/test_api_contract.py` holds this table to the app: every route here exists, and every `/v1` route of
+`tests/api/test_api_contract.py` holds this table to the app: every route here exists, and every `/v1` route of
 the app is here.
 
 ## What you can change here
@@ -903,15 +903,15 @@ otherwise (fixed run and question ids, a fixed clock).
 | Capability | Evidence |
 |---|---|
 | The endpoints, against a copy of the config tree | the `tests/test_api_*.py` files; the preflight is asserted equal to the command line's |
-| The contract: every route of this table, every code in the catalog and in `frontend/src/api/codes.ts`, the recovery record | [`tests/test_api_contract.py`](../tests/test_api_contract.py) |
+| The contract: every route of this table, every code in the catalog and in `frontend/src/api/codes.ts`, the recovery record | [`tests/api/test_api_contract.py`](../tests/api/test_api_contract.py) |
 | A task end to end on `console_dummy`: once, until empty, stop after the part, halt and "Backen leer", Home's countdown | the captured event logs and `tests/test_api_task*.py` |
-| A stop that outlives a restart of the server: the record read back uncleared, the halt carried to every later build, an unreadable file | [`tests/test_api_a_stop_outlives_a_server_restart.py`](../tests/test_api_a_stop_outlives_a_server_restart.py), and a real restart of `python -m api --profile console_dummy` |
+| A stop that outlives a restart of the server: the record read back uncleared, the halt carried to every later build, an unreadable file | [`tests/api/test_api_a_stop_outlives_a_server_restart.py`](../tests/api/test_api_a_stop_outlives_a_server_restart.py), and a real restart of `python -m api --profile console_dummy` |
 | Halt now on a CB3 controller: the brake, the stop point on the judged leg, 200 moves with no early return, a braked path that sends no later waypoint, no DO0 edge after a halt | measured against real controller software (URSim CB3, `scripts/ursim/probe_halt.py`) |
-| The console's task on a CB3 controller: three cycles with 2 DO0 edges each, halt in the approach and in the carry, a protective stop, the jaws question in the browser, Restart home | measured against real controller software (URSim CB3, `scripts/ursim/probe_console_task.py`), with the CB3's serial read by a scratch shim that did what the driver now does; the shipped reading is pinned on a local dashboard double ([`tests/test_ur_cb3_serial.py`](../tests/test_ur_cb3_serial.py)) and not rerun on URSim yet ([the runbook](../docs/runbooks/console_at_the_cell.md#3-what-the-probes-prove)) |
+| The console's task on a CB3 controller: three cycles with 2 DO0 edges each, halt in the approach and in the carry, a protective stop, the jaws question in the browser, Restart home | measured against real controller software (URSim CB3, `scripts/ursim/probe_console_task.py`), with the CB3's serial read by a scratch shim that did what the driver now does; the shipped reading is pinned on a local dashboard double ([`tests/robot/drivers/ur/test_ur_cb3_serial.py`](../tests/robot/drivers/ur/test_ur_cb3_serial.py)) and not rerun on URSim yet ([the runbook](../docs/runbooks/console_at_the_cell.md#3-what-the-probes-prove)) |
 | Preflight, build, connect, telemetry, a pick, history and disconnect, the routes the console had before the task | measured against real controller software (URSim, UR3e, 2026-08-20) |
 | The cockpit, Setup and the audience window calling these routes in a browser | run on `console_dummy` (Playwright); not yet against URSim ([`frontend/README.md`](../frontend/README.md)) |
-| A sentence typed and sent with Enter starting a task with no card, and the card first where the settings say so | run on `console_dummy` (Playwright, `frontend/e2e/enter.e2e.ts`); the known sentences and the remembered answers pinned in `tests/test_api_commands.py` |
-| The task's new place, carry and end rules: below the rim, side by side, the measured hang, the carry over the rim, the look count and the check look, the bin remembered and checked by its rim | pinned by tests on the task's doubles and a ray-cast bench (`tests/test_a_part_is_set_down_below_a_box_rim.py`, `tests/test_an_until_empty_task_ends_without_a_long_search.py`, `tests/test_api_the_console_remembers_the_bin_its_last_task_kept.py` and their neighbours); not yet against URSim or the cell |
+| A sentence typed and sent with Enter starting a task with no card, and the card first where the settings say so | run on `console_dummy` (Playwright, `frontend/e2e/enter.e2e.ts`); the known sentences and the remembered answers pinned in `tests/api/test_api_commands.py` |
+| The task's new place, carry and end rules: below the rim, side by side, the measured hang, the carry over the rim, the look count and the check look, the bin remembered and checked by its rim | pinned by tests on the task's doubles and a ray-cast bench (`tests/robot/execution/test_a_part_is_set_down_below_a_box_rim.py`, `tests/robot/execution/test_an_until_empty_task_ends_without_a_long_search.py`, `tests/api/test_api_the_console_remembers_the_bin_its_last_task_kept.py` and their neighbours); not yet against URSim or the cell |
 | A sort through the console: the rules read, every refusal rule by rule, each kind into its own bin, a bin found again after it moved, each place's overlay and remembered bin | pinned by tests on the scripted cell (`tests/test_api_a_sort_*.py`) and the task's doubles (`tests/test_a_sort_*.py`); the class list on the cell's detector not yet measured, nor run against URSim or the cell |
 | Any endpoint with a physical arm, gripper or camera frame | never touched hardware |
 

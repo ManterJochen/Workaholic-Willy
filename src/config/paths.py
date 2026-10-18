@@ -21,7 +21,7 @@ THE RULE
   "${WILLY_RECORD_LOG:-}"`` with the variable unset).
 * **A schema default is not written in the tree**, so it is never read against the tree's folder.
   Every path default is empty, ``None``, or starts with ``${WILLY_PROJECT_ROOT}``, so a default names
-  the repository's file wherever the tree lives (``tests/test_config_paths_resolve_against_the_config_folder.py``
+  the repository's file wherever the tree lives (``tests/calibration/test_config_paths_resolve_against_the_config_folder.py``
   holds every path field of the schema to that).
 
 ``${VAR}`` substitution runs on the text before any of this, so a relative path an environment

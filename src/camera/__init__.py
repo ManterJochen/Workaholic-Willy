@@ -22,7 +22,6 @@ from .orchestration import (
     FrameProviderStateError,
     UnknownCameraRigError,
 )
-from .pipeline import StereoCapturePipeline
 from .setup.image_taking import AnyFrame, RGBDFrame, StereoFrame
 from .stereo_calibration import StereoCalibration, StereoCalibrationReport
 
@@ -39,7 +38,6 @@ __all__ = [
     "RigNotCalibrated",
     "StereoCalibration",
     "StereoCalibrationReport",
-    "StereoCapturePipeline",
     "StereoFrame",
     "UnknownCameraRigError",
 ]

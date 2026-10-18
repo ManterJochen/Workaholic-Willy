@@ -77,8 +77,9 @@ surface gripper is binary and carries no seal model at all.
 ## Details
 
 - [grasping/](../README.md): the pick stack this modality plugs into
-- [planning/](../planning/README.md): the `suction_approach` module, which builds the motion from a
-  `SuctionGrasp`
+- [willy_sim/](../../../willy_sim/README.md): the simulated suction picks, which drive the cup to a
+  `SuctionGrasp` themselves; the `suction_approach` module of [planning/](../planning/README.md), which
+  nothing called, left on 2026-10-18
 - [geometry/](../geometry/README.md): the point cloud and normals the synthesis consumes
 - [grippers/](../../grippers/README.md): the vacuum drivers and the `SuctionCupProfile` shapes of the
   simulated cup

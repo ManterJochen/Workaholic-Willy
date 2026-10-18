@@ -163,7 +163,7 @@ the pair can have moved since, an arm pair in either part's frame and a part aga
 box rule. Where none proves it, the pair is measured exactly as the guard measures it, and a distance under
 the limit plus 1e-6 mm ends the pass there. From that sample on the gate judges every sample one at a time,
 so the verdict, the sample it names and its message are those of judging every sample in turn
-(`tests/test_a_whole_path_is_judged_as_every_sample_is.py`: routes, lines and paths over the cell's worlds
+(`tests/robot/safety/test_a_whole_path_is_judged_as_every_sample_is.py`: routes, lines and paths over the cell's worlds
 of 2026-10-07, the borderline at 3 mm give or take 1e-7 mm, the guard order). A guard that offers no such
 pass, a site-local one, or the self-collision guard where it would answer with the capsule proxy, leaves
 every sample to the loop, and the log says so once. On the desk the owner's route of 905 samples over 128
@@ -217,4 +217,4 @@ under 19.6 mm, the wrist clearance of a natural grasp, or a good pick stops.
 - Maths: [safety-math.md](../../../docs/safety-math.md), distances, DH kinematics, singularity
 - Runbook: [the first pick on a real cell](../../../docs/runbooks/real_cell_first_pick.md)
 - Motion types: [`../core/`](../core/README.md) for `MotionCommand`, `MotionResult` and `MotionStatus`
-- Tests: `tests/test_safety_preflight.py`, `tests/test_joint_path_gate.py`, `tests/test_safety_attestation.py`
+- Tests: `tests/robot/safety/test_safety_preflight.py`, `tests/robot/safety/test_joint_path_gate.py`, `tests/robot/safety/test_safety_attestation.py`

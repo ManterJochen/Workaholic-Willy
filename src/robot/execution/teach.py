@@ -1337,7 +1337,7 @@ def _workspace_box(robot: Any, tree: Any, box: Any) -> Any:
 
     The robot section is the robot's ``robot_config``, else the ``robot`` of the tree (``tree``, else the one the robot
     kept), never a member read off the arm: an arm's ``config`` is a member no protocol declares, which the arm
-    contract refuses (``tests/test_robot_boundaries.py``).
+    contract refuses (``tests/robot/drivers/test_robot_boundaries.py``).
     """
     if box is None:
         loaded = tree if tree is not None else getattr(robot, "tree", None)

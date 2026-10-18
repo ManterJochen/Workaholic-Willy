@@ -53,7 +53,7 @@ from tests._task_fakes import (
     TaskService,
     _report,
 )
-from tests.test_a_stopped_controller_moves_no_jaws import _IO
+from tests.robot.execution.test_a_stopped_controller_moves_no_jaws import _IO
 
 __all__ = [
     "AnswersOpen",
@@ -601,7 +601,7 @@ class AnswersOpen:
     A console build hands every hand a structured seam (``api.jaws.install``), and a connect refuses a toggle without
     one (``jaws_seam_missing``): the console never asks at the terminal of the server. The scripted cell is installed
     without a build, so it is handed this seam instead of the browser's: the question at its connect is no part of a
-    run's story, and publishes nothing on the cell's stream. ``tests/test_api_jaws.py`` asks it in the browser, and
+    run's story, and publishes nothing on the cell's stream. ``tests/api/test_api_jaws.py`` asks it in the browser, and
     ``scripts/console/capture_event_log.py`` captures that round trip (``jaws_question_round_trip``)."""
 
     def __init__(self) -> None:

@@ -2,8 +2,7 @@
 
 They exist for boundary code that speaks plain ndarrays, such as eye-to-hand
 calibration and OpenCV, and for tight inner loops where one matrix multiply is
-cheaper than allocating a new :class:`Transform`. See also
-:mod:`src.geometry.conversions`.
+cheaper than allocating a new :class:`Transform`.
 
 It also holds the flange-to-TCP comparison (:func:`compare_tool_frames`), which
 a planned arm's tool-frame check and the rig calibration share; it moved here
@@ -28,15 +27,12 @@ from .validation import (
     validate_homogeneous_matrix,
     validate_position_mm,
     validate_quaternion_xyzw,
-    validate_rotation_matrix,
 )
 
 __all__ = [
     "IDENTITY_MATRIX",
     "compare_tool_frames",
-    "compose_homogeneous",
     "invert_homogeneous",
-    "make_homogeneous",
     "matrix_to_position_quaternion",
     "position_quaternion_to_matrix",
 ]
@@ -44,16 +40,6 @@ __all__ = [
 
 IDENTITY_MATRIX: np.ndarray = np.eye(4, dtype=np.float64)
 IDENTITY_MATRIX.setflags(write=False)
-
-
-def make_homogeneous(R: np.ndarray, t: np.ndarray) -> np.ndarray:
-    """Assemble a 4x4 transform from a 3x3 rotation and a (3,) translation in mm."""
-    R = validate_rotation_matrix(R, name="R")
-    t = validate_position_mm(t, name="t")
-    out = np.eye(4, dtype=np.float64)
-    out[:3, :3] = R
-    out[:3, 3] = t
-    return out
 
 
 def matrix_to_position_quaternion(T: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -86,17 +72,6 @@ def invert_homogeneous(T: np.ndarray) -> np.ndarray:
     inv[:3, :3] = R.T
     inv[:3, 3] = -R.T @ t
     return inv
-
-
-def compose_homogeneous(A: np.ndarray, B: np.ndarray) -> np.ndarray:
-    """Return ``A @ B`` after validating both as 4x4 rigid transforms.
-
-    The frames are unchecked here: the caller answers for ``A`` ending in the
-    frame ``B`` starts from.
-    """
-    a = validate_homogeneous_matrix(A, name="A")
-    b = validate_homogeneous_matrix(B, name="B")
-    return a @ b
 
 
 def compare_tool_frames(observed: np.ndarray, declared: np.ndarray) -> tuple[float, float]:

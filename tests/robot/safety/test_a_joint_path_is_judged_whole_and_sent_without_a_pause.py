@@ -1,0 +1,342 @@
+"""A UR arm runs a joint path through several waypoints as one motion, judged whole before anything is sent, and the
+exact mesh guard alone judges a motion where it holds everything the planner would judge it against.
+
+The owner, 2026-10-07: the wave at a greeting "muss eine konsistente Bewegung sein"; swing by swing, each judged on its
+own, the hand stood five seconds at every turn. And "einfach mit den meshes prüfen und nicht mit kugeln": the planner's
+spheres refused lines the meshes kept 18 mm clear, and every refusal cost a report over thousands of sphere pairs.
+
+What this file pins:
+
+* ``move_through_joints_on_the_line`` (``DrivesJointPaths``): every leg from where the arm stands through every
+  waypoint judged in one check, then the waypoints sent as a judged plan is sent, one list to the executor, no blend; a
+  leg that is not clear refuses the whole path, nothing sent and nothing planned around it; an arm whose paths nobody
+  judges refuses it; the motion verb refuses an arm without the capability, by name;
+* mesh first (every cell's since 2026-10-17): the exact guard alone where it holds what the planner holds, and the
+  planner asked beside it where it holds more: no exact guard, a mesh in the planner's world, the
+  declared support plane wherever a part of the arm or the hand comes within the guard's distance of its top, and the
+  robot's
+  own base, which no guard part holds, wherever a part past the shoulder comes within that distance of it or the guard
+  knows no base for the arm (the base review of 2026-10-07);
+* mesh first beside the bin of ``test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards.py``, on the real exact
+  guard: the line the planner's spheres refuse runs without the planner being asked, whatever the hand holds (no cell
+  models a part in the jaws since 2026-10-17);
+* how low the arm reaches (``MeshSelfCollisionBackend.lowest_mm``): the lowest point of every part past the shoulder,
+  exact, the shoulder left out;
+* how near the robot's base a part comes (``MeshSelfCollisionBackend.base_near_mm``), on the real exact guard: the
+  Hand-E's finger 3.3 mm from the UR10's base mesh is near it, a line beside the bin is not.
+
+Honesty bucket (2): the real UR driver over a mocked controller and the route planner double, the real mesh backend over
+a recording engine adapter.
+"""
+
+from __future__ import annotations
+
+import unittest
+from typing import Any
+from unittest.mock import MagicMock
+
+import numpy as np
+
+from src.config.schema.robot import RobotConfig
+from src.robot.core import JointPositions, MotionCommand, MotionStatus
+from src.robot.core.arm_capabilities import DrivesJointPaths
+from src.robot.drivers.ur.arm import URRobotArm
+from src.robot.execution import motion
+from src.robot.safety._fcl_self_collision import MeshSelfCollisionBackend
+from src.robot.safety.planning.band import ExactPairs
+from tests._plan_end import OPEN_WORKSPACE
+from tests._route_planner import RoutePlanner
+from tests._task_fakes import TaskArm
+
+_DECLINED = "unit double: this file reads which path a joint path runs on, and no camera world is wired"
+
+#: Where the fake controller says the arm is standing, and two waypoints on from it along one joint.
+_HERE = [0.0, -1.5, 1.5, 0.0, 0.0, 0.0]
+_ONE = [0.1, -1.5, 1.5, 0.0, 0.0, 0.0]
+_TWO = [0.2, -1.5, 1.5, 0.0, 0.0, 0.0]
+#: A waypoint off that line, so the path bends.
+_BENT = [0.2, -1.4, 1.5, 0.0, 0.0, 0.0]
+
+
+class _NeverPlans(RoutePlanner):
+    """The route planner double, failing the test the moment it is asked to plan."""
+
+    def __init__(self, test: unittest.TestCase, *, here: list[float]) -> None:
+        super().__init__(here=here)
+        self.test = test
+
+    def plan_joint(self, goal: Any, *, refresh: bool = True, **_: Any) -> Any:
+        self.test.fail(f"cuRobo was asked to plan to {list(goal)}: a joint path is never planned around")
+
+
+def _arm(planner: RoutePlanner, *, motion_planner: str = "curobo", world: "dict[str, Any] | None" = None) -> URRobotArm:
+    safety: dict[str, Any] = {}
+    if world is not None:
+        safety["planning_world"] = world
+    arm = URRobotArm(RobotConfig.model_validate({
+        "vendor": "ur", "ur": {"model": "ur5e"}, "motion": {"planner": motion_planner, "workspace": OPEN_WORKSPACE},
+        "safety": safety, "gripper": {"model": "robotiq_2f85"},
+    }))
+    arm._conn = MagicMock()
+    arm._conn.is_connected = True
+    arm._conn.get_joint_positions.return_value = list(planner.here)
+    arm._conn.moveJ.return_value = True
+    arm._conn.fk.return_value = [0.4, 0.0, 0.3, 0.0, 3.14159, 0.0]
+    arm._curobo = planner  # type: ignore[assignment]
+    # The local path gate has its own tests (tests/robot/safety/test_a_joint_move_is_judged_as_a_path.py); the destination guards stay real.
+    arm._preflight.gate_planned_path = lambda waypoints, *, arm=None, command=None: None  # type: ignore[method-assign]
+    return arm
+
+
+def _path(*waypoints: list[float]) -> list[JointPositions]:
+    return [JointPositions(w) for w in waypoints]
+
+
+class TheJointPathTests(unittest.TestCase):
+    def test_the_whole_path_is_judged_in_one_check_and_sent_as_one_list(self) -> None:
+        planner = _NeverPlans(self, here=_HERE)
+        arm = _arm(planner)
+
+        with arm.without_camera_world(_DECLINED):
+            result = arm.move_through_joints_on_the_line(_path(_ONE, _BENT, _HERE))
+
+        self.assertTrue(result.ok, result.message)
+        self.assertEqual((MotionCommand.MOVE_JOINTS, "move_through_joints_on_the_line"), (result.command,
+                                                                                            result.message))
+        (checked,) = planner.lines()
+        np.testing.assert_allclose(checked[1][0], _HERE, atol=0.0)
+        np.testing.assert_allclose(checked[1][-1], _HERE, atol=0.0)
+        self.assertTrue(any(np.allclose(c, _BENT) for c in checked[1]), "the bent leg was not judged")
+        self.assertEqual(3.0, checked[3], "the legs were not judged at path_samples.LINE_CLEARANCE_MM")
+        (executed,) = planner.named("execute")
+        self.assertEqual([tuple(_ONE), tuple(_BENT), tuple(_HERE)], executed[1])
+        self.assertIs(MotionCommand.MOVE_JOINTS, executed[2])
+        arm._conn.moveJ.assert_not_called()
+
+    def test_a_leg_that_is_not_clear_refuses_the_whole_path_and_nothing_is_sent(self) -> None:
+        planner = _NeverPlans(self, here=_HERE)
+        planner.line_clear = lambda start, end: False
+        arm = _arm(planner)
+
+        with arm.without_camera_world(_DECLINED):
+            result = arm.move_through_joints_on_the_line(_path(_ONE, _TWO))
+
+        self.assertIs(MotionStatus.SELF_COLLISION_REJECTED, result.status, result.message)
+        self.assertIn("a joint path only: nothing is planned around it, nothing was sent", result.message or "")
+        self.assertEqual([], planner.named("execute"))
+        arm._conn.moveJ.assert_not_called()
+
+    def test_the_destination_guards_judge_every_waypoint_first(self) -> None:
+        planner = _NeverPlans(self, here=_HERE)
+        arm = _arm(planner)
+
+        with arm.without_camera_world(_DECLINED):
+            result = arm.move_through_joints_on_the_line(_path(_ONE, [0.0, -90.0, 90.0, -90.0, -90.0, 0.0]))
+
+        self.assertIs(MotionStatus.JOINT_LIMIT_REJECTED, result.status, result.message)
+        self.assertEqual([], planner.lines())
+        self.assertEqual([], planner.named("execute"))
+
+    def test_an_arm_whose_paths_nobody_judges_refuses_the_path(self) -> None:
+        planner = _NeverPlans(self, here=_HERE)
+        arm = _arm(planner, motion_planner="ik")
+
+        with arm.without_camera_world(_DECLINED):
+            result = arm.move_through_joints_on_the_line(_path(_ONE, _TWO))
+
+        self.assertIs(MotionStatus.UNSUPPORTED, result.status, result.message)
+        self.assertIn("nobody judges", result.message or "")
+        self.assertEqual([], planner.named("execute"))
+        arm._conn.moveJ.assert_not_called()
+
+    def test_an_empty_path_is_refused(self) -> None:
+        planner = _NeverPlans(self, here=_HERE)
+        arm = _arm(planner)
+
+        with arm.without_camera_world(_DECLINED):
+            result = arm.move_through_joints_on_the_line([])
+
+        self.assertIs(MotionStatus.INVALID_TARGET, result.status, result.message)
+        self.assertEqual([], planner.named("execute"))
+
+    def test_only_an_arm_with_the_capability_runs_one_and_the_verb_says_so(self) -> None:
+        self.assertIsInstance(_arm(RoutePlanner(here=_HERE)), DrivesJointPaths)
+        arm = TaskArm([])
+        self.assertNotIsInstance(arm, DrivesJointPaths)
+        report = motion.move_through_joints_on_the_line(arm, _path(_ONE, _TWO))
+        self.assertIs(motion.MotionOutcome.REFUSED, report.outcome)
+        self.assertIs(MotionStatus.UNSUPPORTED, report.status)
+        self.assertIn("DrivesJointPaths", report.message)
+
+
+_PLANE = {"height_mm": 0.0, "extent_mm": [900.0, 700.0], "thickness_mm": 50.0}
+
+
+#: No part past the shoulder near the robot's base.
+_FAR_FROM_THE_BASE = ("", float("inf"))
+
+
+def _pairs(lowest: "float | None" = 400.0, *, says: bool = True,
+           base: "tuple[str, float] | None" = _FAR_FROM_THE_BASE, knows_base: bool = True) -> ExactPairs:
+    return ExactPairs(checks=lambda a, b: True, frames={}, distance=lambda joints, a, b: None, min_distance_mm=3.0,
+                      lowest=(lambda joints: lowest) if says else None,
+                      base=(lambda joints: base) if knows_base else None)
+
+
+def _mesh_first(*, world: "dict[str, Any] | None" = None, pairs: "ExactPairs | None" = None,
+                planner: "RoutePlanner | None" = None,
+                arm_setup: Any = None) -> "str | None":
+    glue = planner if planner is not None else RoutePlanner(here=_HERE)
+    arm = _arm(glue, world=world)
+    arm._preflight.exact_pairs = lambda arm=None: pairs  # type: ignore[method-assign]
+    if arm_setup is not None:
+        arm_setup(arm)
+    return arm._mesh_first_refusal(glue, [_HERE, _ONE])
+
+
+class MeshFirstTests(unittest.TestCase):
+    def test_the_exact_guard_alone_where_it_holds_what_the_planner_holds(self) -> None:
+        # The world sends its distance field too, as every cell's does: the camera world's boxes as measured, which the
+        # guard holds (owner, 2026-10-15).
+        self.assertIsNone(_mesh_first(world={"support_plane": _PLANE}, pairs=_pairs()))
+        self.assertIsNone(_mesh_first(pairs=_pairs(lowest=None, says=False)), "no planning world, no plane to keep")
+
+    def test_no_exact_guard_asks_the_planner(self) -> None:
+        self.assertIn("no exact mesh guard", _mesh_first(pairs=None) or "")
+
+    def test_what_only_the_planner_holds_asks_it(self) -> None:
+        world = {"support_plane": _PLANE, "meshes": [{"name": "tote", "path": "assets/tote.obj"}]}
+        self.assertIn("declares meshes the exact guard does not hold", _mesh_first(world=world, pairs=_pairs()) or "")
+
+    def test_the_support_plane_asks_the_planner_where_the_arm_comes_near_it(self) -> None:
+        world = {"support_plane": _PLANE}
+        said = _mesh_first(world=world, pairs=_pairs(lowest=2.0)) or ""
+        self.assertIn("2.0 mm over the declared support plane", said)
+        self.assertIn("within the guard's 3 mm", said)
+        self.assertIsNone(_mesh_first(world=world, pairs=_pairs(lowest=3.5)))
+        self.assertIn("cannot say how low", _mesh_first(world=world, pairs=_pairs(says=False)) or "")
+        self.assertIn("cannot place the arm", _mesh_first(world=world, pairs=_pairs(lowest=None)) or "")
+
+    def test_the_robots_base_asks_the_planner_where_a_part_comes_near_it(self) -> None:
+        said = _mesh_first(pairs=_pairs(base=("rfinger", 1.2))) or ""
+        self.assertIn("rfinger comes 1.2 mm from the robot's base", said)
+        self.assertIn("within the guard's 3 mm, and only the planner holds the base", said)
+        self.assertIsNone(_mesh_first(pairs=_pairs(base=("rfinger", 3.0))), "the guard's distance kept")
+        self.assertIn("cannot place the arm beside its base", _mesh_first(pairs=_pairs(base=None)) or "")
+        self.assertIn("knows no base for this arm", _mesh_first(pairs=_pairs(knows_base=False)) or "")
+
+    def test_a_raised_plane_is_read_at_its_height(self) -> None:
+        raised = {"support_plane": {**_PLANE, "height_mm": 398.0}}
+        self.assertIn("2.0 mm over", _mesh_first(world=raised, pairs=_pairs(lowest=400.0)) or "")
+
+    def test_no_hand_is_read(self) -> None:
+        """No part in the jaws is modelled (the owner, 2026-10-05; every cell since 2026-10-17): whatever the hand
+        says, the exact guard alone judges where it holds what the planner holds."""
+        def unknown(arm: URRobotArm) -> None:
+            arm.set_hand(None)
+
+        self.assertIsNone(_mesh_first(world={"support_plane": _PLANE}, pairs=_pairs(), arm_setup=unknown))
+
+
+class MeshFirstBesideTheBinTests(unittest.TestCase):
+    """The real exact guard on the UR10 and the Hand-E, the bin 30 mm from the arm's meshes that only the planner's
+    spheres refuse (``test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards.py``), mesh first on."""
+
+    def test_the_line_runs_and_the_planner_is_not_asked(self) -> None:
+        from tests.robot.safety.test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards import OFF, OFF_ON, _cell, _from, _line
+
+        arm, planner = _cell(mesh_first=True)
+        _from(arm, planner, OFF)
+        result = _line(arm, OFF_ON)
+        self.assertTrue(result.ok, result.message)
+        arm._conn.moveJ.assert_called_once()
+        self.assertEqual([], [call for call in planner.named("check") if len(call[1]) > 1],
+                         "the planner's spheres were asked about the line")
+        self.assertEqual([], planner.set_aside())
+
+    def test_a_hand_not_known_open_runs_the_line_the_same_way(self) -> None:
+        from tests.robot.safety.test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards import OFF, OFF_ON, _cell, _from, _line
+
+        arm, planner = _cell(mesh_first=True)
+        arm.set_hand(None)
+        _from(arm, planner, OFF)
+        result = _line(arm, OFF_ON)
+        self.assertTrue(result.ok, result.message)
+        arm._conn.moveJ.assert_called_once()
+        self.assertEqual([], [call for call in planner.named("check") if len(call[1]) > 1],
+                         "the planner's spheres were asked about the line")
+
+
+class HowNearTheBaseTests(unittest.TestCase):
+    """The real exact guard on the UR10 and the Hand-E (``test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards``)
+    asked how near the robot's base a part past the shoulder comes."""
+
+    def _base(self) -> Any:
+        from tests.robot.safety.test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards import _cell
+
+        arm, _ = _cell(mesh_first=True)
+        pairs = arm._preflight.exact_pairs(arm)
+        self.assertIsNotNone(pairs.base, "the guard knows the UR10's base")
+        return pairs.base
+
+    def test_the_finger_the_band_review_found_at_the_base_is_near_it(self) -> None:
+        from tests.robot.safety.planning.test_a_pose_only_the_planners_spheres_refuse_is_the_exact_guards import BASE_NEAR
+
+        part, gap = self._base()(BASE_NEAR)
+        self.assertIn("finger", part)
+        self.assertLess(gap, 3.0, "the Hand-E's finger 3.3 mm from the base mesh, inside the base's cylinder")
+
+    def test_a_line_beside_the_bin_keeps_far_from_it(self) -> None:
+        from tests.robot.safety.test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards import OFF, OFF_ON
+
+        base = self._base()
+        for joints in (OFF, OFF_ON):
+            part, gap = base(joints)
+            self.assertGreaterEqual(gap, 3.0, f"{part} at {joints}")
+
+
+class _Adapter:
+    """An engine adapter that builds nothing: ``lowest_mm`` reads the vertices alone."""
+
+    kind = "recording"
+
+    def build_object(self, vertices: Any, faces: Any) -> object:
+        return object()
+
+
+def _cube(low_z: float, high_z: float) -> tuple[np.ndarray, np.ndarray]:
+    corners = np.asarray([[x, y, z] for x in (-10.0, 10.0) for y in (-10.0, 10.0) for z in (low_z, high_z)])
+    return corners, np.zeros((0, 3), dtype=np.int64)
+
+
+class HowLowTheArmReachesTests(unittest.TestCase):
+    def _backend(self) -> MeshSelfCollisionBackend:
+        shoulder_v, shoulder_f = _cube(-500.0, 10.0)
+        arm_v, arm_f = _cube(50.0, 60.0)
+        finger_v, finger_f = _cube(5.0, 8.0)
+        return MeshSelfCollisionBackend(_Adapter(), {  # type: ignore[arg-type]
+            "shoulder": (shoulder_v, shoulder_f, 1), "upper_arm": (arm_v, arm_f, 2), "rfinger": (finger_v, finger_f, 6)})
+
+    def test_the_lowest_point_of_every_part_past_the_shoulder(self) -> None:
+        frames = [np.eye(4) for _ in range(7)]
+        frames[6] = np.eye(4)
+        frames[6][2, 3] = 100.0
+        self.assertAlmostEqual(50.0, self._backend().lowest_mm(frames, 0.0))
+        frames[6][2, 3] = 20.0
+        self.assertAlmostEqual(25.0, self._backend().lowest_mm(frames, 0.0), msg="the finger, lifted 20 mm")
+
+    def test_a_turned_part_reaches_as_turned(self) -> None:
+        frames = [np.eye(4) for _ in range(7)]
+        frames[6][2, 3] = 1000.0
+        flipped = np.eye(4)
+        flipped[:3, :3] = np.diag([1.0, -1.0, -1.0])  # half a turn about X
+        frames[2] = flipped
+        self.assertAlmostEqual(-60.0, self._backend().lowest_mm(frames, 37.0))
+
+    def test_the_shoulder_is_left_out_and_from_frame_brings_it_in(self) -> None:
+        frames = [np.eye(4) for _ in range(7)]
+        self.assertAlmostEqual(-500.0, self._backend().lowest_mm(frames, 0.0, from_frame=1))
+
+
+if __name__ == "__main__":
+    unittest.main()

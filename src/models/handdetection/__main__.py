@@ -242,7 +242,7 @@ def _locate_on_rig(config: Any, args: argparse.Namespace) -> int:
     # `FrameProvider` call sites spell it the same way: `cells.py:139`,
     # `real_cell/calibrate.py:193` and `perception/__main__.py:73`. Nothing imported this
     # module then, which is why four correct siblings did not make the fifth correct.
-    # `tests/test_hand_detection_cli.py` now does.
+    # `tests/models/handdetection/test_hand_detection_cli.py` now does.
     #
     # One rig, not the cell. `FrameProvider.open()`, which `with` calls, claims every
     # configured streamer, so asking one camera whether a hand is in the way took three

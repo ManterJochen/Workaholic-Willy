@@ -373,7 +373,7 @@ class CameraSystemConfig(StrictModel):
 
 #: How many ids the predefined ArUco dictionaries whose name does not say it hold. An ``NxN_M`` name holds ``M``.
 #: Written out rather than read from ``cv2``, so loading a config imports no OpenCV;
-#: ``tests/test_calibration_targets.py`` holds every name against ``cv2.aruco``.
+#: ``tests/calibration/test_calibration_targets.py`` holds every name against ``cv2.aruco``.
 _ARUCO_DICT_IDS = {
     "DICT_ARUCO_ORIGINAL": 1024,
     "DICT_APRILTAG_16h5": 30,

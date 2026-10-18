@@ -1,11 +1,6 @@
 """Collision and physical validation utilities for grasp candidates."""
 
-from .collision_checker import (
-    GraspCollisionResult,
-    colliding_point_indices,
-    validate_grasp_collision,
-    validate_grasp_collisions,
-)
+from .collision_checker import GraspCollisionResult, colliding_point_indices, validate_grasp_collision
 from .gripper_model import (
     CollisionBox,
     GripperGeometryStrategy,
@@ -43,5 +38,4 @@ __all__ = [
     "resolve_support_plane",
     "points_to_grasp_frame",
     "validate_grasp_collision",
-    "validate_grasp_collisions",
 ]

@@ -223,7 +223,7 @@ stopped one's sentence in `telemetry['push_stopped']`, and every push whose arm 
 | --- | --- |
 | The service on a UR5e with a 2F-85 in Isaac Sim | measured in simulation ([willy_sim](../../../willy_sim/README.md)) |
 | The service on a physical arm | run on a physical cell: camera picks through `PickRun` (example 12) on a UR10 (CB3) with a wrist D415 and a `jaw_io` Hand-E; the console has not run there, nor the looks, the generated view or the push |
-| A wrist pick's looks through `PickRun` and the console | pinned end to end with the repository's doubles (`tests/test_a_wrist_pick_runs_end_to_end.py`); never touched hardware |
+| A wrist pick's looks through `PickRun` and the console | pinned end to end with the repository's doubles (`tests/api/test_a_wrist_pick_runs_end_to_end.py`); never touched hardware |
 
 The default attempt is open-loop. The one `robot.grasping` block with a switch ships `enabled: false`
 (`deep_ranker`); the recovery, and the fusion of two or more calibrated RGB-D rigs, run on every cell with no
@@ -280,4 +280,4 @@ performance and approach-validation keys left on 2026-10-16 with theirs.
 - Guide: [the pick loop](../../../../docs/guide/05-pick-loop.md); every `robot.grasping` block and the mode gate: [grasping-config-reference.md](../../../../docs/grasping-config-reference.md)
 - The parent package: [execution](../README.md); the command line: [real_cell](../real_cell/README.md)
 - What it drives: [grasping](../../grasping/README.md), [safety](../../safety/README.md)
-- Tests: `tests/test_autonomous_grasp_service.py`, `tests/test_autonomous_grasp_report_contract.py`, `tests/test_cell_builders.py`, `tests/test_pick_reports_a_cell_fault.py`, `tests/test_effective_config_field_split.py`, `tests/test_a_wrist_pick_hands_its_looks_to_the_pick_loop.py`, `tests/test_looks_come_from_the_cell_profile.py`, `tests/test_a_boxed_in_part_is_pushed_inside_the_pick.py`, `tests/test_a_jaw_count_nobody_vouches_for_moves_nothing_more.py`, `tests/test_a_pick_closes_along_the_axis_its_program_names.py`, `tests/test_every_grasp_closes_the_way_round_the_hand_naturally_stands.py`
+- Tests: `tests/robot/execution/autonomous_grasp/test_autonomous_grasp_service.py`, `tests/robot/execution/autonomous_grasp/test_autonomous_grasp_report_contract.py`, `tests/robot/execution/autonomous_grasp/test_cell_builders.py`, `tests/robot/grasping/types/test_pick_reports_a_cell_fault.py`, `tests/robot/execution/autonomous_grasp/test_effective_config_field_split.py`, `tests/robot/execution/test_a_wrist_pick_hands_its_looks_to_the_pick_loop.py`, `tests/robot/execution/test_looks_come_from_the_cell_profile.py`, `tests/robot/grasping/recovery/test_a_boxed_in_part_is_pushed_inside_the_pick.py`, `tests/api/test_a_jaw_count_nobody_vouches_for_moves_nothing_more.py`, `tests/robot/grasping/types/test_a_pick_closes_along_the_axis_its_program_names.py`, `tests/robot/execution/test_every_grasp_closes_the_way_round_the_hand_naturally_stands.py`

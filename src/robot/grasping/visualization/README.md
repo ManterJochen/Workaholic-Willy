@@ -1,8 +1,9 @@
 # Grasp debug images (`src.robot.grasping.visualization`)
 
 Pictures that answer one question: why were these grasps ranked this way. A 2D overlay of the camera
-image with the mask, the gripper boxes, the contact arrows and the scores, and an offline 3D view of the
-cloud with wireframe grippers. Neither commands motion or touches a robot.
+image with the mask, the gripper boxes, the contact arrows and the scores. It commands no motion and
+touches no robot. The offline 3D viewer (Open3D) and `save_grasp_debug_image` left on 2026-10-18 with
+the code nothing called.
 
 The overlay is a switch on the pick service, off by default. This runs at a desk on the dummy arm of the
 `console_dummy` profile:
@@ -25,16 +26,18 @@ if png is not None:
 Call it directly to draw a frame of your own:
 
 ```python
-from src.robot.grasping.geometry import CameraIntrinsics
-from src.robot.grasping.visualization import save_grasp_debug_image
+import cv2
 
-save_grasp_debug_image(
-    "logs/grasp_debug/one_frame.png",
+from src.robot.grasping.geometry import CameraIntrinsics
+from src.robot.grasping.visualization import draw_grasp_debug_image
+
+image = draw_grasp_debug_image(
     rgb_image,              # HxWx3, HxWx4 or HxW uint8
     candidates,             # camera-frame GraspPoint list, best first
     intrinsics=CameraIntrinsics(fx, fy, cx, cy),
     mask=segmentation_mask, # optional HxW bool or uint8
 )
+cv2.imwrite("one_frame.png", image)   # the overlay is BGR, as OpenCV writes it
 ```
 
 A simulation runner writes one PNG per attempt with a flag, under Isaac's own interpreter:
@@ -45,21 +48,15 @@ A simulation runner writes one PNG per attempt with a flag, under Isaac's own in
 | Call | Also takes | Returns |
 | --- | --- | --- |
 | `draw_grasp_debug_image(rgb, grasps, intrinsics=...)` | a mask, a gripper model, a `DebugDrawConfig` | an annotated BGR `uint8` image |
-| `save_grasp_debug_image(path, rgb, grasps, intrinsics=...)` | the same; it creates the parent folders | the path it wrote |
-| `build_grasp_scene(grasps, points_mm=...)` | a support plane, a gripper model, a `GraspViewerConfig` | a list of Open3D geometries |
-| `show_grasp_scene(...)` | the same | nothing; it opens a blocking Open3D window |
 
-The 2D overlay needs only OpenCV. The 3D view imports Open3D inside its entry points, so a machine
-without Open3D still runs everything else and raises `ImportError` only when a 3D call is made. The
-package depends downward on [`collision/`](../collision/README.md), [`geometry/`](../geometry/README.md)
-and `GraspPoint`, and nothing imports it back.
+The overlay needs only OpenCV. The package depends downward on [`collision/`](../collision/README.md),
+[`geometry/`](../geometry/README.md) and `GraspPoint`; the pick run imports `scene_debug.py` for its
+per-look pictures.
 
 ## What it refuses
 
 | Refusal | When | What to do |
 | --- | --- | --- |
-| `OSError` from `save_grasp_debug_image` | OpenCV could not write the PNG | check the path and the disk |
-| `ImportError` from a 3D call | Open3D is not installed | install it, or use the 2D overlay |
 | `ValueError` from `DebugDrawConfig` | a count, alpha, thickness or scale out of range | fix the value |
 | a skipped candidate | a BASE-frame grasp: no BASE to CAMERA transform is available here | draw camera-frame candidates |
 
@@ -72,8 +69,6 @@ and `GraspPoint`, and nothing imports it back.
   grasps the pick chooses among, each the way round it closes, with `final` and `best_score` counted on
   them: the pick loop draws it again (`GraspCalculator.redraw_debug_image`) wherever it changed a result,
   and drops it where the calculator cannot redraw.
-- The 3D path has no caller in the pick path. `show_grasp_scene` blocks until the window closes, so
-  it belongs in a notebook or an offline script, never in a request.
 - Everything is one frame at a time: no video, no temporal overlay, no browser output of its own.
 - The operator console serves the cached overlay at `GET /v1/camera`, which the browser polls, and
   shows the image's age rather than pretending it is live.
@@ -83,18 +78,17 @@ and `GraspPoint`, and nothing imports it back.
 | Capability | Evidence |
 | --- | --- |
 | The 2D overlay in a pick | measured in simulation: `run_m2_pick --debug-frames` writes one per attempt |
-| The 3D viewer | never touched hardware: offline only |
 
 ## Files
 
 | File | Holds |
 | --- | --- |
-| `debug_draw.py` | `DebugDrawConfig`, `draw_grasp_debug_image`, `save_grasp_debug_image` |
-| `open3d_viewer.py` | `GraspViewerConfig`, `build_grasp_scene`, `show_grasp_scene` |
+| `debug_draw.py` | `DebugDrawConfig`, `draw_grasp_debug_image` |
+| `scene_debug.py` | `draw_scene_debug`, `save_scene_debug`, `grasp_rectangle`, `GraspRectangle`: what one look saw, every detection's box, mask, label and score, and the grasp the pick chose; import it by module path |
 
 ## Details
 
 - [`collision/`](../collision/README.md) for the gripper models and the support plane drawn here, and
   [`geometry/`](../geometry/README.md) for `CameraIntrinsics`.
 - [The console](../../../../api/README.md) for the route that serves the overlay.
-- Tests: `tests/test_grasp_visualization_smoke.py`.
+- Tests: `tests/robot/grasping/visualization/test_grasp_visualization_smoke.py`.

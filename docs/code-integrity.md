@@ -62,7 +62,7 @@ python -m src.robot.safety.planning --doctor      # must exit 0
 ```
 
 Linux has no such policy, but its lock follows a Windows re-pin, so both platforms keep running one version
-(`tests/test_both_platforms_lock_the_same_versions.py` holds the pair). The same recipe with the platform's names;
+(`tests/repo/test_both_platforms_lock_the_same_versions.py` holds the pair). The same recipe with the platform's names;
 the shell redirect writes no byte-order mark, and none belongs there:
 
 ```bash

@@ -14,12 +14,12 @@ None of them is edited by hand except where the table says so. The procedure tha
 | file | written by | what holds it |
 |---|---|---|
 | `{arm}_arm_spheres.yml`, `{hand}_gripper_spheres.yml` | `scripts/arms/fit.py --arm <arm>` or `--hand <hand>`, with `--write` (its `generated_by`) | the maps carry no wall clock since P0f F10, so a refit of the same bundle writes the same file byte for byte |
-| `{arm}_arm_lean_spheres.yml`, `{hand}_gripper_lean_spheres.yml` | `scripts/curobo/fit_planning_spheres.py` (its `generated_by`), seeded, and without a wall clock since P0f F10 | `tests/test_the_planner_plans_on_a_lean_model_and_judges_on_the_evidence.py` |
+| `{arm}_arm_lean_spheres.yml`, `{hand}_gripper_lean_spheres.yml` | `scripts/curobo/fit_planning_spheres.py` (its `generated_by`), seeded, and without a wall clock since P0f F10 | `tests/robot/safety/planning/test_the_planner_plans_on_a_lean_model_and_judges_on_the_evidence.py` |
 | `retract.yaml` (`ur_retract.yaml` until P0f F10) | `scripts/arms/retract.py` (its header) | `scripts/arms/retract.py --check` exits 1 when the table is not what this box measures |
-| `evidence/*.json` | `scripts/arms/gate.py`, `scripts/arms/sweep.py` | `tests/test_the_committed_evidence_recomputes.py` recomputes every hash from the committed files and the descriptor installed on the box |
-| `../../data/{arm}_collision_meshes.npz` | `scripts/arms/bake.py <arm> --write` | `tests/test_arm_bundles_reproduce_from_pinned_stl.py` bakes each again from the pinned meshes |
-| `../../data/{hand}_hand_meshes.npz` | for a new hand, the writers in `scripts/grippers/`. The Hand-E came from `scripts/grippers/bake_gripper_variant.py`; the 2F-85 and the EGU-50 from a simulator baker retired in P0f F5, so their rows are held by `arrays_sha256` and not rebuilt | `tests/test_the_committed_bundles_hold_their_arrays.py` |
-| `../../data/bundles.json` | the hand writers record their own rows; an arm's row is written by hand | `tests/test_bundle_provenance.py`; each arm row names its `upstream` as `<repo>@<commit>` since P0f F10 |
+| `evidence/*.json` | `scripts/arms/gate.py`, `scripts/arms/sweep.py` | `tests/robot/safety/planning/test_the_committed_evidence_recomputes.py` recomputes every hash from the committed files and the descriptor installed on the box |
+| `../../data/{arm}_collision_meshes.npz` | `scripts/arms/bake.py <arm> --write` | `tests/scripts/arms/test_arm_bundles_reproduce_from_pinned_stl.py` bakes each again from the pinned meshes |
+| `../../data/{hand}_hand_meshes.npz` | for a new hand, the writers in `scripts/grippers/`. The Hand-E came from `scripts/grippers/bake_gripper_variant.py`; the 2F-85 and the EGU-50 from a simulator baker retired in P0f F5, so their rows are held by `arrays_sha256` and not rebuilt | `tests/scripts/arms/test_the_committed_bundles_hold_their_arrays.py` |
+| `../../data/bundles.json` | the hand writers record their own rows; an arm's row is written by hand | `tests/scripts/grippers/test_bundle_provenance.py`; each arm row names its `upstream` as `<repo>@<commit>` since P0f F10 |
 
 ## Robot: Universal Robots UR5e
 
@@ -178,14 +178,11 @@ body from its registry numbers (`scripts/grippers/write_hand_from_dimensions.py`
 OBJ files (`scripts/grippers/write_hand_from_mesh.py`) or from a USD
 (`scripts/grippers/bake_gripper_variant.py`), then the map from
 `scripts/arms/fit.py --hand <name> --write`. A planner reads cover fits only: a cell
-whose map is not a cover fit of its hand's own bundle is refused. The grid fit in
-[`gripper_spheres.py`](gripper_spheres.py) stays a library for measuring and comparing; its command
-line, `build_gripper_spheres.py`, wrote no map and was deleted in P0f F1.
-
-The grid fit's `cell_mm` and `rmax_mm` have no default, and that is deliberate. The pairing of
-34.0 with 24.0 is this repository's 2F-85 finger cell size against its palm radius cap: a combination
-describing no part of any gripper, including the one both halves were measured from. A default that
-looks calibrated is worse than one that looks arbitrary. The grid fit used 44 mm cells capped at 24 mm
+whose map is not a cover fit of its hand's own bundle is refused. The grid fit, which
+[`gripper_spheres.py`](gripper_spheres.py) kept as a library for measuring and comparing, left on
+2026-10-18 with the code nothing called; its command line, `build_gripper_spheres.py`, wrote no map and
+was deleted in P0f F1. The module keeps where a bundle's numbers start (`bundle_origin`, `FLANGE`,
+`MOUNTING_FACE`), which [`../hand.py`](../hand.py) and the planning doctor read. The grid fit used 44 mm cells capped at 24 mm
 for a palm and 34 mm capped at 17 mm for a finger blade.
 
 Three things a mesh file cannot say and a person has to: which vendor axis is the approach and which
@@ -252,8 +249,9 @@ extents. Every assertion anyone would naturally write about a gripper bundle, wi
 bounding boxes, corner distances, passes on a hand built inside out. Only the determinant and a diff
 against a known-good bundle see it.
 
-The grid fit itself lives in [`gripper_spheres.py`](gripper_spheres.py), in one place, so the file
-and the generator cannot drift apart.
+The fit itself lives in one place, [`scripts/arms/_cover_fit.py`](../../../../../scripts/arms/_cover_fit.py),
+which [`scripts/arms/fit.py`](../../../../../scripts/arms/fit.py) runs, so the file and the generator
+cannot drift apart.
 
 ## The planner robot config, one per arm
 

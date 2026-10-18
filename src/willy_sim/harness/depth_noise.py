@@ -1,10 +1,9 @@
 """Synthetic sensor depth noise injected onto the noise-free Isaac depth map.
 
-The Isaac renderer is close to noise-free, so the cloud-outlier filter
-(:mod:`src.robot.grasping.geometry.filters`) has nothing to remove there. This models the noise the
-sim omits: a per-pixel gaussian for surface jitter, plus a speckle spray that offsets a fraction of
-pixels far off-surface, which is the kind of outlier the filter exists to remove. The same cell can
-then measure whether the filter recovers picks the noise broke.
+The Isaac renderer is close to noise-free. This models the noise the sim omits: a per-pixel
+gaussian for surface jitter, plus a speckle spray that offsets a fraction of pixels far off-surface.
+(It was built to measure the cloud-outlier filter, which left on 2026-10-18 having never run on a
+real camera.)
 
 The depth map is noised before perception, so the cloud build, the outlier filter and the grasp all
 see the speckle. The all-zero default does nothing. The noise is synthetic, not a measured

@@ -8,7 +8,6 @@ PNG without a frontend dependency on matplotlib or Open3D.
 
 from __future__ import annotations
 
-import os
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
@@ -29,7 +28,6 @@ from src.robot.grasping.types.grasp_point import GraspFrame, GraspPoint
 __all__ = [
     "DebugDrawConfig",
     "draw_grasp_debug_image",
-    "save_grasp_debug_image",
 ]
 
 #: An overlay that shows fewer grasps than the pick considered is a misleading
@@ -339,39 +337,3 @@ def draw_grasp_debug_image(
     return canvas
 
 
-def save_grasp_debug_image(
-    path: str,
-    rgb_image: np.ndarray,
-    grasps: Iterable[GraspPoint],
-    *,
-    intrinsics: CameraIntrinsics,
-    mask: np.ndarray | None = None,
-    gripper_model: GripperGeometryStrategy | None = None,
-    config: DebugDrawConfig | None = None,
-    label: str | None = None,
-    telemetry: dict | None = None,
-) -> str:
-    """Render and write the debug image to ``path``; return the path."""
-    image = draw_grasp_debug_image(
-        rgb_image,
-        grasps,
-        intrinsics=intrinsics,
-        mask=mask,
-        gripper_model=gripper_model,
-        config=config,
-        label=label,
-        telemetry=telemetry,
-    )
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    if not cv2.imwrite(path, image):
-        raise OSError(f"failed to write debug image to {path!r}")
-    logger.info(
-        "Wrote grasp debug overlay to %s (%dx%d, %d bytes)",
-        path,
-        image.shape[1],
-        image.shape[0],
-        os.path.getsize(path),
-    )
-    return path

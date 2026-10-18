@@ -2,7 +2,7 @@
 
 Standard library and PyYAML only, and Python 3.10, so the venv, the cuRobo environment (where ``src.config``
 cannot be imported) and Isaac read the same numbers from the same file. No schema runs here: the description is
-validated where it lives, ``src/config/arms.py``, and ``tests/test_the_arm_file_reads_as_the_registry_does.py``
+validated where it lives, ``src/config/arms.py``, and ``tests/scripts/arms/test_the_arm_file_reads_as_the_registry_does.py``
 holds every answer below to what ``load_arm`` answers, bit for bit. Each answer is the value the file holds, in the
 type the file holds it, because the scripts that read it write bytes that are hashed.
 """

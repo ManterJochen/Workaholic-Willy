@@ -11,7 +11,7 @@ from __future__ import annotations
 from .io import atomic_write_text, dump_json, load_json
 from .log_cfg import create_logger
 from .paths import debug_dir, ensure_dir, logs_dir, project_root, rotate_files
-from .timing import now_ms, timed
+from .timing import timed
 from .unit_scaling import unit_scaling
 from .vision import bgr_to_rgb, rgb_to_bgr
 
@@ -44,7 +44,6 @@ __all__ = [
     "load_json",
     "logs_dir",
     "move_inputs_to_device",
-    "now_ms",
     "project_root",
     "resolve_torch_dtype",
     "rgb_to_bgr",

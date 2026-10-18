@@ -1,31 +1,34 @@
 # Grasp contacts (`src.robot.grasping.contacts`)
 
-Where a parallel jaw could touch a part: contact points, pairs of opposing contacts, a dense
-graspability-weighted sampling of one object's surface, and the collision cloud of everything that is
-not the target. It says where a jaw could touch; whether the grasp can be executed is decided downstream.
+Where a parallel jaw could touch a part: contact points, pairs of opposing contacts, and the collision
+cloud of everything that is not the target. It says where a jaw could touch; whether the grasp can be
+executed is decided downstream.
 
-You reach it through the grasp calculator. Call it directly to see the pairs one mask yields:
+The grasp calculator builds its cloud of the other parts with `scene_collision_cloud`, and the
+multi-finger planners' `ParallelJawContactPlanner` searches its pairs with `find_antipodal_pairs`. The
+dense surface sampler that fed the search a graspability-weighted cloud of one part left on 2026-10-18
+with the code nothing called. Call the search directly to see the pairs one mask yields:
 
 ```python
-from src.robot.grasping.contacts import dense_surface_samples, find_antipodal_pairs
+from src.robot.grasping.contacts import find_antipodal_pairs
+from src.robot.grasping.geometry import CameraIntrinsics, estimate_surface_normals, masked_point_cloud
 
-samples = dense_surface_samples(mask, depth_mm, intrinsics)     # one part; depth in mm by default
-pairs = find_antipodal_pairs(samples.points_mm, samples.normals, valid_mask=samples.graspability)
-print(samples.size, len(pairs))
+cloud = masked_point_cloud(mask, depth_mm, CameraIntrinsics(fx, fy, cx, cy), voxel_size_mm=4.0)
+normals = estimate_surface_normals(cloud.points_mm, radius_mm=15.0)
+pairs = find_antipodal_pairs(cloud.points_mm, normals, max_width_mm=85.0)
+print(cloud.size, len(pairs))
 if pairs:
     best = pairs[0]              # best score first, then the narrower width, ties broken by index
     print(best.distance_mm, best.antipodal_score)
 ```
 
-`intrinsics` is a `geometry.CameraIntrinsics` or a 3x3 matrix. A flat face seen from straight above
-yields no pair, because the two contacts must face apart; one view sees one side of a part, which is
-what [`multiview/`](../multiview/README.md) addresses.
+A flat face seen from straight above yields no pair, because the two contacts must face apart; one view
+sees one side of a part, which is what [`multiview/`](../multiview/README.md) addresses.
 
 ## The nouns
 
 | Noun | Built by | Verb | Returns |
 | --- | --- | --- | --- |
-| `SurfaceSamples` | `dense_surface_samples(mask, depth_map, intrinsics, ...)` | read `points_mm`, `normals`, `graspability` | one object's surface |
 | `ContactPair` | `find_antipodal_pairs(points_mm, normals, ...)` | read `distance_mm`, `antipodal_score` | the pairs, best first |
 | `ContactPoint` | `ContactPoint(point_mm=..., normal=...)` | two make a `ContactPair` | one validated contact |
 | a collision cloud | `scene_collision_cloud(object_masks, depth_map, intrinsics, target_index=...)` | hand it to the collision filter | `(N, 3)` mm of every mask but the target |
@@ -57,7 +60,6 @@ normal, and it carries its own seal physics, so it lives in [`suction/`](../suct
 | `ValueError` from `ContactPoint` | a non-finite point, or a normal more than 1 % off unit length | normalise the normal |
 | `ValueError` from `ContactPair` | `distance_mm` not the distance between the points, or a score outside `[0, 1]` | build pairs with `find_antipodal_pairs` |
 | `ValueError` from `find_antipodal_pairs` | a negative minimum width, or a maximum not above the minimum | fix the width range |
-| `ValueError` from `dense_surface_samples` | a negative erosion, or `max_points` below 1 | fix the argument |
 
 ## Traps
 
@@ -66,15 +68,15 @@ normal, and it carries its own seal physics, so it lives in [`suction/`](../suct
   Nothing raises.
 - The search assumes locally well-behaved surfaces. Concave parts, and transparent or reflective ones
   whose depth is unreliable, degrade the result.
-- Parallel-jaw contacts only. Multi-finger planning and the force-closure certificate build on these
-  primitives in their own modules.
+- Parallel-jaw contacts only. Multi-finger planning builds on these primitives in its own module.
 
 ## Status
 
 | Capability | Evidence |
 | --- | --- |
-| Dense sampling, the antipodal search, the collision cloud | measured in simulation: the grasp calculator runs them on the Isaac picks |
-| On a physical depth camera | run on a physical cell: the calculator ran them on the camera picks of a wrist D415 on a UR10 (CB3); nothing measured there is kept here |
+| The collision cloud | measured in simulation: the grasp calculator builds it on the Isaac picks |
+| The antipodal search | never touched hardware: the multi-finger planners call it, and no pick path plans with them |
+| On a physical depth camera | run on a physical cell: the calculator built the collision cloud on the camera picks of a wrist D415 on a UR10 (CB3); nothing measured there is kept here |
 
 ## Files
 
@@ -83,13 +85,11 @@ normal, and it carries its own seal physics, so it lives in [`suction/`](../suct
 | `contact_point.py` | `ContactPoint`, and the shared `as_unit_normal` check |
 | `contact_pair.py` | `ContactPair` |
 | `antipodal.py` | `find_antipodal_pairs`: the radius search, the admission gates and the score |
-| `dense_sampler.py` | `SurfaceSamples`, `dense_surface_samples`, `scene_collision_cloud`, the erosion and depth-edge helpers |
+| `dense_sampler.py` | `scene_collision_cloud` |
 
 ## Details
 
-- [`generation/`](../generation/README.md) for the calculator that turns pairs into candidates, and
-  [`planning/`](../planning/README.md) for the poses built from them.
-- [`scoring/`](../scoring/README.md) for `force_closure`, which certifies a `ContactPair`.
+- [`generation/`](../generation/README.md) for the calculator that keeps the hand off the collision
+  cloud, and [`planning/`](../planning/README.md) for the multi-finger planners built on the pairs.
 - [The grasping maths](../../../../docs/grasping-math.md) for the antipodal conditions.
-- Tests: `tests/test_contact_point.py`, `tests/test_dense_sampler.py`, `tests/test_force_closure.py`,
-  `tests/test_radius_index.py`.
+- Tests: `tests/robot/grasping/contacts/test_contact_point.py`, `tests/robot/grasping/test_dense_sampler.py`, `tests/robot/grasping/contacts/test_radius_index.py`.

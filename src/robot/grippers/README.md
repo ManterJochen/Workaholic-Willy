@@ -238,7 +238,7 @@ I/O drivers against a fake I/O port. None of the real drivers reports force or c
 | File | Holds |
 |---|---|
 | `registry.py` | `create_gripper`, `register_gripper_driver`, `available_gripper_vendors` and the rest of the registry; `gripper_driver(vendor)` and `gripper_drivers()`, the drivers' specs |
-| `spec.py` | `GripperDriver`, the one value each driver states at the end of its module (`DRIVER`): what it refuses on an arm, how it is built, what sits on the flange when it actuates nothing, its desk rows, what moves when it connects, whether the bench's jaw verbs drive it, whether it opens only as wide as a grasp needs, its SDK modules. The build, the desk, the console, the bench and the doctor read it rather than branching on the vendor, which `tests/test_no_gripper_vendor_is_dispatched_by_hand.py` holds |
+| `spec.py` | `GripperDriver`, the one value each driver states at the end of its module (`DRIVER`): what it refuses on an arm, how it is built, what sits on the flange when it actuates nothing, its desk rows, what moves when it connects, whether the bench's jaw verbs drive it, whether it opens only as wide as a grasp needs, its SDK modules. The build, the desk, the console, the bench and the doctor read it rather than branching on the vendor, which `tests/robot/grippers/test_no_gripper_vendor_is_dispatched_by_hand.py` holds |
 | `robotiq.py`, `robotiq_socket.py` | `GripperController` and `RobotiqSocket`, the port-63352 client |
 | `onrobot.py`, `onrobot_modbus.py` | `OnRobotGripper` and `OnRobotRG`, the register-level Modbus client |
 | `jaw_io.py`, `vacuum.py` | `JawIOGripper` and `VacuumGripper`, over the arm's digital I/O |

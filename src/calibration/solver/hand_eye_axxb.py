@@ -92,39 +92,6 @@ def _invert_homogeneous(matrix: np.ndarray) -> np.ndarray:
     return inverse
 
 
-def _rot_to_vec(R: np.ndarray) -> np.ndarray:
-    """Matrix logarithm of a rotation matrix, as an axis-angle vector (3,).
-
-    An angle under 1e-10 rad leaves the axis undefined, so the zero vector is
-    returned there.
-    """
-    cos_angle = np.clip((np.trace(R) - 1.0) / 2.0, -1.0, 1.0)
-    angle = float(np.arccos(cos_angle))
-    if abs(angle) < 1e-10:
-        return np.zeros(3, dtype=np.float64)
-    factor = angle / (2.0 * np.sin(angle))
-    return factor * np.array(
-        [R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]],
-        dtype=np.float64,
-    )
-
-
-def _vec_to_rot(v: np.ndarray) -> np.ndarray:
-    """Rodrigues exponential of an axis-angle vector, as a 3x3 rotation.
-
-    A norm under 1e-10 returns the identity.
-    """
-    theta = float(np.linalg.norm(v))
-    if theta < 1e-10:
-        return np.eye(3, dtype=np.float64)
-    k = v / theta
-    K = np.array(
-        [[0.0, -k[2], k[1]], [k[2], 0.0, -k[0]], [-k[1], k[0], 0.0]],
-        dtype=np.float64,
-    )
-    return np.eye(3) + np.sin(theta) * K + (1.0 - np.cos(theta)) * (K @ K)
-
-
 def _project_to_SO3(M: np.ndarray) -> np.ndarray:
     """Project an approximate rotation matrix onto SO(3) via SVD.
 

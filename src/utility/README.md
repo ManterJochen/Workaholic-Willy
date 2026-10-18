@@ -2,7 +2,7 @@
 
 
 ```python
-from src.utility import dump_json, now_ms, unit_scaling
+from src.utility import dump_json, unit_scaling
 from src.utility.paths import debug_dir, weights_root
 
 dump_json({"ok": True}, "out.json")     # atomic UTF-8 write: a reader never sees a partial file
@@ -32,12 +32,12 @@ unit other than `mm`, `cm` or `m`.
 | File | Holds |
 | --- | --- |
 | [`paths.py`](paths.py) | `project_root`, `logs_dir`, `debug_dir`, `ensure_dir`, `rotate_files`, `weights_root`, `fence_model_downloads` |
-| [`io.py`](io.py) | `load_json`, `dump_json`, `atomic_write_text`, `atomic_write_bytes` |
+| [`io.py`](io.py) | `load_json`, `dump_json`, `atomic_write_text` |
 | [`device.py`](device.py) | `get_device`, `is_cuda`, `resolve_torch_dtype`, `move_inputs_to_device` |
 | [`interpreters.py`](interpreters.py) | `Interpreter`, `interpreter_command`, `conda_interpreter_parts`, `is_windows`: the interpreter a printed command names on this platform, `.venv/Scripts/python.exe`, `ext_deps/curobo_env/python.exe` and Isaac's `python.bat` on Windows, `bin/python` and `python.sh` elsewhere (P0h h2); standard library only |
 | [`log_cfg.py`](log_cfg.py) | `create_logger`, and the one place `WILLY_LOG_DIR` reaches the logs |
 | [`constants.py`](constants.py) | the package log directory, its log file names, and the lazy `utility_logger` |
-| [`timing.py`](timing.py) | `now_ms` and the `timed` context manager |
+| [`timing.py`](timing.py) | the `timed` context manager |
 | [`unit_scaling.py`](unit_scaling.py) | `unit_scaling` and `SUPPORTED_DISTANCE_UNITS`, the millimetre scale factors |
 | [`vision.py`](vision.py) | `bgr_to_rgb` and `rgb_to_bgr` |
 
@@ -49,4 +49,4 @@ unit other than `mm`, `cm` or `m`.
 - [`../calibration/README.md`](../calibration/README.md) wraps `unit_scaling` in a helper that raises `CalibrationDataError`
 - [`../geometry/README.md`](../geometry/README.md) holds the transforms that use the same millimetres
 - [`../models/README.md`](../models/README.md) is the main user of the device and dtype helpers
-- Tests: `tests/test_utility_boundaries.py`, `tests/test_logs_go_where_configured.py`
+- Tests: `tests/utility/test_utility_boundaries.py`, `tests/api/test_logs_go_where_configured.py`

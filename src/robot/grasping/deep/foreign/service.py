@@ -47,7 +47,7 @@ _NEWLINE = chr(10)
 def _grasp_anything() -> Any:
     """The Grasp-Anything-6D reader, imported when it is asked for rather than at module import.
 
-    A real import statement, not `import_module(<a string>)`: `tests/test_deep_imports_resolve.py`
+    A real import statement, not `import_module(<a string>)`: `tests/repo/test_deep_imports_resolve.py`
     walks the AST of every live file to catch an import naming a module that no longer exists, and a
     module path held as a string is invisible to it. A registry keyed by loader keeps both the table
     and that guard.

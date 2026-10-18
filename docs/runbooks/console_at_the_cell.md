@@ -107,7 +107,7 @@ asks the dashboard's own "get serial number" over a connection of its own, and t
 (`api/telemetry.py`) takes 10 digits ending 9999 (a CB3: `2018309999`) or 11 ending 99999 (an e-Series), on a
 loopback address only. The run above read the serial through a scratch shim that did the same before it shipped;
 the shipped reading is pinned on a local dashboard double
-([`tests/test_ur_cb3_serial.py`](../../tests/test_ur_cb3_serial.py)) and not rerun on URSim yet.
+([`tests/robot/drivers/ur/test_ur_cb3_serial.py`](../../tests/robot/drivers/ur/test_ur_cb3_serial.py)) and not rerun on URSim yet.
 
 **Not measured on URSim:** a halt with the hand inside a bin (the bed has no camera world, so the path home is
 judged against no frame), Disconnect during a jaws question and during a free teach, a pose taught by URSim

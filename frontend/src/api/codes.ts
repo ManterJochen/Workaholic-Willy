@@ -9,7 +9,7 @@
  * * the types are derived from the generated `schema.d.ts` (`CodesOut`), and each list below goes through `every`,
  *   which accepts it only if it names every member of its union and nothing else, so a code added on the server
  *   fails the build here until it is listed;
- * * `tests/test_api_contract.py` reads these lists and compares them with the StrEnums, in order.
+ * * `tests/api/test_api_contract.py` reads these lists and compares them with the StrEnums, in order.
  *
  * One code, one meaning: `not_acknowledged` is Connect's 428 ("read the preview first") and nothing else. The stop
  * card's gate is `cell_not_cleared`.

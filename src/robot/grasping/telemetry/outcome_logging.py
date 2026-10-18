@@ -36,9 +36,7 @@ import numpy as np
 
 __all__ = [
     "GraspAttemptRecord",
-    "append_jsonl",
     "execution_metadata_from",
-    "frame_metadata_from",
     "grasp_metadata_from",
     "iter_jsonl",
     "json_safe",
@@ -123,40 +121,6 @@ def profile_metadata_from(profile: Any) -> dict[str, Any]:
             json_safe(a)
             for a in tuple(getattr(profile, "recovery_allowed_actions", ()) or ())
         ],
-    }
-
-
-def frame_metadata_from(frame: Any) -> dict[str, Any]:
-    """Summarise a :class:`PerceptionFrame` without persisting pixels.
-
-    It keeps the shape fingerprints, the timestamp, the segmentation count and the
-    intrinsics, which is enough to correlate back to a persisted frame.
-    """
-
-    depth = getattr(frame, "depth_map", None)
-    rgb = getattr(frame, "rgb", None)
-    intrinsics = getattr(frame, "intrinsics", None)
-    segmentations = tuple(getattr(frame, "segmentations", ()) or ())
-
-    depth_shape: Optional[list[int]] = None
-    if depth is not None:
-        depth_shape = [int(d) for d in np.asarray(depth).shape]
-
-    rgb_shape: Optional[list[int]] = None
-    if rgb is not None:
-        rgb_shape = [int(d) for d in np.asarray(rgb).shape]
-
-    intrinsics_list: Optional[list[list[float]]] = None
-    if intrinsics is not None:
-        intrinsics_list = json_safe(np.asarray(intrinsics).tolist())
-
-    return {
-        "timestamp": json_safe(getattr(frame, "timestamp", None)),
-        "depth_shape": depth_shape,
-        "rgb_shape": rgb_shape,
-        "has_rgb": rgb is not None,
-        "segmentation_count": len(segmentations),
-        "intrinsics": intrinsics_list,
     }
 
 
@@ -409,31 +373,6 @@ def _optional_dict(value: Any) -> Optional[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 # JSONL file helpers
 # ---------------------------------------------------------------------------
-
-
-def append_jsonl(
-    record: GraspAttemptRecord | Mapping[str, Any],
-    path: str | os.PathLike[str],
-) -> Path:
-    """Atomically append ``record`` as a single line to ``path``.
-
-    It creates the parent directory where one does not exist and returns the resolved
-    :class:`Path`. It appends in line-buffered text mode, so each record is one
-    ``\\n``-terminated line, which is what downstream JSONL tooling expects.
-    """
-
-    p = Path(path)
-    p.parent.mkdir(parents=True, exist_ok=True)
-    if isinstance(record, GraspAttemptRecord):
-        payload = record.to_json()
-    else:
-        payload = json.dumps(
-            json_safe(record), separators=(",", ":"), sort_keys=False
-        )
-    with p.open("a", encoding="utf-8") as fh:
-        fh.write(payload)
-        fh.write("\n")
-    return p
 
 
 def iter_jsonl(

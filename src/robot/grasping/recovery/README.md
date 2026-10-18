@@ -381,19 +381,19 @@ classes an older record may carry. Two entries are rules rather than tuning:
 - [`safety/`](../../safety/README.md) holds the guards every push waypoint still passes.
 - [The grasping config reference](../../../../docs/grasping-config-reference.md) for the modes the recovery
   runs in.
-- Tests: `tests/test_grasp_recovery.py` (the policy and the push gate), `tests/test_t5_recovery_dispatcher.py`,
-  `tests/test_t5_recovery_orchestrator.py`, `tests/test_t5_service_retry_loop.py`,
-  `tests/test_a_config_built_recovery_plans_only_what_its_profile_allows.py` (the owner's recovery on a cell
-  built from config), `tests/test_a_rescan_is_the_only_second_look.py`,
-  `tests/test_a_push_is_planned_from_what_the_camera_saw.py`, `tests/test_the_push_budgets.py`,
-  `tests/test_a_push_moves_only_when_every_guard_holds.py`, `tests/test_a_push_takes_its_hand_from_the_registry.py`,
-  and end to end on the owner's cell in miniature: `tests/test_a_boxed_in_part_is_pushed_inside_the_pick.py`,
-  `tests/test_a_push_and_its_re_pick_leave_the_toggle_alone.py`, `tests/test_api_pick_push_distance.py`,
-  `tests/test_a_push_needs_no_fixture.py` (the automatic push box alone),
-  `tests/test_a_jaw_count_nobody_vouches_for_moves_nothing_more.py` (the contact legs and the lift point, a
+- Tests: `tests/robot/grasping/recovery/test_grasp_recovery.py` (the policy and the push gate), `tests/robot/grasping/recovery/test_t5_recovery_dispatcher.py`,
+  `tests/robot/grasping/recovery/test_t5_recovery_orchestrator.py`, `tests/robot/grasping/test_t5_service_retry_loop.py`,
+  `tests/robot/execution/autonomous_grasp/test_a_config_built_recovery_plans_only_what_its_profile_allows.py` (the owner's recovery on a cell
+  built from config), `tests/robot/test_a_rescan_is_the_only_second_look.py`,
+  `tests/robot/grasping/recovery/test_a_push_is_planned_from_what_the_camera_saw.py`, `tests/robot/grasping/recovery/test_the_push_budgets.py`,
+  `tests/robot/grasping/recovery/test_a_push_moves_only_when_every_guard_holds.py`, `tests/robot/grasping/recovery/test_a_push_takes_its_hand_from_the_registry.py`,
+  and end to end on the owner's cell in miniature: `tests/robot/grasping/recovery/test_a_boxed_in_part_is_pushed_inside_the_pick.py`,
+  `tests/api/test_a_push_and_its_re_pick_leave_the_toggle_alone.py`, `tests/api/test_api_pick_push_distance.py`,
+  `tests/robot/grasping/recovery/test_a_push_needs_no_fixture.py` (the automatic push box alone),
+  `tests/api/test_a_jaw_count_nobody_vouches_for_moves_nothing_more.py` (the contact legs and the lift point, a
   width gripper not connected or unreadable, a pick whose count went unknown at its last look) and
-  `tests/test_a_part_the_axis_refused_is_never_pushed.py` (the closing axis and the natural orientation
-  beside the push). The owner's rules of 2026-10-03: `tests/test_a_push_may_rearrange_the_scene.py` (the
+  `tests/robot/grasping/types/test_a_part_the_axis_refused_is_never_pushed.py` (the closing axis and the natural orientation
+  beside the push). The owner's rules of 2026-10-03: `tests/robot/grasping/recovery/test_a_push_may_rearrange_the_scene.py` (the
   inferred foot, the ground, the longer push, the rearranging push, the whole neighbours held out, every
-  line judged ahead, the switch), `tests/test_clearing_reaches_what_a_look_from_above_hides.py` and
-  `tests/test_api_a_task_says_its_parts_are_critical.py`.
+  line judged ahead, the switch), `tests/robot/grasping/test_clearing_reaches_what_a_look_from_above_hides.py` and
+  `tests/api/test_api_a_task_says_its_parts_are_critical.py`.

@@ -10,7 +10,7 @@
 The owner, 2026-10-08: "speed first". On the cell the 8B model spends about 140 ms on every token of its answer, so
 the morning's "Alle grauen Würfel in die Gelbe Kiste." cost 9.8 s and every "Hallo Willy" 7.2 s. This table answers
 a closed grammar of such sentences with the answer the model gives for them, the words the model was measured to
-choose (``tests/test_vlm_command.py``, ``_REAL_ANSWERS``), and the reader's own code makes the card of that answer
+choose (``tests/models/vlm/test_vlm_command.py``, ``_REAL_ANSWERS``), and the reader's own code makes the card of that answer
 (:func:`~src.models.vlm.command._checked` and :func:`~src.models.vlm.command._reading`): the same checks, the same
 notes, the same words found in the sentence. A sentence outside the grammar, or an answer the checks would send back,
 returns ``None``, and the model reads the sentence as before.

@@ -159,9 +159,9 @@ A cell with no `CAMERA->BASE` transform builds, connects, and then refuses every
 
 ## Grasp modes
 
-`robot.grasping.default_mode` sets the sampling and the recovery a mode allows together: `easy` samples
-one object and never recovers, `auto` takes the dense sampler where other parts stand beside the part, and
-`dense_clutter` always samples dense ([guide 05](guide/05-pick-loop.md), section 6). A tree or a call that
+`robot.grasping.default_mode` sets the recovery a mode allows: `easy` never recovers, `auto` rescans, and
+`dense_clutter` rescans and pushes ([guide 05](guide/05-pick-loop.md), section 6). No mode chooses a sampler
+since 2026-10-16: the part's own body over its support grasps every part alike. A tree or a call that
 still names `closed_loop` is refused with the mode to name instead, `auto`; `dense_autonomous` names
 `dense_clutter`. The grasp presets that overlaid a mode with its switches left on 2026-10-16.
 

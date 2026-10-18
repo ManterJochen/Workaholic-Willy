@@ -112,4 +112,4 @@ run before. Every formula the guards evaluate is in [docs/safety-math.md](../../
 
 - Guide: [robot and safety](../../docs/guide/04-robot-and-safety.md), [the pick loop](../../docs/guide/05-pick-loop.md)
 - A hand of your own: [your_own_gripper.md](../../docs/runbooks/your_own_gripper.md)
-- Tests: `tests/test_robot.py`, `tests/test_safety_preflight.py`, `tests/test_robot_arm_protocol_conformance.py`, `tests/test_no_web_framework_import.py`
+- Tests: `tests/robot/execution/test_robot.py`, `tests/robot/safety/test_safety_preflight.py`, `tests/robot/drivers/test_robot_arm_protocol_conformance.py`, `tests/repo/test_no_web_framework_import.py`

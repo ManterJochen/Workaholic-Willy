@@ -19,7 +19,7 @@ What it answers:
 
 It takes a live scene in one request (``set_scene``), as every cell's camera world sends its boxes and its distance
 field since 2026-10-17, and no field on its own (``set_voxels``);
-``tests/test_the_fake_transport_keeps_step_with_the_protocols.py`` holds its signatures to ``CuroboPlanClient``'s.
+``tests/robot/safety/planning/test_the_fake_transport_keeps_step_with_the_protocols.py`` holds its signatures to ``CuroboPlanClient``'s.
 """
 
 from __future__ import annotations

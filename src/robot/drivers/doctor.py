@@ -31,7 +31,6 @@ __all__ = [
     "arm_vendor_readiness",
     "gripper_vendor_readiness",
     "probe_module",
-    "readiness_table",
     "require_arm_vendor_ready",
 ]
 
@@ -230,13 +229,6 @@ def gripper_vendor_readiness() -> list[VendorReadiness]:
     return [r for r in Host.local().readiness().rows if r.kind == "gripper"]
 
 
-def readiness_table() -> str:
-    """The readiness table an operator reads. A shim over :meth:`ReadinessReport.render`."""
-    from src.robot.drivers.host import Host
-
-    return Host.local().readiness().render()
-
-
 def require_arm_vendor_ready(vendor: RobotVendor, *, mock_mode: bool = False) -> None:
     """The fail-early startup gate: raise unless this host can drive ``vendor``.
 
@@ -275,10 +267,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json", action="store_true", help="emit JSON instead of the human table.")
     args = parser.parse_args(argv)
 
-    # One probe, one set of rows. Building the list here and then calling
-    # `readiness_table()` would build it again from scratch: two probes of the same
-    # interpreter per invocation, and two chances for a table and a verdict printed side
-    # by side to disagree.
+    # One probe, one set of rows: the table and the verdict below are printed from the same list,
+    # so they cannot disagree.
     from src.robot.drivers.host import Host
 
     report = Host.local().readiness()

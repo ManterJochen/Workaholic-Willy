@@ -739,7 +739,7 @@ class SafetyPreflight:
         sample before it is passed on a proof that each guard accepts it; from it on, every
         sample is judged here one at a time, so the verdict, the sample it names and its
         message are those of judging every sample one at a time from the first
-        (``tests/test_a_whole_path_is_judged_as_every_sample_is.py``). On the owner's cell a
+        (``tests/robot/safety/test_a_whole_path_is_judged_as_every_sample_is.py``). On the owner's cell a
         route the exact guard took 2.3 to 2.6 s for, judged so (905 samples, 128 boxes), took
         12 ms on the desk instead of 0.96 s, about 0.03 s on the cell; every cell judges so
         since 2026-10-17.

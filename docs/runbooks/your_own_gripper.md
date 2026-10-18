@@ -16,7 +16,7 @@ is those scripts in the order their inputs exist.
 
 **How it is kept true.** Every command below is run, in a copy of the tree, by
 `scripts/trial/run_runbook.py` against `scripts/trial/customer_hand_trial.json`, and
-`tests/test_your_own_gripper_runbook.py` holds every command to the parser of the script it names. A
+`tests/scripts/trial/test_your_own_gripper_runbook.py` holds every command to the parser of the script it names. A
 step marked `trial-skip` in the source says why the trial did not run it.
 
 **The names used below.** Set them once for your cell; the commands are bash, and a PowerShell reader
@@ -160,13 +160,13 @@ $PY scripts/grippers/measure_jaw_from_bundle.py $HAND --centre-mm $GRASP_CENTRE_
 **From a standalone USD.** The baker reads the vendor's stage with `pxr` and first proves its reader
 on the committed 2F-85; skipping that control needs a reason, which is recorded in the bundle:
 
-<!-- trial-skip: pxr is refused by the trial box's application control policy (WinError 4551); tests/test_a_usd_bakes_from_the_command_line.py holds the route where pxr imports -->
+<!-- trial-skip: pxr is refused by the trial box's application control policy (WinError 4551); tests/scripts/grippers/test_a_usd_bakes_from_the_command_line.py holds the route where pxr imports -->
 <!-- step: usd-control -->
 ```bash
 $PY scripts/grippers/bake_gripper_variant.py --check
 ```
 
-<!-- trial-skip: pxr is refused by the trial box's application control policy (WinError 4551); tests/test_a_usd_bakes_from_the_command_line.py holds the route where pxr imports -->
+<!-- trial-skip: pxr is refused by the trial box's application control policy (WinError 4551); tests/scripts/grippers/test_a_usd_bakes_from_the_command_line.py holds the route where pxr imports -->
 <!-- step: usd-write -->
 ```bash
 $PY scripts/grippers/bake_gripper_variant.py --usd $USD --hand $HAND --bodies $BODIES --closing $CLOSING --approach $APPROACH --binormal $BINORMAL --mount-face-mm $MOUNT_FACE_MM --origin $ORIGIN --write

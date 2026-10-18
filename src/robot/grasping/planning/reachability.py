@@ -5,15 +5,12 @@ UR with RTDE or another vendor's. Reachability checks therefore
 live behind an :class:`IKService` protocol that the execution layer
 fulfils: a UR adapter, another vendor's, or a pure-Python stub.
 
-The default ``WorkspaceBoxIKService`` keeps :class:`GraspCalculator`
-useful without any robot at all by accepting every candidate inside an
-axis-aligned workspace box. Production callers replace it with a
-service that consults a real solver.
+A cell's service consults its arm's solver (``src/robot/execution/ik_service.py``); the
+workspace-box stand-in left on 2026-10-18, as nothing built it.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -34,8 +31,6 @@ logger = create_grasping_logger("Reachability", REACHABILITY_LOG_FILE)
 __all__ = [
     "IKResult",
     "IKService",
-    "WorkspaceBoxIKService",
-    "filter_reachable_poses",
     "transform_grasp_pose",
 ]
 
@@ -68,42 +63,6 @@ class IKService(Protocol):
     """
 
     def query(self, pose: GraspPose) -> IKResult: ...
-
-
-@dataclass(frozen=True, slots=True)
-class WorkspaceBoxIKService:
-    """Trivial reachability oracle: pose position inside an aabb box.
-
-    The default when nothing is wired, and a sanity baseline behind a
-    real adapter. The direction of the approach axis is not consulted;
-    that signal already feeds the heuristic reachability score in
-    :mod:`src.robot.grasping.scoring`.
-    """
-
-    min_corner_mm: np.ndarray
-    max_corner_mm: np.ndarray
-
-    def __post_init__(self) -> None:
-        min_corner = np.asarray(self.min_corner_mm, dtype=np.float64)
-        max_corner = np.asarray(self.max_corner_mm, dtype=np.float64)
-        if min_corner.shape != (3,) or max_corner.shape != (3,):
-            raise ValueError("workspace corners must be shape (3,)")
-        if not np.all(min_corner < max_corner):
-            raise ValueError("min_corner_mm must be strictly less than max_corner_mm")
-        min_corner.setflags(write=False)
-        max_corner.setflags(write=False)
-        object.__setattr__(self, "min_corner_mm", min_corner)
-        object.__setattr__(self, "max_corner_mm", max_corner)
-
-    def query(self, pose: GraspPose) -> IKResult:
-        position = pose.position_mm
-        inside = bool(
-            np.all(position >= self.min_corner_mm)
-            and np.all(position <= self.max_corner_mm)
-        )
-        if inside:
-            return IKResult(reachable=True)
-        return IKResult(reachable=False, reason="outside_workspace_box")
 
 
 def _nearest_rotation(matrix: np.ndarray) -> np.ndarray:
@@ -158,53 +117,3 @@ def transform_grasp_pose(
     )
 
 
-def filter_reachable_poses(
-    poses: Iterable[GraspPose],
-    service: IKService,
-) -> tuple[list[GraspPose], list[IKResult]]:
-    """Run ``service`` on each pose and return the reachable poses with their diagnostics.
-
-    Order is preserved. The returned ``IKResult`` list is parallel to
-    the input iterable rather than to the kept-pose list, so a caller
-    can correlate each rejection with its source candidate.
-    """
-    kept: list[GraspPose] = []
-    diagnostics: list[IKResult] = []
-    for pose in poses:
-        result = service.query(pose)
-        if not isinstance(result, IKResult):
-            raise TypeError(
-                "IKService.query must return an IKResult, "
-                f"got {type(result).__name__}"
-            )
-        diagnostics.append(result)
-        if result.reachable:
-            kept.append(pose)
-    # Aggregate, not per pose: the pose count is the candidate count, and the
-    # dominant rejection reason is what an operator needs to act on.
-    rejected = len(diagnostics) - len(kept)
-    if rejected:
-        reasons: dict[str, int] = {}
-        for result in diagnostics:
-            if not result.reachable:
-                key = result.reason or "unspecified"
-                reasons[key] = reasons.get(key, 0) + 1
-        summary = ", ".join(
-            f"{reason}={count}"
-            for reason, count in sorted(reasons.items(), key=lambda kv: -kv[1])
-        )
-        log = logger.warning if not kept else logger.info
-        log(
-            "IK filter (%s): %d/%d poses reachable; rejections: %s",
-            type(service).__name__,
-            len(kept),
-            len(diagnostics),
-            summary,
-        )
-    else:
-        logger.debug(
-            "IK filter (%s): all %d poses reachable",
-            type(service).__name__,
-            len(diagnostics),
-        )
-    return kept, diagnostics

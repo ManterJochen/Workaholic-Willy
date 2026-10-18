@@ -730,7 +730,7 @@ class SelfEnvelope:
         It is a bound, not the reach itself, and it errs outward, which keeps an obstacle rather than
         dropping one. The body is what the envelope carries now: every link, the hand, a wrist camera
         and a part while it is held. Measured 2026-09-23 on the committed UR10 bundle with the Robotiq
-        Hand-E on a 20 mm plate (``tests/test_the_camera_world_sees_what_it_can.py``): a radius of
+        Hand-E on a 20 mm plate (``tests/robot/safety/planning/test_the_camera_world_sees_what_it_can.py``): a radius of
         1793 mm, where the farthest point of the body over 300 random configurations stood 1558 mm
         from the base origin.
         """

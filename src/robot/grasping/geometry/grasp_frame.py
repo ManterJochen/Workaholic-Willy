@@ -12,12 +12,11 @@ A parallel jaw turned half a turn about its approach is the same grasp, so a clo
 negation describe one grasp. This function keeps the sign it is given; the generation README records
 that both directions plan.
 
-The same rotation is also written in four other places, none of them a public route:
-``_rotation_from_axes`` (``planning/pose_generation.py``), ``_quaternion_from_axes``
-(``motion/execution_policy.py``), ``_to_camera_pose`` (``generation/_support_footprint_stage.py``)
-and the collision check's adapter ``grasp_point_to_pose``. This is the public one the candidates'
-``pose()`` methods call. The four stay as they are, because they sit on the pick path the
-determinism goldens hash, and folding them in needs its own byte check.
+The same rotation is also written in three other places, none of them a public route:
+``_quaternion_from_axes`` (``motion/execution_policy.py``), ``_to_camera_pose``
+(``generation/_support_footprint_stage.py``) and the collision check's adapter ``grasp_point_to_pose``.
+This is the public one the candidates' ``pose()`` methods call. The three stay as they are, because
+they sit on the pick path, and folding them in needs its own byte check.
 """
 
 from __future__ import annotations
@@ -52,8 +51,7 @@ def pose_from_grasp_axes(
     ``approach`` is the direction the tool travels toward the part, so a straight-down grasp in BASE
     has ``approach = (0, 0, -1)``, and with ``closing_axis = (-1, 0, 0)`` that is the tool-down
     quaternion ``(0, 1, 0, 0)`` XYZW. ``closing_axis`` is used perpendicular to the approach: a
-    component along the approach is removed before it is normalised, as the SFE stage and
-    ``generate_grasp_poses`` do. The frame is the caller's and is never guessed.
+    component along the approach is removed before it is normalised, as the SFE stage does. The frame is the caller's and is never guessed.
 
     Raises ``ValueError`` for a vector that is not three finite numbers, a zero approach, and a
     closing axis that is zero or lies along the approach, where no rotation is defined. Those are

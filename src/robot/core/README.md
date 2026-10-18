@@ -171,4 +171,4 @@ and `ik` take `Frame.BASE`) are stated here and enforced by each driver.
 - The guards behind the guard statuses: [safety](../safety/README.md), and their formulas in
   [docs/safety-math.md](../../../docs/safety-math.md)
 - Who drives this contract: [execution](../execution/README.md)
-- Tests: `tests/test_motion_result.py`, `tests/test_core_value_objects.py`, `tests/test_camera_world_stamp.py`, `tests/test_robot_arm_protocol_conformance.py`
+- Tests: `tests/robot/core/test_motion_result.py`, `tests/robot/core/test_core_value_objects.py`, `tests/robot/core/test_camera_world_stamp.py`, `tests/robot/drivers/test_robot_arm_protocol_conformance.py`

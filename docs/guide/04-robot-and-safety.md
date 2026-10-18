@@ -225,12 +225,12 @@ repository file to copy over it. A tree with no `arms/` folder reads through the
 
 Each description also names the pin its joints were read from, as data: `upstream` holds the build adapter,
 the repository, the full commit, the licence as one SPDX identifier and a hash over the adapter manifest's
-rows. Nothing reads it at build or run time yet; `tests/test_the_description_names_its_upstream.py` holds all
+rows. Nothing reads it at build or run time yet; `tests/scripts/arms/test_the_description_names_its_upstream.py` holds all
 eight to `scripts/arms/fetch.py`, so a pin bump that forgets an arm fails by name. Every joint row also
 names the `link` it moves and the bundle `part` its arrays are baked under; the frame is the row's number and
 the flange is frame `dof`, so neither is written. The bake and the tools around it read the description
 through `scripts/arms/_arm_file.py` (stdlib and PyYAML, so the cuRobo environment's Python 3.10 reads it too);
-the fit plans and the runtime keep their own copies until P0f F8 and F9, and `tests/test_inlined_link_tables.py`
+the fit plans and the runtime keep their own copies until P0f F8 and F9, and `tests/repo/test_inlined_link_tables.py`
 holds those, the committed bundles and the sphere maps to the description.
 The `base` block names the root the joints hang from and `chain_yaw_deg`, the turn from it to where the DH
 chain starts: 180 on every UR, 0 or 180 and nothing else. It is the relation from the URDF's root to the chain,
@@ -275,7 +275,7 @@ Why the description is shaped as it is:
 - **An identical tree copy is accepted.** A deployment tree is normally a copy of the shipped one, so it carries
   `arms/` whether or not anybody meant it to. Refusing a tree-owned registry outright would refuse a
   byte-identical copy, which the hand and camera registries decline to do for the same reason, and which
-  `python -m src.config --data <copy>` does on every run of `tests/test_config_cli.py`.
+  `python -m src.config --data <copy>` does on every run of `tests/config/test_config_cli.py`.
 
 In simulation the mount follows from `robot.gripper.model`. The `ur5e` and `ur10e` assets bake the 2F-85
 as a variant; on the other arms the simulator mounts the named hand standalone. A hand the simulator has no
@@ -378,7 +378,7 @@ factory limit of 360 degrees per axis either way, less its 5 degree margin. A pl
 the published planning limit of 180 degrees and every other joint at 360, and the planner narrows all of
 them by `position_limit_clip`, 0.1 rad or 5.73 degrees, when it loads. Each arm description states both, as
 `planner_limit_deg` and `planner.position_limit_clip_rad` (2.4). Since 5.73 is more than 5.0, the planner never
-proposes a configuration the guard refuses. `tests/test_planner_joint_envelope.py` asserts
+proposes a configuration the guard refuses. `tests/scripts/arms/test_planner_joint_envelope.py` asserts
 that for every bundled arm and for the simulation cell, and a margin above 5.73 fails it.
 
 Every rejection becomes a typed `MotionResult` prefixed `[safety:<guard>/<reason>]`, with one
@@ -469,7 +469,7 @@ simulated cell gets arm-against-arm checks without a safety key. Until P0d D5 th
 `isaac-sim`, which no registry describes, and `self_collision.kinematics_model` was the key that opted it
 in; unset, the guard checked only base, tool and fixtures, with no arm against arm and no error. That is
 still what an arm the registry does not describe gets, on both backends and whatever its vendor.
-`tests/test_the_arm_says_what_it_is.py` holds the arm naming itself.
+`tests/robot/test_the_arm_says_what_it_is.py` holds the arm naming itself.
 
 The guard's base yaw is no key since 2026-10-17. The bundled UR DH base is rotated 180 degrees about Z from the
 simulator's UR5e `base_link`. The reconcile is a pure base rotation, so every distance between links is preserved:
@@ -552,7 +552,7 @@ placed on the flange by the rotation the declared tool frame derives, so one han
 
 Ask `mesh_backend_status(model, None, hand)` from `src.robot.safety._fcl_self_collision` for your arm and
 hand. The tokens are `ok`, `unknown_model`, `no_bundle`, `no_hand_bundle`, `hand_bundle_refused` and
-`no_engine`, and `tests/test_status_tokens_are_documented.py` fails when this paragraph and the guard
+`no_engine`, and `tests/repo/test_status_tokens_are_documented.py` fails when this paragraph and the guard
 disagree in either direction. `unknown_model` means no bundled DH row exists for that key, so an arm that
 is not a UR has no exact-mesh authority. `no_bundle` means the arm has no bundle yet. `no_hand_bundle`
 means the named hand has no bundle of its own, and `hand_bundle_refused` that it has one the guard cannot

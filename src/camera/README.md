@@ -37,8 +37,7 @@ mask ([`src/robot/perception/`](../robot/perception/README.md)).
 |---|---|---|---|
 | `Camera` | `from_tree(tree)`, `from_config(camera_section, workspace=)`, `from_rig(rig, workspace=)`; `rig_id=` names another rig | `grab()`, in a `with` block or between `open()` and `release()`; `camera_moved()` after the camera moved | an `RGBDFrame` (`color`, `depth`), a stereo pair's too; a `StereoFrame` (`left`, `right`) only from the catalogue's raw pair |
 | `RigHandle` | `camera.handle()`, `provider.rig(rig_id)` | `grab()`, `get_intrinsics()`, `camera_moved()`, `release()` | the owner's frames; `release()` gives back that one rig |
-| `FrameProvider` | `FrameProvider(rigs)` | `grab(rig_id)`, `grab_rectified(rig_id)` | frames keyed by rig id, over stereo and RGB-D rigs |
-| `StereoCapturePipeline` | `StereoCapturePipeline(cameras, stereo_calibration)` | `run()` | `(FrameProvider, StereoCam3D)`; the second is `None` when every rig is RGB-D |
+| `FrameProvider` | `FrameProvider(rigs)`, or `FrameProvider(rigs, stereo=)` with the `StereoCam3D` that `grab_rectified` needs | `grab(rig_id)`, `grab_rectified(rig_id)` | frames keyed by rig id, over stereo and RGB-D rigs |
 | `StereoCalibration` | `from_tree(tree, rig_id=)` | `record()`, then `calibrate()` | a `StereoCalibrationReport`: the pair solved against its ChArUco board and its `stereo_map_file` written, or why not |
 
 `Camera` also answers `get_distortion()`, and `calibration()` loads the rig's declared calibration,
@@ -95,10 +94,12 @@ frame = handle.grab()
 handle.release()                     # gives back this rig; every other rig keeps streaming
 ```
 
-`StereoCapturePipeline(...).run()` builds the same catalogue from the camera section, together with
-the `StereoCam3D` that rectifies its stereo rigs ([the stereo runtime](../calibration/README.md#the-stereo-runtime)).
-When a stereo rig lacks calibration images it records them first, interactively, and blocks until the
-operator ends that session. RGB-D rigs pass through to the catalogue and are never stereo calibrated.
+A catalogue rectifies a stereo rig's raw pair only when it is handed the `StereoCam3D` of its rigs,
+`FrameProvider(rigs, stereo=...)` ([the stereo runtime](../calibration/README.md#the-stereo-runtime));
+without one, `grab_rectified` raises. RGB-D rigs pass through to the catalogue and are never stereo
+calibrated. `StereoCapturePipeline`, which built both from the camera section and recorded a pair's
+calibration images first, left on 2026-10-18 with the code nothing called: a pair is calibrated by
+`StereoCalibration` and opened as an RGB-D camera, as the next section says.
 
 ## A stereo pair as the cell's camera
 
@@ -131,7 +132,7 @@ It takes three steps, each the one an RGB-D camera takes after its first:
 
 Until step 1 the rig gives no depth, and every door that chooses or opens it says so in one sentence
 that names the file and how to write it (`CameraRefused`, `reason="no_stereo_calibration"`). The stereo
-calibration tools, `StereoCapturePipeline` and the catalogue, keep the raw pair.
+calibration tools and the catalogue keep the raw pair.
 
 **What the matcher searches.** Nothing of it is a config key: the stereo matcher block,
 `camera/stereomatcher.yaml`, left the tree on 2026-10-17, and a tree that still carries it is refused
@@ -288,12 +289,12 @@ The legend is the guide's [evidence levels](../../docs/guide/README.md#what-veri
 
 | Capability | Evidence |
 |---|---|
-| One owner per device, serialised grabs, stamped frames | run on a physical cell: a wrist D415 on a UR10 (CB3); pinned against device doubles in [`test_camera_noun.py`](../../tests/test_camera_noun.py) |
-| The RealSense driver | run on a physical cell: the same D415; in the suite the real librealsense processes its frames, no camera attached ([test](../../tests/test_realsense_sdk_contract.py)), including its filter order and the dropped temporal history after a move ([test](../../tests/test_a_moved_wrist_camera_forgets_the_last_pose.py)) |
-| Min-Z, USB link and depth units at open | never touched hardware; the Min-Z figures are Intel's, and the USB and depth-unit messages are pinned against an SDK double ([test](../../tests/test_a_realsense_says_what_it_opened.py)) |
-| The colour block and the research recording | never touched hardware; the write order, the read-back, the refusals, the frames and the views file are pinned against an SDK double, the names and the extrinsics against the real librealsense ([colour](../../tests/test_the_colour_sensor_holds_what_its_rig_asks.py), [research](../../tests/test_a_rig_recording_for_research_keeps_its_infrared_images.py)) |
+| One owner per device, serialised grabs, stamped frames | run on a physical cell: a wrist D415 on a UR10 (CB3); pinned against device doubles in [`test_camera_noun.py`](../../tests/camera/orchestration/test_camera_noun.py) |
+| The RealSense driver | run on a physical cell: the same D415; in the suite the real librealsense processes its frames, no camera attached ([test](../../tests/camera/setup/image_taking/test_realsense_sdk_contract.py)), including its filter order and the dropped temporal history after a move ([test](../../tests/camera/orchestration/test_a_moved_wrist_camera_forgets_the_last_pose.py)) |
+| Min-Z, USB link and depth units at open | never touched hardware; the Min-Z figures are Intel's, and the USB and depth-unit messages are pinned against an SDK double ([test](../../tests/camera/setup/image_taking/test_a_realsense_says_what_it_opened.py)) |
+| The colour block and the research recording | never touched hardware; the write order, the read-back, the refusals, the frames and the views file are pinned against an SDK double, the names and the extrinsics against the real librealsense ([colour](../../tests/camera/setup/image_taking/test_the_colour_sensor_holds_what_its_rig_asks.py), [research](../../tests/camera/setup/image_taking/test_a_rig_recording_for_research_keeps_its_infrared_images.py)) |
 | Device identity by serial and by index | never touched hardware; how a D435 enumerates beside an OpenCV video device is not observed |
-| A stereo pair as an RGB-D camera | measured offline on the D415's own infrared pair against its chip's depth ([script](../../scripts/stereo/measure_on_the_d415_ir_pair.py), [regression](../../tests/test_stereo_depth_on_the_d415_ir_pair.py)); swept against the robot on a rendered pair with a known lens and baseline ([test](../../tests/test_a_stereo_rig_is_calibrated_against_the_robot.py)); never run on a webcam pair or a stereo device at a cell |
+| A stereo pair as an RGB-D camera | measured offline on the D415's own infrared pair against its chip's depth ([script](../../scripts/stereo/measure_on_the_d415_ir_pair.py), [regression](../../tests/calibration/stereo/sub_modules/test_stereo_depth_on_the_d415_ir_pair.py)); swept against the robot on a rendered pair with a known lens and baseline ([test](../../tests/camera/setup/image_taking/test_a_stereo_rig_is_calibrated_against_the_robot.py)); never run on a webcam pair or a stereo device at a cell |
 
 ## Files
 
@@ -302,7 +303,6 @@ The legend is the guide's [evidence levels](../../docs/guide/README.md#what-veri
 | [`orchestration/camera.py`](orchestration/camera.py) | `Camera`, its refusals, the process registry, `select_rig`, and `create_streamer` and `create_device_streamer`, the one place a device streamer is built |
 | [`stereo_calibration.py`](stereo_calibration.py) | `StereoCalibration` and its report: a pair recorded and solved against its ChArUco board |
 | [`orchestration/frame_provider.py`](orchestration/frame_provider.py) | `FrameProvider` and `RigHandle` |
-| [`pipeline/stereo_capture.py`](pipeline/stereo_capture.py) | `StereoCapturePipeline` |
 | [`setup/`](setup/README.md) | the device drivers, the two frame types and the capture quality settings |
 
 ## Details
@@ -315,6 +315,6 @@ The legend is the guide's [evidence levels](../../docs/guide/README.md#what-veri
 - The adapter that turns a frame into what a pick perceives: [`src/robot/perception/`](../robot/perception/README.md).
 - Every command: [`docs/cli.md`](../../docs/cli.md). The first cell:
   [`docs/runbooks/real_cell_first_pick.md`](../../docs/runbooks/real_cell_first_pick.md).
-- Tests: [`test_camera_noun.py`](../../tests/test_camera_noun.py),
-  [`test_frame_provider_seam.py`](../../tests/test_frame_provider_seam.py),
-  [`test_realsense_streamer.py`](../../tests/test_realsense_streamer.py).
+- Tests: [`test_camera_noun.py`](../../tests/camera/orchestration/test_camera_noun.py),
+  [`test_frame_provider_seam.py`](../../tests/camera/orchestration/test_frame_provider_seam.py),
+  [`test_realsense_streamer.py`](../../tests/camera/setup/image_taking/test_realsense_streamer.py).

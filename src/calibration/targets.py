@@ -11,8 +11,7 @@ marker source and the two estimators speak about the same thing:
   ``ArucoPoseEstimator.observe`` (``stereo/sub_modules/aruco_esti.py``) is the single-marker counterpart.
 * :func:`estimator_for`: the estimator a target describes, read by attribute or by key.
 * :func:`parse_board_spec`: the ``--board`` spelling of a target, as the mapping the schema validates.
-* :func:`canonical_aruco_dict_name` and :func:`aruco_dictionary_size`: dictionary names as OpenCV spells
-  them, and how many ids a dictionary holds.
+* :func:`canonical_aruco_dict_name`: dictionary names as OpenCV spells them.
 
 Only relative target motions enter AX=XB (``B_i = M_{i+1} M_i^-1``), so a constant offset of the target
 frame cancels. A board's origin at its corner is as valid as a marker's at its centre.
@@ -37,7 +36,6 @@ from src.calibration.exceptions import StereoCalibrationError
 __all__ = [
     "CharucoPoseEstimator",
     "Observation",
-    "aruco_dictionary_size",
     "canonical_aruco_dict_name",
     "checked_camera",
     "describe_target",
@@ -104,11 +102,6 @@ def _dictionary(name: str) -> Any:
     except ValueError as exc:
         raise StereoCalibrationError(f"Unknown ArUco dictionary: {name}") from exc
     return cv.aruco.getPredefinedDictionary(getattr(cv.aruco, canonical))
-
-
-def aruco_dictionary_size(name: str) -> int:
-    """How many marker ids the dictionary holds: ids run from 0 to this minus one."""
-    return int(_dictionary(name).bytesList.shape[0])
 
 
 _OTHER_DETECTORS: dict[str, Any] = {}

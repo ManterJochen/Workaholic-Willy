@@ -243,8 +243,8 @@ class GraspCalculator:
         )
         # Optional deformable-handling strategy. ``None`` keeps the rigid
         # pipeline unchanged regardless of any ``deformable_class`` argument;
-        # setting a strategy (e.g. ``RefuseDeformableStrategy()``) engages the
-        # gate so non-rigid targets short-circuit with ``DEFORMABLE_ROUTING_REQUIRED``.
+        # setting a strategy engages the gate so non-rigid targets short-circuit
+        # with ``DEFORMABLE_ROUTING_REQUIRED``.
         self.deformable_strategy: DeformableHandlingStrategy | None = (
             deformable_strategy
         )
@@ -359,7 +359,7 @@ class GraspCalculator:
 
         A method rather than an inline call so ``Scene.from_robot_config``, which builds its jaw from
         the tree through ``SupportFootprintJaw.from_robot_config``, can be held to the same jaw on a
-        profile; ``tests/test_a_scene_plans_the_trees_hand.py`` does that on ``hande``.
+        profile; ``tests/robot/grasping/test_a_scene_plans_the_trees_hand.py`` does that on ``hande``.
         """
         return SupportFootprintJaw.from_model(
             gripper_model if isinstance(gripper_model, ParallelJawGripperModel)
@@ -781,8 +781,8 @@ class GraspCalculator:
                                    else np.vstack([np.asarray(scene_points_mm, dtype=np.float64), _scene_cam]))
 
         # The support-footprint stage: the part's own body over its support (``body_grasps``), planned so the hand
-        # clears the support instead of being filtered for it. Its own score is kept: the calculator's geometric ranker
-        # is anti-correlated with validity on this data (AUC 0.419).
+        # clears the support instead of being filtered for it. Its own score is kept: the geometric ranker that left on
+        # 2026-10-18 was anti-correlated with validity on this data (AUC 0.419).
         #
         # The stage's input at full resolution, without the mask pixels that measure the background behind the part's
         # edge: a band of table seen past the far edge through depth-to-colour misregistration pulls a face out to it;

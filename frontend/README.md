@@ -429,7 +429,7 @@ to what the console says.
   something (Verbinden, "Arm freigeben", "Jetzt öffnen"); `--halt` is only ever a filled orange button with a
   dark label, for "Sofort anhalten"; the lime accent fills the controls that start motion, since IEC 60204-1
   never colours a start red. Colour never carries the text.
-- **Contrast is a test.** [`tests/test_console_contrast.py`](../tests/test_console_contrast.py) reads the
+- **Contrast is a test.** [`tests/repo/test_console_contrast.py`](../tests/repo/test_console_contrast.py) reads the
   numbers out of `styles.css` and checks WCAG AA for every text tier on every surface it can land on, the halt
   label on its fill, the brand's tokens, text on tinted surfaces and the status colours used as text.
 - **One file of design tokens.** `src/styles.css` is a Tailwind v4 theme: the palette is declared under
@@ -493,8 +493,8 @@ to what the console says.
 |---|---|
 | The screens, the run model and the catalogs keep the rules marked yes above | `npm test` (Vitest) |
 | A task from Setup to the cockpit, halted, the cell cleared and restarted, the audience window mirroring it, and one click halting with the Diagnostics drawer open | `npm run e2e` (Playwright, Chromium) against `console_dummy` |
-| The server serves the built pages, and an unknown `/v1` path stays a JSON 404 | [`tests/test_api_serves_the_console.py`](../tests/test_api_serves_the_console.py) |
-| Contrast and the brand's tokens | [`tests/test_console_contrast.py`](../tests/test_console_contrast.py) |
+| The server serves the built pages, and an unknown `/v1` path stays a JSON 404 | [`tests/api/test_api_serves_the_console.py`](../tests/api/test_api_serves_the_console.py) |
+| Contrast and the brand's tokens | [`tests/repo/test_console_contrast.py`](../tests/repo/test_console_contrast.py) |
 | Preflight, build, connect, live status, a pick, history and disconnect, through the console's earlier pages | measured against real controller software (URSim, UR3e, 2026-08-20); the cockpit and Setup have replaced those pages since |
 | The routes the cockpit calls for a task, halt now, the way back and the jaws question | measured against real controller software (URSim CB3), through the API in-process, not through these pages ([what the probes prove](../docs/runbooks/console_at_the_cell.md#3-what-the-probes-prove)) |
 | The cockpit, Setup and the audience window in a browser | run on `console_dummy` (Playwright); not yet against URSim ([the runbook](../docs/runbooks/console_at_the_cell.md), the URSim checklist, step 3) |

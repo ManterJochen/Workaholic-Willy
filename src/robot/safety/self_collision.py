@@ -562,7 +562,7 @@ class SelfCollisionGuard:
         Public because more than the meshes depend on it. A sampled path is bounded by how far a joint can swing a
         point of this same arm, so the two answers have to be the same robot. An arm that could not name itself cost
         aurora's M1 gate on 2026-09-12: the Isaac arm answered `isaac-sim`, no reach derived, and every motion in the
-        sim was refused as unsampleable. ``tests/test_joint_path_gate.py`` keeps that case.
+        sim was refused as unsampleable. ``tests/robot/safety/test_joint_path_gate.py`` keeps that case.
         """
         if self.refusal_for(arm) is not None:
             return None

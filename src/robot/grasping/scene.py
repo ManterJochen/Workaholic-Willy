@@ -79,7 +79,7 @@ _GEOMETRIC = "geometric"
 #: How far a single view's target cloud has to reach along the support normal before its lowest point
 #: may raise the support, millimetres. The pick loop's ``_MIN_CLOUD_EXTENT_FOR_SUPPORT_MM``, restated
 #: rather than imported because importing the pick loop here would put it on the import path of every
-#: bare-cloud caller and of the locator; ``tests/test_a_scene_plans_the_trees_hand.py`` holds the two
+#: bare-cloud caller and of the locator; ``tests/robot/grasping/test_a_scene_plans_the_trees_hand.py`` holds the two
 #: equal. Below it the cloud is one face seen head-on, its lowest point is that face, and the plane
 #: would land on top of the object.
 _MIN_CLOUD_EXTENT_FOR_SUPPORT_MM = 25.0

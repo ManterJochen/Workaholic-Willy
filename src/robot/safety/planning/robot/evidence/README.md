@@ -63,4 +63,4 @@ meet that bar. The count of those disagreements is recorded anyway, as the price
 ## Details
 
 - [`../../evidence.py`](../../evidence.py) reads and checks these files
-- Tests: `tests/test_combination_evidence.py`, `tests/test_committed_evidence.py`
+- Tests: `tests/robot/safety/planning/test_combination_evidence.py`, `tests/robot/safety/planning/test_committed_evidence.py`

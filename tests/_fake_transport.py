@@ -29,8 +29,8 @@ What it answers:
   output is written (``ArmHalted``) but the end of a pulse, as the UR connection refuses them, until ``clear_halt``.
   A read of the latch is the link's own state, asked before every motion, and stays off the tape.
 
-The behaviour it shares with ``URTransport`` is held by ``tests/test_every_transport_keeps_the_transport_contract.py``,
-and its members by ``tests/test_the_fake_transport_keeps_step_with_the_protocols.py``; ``tests/_injection_guard.py``
+The behaviour it shares with ``URTransport`` is held by ``tests/robot/drivers/ur/test_every_transport_keeps_the_transport_contract.py``,
+and its members by ``tests/robot/safety/planning/test_the_fake_transport_keeps_step_with_the_protocols.py``; ``tests/_injection_guard.py``
 refuses a write that would create a name on it.
 """
 
@@ -104,7 +104,7 @@ def silenced() -> Iterator[None]:
     """Every fake answers as before and records nothing, neither its tape nor what it sent (P0g slice 13).
 
     The sabotage control's instrument: a test that reads what a fake was sent must fail inside this block, or its
-    negatives would pass on a fake that recorded nothing (``tests/test_the_kit_tests_read_what_the_fake_records.py``).
+    negatives would pass on a fake that recorded nothing (``tests/repo/test_the_kit_tests_read_what_the_fake_records.py``).
     """
     _SILENCED[0] = True
     try:

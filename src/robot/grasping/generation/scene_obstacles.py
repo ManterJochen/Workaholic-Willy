@@ -953,7 +953,7 @@ class SeenEnvelope:
         part on the owner's cell had 38 boxes beside it (2026-10-08), and measuring the hand's 3 boxes against all 38 was
         95 % of a call's 1.7 to 2.0 ms on synthetic scenes of the Hand-E; measured only where it can refuse, a call takes
         0.6 to 0.7 ms, and the verdict is the same on every pose of the seeded scenes
-        (``tests/test_the_seen_boxes_are_measured_only_where_they_could_refuse.py``).
+        (``tests/robot/grasping/generation/test_the_seen_boxes_are_measured_only_where_they_could_refuse.py``).
         """
         turn = np.asarray(rotation, dtype=np.float64).reshape(3, 3)
         at = np.asarray(position, dtype=np.float64).reshape(3)

@@ -60,5 +60,5 @@ at 2 mm from a camera's box (`robominds_config_robotiq_ported`), before it the t
 formats read: a pick recorded before 2026-10-12 carries no segmentation, so its target's mask is its fused cloud
 projected into the look, and it has no neighbour the detector named.
 
-`tests/test_the_replay_bank_reads_what_a_cell_recorded.py` pins what needs no recording: a pick read back as written,
+`tests/scripts/replay_bank/test_the_replay_bank_reads_what_a_cell_recorded.py` pins what needs no recording: a pick read back as written,
 a refusal named by what met what, and the gate.

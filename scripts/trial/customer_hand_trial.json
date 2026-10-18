@@ -725,7 +725,7 @@
     {
      "id": "p5-suite",
      "timeout_s": 14400,
-     "run": "$PY -m pytest tests/ --ignore=tests/test_no_foreign_corpus.py --deselect tests/test_recovery_policy.py::CommittedArtifactTests::test_committed_artifact_reproduces_from_packs --deselect tests/test_ranking_shadow_and_pairwise_logistic.py::CommittedArtifactSha256Tests::test_cli_regenerates_byte_identical_artifact -p no:cacheprovider --no-cov -rfE",
+     "run": "$PY -m pytest tests/ --ignore=tests/repo/test_no_foreign_corpus.py --deselect tests/test_recovery_policy.py::CommittedArtifactTests::test_committed_artifact_reproduces_from_packs --deselect tests/test_ranking_shadow_and_pairwise_logistic.py::CommittedArtifactSha256Tests::test_cli_regenerates_byte_identical_artifact -p no:cacheprovider --no-cov -rfE",
      "expect": {
       "exit": 0,
       "stdout_has": [
@@ -735,7 +735,7 @@
     }
    ],
    "why_left_out": {
-    "tests/test_no_foreign_corpus.py": "runs git ls-files in the repository root, and the copy carries no .git",
+    "tests/repo/test_no_foreign_corpus.py": "runs git ls-files in the repository root, and the copy carries no .git",
     "tests/test_recovery_policy.py::CommittedArtifactTests::test_committed_artifact_reproduces_from_packs": "train_recovery._hash_pack_paths hashes the packs' absolute paths, so the committed artifact reproduces only in the checkout it was generated in, and a copy is not that checkout",
     "tests/test_ranking_shadow_and_pairwise_logistic.py::CommittedArtifactSha256Tests::test_cli_regenerates_byte_identical_artifact": "red in the copy's full suite twice and green alone in the same copy, with its dataset splits byte identical to the original's; the sibling that compares the numbers passes. A byte identity that depends on suite order or on ignored local state"
    }

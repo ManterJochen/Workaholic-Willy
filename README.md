@@ -106,7 +106,7 @@ The looping previews above are muted GIFs. The full recordings live in [`docs/as
 |  |  |
 |---|---|
 | 🗣 **Vision-language perception** | Text prompt → Qwen-VL grounds it (RT-DETR for trained classes) → SAM2 segments → masked point cloud, over stereo or RGB-D depth. The VLM reads colours, negations and where a part lies. |
-| ✋ **6-DoF grasp synthesis** | Support-plane geometry → antipodal / surface / dense contact sampling → geometric + stability + reachability scoring → deterministic rank. The math: [`docs/grasping-math.md`](docs/grasping-math.md). |
+| ✋ **6-DoF grasp synthesis** | The part's own body over its support → grasps that lean up to 90 degrees and roll onto its faces where a camera saw the way in → one score of measured margins (friction cone, aperture, table clearance, uprightness) → the exact guard judges each. The math: [`docs/grasping-math.md`](docs/grasping-math.md). |
 | 🛡 **Fail-closed safety** | Six ordered guards (workspace · joint-limit · IK-quality · self-collision · payload · motion-continuity) run before every motion and **outrank every learned layer**. The math: [`docs/safety-math.md`](docs/safety-math.md). |
 | 🧭 **Collision-free motion** | cuRobo + Coal (vertex-exact mesh self-collision), with a blind-IK fallback that keeps CI green. |
 | 🤖 **Vendor-neutral drivers** |  All behind one `RobotArm`/`Gripper` `Protocol`. |

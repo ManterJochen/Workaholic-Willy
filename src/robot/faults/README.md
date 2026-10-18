@@ -7,7 +7,7 @@ python -m src.robot.faults acknowledge --profile ursim --yes    # the person at 
 
 The one door to `SupportsRobotStatus.acknowledge_fault` (P0i i4). Recovery is never automatic (owner, 2026-09-19):
 nothing in `robot/execution`, `robot/grasping`, `robot/safety` or `api/` calls it, and the console shows a fault and
-this command beside it and clears nothing (owner, 2026-09-26). `tests/test_a_fault_has_one_door.py` holds every caller
+this command beside it and clears nothing (owner, 2026-09-26). `tests/repo/test_a_fault_has_one_door.py` holds every caller
 in this repository's code to this package.
 
 | File | What it holds |

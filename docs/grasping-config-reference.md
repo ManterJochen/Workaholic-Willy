@@ -326,7 +326,7 @@ refused a config that set one. Its last flag, `occlusion.hard_reject_enabled`, l
 block, and the list went with it.
 
 The rule it kept stays: every flag left must move the runtime, which
-[`tests/test_grasping_wiring_guard.py`](../tests/test_grasping_wiring_guard.py) checks flag by flag, so a
+[`tests/robot/grasping/types/test_grasping_wiring_guard.py`](../tests/robot/grasping/types/test_grasping_wiring_guard.py) checks flag by flag, so a
 flag may not be quietly acceptable and inert. A block or a switch removed on purpose is refused at load with
 the sentence that says what replaced it ([`src/config/schema/_removed.py`](../src/config/schema/_removed.py)),
 and `python -m src.config migrate PATH --write` rewrites an old tree to the keys this Willy reads.

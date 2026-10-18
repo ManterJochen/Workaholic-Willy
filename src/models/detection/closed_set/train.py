@@ -21,12 +21,11 @@ import argparse
 import json
 import sys
 from collections.abc import Iterable
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from src.contracts.options import UNSET, chosen
 from src.models.constants import MODELS_LOG_DIR, RTDETR_TRAIN_LOG_FILE
-from src.models.detection.closed_set.training.plan import DEFAULT_SEED, DetectorPlanOverrides
+from src.models.detection.closed_set.training.plan import DetectorPlanOverrides
 from src.models.detection.closed_set.training.recipes import DEFAULT_BASE_MODEL, RECIPES, TIERS
 from src.utility.log_cfg import create_logger
 
@@ -34,113 +33,6 @@ _LOG = create_logger("RtDetrTrain", log_file=RTDETR_TRAIN_LOG_FILE, log_dir=MODE
 
 DEFAULT_OUTPUT_DIR = "assets/models/rtdetr/v1"
 DEFAULT_DATA_DIR = "data/detect/v1"
-
-
-# --------------------------------------------------------------------------------------------------
-# The small COCO reader older callers import (``training/datasets.py`` is the one a run uses)
-# --------------------------------------------------------------------------------------------------
-@dataclass(frozen=True, slots=True)
-class TrainConfig:
-    """Fine-tuning settings for :func:`train_rtdetr`; ``DetectorPlan`` is the full description of a run."""
-
-    base_model_id: str = DEFAULT_BASE_MODEL
-    epochs: int = 50
-    learning_rate: float = 1e-4
-    batch_size: int = 8
-    image_size: int = 640
-    seed: int = DEFAULT_SEED
-    num_workers: int | None = None
-
-    def to_dict(self) -> dict:
-        from dataclasses import asdict  # noqa: PLC0415
-
-        return asdict(self)
-
-
-@dataclass(frozen=True, slots=True)
-class CocoImageRecord:
-    """One image + its annotations, in the shape the HF image processor's ``annotations`` arg wants."""
-
-    image_id: int
-    file_name: str
-    coco_annotations: list[dict]
-
-
-@dataclass(frozen=True, slots=True)
-class CocoIndex:
-    """A parsed COCO ``annotations.json``: category map + per-image records."""
-
-    categories: dict[int, str]
-    records: list[CocoImageRecord]
-    source_path: str
-    num_annotations: int = field(default=0)
-
-    def image_records(self) -> list[CocoImageRecord]:
-        return self.records
-
-
-def load_coco_index(annotations_path: str | Path) -> CocoIndex:
-    """Parse a COCO detection ``annotations.json``; ``FileNotFoundError`` when missing, ``ValueError`` when malformed."""
-    p = Path(annotations_path)
-    if not p.is_file():
-        raise FileNotFoundError(f"COCO annotations.json not found: {p}")
-    doc = json.loads(p.read_text(encoding="utf-8"))
-    for key in ("images", "annotations", "categories"):
-        if key not in doc:
-            raise ValueError(f"COCO file {p} missing required key {key!r}")
-    categories = {int(c["id"]): str(c["name"]) for c in doc["categories"]}
-    if not categories:
-        raise ValueError(f"COCO file {p} declares no categories")
-    categories = dict(sorted(categories.items()))
-    by_image: dict[int, list[dict]] = {int(im["id"]): [] for im in doc["images"]}
-    for ann in doc["annotations"]:
-        iid = int(ann["image_id"])
-        if iid not in by_image:  # an annotation for an image the file doesn't declare -> skip, don't crash
-            continue
-        bbox = [float(v) for v in ann["bbox"]]
-        by_image[iid].append({
-            "bbox": bbox,
-            "category_id": int(ann["category_id"]),
-            "area": float(ann.get("area", bbox[2] * bbox[3])),
-            "iscrowd": int(ann.get("iscrowd", 0)),
-            "id": int(ann.get("id", 0)),
-        })
-    records = [
-        CocoImageRecord(image_id=int(im["id"]), file_name=str(im["file_name"]),
-                        coco_annotations=by_image.get(int(im["id"]), []))
-        for im in doc["images"]
-    ]
-    return CocoIndex(categories=categories, records=records, source_path=str(p),
-                     num_annotations=len(doc["annotations"]))
-
-
-def build_id2label(index: CocoIndex) -> dict[int, str]:
-    """The model ``id2label``: the dataset's categories over a contiguous ``0..N-1`` label space, by sorted id."""
-    return {i: name for i, (_cid, name) in enumerate(index.categories.items())}
-
-
-def _category_remap(index: CocoIndex) -> dict[int, int]:
-    """COCO ``category_id`` -> contiguous model label id (0..N-1), by sorted category id."""
-    return {cid: i for i, (cid, _name) in enumerate(index.categories.items())}
-
-
-# --------------------------------------------------------------------------------------------------
-# Training and evaluation
-# --------------------------------------------------------------------------------------------------
-def train_rtdetr(*, data_dir: str, output_dir: str, config: TrainConfig) -> dict:
-    """Train at the ``full`` tier with ``config``'s settings and return the written manifest.
-
-    The function the first command line exposed, kept for its callers; it runs through ``DetectorTraining``.
-    """
-    from src.models.detection.closed_set.training.api import DetectorTraining  # noqa: PLC0415
-
-    overrides = DetectorPlanOverrides(base_model=config.base_model_id, epochs=config.epochs,
-                                      learning_rate=config.learning_rate, batch=config.batch_size,
-                                      image_size=config.image_size, seed=config.seed, workers=config.num_workers)
-    run = DetectorTraining.from_dataset(dataset=data_dir, overrides=overrides, out_dir=output_dir)
-    report = run.train()
-    run.write_report(report)
-    return json.loads(Path(report.raw["manifest"]).read_text(encoding="utf-8"))
 
 
 def evaluate_rtdetr(*, model_dir: str, data_dir: str, batch_size: int = 8, format: str = "auto",

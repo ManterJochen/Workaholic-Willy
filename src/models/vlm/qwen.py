@@ -29,7 +29,7 @@ Hugging Face cache, and never a download.
 Measured against the real 4B weights on the dev box's RTX 5080 (2026-10-01): the load takes about
 6.3-6.5 s and holds 8.93 GB, a command's text answer peaks at 9.8-9.9 GB (a retried question is the
 longest) and takes about 2.2 s, an unload hands all of it back (0.01 GB still allocated), and the
-grounding tests pass (`tests/test_vlm_inference.py`, `tests/test_vlm_command_inference.py`). The
+grounding tests pass (`tests/models/vlm/test_vlm_inference.py`, `tests/models/vlm/test_vlm_command_inference.py`). The
 grounding quality on a real cell's scenes, the VRAM on any other card and the choice between the 4B
 and 8B checkpoints are unmeasured, so the config default has to follow a measurement rather than the
 other way round.

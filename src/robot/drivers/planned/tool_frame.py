@@ -11,7 +11,7 @@ from two things a planned arm already has:
 * ``T_base_to_flange`` is the last frame of the arm description's serial chain (:func:`described_chain`), the flange,
   meaning the TCP without a tool. Until P0g slice 15 this read the UR DH table in ``safety/_ur_kinematics.py``; the
   chain is that table expression for expression, held to exact equality over every described model, every link and a
-  thousand random joint vectors by ``tests/test_serial_chain_is_the_ur_chain.py``, so the move changed no bit.
+  thousand random joint vectors by ``tests/robot/safety/test_serial_chain_is_the_ur_chain.py``, so the move changed no bit.
 
 Their difference is the tool register of the controller.
 

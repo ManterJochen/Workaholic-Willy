@@ -49,8 +49,9 @@ call offers nothing, `support_footprint_ready` in the telemetry is `False`, `no_
 is `NO_CANDIDATES_GENERATED`. It also gives up when fewer than 20 cloud points survive the support-height cut. An
 empty result is the stage's answer, not a failure: it looked and found no legal grasp, or it could not look at all.
 The stage runs no IK, reachability or safety check: its candidates pass the same filters as any others, and its own
-score is kept as `total_score`, because the geometric scorer does not order these candidates usefully. The jaw
-dimensions come from `ParallelJawGripperModel`, the one measurement of the jaw every consumer reads.
+score is their `total_score` and orders them. The geometric scorer, which ordered them worse than a coin (AUC 0.419
+against physical validity), left with the other scorers on 2026-10-18; nothing called them. The jaw dimensions come
+from `ParallelJawGripperModel`, the one measurement of the jaw every consumer reads.
 
 `telemetry["geometry_stage"]` says `support_footprint`. The silhouette stage, which anchored grasps on the visible
 surface and let the filters discard what did not fit, left on 2026-10-16 with its dense and geometry-first samplers,
@@ -220,10 +221,11 @@ the boxes whose spheres and whose extents along BASE's axes come within the guar
 
 ## What it does not do
 
-The deformable seam is inert. No caller passes `deformable_strategy=`, so the gate is skipped, and
-`CablePCAStrategy` always refuses with a telemetry hint. This calculator is built for rigid
-parallel-jaw grasps; cables, cloth and bags need another planner, and the seam exists so that the rigid
-path never pretends otherwise.
+The deformable seam is inert. No caller passes `deformable_strategy=`, so the gate is skipped; a strategy
+that satisfies `DeformableHandlingStrategy` and returns `proceed=False` refuses with its own reasons. The two
+strategies that shipped, a refusing default and a cable hint that refused as well, left on 2026-10-18 with the
+code nothing called. This calculator is built for rigid parallel-jaw grasps; cables, cloth and bags need
+another planner, and the seam exists so that the rigid path never pretends otherwise.
 
 ## Status
 
@@ -257,7 +259,7 @@ path never pretends otherwise.
 - [grasping/](../README.md): the stack this is the entry point of, and the generator selector
 - [geometry/](../geometry/README.md), [contacts/](../contacts/README.md): the layers it consumes
 - [scoring/](../scoring/README.md), [collision/](../collision/README.md), [planning/](../planning/README.md):
-  the scores and filters its candidates pass
+  the score record its candidates carry, the filters they pass and the pose they are built as
 - [multiview/](../multiview/README.md): `geometry_points_base_mm`, which feeds a fused cloud into this stage, and
   `footprint_points_base_mm`, the same views less their rim
 - [deep/](../deep/README.md): the learned generator selected in its place

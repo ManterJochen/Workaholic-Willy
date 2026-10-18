@@ -68,7 +68,6 @@ __all__ = [
     "cancel_pending",
     "check",
     "controller_stop",
-    "ended_open",
     "halt_refusal",
     "hand_of",
     "install",
@@ -201,7 +200,7 @@ def _is_suction(gripper: object) -> bool:
 class JawAskingLike(Protocol):
     """One question a toggle hand asks, as the browser seam reads it: the library's ``JawAsking`` (library L10), which
     the hand hands to the seam its ``answer_questions_with`` installed, once per attempt. Read-only, so a frozen
-    dataclass answers it; ``tests/test_api_contract.py`` pins these names against the library's once it has landed.
+    dataclass answers it; ``tests/api/test_api_contract.py`` pins these names against the library's once it has landed.
     The library's ``of`` (how many attempts there are) is read where it is there, and is 3 where not."""
 
     @property
@@ -353,7 +352,7 @@ class BrowserJawQuestions:
     the browser gave it, one of the question's own choices (``open``/``closed``, then ``open_now``/``abort``). A timeout,
     :meth:`cancel` (a Disconnect, a shutdown) and a question asked while another waits raise ``EOFError``, which the hand
     takes as no answer and refuses, never as "open". :meth:`pending` answers the question in progress, and
-    ``tests/test_api_contract.py`` asks on a thread and cancels once the question waits.
+    ``tests/api/test_api_contract.py`` asks on a thread and cancels once the question waits.
 
     A connect's or a check's questions are one flow (:meth:`open_flow`, :meth:`close_flow`): the question stays pending
     from the first one (a check: from its start) until the console closed the flow, the change it led to sent and
@@ -659,13 +658,6 @@ def answer(console: "Console", question_id: str, choice: str) -> PendingJawQuest
     if not isinstance(seam, BrowserJawQuestions):
         raise JawsRefused(RefusalCode.NO_QUESTION, "no jaws question waits for an answer on this console")
     return seam.answer(question_id, choice)
-
-
-def ended_open(console: "Console", opened: bool) -> None:
-    """A question ended with the jaws standing open: stamp it through ``console.stamp_jaws_open(opened=opened)``
-    (``opened`` after "open now": a person held the part at the jaws, so the next moving run counts down; the stamps are
-    read-only, and the countdown reads the order their methods keep)."""
-    console.stamp_jaws_open(opened=opened)
 
 
 def before_change(console: "Console") -> Callable[[], str]:

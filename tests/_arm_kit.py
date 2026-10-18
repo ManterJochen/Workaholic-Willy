@@ -19,9 +19,9 @@ the helper it replaces                                the kit builder
 
 The trees still name a UR model: every description this repository holds is a UR's, and the core still reads UR
 geometry in the places P1 replaces. What the kit does not do is import the UR driver, so a test built on it holds
-for any vendor whose transport answers the same (``tests/test_every_transport_keeps_the_transport_contract.py``), and
+for any vendor whose transport answers the same (``tests/robot/drivers/ur/test_every_transport_keeps_the_transport_contract.py``), and
 the pieces it hands ``PlannedArm`` from a tree are the ones the UR driver hands it, or the same refusal
-(``tests/test_the_kit_builds_what_the_ur_driver_builds.py``).
+(``tests/robot/drivers/ur/test_the_kit_builds_what_the_ur_driver_builds.py``).
 Controller readings are given the way a UR reports them, ``[x_m, y_m, z_m, rx, ry, rz]``, and turned into poses by the
 same arithmetic the UR transport uses (:func:`controller_pose`, :func:`controller_matrix`), so a test that moved here
 reads the numbers it read before, bit for bit.
@@ -157,7 +157,7 @@ class PlannerDouble:
 class RecordingPlanner:
     """A planner that records the samples a judged path asks about, and at what clearance, and answers ``verdict``
     (clear by default). It plans nothing, so a line it or the guards refuse is refused: a plan around it has its own
-    tests (``tests/test_a_joint_target_goes_to_its_twin_and_around_what_its_line_hits.py``)."""
+    tests (``tests/robot/safety/test_a_joint_target_goes_to_its_twin_and_around_what_its_line_hits.py``)."""
 
     def __init__(self, verdict: Any = None) -> None:
         self._verdict = verdict

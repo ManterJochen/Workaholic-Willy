@@ -66,8 +66,7 @@ they fail the band only after being counted, and downsampling first would let on
 as a voxel representative. Discard, then band, then downsample is the only order in which a hole
 cannot reach the cloud.
 
-Code: [`src/robot/grasping/geometry/pointcloud.py`](../src/robot/grasping/geometry/pointcloud.py) and
-[`src/robot/grasping/geometry/filters.py`](../src/robot/grasping/geometry/filters.py)
+Code: [`src/robot/grasping/geometry/pointcloud.py`](../src/robot/grasping/geometry/pointcloud.py)
 
 ---
 
@@ -164,7 +163,8 @@ These weights are hand-tuned priors, deliberately, so this layer stays a cheap d
 pre-filter. Learning the prior itself needs a real grasp-outcome corpus.
 
 The calculator searched these pairs in its silhouette and geometry-first stages until those left on 2026-10-16
-(the owner's cleanup); the search stays in `contacts/` for a caller of its own.
+(the owner's cleanup); the search stays in `contacts/`, where the multi-finger planners' `ParallelJawContactPlanner`
+calls it.
 
 Code: [`src/robot/grasping/contacts/antipodal.py`](../src/robot/grasping/contacts/antipodal.py)
 
@@ -220,11 +220,12 @@ leaves fewer than three square grasps, a finer pass runs: the leans every 7.5 de
 the frames of the hand rolled 10, 20 and 30 degrees about its binormal, one finger higher than the other, so the pads
 lie on a tilted part's leaning faces.
 
-These candidates are deliberately not re-ranked by the geometric scorer of section 9. The breakdowns
-are built with this stage's own score as `total_score` directly, and `stability_score` and
-`reachability_score` are left at `0.0` and said so, because a single blend of physical margins does
-not decompose into the calculator's three categories and splitting it into those buckets would be an
-invention. The real margins ride along in `metadata` instead.
+The calculator keeps this score. Its breakdowns carry it as `total_score` and `geometric_score`, and
+leave `stability_score` and `reachability_score` at `0.0` and say so (`score_is_undecomposed`): a
+single blend of physical margins does not decompose into those three categories, and splitting it
+into them would be an invention. The real margins ride along in `components["support_footprint"]`
+instead. The scorers that blended the three categories, and the two-contact force-closure
+certificate, left on 2026-10-18 with the code nothing called.
 
 Code: [`src/robot/grasping/generation/body_grasps.py`](../src/robot/grasping/generation/body_grasps.py),
 [`src/robot/grasping/generation/hand.py`](../src/robot/grasping/generation/hand.py)
@@ -233,27 +234,30 @@ and
 
 ---
 
-## 6. Contact pair to grasp pose, constructing the frame
+## 6. Grasp axes to a pose, constructing the frame
 
 A `GraspPose` is a full `SE(3)` frame whose rotation columns are `[closing, binormal, approach]`.
-Given the closing axis `x_hat` and a preferred approach direction `a`, the construction is a
-Gram-Schmidt with a handedness fix:
+Given the approach `a` and the closing axis `c`, the construction keeps the approach and is a
+Gram-Schmidt on the closing axis:
 
 ```
-x_hat = normalise(closing_axis)
-z_hat = normalise(a - dot(a, x_hat) * x_hat)   approach, projected perpendicular to the closing axis
-y_hat = normalise(cross(z_hat, x_hat))         binormal
-z_hat = normalise(cross(x_hat, y_hat))         re-derived, so the triad is exactly orthonormal
+z_hat = normalise(a)                             approach
+x_hat = normalise(c - dot(c, z_hat) * z_hat)     closing, projected perpendicular to the approach
+y_hat = cross(z_hat, x_hat)                      binormal; the triad is right handed, det(R) = +1
 
-R = [x_hat | y_hat | z_hat],  and if det(R) < 0, flip y_hat and rebuild
+R = [x_hat | y_hat | z_hat]
 ```
 
-If the preferred approach is parallel to the closing axis the projection collapses; the generator
-then walks a list of fallback approach axes and raises only if every candidate is dependent. It
-never guesses a direction.
+A zero approach, or a closing axis that is zero or lies along the approach (what the projection leaves
+of it is under `1e-6` of its length), raises: no rotation is defined there, and the construction never
+guesses a direction. `pose_from_grasp_axes` builds every candidate's `pose()` this way. The
+support-footprint stage builds its `GraspPose` by the same projection when it rotates a candidate into
+CAMERA, and drops a candidate whose closing axis collapses onto the approach. The construction from a
+contact pair, which kept the closing axis and projected the approach instead, left on 2026-10-18 with
+the code nothing called.
 
-`GraspPose` validates on construction: finite entries, `transpose(R) * R = I` and `det(R) = +1`, and
-scores in `[0, 1]`.
+`GraspPose` validates on construction: finite entries, `transpose(R) * R = I` and `det(R) = +1`
+within `1e-6`, and scores in `[0, 1]`.
 
 **Rigid transforms must re-orthonormalise.** `transform_grasp_pose` composes the pose with a
 calibration matrix and re-orthonormalises the result by SVD Procrustes, because the two validators
@@ -261,7 +265,8 @@ hold different tolerances on purpose: `validate_transform` admits orthonormality
 since a real calibration matrix carries numerical slack, while `GraspPose` re-validates at `1e-6`.
 Without the cleanup, inherited slack trips the strict gate and raises in the middle of a pick.
 
-Code: [`src/robot/grasping/planning/pose_generation.py`](../src/robot/grasping/planning/pose_generation.py) and
+Code: [`src/robot/grasping/geometry/grasp_frame.py`](../src/robot/grasping/geometry/grasp_frame.py),
+[`src/robot/grasping/planning/grasp_pose.py`](../src/robot/grasping/planning/grasp_pose.py) and
 [`src/robot/grasping/planning/reachability.py`](../src/robot/grasping/planning/reachability.py)
 
 ---
@@ -313,86 +318,7 @@ Code: [`src/robot/grasping/collision/gripper_model.py`](../src/robot/grasping/co
 
 ---
 
-## 8. Force closure, the two-contact certificate
-
-For two point contacts with Coulomb friction coefficient `mu`, Nguyen's (1988) criterion for force
-closure is that the line `v` joining the contacts lies inside both friction cones:
-
-```
--dot(v_hat, n_a) >= cos(arctan(mu))   and   dot(v_hat, n_b) >= cos(arctan(mu))
-```
-
-and the threshold has a closed form that avoids the transcendental entirely:
-
-```
-cos(arctan(mu)) = 1 / sqrt(1 + mu * mu)
-```
-
-The certificate reports `cos_alpha_a = -dot(v_hat, n_a)` and `cos_alpha_b = dot(v_hat, n_b)`, both
-clipped to `[-1, 1]`, and
-
-```
-margin = min(cos_alpha_a, cos_alpha_b) - cos_threshold      certified iff margin >= 0
-```
-
-This proves force closure under a contact model. It is not a wrench-space proof and it is no
-substitute for hardware force feedback. It ships off by default and is used as a transparency
-signal.
-
-Code: [`src/robot/grasping/scoring/force_closure.py`](../src/robot/grasping/scoring/force_closure.py)
-
----
-
-## 9. Scoring, three axes and one blend
-
-Every scorer is pure and never rejecting, because hard rejection is a calculator and safety concern.
-Each axis is itself a normalised weighted sum of components.
-
-**Geometric**, is this a good grasp on this shape?
-
-```
-width_fit = clip(1 - abs(w - mid) / half_range, 0, 1)       mid = 0.5 * (w_min + w_max)
-
-geometric = (0.40 * antipodal + 0.25 * normal_opposition
-           + 0.25 * axis_alignment + 0.10 * width_fit) / sum_of_weights
-```
-
-**Stability**, will it stay held?
-
-```
-table_clearance = clip((clearance - required) / good_margin, 0, 1)
-
-stability = (0.35 * confidence + 0.25 * contact_stability
-           + 0.30 * collision_free + 0.10 * table_clearance) / sum_of_weights
-```
-
-**Reachability**, can the arm plausibly get there? This is geometry only and not a real IK query.
-
-```
-workspace_margin = clip(min_face_margin / good_margin_mm, 0, 1)
-approach_align   = clip(1 - theta / max_angle, 0, 1)     theta = angle(approach, preferred)
-
-reachability = (0.70 * workspace_margin + 0.30 * approach_align) / sum_of_weights
-```
-
-The top-level blend:
-
-```
-total = clip(0.50 * geometric + 0.35 * stability + 0.15 * reachability, 0, 1)
-```
-
-Ranking sorts descending with a deterministic tie-break by input index, so equal scores never
-reorder from one run to the next.
-
-A fourth axis, feasibility (IK quality, approach path and corridor risk), sat in the blend at weight
-`0.0` until 2026-10-16, when it left with `robot.grasping.feasibility`: at that weight it moved no
-score, and raised to `0.5` it changed none of the 479 picks of the owner's cell's replay bank.
-
-Code: [`scoring/`](../src/robot/grasping/scoring/README.md)
-
----
-
-## 10. Suction, seal and wrench
+## 8. Suction, seal and wrench
 
 A suction grasp has no aperture and no antipodal pair. It has one sealable contact and a press
 direction. Two independent models multiply.
@@ -447,7 +373,7 @@ Code: [`src/robot/grasping/suction/seal.py`](../src/robot/grasping/suction/seal.
 
 ---
 
-## 11. Multi-view, deciding two blobs are one object
+## 9. Multi-view, deciding two blobs are one object
 
 Fusing clouds across cameras needs an answer to whether camera B's blob is the same object as camera
 A's. Three metrics are available and the default is `overlap`:
@@ -486,7 +412,7 @@ Code: [`src/robot/grasping/multiview/association.py`](../src/robot/grasping/mult
 
 ---
 
-## 12. Out to the robot
+## 10. Out to the robot
 
 The pose leaves the grasping layer in the BASE frame. For a fixed camera that is one static
 composition; for a wrist camera it is recomposed from the live TCP every frame:
@@ -508,12 +434,12 @@ Code: [`src/robot/grasping/motion/frame_resolver.py`](../src/robot/grasping/moti
 
 ---
 
-## 13. What this math does not know
+## 11. What this math does not know
 
 | | |
 |---|---|
-| Whether the grasp survives a lift | Every criterion here is about the moment of closing. Force closure under a contact model is not a dynamics proof, and shake or lift is a physics measurement rather than a formula. |
-| Reachability | The reachability axis of section 9 is a workspace box and an angle. Real reachability is an IK query against the arm actually bolted to the table. |
+| Whether the grasp survives a lift | Every criterion here is about the moment of closing. A friction cone under a contact model is not a dynamics proof, and shake or lift is a physics measurement rather than a formula. |
+| Reachability | The grasping layer's own reach check is a workspace box the grasp's position must lie in; an IK query runs only where a caller hands the calculator an `IKService`. Real reachability is an IK query against the arm actually bolted to the table. |
 | Concave shape | The analytic reference in [`datagen/grasps/`](../datagen/grasps/README.md) authors many object kinds as a small set of convex solids, so anything it grades is graded as convex primitives. |
 | Real sensor noise | Real depth returns holes inside a mask and leaks at mask edges. The robustness the stack carries was developed against rendered depth, which is a starting point and not a proven answer. |
 | Whether the prompt named the right object | Grounding is a separate question, answered separately. The phrase grounder that shipped until 2026-10-17 answered it badly on attribute prompts, returning a confident wrong object rather than abstaining, which is why the VLM is the only grounder now. See [`models/vlm/`](../src/models/vlm/README.md). |

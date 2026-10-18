@@ -142,4 +142,4 @@ word, for which no licence-clean German model is known.
   `models.weights_root`, pinned by hub commit and by sha256. Both are MIT; Whisper's training data is undisclosed, which
   `NOTICE` records as a known provenance gap.
 - Guide: [models](../../../docs/guide/02-models.md); console routes: [api/README.md](../../../api/README.md)
-- Tests: `tests/test_speech_engine.py`, `tests/test_speech_push_to_talk.py`, `tests/test_speech_confirm.py`
+- Tests: `tests/models/speech/test_speech_engine.py`, `tests/models/speech/test_speech_push_to_talk.py`, `tests/models/speech/test_speech_confirm.py`

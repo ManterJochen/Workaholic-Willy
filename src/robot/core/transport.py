@@ -12,7 +12,7 @@ controller holds it. The composition itself stays with the arm, so a transport n
 vendor's own pose type (the UR ``URPose``) never crosses this boundary.
 
 The verbs are what the UR driver already sends, named for what they do, so the UR transport is a translation and the
-arm's commands do not change: ``tests/test_what_a_test_injects_reaches_the_arm.py`` and the P0e command tape hold that.
+arm's commands do not change: ``tests/robot/drivers/ur/test_what_a_test_injects_reaches_the_arm.py`` and the P0e command tape hold that.
 
 One protocol is Willy's own: :class:`HoldsAHaltLatch`, the halt latch the console's "halt now" sets (``SupportsHalt``).
 It lives on the link, so a disconnect and a connect keep it, and a planned arm reads it before every leg it sends.

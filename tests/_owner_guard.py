@@ -7,7 +7,7 @@ cell's payload: every guard a joint move asks (``SafetyPreflight._JOINT_MOVE_SKI
 It judges every path whole first, as every cell does since 2026-10-17; :func:`every_sample` has a preflight judge every
 sample one at a time instead, the reference the tests hold the whole-path judge to.
 
-The worlds are the three cell frames of 2026-10-07 (``tests/test_a_faster_camera_world_builds_the_same_world.py``),
+The worlds are the three cell frames of 2026-10-07 (``tests/robot/safety/planning/test_a_faster_camera_world_builds_the_same_world.py``),
 handed to the guard as the arm's refresh hands them (``live_world._guard_boxes``). Solutions come from the repository's
 closed form (``_ur_ik.ur_flange_ik``) nearest the previous one, through the declared tool frame: the cell solves them
 on the controller, and only the guard is judged here.
@@ -89,7 +89,7 @@ def camera_body() -> Any:
     from src.config.cameras import load_camera
     from src.geometry import Frame, Transform
     from src.robot.safety.planning.body_link import WristBody
-    from tests.test_a_faster_camera_world_builds_the_same_world import frame
+    from tests.robot.safety.planning.test_a_faster_camera_world_builds_the_same_world import frame
 
     recorded = frame("F1")
     camera_to_tool = Transform.from_matrix(np.linalg.inv(recorded["tool_to_base"]) @ recorded["camera_to_base"],
@@ -168,7 +168,7 @@ def line_samples(top: np.ndarray, bottom: np.ndarray, near: Any, reach_mm: "tupl
 def seen_world(name: str, case: str) -> "tuple[Any, ...]":
     """The boxes the cell's camera world of frame ``name`` builds in ``case``, as the guard holds them."""
     from src.robot.safety.planning.live_world import _guard_boxes
-    from tests.test_a_faster_camera_world_builds_the_same_world import build
+    from tests.robot.safety.planning.test_a_faster_camera_world_builds_the_same_world import build
 
     return tuple(_guard_boxes(build(name, case).perceived))
 

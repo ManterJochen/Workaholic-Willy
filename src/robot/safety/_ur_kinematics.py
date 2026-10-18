@@ -2,7 +2,7 @@
 
 The rows come from the arm registry (``config/arms/<model>.yaml``) through :func:`ur_dh_rows`. They were hand-typed
 here as ``UR_DH_TABLES_M`` until P0d D4 deleted the table; the numbers did not change, and
-``tests/test_inlined_dh_tables.py`` holds them, exactly, to the copies the committed collision bundles were baked
+``tests/scripts/arms/test_inlined_dh_tables.py`` holds them, exactly, to the copies the committed collision bundles were baked
 through.
 
 The DH convention is the standard Craig-style one, with alpha, a, d and theta_offset, and the joint variable added
@@ -11,7 +11,7 @@ to ``theta_offset``. Lengths are metres internally, and the consumer scales to m
 Sources
 -------
 Universal Robots' own numbers, twice over: the descriptions agree with UR's pinned ROS 2 description to float noise
-(``tests/test_arm_descriptions_are_urs_numbers.py``), and with UR's support-site page "DH parameters for
+(``tests/robot/safety/test_arm_descriptions_are_urs_numbers.py``), and with UR's support-site page "DH parameters for
 calculations of kinematics and dynamics", from which the old table was typed:
 https://www.universal-robots.com/articles/ur/application-installation/dh-parameters-for-calculations-of-kinematics-and-dynamics/
 
@@ -61,7 +61,7 @@ def _described_rows(key: str) -> tuple[URDhRow, ...] | None:
     from src.config.arms import load_arm  # noqa: PLC0415
 
     # A description, not an arm, and named so: the contract test reads `arm.<member>` as a member of a robot arm
-    # (tests/test_robot_boundaries.py, rule III.b), and a description's `vendor` and `joints` are not one.
+    # (tests/robot/drivers/test_robot_boundaries.py, rule III.b), and a description's `vendor` and `joints` are not one.
     try:
         description = load_arm(key)
     except ConfigError:
@@ -77,7 +77,7 @@ def ur_dh_rows(model: str | None) -> tuple[URDhRow, ...] | None:
     The one place the rows come from, since P0d D3b. Every function below read ``UR_DH_TABLES_M`` directly, and so did
     the exact-mesh guard's model check, the closed-form IK, the sidecar's model guess, the sim's reach helper and
     datagen's robot resolver. They all ask here now, and this asks ``config/arms/<model>.yaml``. The table is gone (D4);
-    what holds these floats now is ``tests/test_inlined_dh_tables.py``, which compares them, exactly, with the copies
+    what holds these floats now is ``tests/scripts/arms/test_inlined_dh_tables.py``, which compares them, exactly, with the copies
     inlined in the three scripts that baked the committed collision bundles, because those are the floats the geometry
     was cut from.
 

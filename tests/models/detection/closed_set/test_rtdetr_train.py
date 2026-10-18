@@ -1,0 +1,99 @@
+"""The RT-DETR command line and the small COCO reader it keeps for older callers.
+
+Covers what runs WITHOUT the training stack (torch / transformers): COCO parsing, the class-map remap, ``inspect`` and
+the exit codes. The training run itself is ``tests/models/detection/closed_set/training/test_detector_training_run.py``.
+"""
+
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from src.models.detection.closed_set.train import main
+
+
+def _coco_doc() -> dict:
+    # Two images; NON-contiguous category ids (5, 2) to exercise the remap.
+    return {
+        "images": [
+            {"id": 1, "file_name": "a.png", "width": 64, "height": 64},
+            {"id": 2, "file_name": "b.png", "width": 64, "height": 64},
+        ],
+        "annotations": [
+            {"id": 10, "image_id": 1, "category_id": 5, "bbox": [1, 2, 10, 12], "area": 120, "iscrowd": 0},
+            {"id": 11, "image_id": 1, "category_id": 2, "bbox": [5, 5, 8, 8]},
+            {"id": 12, "image_id": 2, "category_id": 5, "bbox": [0, 0, 20, 20]},
+            {"id": 13, "image_id": 99, "category_id": 2, "bbox": [0, 0, 1, 1]},  # dangling -> skipped
+        ],
+        "categories": [{"id": 5, "name": "rhino"}, {"id": 2, "name": "box"}],
+    }
+
+
+def _write_split(root: Path, doc: dict) -> Path:
+    (root / "images").mkdir(parents=True, exist_ok=True)
+    ann = root / "annotations.json"
+    ann.write_text(json.dumps(doc), encoding="utf-8")
+    return ann
+
+
+class CliTests(unittest.TestCase):
+    def test_inspect_prints_class_map(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            _write_split(Path(d) / "train", _coco_doc())
+            rc = main(["inspect", "--data-dir", d, "--split", "train"])
+        self.assertEqual(rc, 0)
+
+    def test_inspect_missing_split_exit_2(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            rc = main(["inspect", "--data-dir", d, "--split", "val"])
+        self.assertEqual(rc, 2)
+
+    def test_train_missing_data_exit_2_without_training_stack(self) -> None:
+        # The data-existence check runs BEFORE the heavy imports, so a missing dataset returns 2
+        # even on a machine without accelerate/transformers installed.
+        with tempfile.TemporaryDirectory() as d:
+            rc = main(["train", "--data-dir", d, "--output-dir", str(Path(d) / "out")])
+        self.assertEqual(rc, 2)
+
+    def test_inspect_prints_json_on_request(self) -> None:
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory() as d:
+            _write_split(Path(d) / "train", _coco_doc())
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = main(["inspect", "--data-dir", d, "--json"])
+        self.assertEqual(0, rc)
+        self.assertEqual(["box", "rhino"], json.loads(out.getvalue())["classes"])
+
+    def test_inspect_keeps_the_classes_named_and_refuses_one_it_does_not_have(self) -> None:
+        import contextlib
+        import io
+
+        with tempfile.TemporaryDirectory() as d:
+            _write_split(Path(d) / "train", _coco_doc())
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = main(["inspect", "--data-dir", d, "--json", "--classes", "rhino"])
+            refused = main(["inspect", "--data-dir", d, "--classes", "zebra"])
+        self.assertEqual(0, rc)
+        self.assertEqual(["rhino"], json.loads(out.getvalue())["classes"])
+        self.assertEqual(2, refused)
+
+    def test_eval_without_a_model_folder_exit_2(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            _write_split(Path(d), _coco_doc())
+            rc = main(["eval", "--data-dir", d, "--model-dir", str(Path(d) / "no_model")])
+        self.assertEqual(2, rc)
+
+    def test_a_setting_no_run_can_use_is_exit_2(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            rc = main(["train", "--data-dir", d, "--epochs", "0"])
+        self.assertEqual(2, rc)
+
+
+if __name__ == "__main__":
+    unittest.main()

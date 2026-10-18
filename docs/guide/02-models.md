@@ -503,10 +503,10 @@ refusal messages, the weights resolver and its refusals, `PerceptionSpec.resolve
 |---|---|
 | SAM2 on rendered images | measured in simulation with GroundingDINO's boxes, before 2026-10-17; the VLM's boxes there are unmeasured |
 | RT-DETR, the MediaPipe detectors, the RT-DETR training script | never touched hardware: unit tests only |
-| `ObjectDetector`: every class in one call, SAM2's masks for every box in one pass | unit tests on a CPU, with the real RT-DETR and SAM2 classes at toy size; the real-weights file `tests/test_an_object_detector_on_real_weights_inference.py` is written and not run |
+| `ObjectDetector`: every class in one call, SAM2's masks for every box in one pass | unit tests on a CPU, with the real RT-DETR and SAM2 classes at toy size; the real-weights file `tests/models/detection/test_an_object_detector_on_real_weights_inference.py` is written and not run |
 | Whisper and the Silero voice detector | never touched hardware: fakes, a random Whisper, and the real weights for load time, latency and memory only |
 | The VLM and SAM2 on a physical camera | run on a physical cell: a wrist D415 on a UR10 (CB3); no measurement is kept here |
-| The VLM reading commands: load time, VRAM, latency, German and English sentences | measured on the development box's RTX 5080 against the real 4B weights (`tests/test_vlm_command_inference.py`); not on the cell PC |
+| The VLM reading commands: load time, VRAM, latency, German and English sentences | measured on the development box's RTX 5080 against the real 4B weights (`tests/models/vlm/test_vlm_command_inference.py`); not on the cell PC |
 | The live RGB-D adapter | measured on a real camera setup ([perception status](../../src/robot/perception/README.md#status)) |
 | A learned depth model | does not exist |
 

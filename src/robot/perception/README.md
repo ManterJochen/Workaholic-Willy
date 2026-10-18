@@ -330,12 +330,12 @@ The legend is the guide's [evidence levels](../../../docs/guide/README.md#what-v
 | The live source, the locator and the wrist shutter check | measured on a real camera setup |
 | Prompt, detect, segment, masked cloud on the pick path | measured on a real camera setup |
 | Mask completion default `none` | measured on a real camera setup |
-| `capture`, `pixel_to_base`, `pixels_to_base`, `tcp_above` | pinned by tests on ray-cast frames (`tests/test_a_pixel_of_your_own_lands_in_base.py`): 1e-6 mm on exact depth, 0.5 mm on whole millimetres; never run on the cell, where example 18 is its check |
-| `look_around`: the fused looks, `both_faces`, the generated view, the held frames | pinned by tests with fake arms and cameras (`tests/test_a_located_part_is_looked_at_from_every_look.py`); never touched hardware |
-| The colour check and the label mapping | rule checked offline on 9 of the cell's recorded home views (142 sightings); pinned by tests on painted patches and a ray-cast mat (`tests/test_a_task_picks_the_grey_parts_and_ends_without_a_long_search.py`); on at the owner's cell since 2026-10-08, in every cell since 2026-10-17 |
-| The clipped pixels left out | measured offline through `judge_colour` on the cell's 31 recorded looks of 2026-10-07 (orange 53 to 89 of 89, every other part as before); pinned by tests on painted patches (`tests/test_the_colour_check_leaves_clipped_pixels_out.py`); no red part measured; on at the owner's cell since 2026-10-09, in every cell since 2026-10-17 |
-| Following the parts a task kept (`kept_scene.py`) | thresholds measured offline on the cell's recorded frames of 2026-10-07/08 (CPU); pinned by tests on ray-cast frames (`tests/test_a_kept_scene_follows_only_what_stands_where_it_stood.py`, `tests/test_a_task_follows_its_parts_instead_of_grounding_them_again.py`); on at the owner's cell by its tree, in every cell since 2026-10-17 |
-| The task's own places hidden from the detector (`kept_out_pixels`) | pinned by tests on ray-cast frames, flying pixels and holes included (`tests/test_the_tasks_own_places_are_hidden_from_the_detector.py`); needs a backend that takes `detect_on`; on at the owner's cell by its tree, in every cell since 2026-10-17 |
+| `capture`, `pixel_to_base`, `pixels_to_base`, `tcp_above` | pinned by tests on ray-cast frames (`tests/calibration/test_a_pixel_of_your_own_lands_in_base.py`): 1e-6 mm on exact depth, 0.5 mm on whole millimetres; never run on the cell, where example 18 is its check |
+| `look_around`: the fused looks, `both_faces`, the generated view, the held frames | pinned by tests with fake arms and cameras (`tests/robot/execution/test_a_located_part_is_looked_at_from_every_look.py`); never touched hardware |
+| The colour check and the label mapping | rule checked offline on 9 of the cell's recorded home views (142 sightings); pinned by tests on painted patches and a ray-cast mat (`tests/robot/execution/test_a_task_picks_the_grey_parts_and_ends_without_a_long_search.py`); on at the owner's cell since 2026-10-08, in every cell since 2026-10-17 |
+| The clipped pixels left out | measured offline through `judge_colour` on the cell's 31 recorded looks of 2026-10-07 (orange 53 to 89 of 89, every other part as before); pinned by tests on painted patches (`tests/robot/perception/test_the_colour_check_leaves_clipped_pixels_out.py`); no red part measured; on at the owner's cell since 2026-10-09, in every cell since 2026-10-17 |
+| Following the parts a task kept (`kept_scene.py`) | thresholds measured offline on the cell's recorded frames of 2026-10-07/08 (CPU); pinned by tests on ray-cast frames (`tests/robot/perception/test_a_kept_scene_follows_only_what_stands_where_it_stood.py`, `tests/robot/execution/test_a_task_follows_its_parts_instead_of_grounding_them_again.py`); on at the owner's cell by its tree, in every cell since 2026-10-17 |
+| The task's own places hidden from the detector (`kept_out_pixels`) | pinned by tests on ray-cast frames, flying pixels and holes included (`tests/robot/test_the_tasks_own_places_are_hidden_from_the_detector.py`); needs a backend that takes `detect_on`; on at the owner's cell by its tree, in every cell since 2026-10-17 |
 
 How the stack behaves on real depth, which returns zeros inside a mask and leaks at its edges, is not
 measured. It is the largest untested surface in the stack, and it can be tested without a robot: a
@@ -362,16 +362,16 @@ camera on a desk, pointed at the real parts, through the exerciser above.
   [`src/models/`](../../models/README.md) and [guide 02](../../../docs/guide/02-models.md).
 - The simulated sources this mirrors: [`src/willy_sim/`](../../willy_sim/README.md). A physical cell:
   [`real_cell`](../execution/real_cell/README.md) and [the first pick](../../../docs/runbooks/real_cell_first_pick.md).
-- Tests: [`test_locator.py`](../../../tests/test_locator.py), [`test_perception_shutter_stamp.py`](../../../tests/test_perception_shutter_stamp.py),
-  [`test_a_pixel_of_your_own_lands_in_base.py`](../../../tests/test_a_pixel_of_your_own_lands_in_base.py),
-  [`test_realsense_perception_source.py`](../../../tests/test_realsense_perception_source.py),
-  [`test_a_part_of_another_colour_is_no_target.py`](../../../tests/test_a_part_of_another_colour_is_no_target.py),
-  [`test_a_kept_scene_follows_only_what_stands_where_it_stood.py`](../../../tests/test_a_kept_scene_follows_only_what_stands_where_it_stood.py),
-  [`test_a_source_grounds_the_frame_whenever_following_fails.py`](../../../tests/test_a_source_grounds_the_frame_whenever_following_fails.py),
-  [`test_a_followed_target_is_kept_out_by_its_new_mask.py`](../../../tests/test_a_followed_target_is_kept_out_by_its_new_mask.py),
-  [`test_a_label_of_another_colour_is_never_mapped_onto_the_object.py`](../../../tests/test_a_label_of_another_colour_is_never_mapped_onto_the_object.py),
-  [`test_a_located_part_is_looked_at_from_every_look.py`](../../../tests/test_a_located_part_is_looked_at_from_every_look.py),
-  [`test_a_part_is_placed_on_what_the_camera_found.py`](../../../tests/test_a_part_is_placed_on_what_the_camera_found.py),
-  [`test_a_pick_closes_along_the_axis_its_program_names.py`](../../../tests/test_a_pick_closes_along_the_axis_its_program_names.py),
-  [`test_every_grasp_closes_the_way_round_the_hand_naturally_stands.py`](../../../tests/test_every_grasp_closes_the_way_round_the_hand_naturally_stands.py),
-  [`test_the_looks_say_how_many_agreed_on_the_label.py`](../../../tests/test_the_looks_say_how_many_agreed_on_the_label.py).
+- Tests: [`test_locator.py`](../../../tests/robot/perception/test_locator.py), [`test_perception_shutter_stamp.py`](../../../tests/perception/test_perception_shutter_stamp.py),
+  [`test_a_pixel_of_your_own_lands_in_base.py`](../../../tests/calibration/test_a_pixel_of_your_own_lands_in_base.py),
+  [`test_realsense_perception_source.py`](../../../tests/robot/perception/test_realsense_perception_source.py),
+  [`test_a_part_of_another_colour_is_no_target.py`](../../../tests/robot/perception/test_a_part_of_another_colour_is_no_target.py),
+  [`test_a_kept_scene_follows_only_what_stands_where_it_stood.py`](../../../tests/robot/perception/test_a_kept_scene_follows_only_what_stands_where_it_stood.py),
+  [`test_a_source_grounds_the_frame_whenever_following_fails.py`](../../../tests/camera/setup/image_taking/test_a_source_grounds_the_frame_whenever_following_fails.py),
+  [`test_a_followed_target_is_kept_out_by_its_new_mask.py`](../../../tests/robot/grasping/loop/test_a_followed_target_is_kept_out_by_its_new_mask.py),
+  [`test_a_label_of_another_colour_is_never_mapped_onto_the_object.py`](../../../tests/camera/setup/image_taking/test_a_label_of_another_colour_is_never_mapped_onto_the_object.py),
+  [`test_a_located_part_is_looked_at_from_every_look.py`](../../../tests/robot/execution/test_a_located_part_is_looked_at_from_every_look.py),
+  [`test_a_part_is_placed_on_what_the_camera_found.py`](../../../tests/camera/orchestration/test_a_part_is_placed_on_what_the_camera_found.py),
+  [`test_a_pick_closes_along_the_axis_its_program_names.py`](../../../tests/robot/grasping/types/test_a_pick_closes_along_the_axis_its_program_names.py),
+  [`test_every_grasp_closes_the_way_round_the_hand_naturally_stands.py`](../../../tests/robot/execution/test_every_grasp_closes_the_way_round_the_hand_naturally_stands.py),
+  [`test_the_looks_say_how_many_agreed_on_the_label.py`](../../../tests/robot/grasping/test_the_looks_say_how_many_agreed_on_the_label.py).

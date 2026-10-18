@@ -209,4 +209,4 @@ camera, and a second camera is not fused before its block is pasted too.
 - Runbooks: [the first pick on a physical arm](../../../../docs/runbooks/real_cell_first_pick.md), [bringing up a cell](../../../../docs/runbooks/cell_bringup.md)
 - Measuring the extrinsics: [calibration-setup.md](../../../../docs/calibration-setup.md); every command: [docs/cli.md](../../../../docs/cli.md)
 - The library it calls: [execution](../README.md), [autonomous_grasp](../autonomous_grasp/README.md); the UR driver: [drivers/ur](../../drivers/ur/README.md)
-- Tests: `tests/test_real_cell_runner.py`, `tests/test_real_cell_calibrate.py`, `tests/test_calibrate_cli_transcript.py`, `tests/test_a_calibration_can_be_guided_by_hand.py`
+- Tests: `tests/robot/execution/test_real_cell_runner.py`, `tests/robot/execution/real_cell/test_real_cell_calibrate.py`, `tests/robot/execution/real_cell/test_calibrate_cli_transcript.py`, `tests/robot/execution/test_a_calibration_can_be_guided_by_hand.py`

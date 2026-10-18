@@ -53,9 +53,8 @@ class RGBDCalibPaths(StrictModel):
     Only ``base_dir`` is required; ``intrinsics_file`` derives from it and can be overridden.
 
     There are deliberately no ``color_images_dir`` / ``depth_images_dir`` fields, real though those
-    are on the stereo rig above. Nothing here would read them: ``StereoCapturePipeline`` skips every
-    RGB-D rig and reaches images through ``left/right_images_glob``, which this class has no
-    counterpart for. The RGB-D artefact path uses no folders at all, only
+    are on the stereo rig above. Nothing here would read them: the stereo images are reached through
+    ``left/right_images_glob``, which this class has no counterpart for. The RGB-D artefact path uses no folders at all, only
     ``export_intrinsics_on_open`` writing ``intrinsics_file`` and ``load_intrinsics`` reading it
     back. If in-repo RGB-D intrinsics capture is ever built, add the directory and its glob
     together: one without the other is dead.

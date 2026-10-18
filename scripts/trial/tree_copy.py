@@ -326,7 +326,8 @@ def touched_tests(original: Path, *, patterns: "tuple[str, ...]" = ARTIFACT_PATT
         name = Path(path).name
         if name.startswith("test_") and name.endswith(".py") and (original / path).is_file():
             named.add(Path(path).as_posix())
-    for test_file in sorted((original / "tests").glob("test_*.py")):
+    # The tests stand in folders of the repo's own structure since 2026-10-18.
+    for test_file in sorted((original / "tests").rglob("test_*.py")):
         text = test_file.read_text(encoding="utf-8", errors="replace")
         if any(pattern in text for pattern in patterns):
             named.add(test_file.relative_to(original).as_posix())

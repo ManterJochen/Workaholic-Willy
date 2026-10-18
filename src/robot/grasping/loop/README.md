@@ -411,9 +411,9 @@ made before it was asked.
 | `CONTROLLER_NOT_OPERATIONAL` | measured against real controller software: a protective stop in URSim |
 | The first good part | pinned by tests on stand-in calculators and a ray-cast bench; not yet run on the grasp bench or the cell |
 | The wrist looks, the generated view, the move back and `both_faces` | pinned by tests on fake arms and cameras, and the Isaac arm generates no view; never touched hardware |
-| Following a task's parts, the later looks' projected boxes and the kept part first | pinned by tests on a ray-cast bench through the real source (`tests/test_a_later_look_follows_the_parts_its_first_look_saw.py`); on in every cell built from a tree since 2026-10-17, and switched on in the trees the owner's cell ran from 2026-10-12 to 10-15 (the replay bank's); not yet measured from its logs |
-| Every look, and the weak-look trigger | pinned by tests on the ray-cast bench (`tests/test_a_wrist_pick_drives_every_look_where_asked.py`, `tests/test_a_weak_look_sends_the_pick_on_to_its_next_look.py`); the trigger is on in every cell built from a tree since 2026-10-17, its thresholds the map's, measured on one recorded frame of the cell (the picked cube: none fires); switched on in the trees the owner's cell ran from 2026-10-12 to 10-15; not yet measured from its logs |
-| The task's own places hidden from the detector | pinned by tests on the ray-cast bench through the real source (`tests/test_the_tasks_own_places_are_hidden_from_the_detector.py`); on in every cell built from a tree since 2026-10-17; needs the backend change that hands the detector a copy (`detects_on_a_copy`); switched on in the trees the owner's cell ran from 2026-10-12 to 10-15; not yet measured from its logs |
+| Following a task's parts, the later looks' projected boxes and the kept part first | pinned by tests on a ray-cast bench through the real source (`tests/robot/grasping/motion/test_a_later_look_follows_the_parts_its_first_look_saw.py`); on in every cell built from a tree since 2026-10-17, and switched on in the trees the owner's cell ran from 2026-10-12 to 10-15 (the replay bank's); not yet measured from its logs |
+| Every look, and the weak-look trigger | pinned by tests on the ray-cast bench (`tests/api/test_a_wrist_pick_drives_every_look_where_asked.py`, `tests/robot/grasping/types/test_a_weak_look_sends_the_pick_on_to_its_next_look.py`); the trigger is on in every cell built from a tree since 2026-10-17, its thresholds the map's, measured on one recorded frame of the cell (the picked cube: none fires); switched on in the trees the owner's cell ran from 2026-10-12 to 10-15; not yet measured from its logs |
+| The task's own places hidden from the detector | pinned by tests on the ray-cast bench through the real source (`tests/robot/test_the_tasks_own_places_are_hidden_from_the_detector.py`); on in every cell built from a tree since 2026-10-17; needs the backend change that hands the detector a copy (`detects_on_a_copy`); switched on in the trees the owner's cell ran from 2026-10-12 to 10-15; not yet measured from its logs |
 | The push inside a wrist camera's attempt | pinned by tests with a fake arm and a fake live world; ran on URSim CB3 on 2026-10-02, a recorded look standing in for the camera ([`probe_push_on_the_mat.py`](../../../../scripts/ursim/probe_push_on_the_mat.py)); never touched hardware |
 
 ## Files
@@ -436,15 +436,15 @@ made before it was asked.
 - [The console](../../../../api/README.md) streams `PickStage` over a WebSocket.
 - [Guide 05, the pick loop](../../../../docs/guide/05-pick-loop.md), and
   [the grasping config reference](../../../../docs/grasping-config-reference.md).
-- Tests: `tests/test_pick_loop.py`, `tests/test_pick_progress.py`,
-  `tests/test_pick_loop_controller_state.py`, `tests/test_a_wrist_pick_looks_until_its_grasp_is_safe.py`,
-  `tests/test_a_wrist_pick_runs_end_to_end.py`, `tests/test_both_jaw_faces_are_seen.py`,
-  `tests/test_the_generated_view_moves_on_its_straight_joint_line_only.py`,
-  `tests/test_a_boxed_in_part_is_pushed_inside_the_pick.py`,
-  `tests/test_a_pick_closes_along_the_axis_its_program_names.py`,
-  `tests/test_every_grasp_closes_the_way_round_the_hand_naturally_stands.py`,
-  `tests/test_the_looks_say_how_many_agreed_on_the_label.py`,
-  `tests/test_a_part_the_axis_refused_is_never_pushed.py`,
-  `tests/test_a_jaw_count_nobody_vouches_for_moves_nothing_more.py`, `tests/test_pick_loop_target_label_gate.py`,
-  `tests/test_a_sort_names_the_kind_it_picked_and_the_parts_no_rule_claims.py`,
-  `tests/test_a_sorts_pick_prompt_passes_only_its_kinds.py`.
+- Tests: `tests/robot/grasping/loop/test_pick_loop.py`, `tests/robot/grasping/loop/test_pick_progress.py`,
+  `tests/robot/grasping/loop/test_pick_loop_controller_state.py`, `tests/robot/grasping/types/test_a_wrist_pick_looks_until_its_grasp_is_safe.py`,
+  `tests/api/test_a_wrist_pick_runs_end_to_end.py`, `tests/robot/grasping/test_both_jaw_faces_are_seen.py`,
+  `tests/robot/execution/test_the_generated_view_moves_on_its_straight_joint_line_only.py`,
+  `tests/robot/grasping/recovery/test_a_boxed_in_part_is_pushed_inside_the_pick.py`,
+  `tests/robot/grasping/types/test_a_pick_closes_along_the_axis_its_program_names.py`,
+  `tests/robot/execution/test_every_grasp_closes_the_way_round_the_hand_naturally_stands.py`,
+  `tests/robot/grasping/test_the_looks_say_how_many_agreed_on_the_label.py`,
+  `tests/robot/grasping/types/test_a_part_the_axis_refused_is_never_pushed.py`,
+  `tests/api/test_a_jaw_count_nobody_vouches_for_moves_nothing_more.py`, `tests/robot/grasping/loop/test_pick_loop_target_label_gate.py`,
+  `tests/robot/grasping/types/test_a_sort_names_the_kind_it_picked_and_the_parts_no_rule_claims.py`,
+  `tests/robot/execution/autonomous_grasp/test_a_sorts_pick_prompt_passes_only_its_kinds.py`.

@@ -1452,11 +1452,6 @@ def _depth_coverage(frame: DepthSnapshot) -> float:
     return float(np.count_nonzero(valid)) / float(valid.size) if valid.size else 0.0
 
 
-def _has_valid_depth(frame: DepthSnapshot) -> bool:
-    """Whether any pixel holds a depth the converter would use: finite and in front of the camera."""
-    return _depth_coverage(frame) > 0.0
-
-
 def _goal_coverage(
     frame: DepthSnapshot, camera_to_base: np.ndarray, goal_mm: np.ndarray, region_mm: float
 ) -> float | None:

@@ -9,7 +9,7 @@ It is the same arithmetic the UR guard already runs, deliberately. ``safety/_ur_
 hand-typed DH table per UR model and the loop that walks it, and every committed UR artefact (the collision
 bundles, the sphere maps, the retract rows, the evidence files) was measured through that loop. So
 :meth:`SerialChain.link_transforms_mm` is that loop, expression for expression, rather than a tidier one that
-agrees to a tolerance: ``tests/test_serial_chain_is_the_ur_chain.py`` holds the two to exact equality over every
+agrees to a tolerance: ``tests/robot/safety/test_serial_chain_is_the_ur_chain.py`` holds the two to exact equality over every
 model and a thousand random joint vectors, and a rewrite that changed the order of two multiplications would be
 caught there before it reached a bundle.
 

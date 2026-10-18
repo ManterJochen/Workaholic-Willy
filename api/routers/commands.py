@@ -50,7 +50,7 @@ def _refuse(code: RefusalCode, message: str, **detail: Any) -> HTTPException:
 
 def _reader_code(code: str) -> RefusalCode:
     """The reader's refusal as the catalog's code. One the catalog does not know (a library that grew a word the
-    console has not) is the reader being unavailable (501), never a 500; ``tests/test_api_commands.py`` pins the two
+    console has not) is the reader being unavailable (501), never a 500; ``tests/api/test_api_commands.py`` pins the two
     lists against each other."""
     try:
         return RefusalCode(code)

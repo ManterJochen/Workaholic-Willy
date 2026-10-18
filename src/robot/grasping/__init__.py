@@ -37,7 +37,6 @@ from .collision import (
     gripper_table_clearance_mm,
     points_to_grasp_frame,
     validate_grasp_collision,
-    validate_grasp_collisions,
 )
 from .contacts import ContactPair, ContactPoint, find_antipodal_pairs
 from .geometry import (
@@ -54,13 +53,7 @@ from .geometry import (
 
 # --- generation/ : mask + depth to ranked candidates ---------------------
 from .generation.calculator import GraspCalculator
-from .generation.deformables import (
-    CablePCAStrategy,
-    DeformableClass,
-    DeformableHandlingDecision,
-    DeformableHandlingStrategy,
-    RefuseDeformableStrategy,
-)
+from .generation.deformables import DeformableClass, DeformableHandlingDecision, DeformableHandlingStrategy
 from .generation.mask_analyzer import MaskAnalysis, MaskAnalyzer
 # `Scene` is the geometry-stage noun, not a scene graph and not a simulator scene. It sits beside
 # six `SceneRecovery*` types here, which are about what a cell does when a pick fails; this one is a
@@ -70,11 +63,8 @@ from .scene import Scene, SceneGrasps
 
 # --- scoring / planning --------------------------------------------------
 from .scoring.semantic_policy import SemanticDecision, SemanticPolicy
-from .scoring.topology_risk import (
-    depth_continuity_risk,
-    topology_risk_from_mask,
-)
-from .planning import GraspPose, generate_grasp_poses, grasp_pose_from_contact_pair
+from .scoring.topology_risk import topology_risk_from_mask
+from .planning import GraspPose
 from .planning.multifinger import (
     FingerKinematicSpec,
     GripperKind,
@@ -84,29 +74,7 @@ from .planning.multifinger import (
     ParallelJawContactPlanner,
     RadialMultiFingerPlanner,
 )
-from .scoring import (
-    ForceClosureCertificate,
-    GeometricScoreConfig,
-    GraspScoreBreakdown,
-    GraspScoreWeights,
-    ReachabilityScoreConfig,
-    StabilityScoreConfig,
-    WorkspaceBox,
-    approach_alignment_score,
-    approach_clearance_mm,
-    certify_contact_pair,
-    geometric_grasp_score,
-    geometric_score_components,
-    occlusion_ratio,
-    rank_grasp_poses,
-    reachability_grasp_score,
-    reachability_score_components,
-    score_grasp_pose,
-    stability_grasp_score,
-    stability_score_components,
-    table_clearance_score,
-    width_fit_score,
-)
+from .scoring import GraspScoreBreakdown, WorkspaceBox, approach_clearance_mm, occlusion_ratio
 
 # --- motion/ : approach, grasp, retreat ----------------------------------
 from .motion.execution_policy import GraspExecutionPolicy, PolicyOutcome, PolicyReport
@@ -137,8 +105,6 @@ from .recovery.orchestrator import (
 # --- telemetry/ ----------------------------------------------------------
 from .telemetry.outcome_logging import (
     GraspAttemptRecord,
-    append_jsonl,
-    frame_metadata_from,
     grasp_metadata_from,
     iter_jsonl,
     json_safe,
@@ -146,23 +112,11 @@ from .telemetry.outcome_logging import (
 )
 
 # --- visualization -------------------------------------------------------
-from .visualization import (
-    DebugDrawConfig,
-    GraspViewerConfig,
-    build_grasp_scene,
-    draw_grasp_debug_image,
-    save_grasp_debug_image,
-    show_grasp_scene,
-)
+from .visualization import DebugDrawConfig, draw_grasp_debug_image
 
 __all__ = [
-    "append_jsonl",
-    "approach_alignment_score",
     "approach_clearance_mm",
-    "build_grasp_scene",
-    "CablePCAStrategy",
     "CameraIntrinsics",
-    "certify_contact_pair",
     "colliding_point_indices",
     "CollisionBox",
     "ContactPair",
@@ -171,22 +125,14 @@ __all__ = [
     "DeformableClass",
     "DeformableHandlingDecision",
     "DeformableHandlingStrategy",
-    "depth_continuity_risk",
     "depth_unit_to_mm",
     "draw_grasp_debug_image",
     "estimate_surface_normals",
     "EyeInHandFrameResolver",
     "find_antipodal_pairs",
     "FingerKinematicSpec",
-    "ForceClosureCertificate",
-    "frame_metadata_from",
     "FrameResolver",
-    "generate_grasp_poses",
-    "geometric_grasp_score",
-    "geometric_score_components",
-    "GeometricScoreConfig",
     "grasp_metadata_from",
-    "grasp_pose_from_contact_pair",
     "GraspAttemptRecord",
     "GraspCalculator",
     "GraspCollisionResult",
@@ -198,8 +144,6 @@ __all__ = [
     "GraspResult",
     "GraspSamplingMode",
     "GraspScoreBreakdown",
-    "GraspScoreWeights",
-    "GraspViewerConfig",
     "gripper_table_clearance_mm",
     "GripperGeometryStrategy",
     "GripperKind",
@@ -224,41 +168,27 @@ __all__ = [
     "PolicyReport",
     "profile_metadata_from",
     "RadialMultiFingerPlanner",
-    "rank_grasp_poses",
-    "reachability_grasp_score",
-    "reachability_score_components",
-    "ReachabilityScoreConfig",
     "RecoveryDispatcher",
     "RecoveryHistoryEntry",
     "RecoveryOrchestrator",
     "RecoveryTrail",
     "RecoveryTrailEntry",
-    "RefuseDeformableStrategy",
     "run_recovery_loop",
-    "save_grasp_debug_image",
     "Scene",
     "SceneGrasps",
     "SceneRecoveryAction",
     "SceneRecoveryContext",
     "SceneRecoveryPlan",
     "SceneRecoveryPolicy",
-    "score_grasp_pose",
     "SegmentationLike",
     "SemanticDecision",
     "SemanticPolicy",
-    "show_grasp_scene",
-    "stability_grasp_score",
-    "stability_score_components",
-    "StabilityScoreConfig",
     "StaticCameraToBaseResolver",
     "SuctionCupGripperModel",
     "SupportPlane",
     "SurfaceNormals",
-    "table_clearance_score",
     "topology_risk_from_mask",
     "VALID_TERMINAL_REASONS",
     "validate_grasp_collision",
-    "validate_grasp_collisions",
-    "width_fit_score",
     "WorkspaceBox",
 ]

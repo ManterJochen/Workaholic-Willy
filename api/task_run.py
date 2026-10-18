@@ -64,7 +64,7 @@ logger = create_logger("TaskRun", TASK_RUN_LOG_FILE, log_dir=API_LOG_DIR)
 class TaskHooks(Protocol):
     """What the library's ``run_task`` calls on its caller between its motions: library L1's ``TaskHooks``, as the plan
     names it. :class:`ConsoleTaskHooks` declares it, so a type checker holds the console's hooks to it, and
-    ``tests/test_api_contract.py`` pins that every hook the library calls is one the console answers."""
+    ``tests/api/test_api_contract.py`` pins that every hook the library calls is one the console answers."""
 
     def event(self, name: str, /, **data: Any) -> None:
         """One of the task's events (``task.*``), to say on the run's stream."""

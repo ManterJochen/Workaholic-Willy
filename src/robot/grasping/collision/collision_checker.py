@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -17,7 +16,6 @@ __all__ = [
     "GraspCollisionResult",
     "colliding_point_indices",
     "validate_grasp_collision",
-    "validate_grasp_collisions",
 ]
 
 
@@ -140,24 +138,3 @@ def validate_grasp_collision(
     )
 
 
-def validate_grasp_collisions(
-    poses: Iterable[GraspPose],
-    *,
-    scene_points_mm: np.ndarray | None = None,
-    support_plane: SupportPlane | None = None,
-    gripper_model: GripperGeometryStrategy | None = None,
-    min_table_clearance_mm: float = 5.0,
-    collision_margin_mm: float = 0.0,
-) -> list[GraspCollisionResult]:
-    """Validate several poses and preserve input order."""
-    return [
-        validate_grasp_collision(
-            pose,
-            scene_points_mm=scene_points_mm,
-            support_plane=support_plane,
-            gripper_model=gripper_model,
-            min_table_clearance_mm=min_table_clearance_mm,
-            collision_margin_mm=collision_margin_mm,
-        )
-        for pose in poses
-    ]

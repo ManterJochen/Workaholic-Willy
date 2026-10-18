@@ -46,7 +46,7 @@ _AIM_MIN_UP_CROSS = 1e-6
 #: Where the roll comes from when the up hint runs along the aim, most importantly for the default
 #: hint and an aim straight down, which is the commonest pose in a cell. The first entry is what
 #: makes `aimed_at(x, y, z, target_mm=(x, y, z - d))` equal `tool_down(x, y, z)` exactly, and
-#: `tests/test_geometry_precision.py` holds that equality rather than leaving it to be rediscovered.
+#: `tests/geometry/test_geometry_precision.py` holds that equality rather than leaving it to be rediscovered.
 _AIM_UP_FALLBACKS: tuple[tuple[float, float, float], ...] = ((0.0, -1.0, 0.0), (1.0, 0.0, 0.0))
 
 #: The horizontal axis a pose's closing axis, the tool's +X, can be lined up with. ``x`` and ``y`` are

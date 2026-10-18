@@ -122,5 +122,5 @@ dropped and named, never fused at a guessed position.
   [`geometry/`](../geometry/README.md) for the numbers it validates against.
 - [`telemetry/`](../telemetry/README.md) for where a result ends up as a logged record.
 - [The grasping maths](../../../../docs/grasping-math.md) for what the numbers mean.
-- Tests: `tests/test_grasping_modes.py`, `tests/test_pick_loop_controller_state.py`,
-  `tests/test_motion_plan_refusal_recovery.py`, `tests/test_pick_loop_target_label_gate.py`.
+- Tests: `tests/test_grasping_modes.py`, `tests/robot/grasping/loop/test_pick_loop_controller_state.py`,
+  `tests/robot/grasping/recovery/test_motion_plan_refusal_recovery.py`, `tests/robot/grasping/loop/test_pick_loop_target_label_gate.py`.

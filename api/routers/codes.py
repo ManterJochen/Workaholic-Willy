@@ -2,7 +2,7 @@
 
 The browser translates codes, not the backend's English sentences, so it needs the list of every code to translate.
 ``frontend/src/api/codes.ts`` mirrors this answer and the generated types check the mirror at compile time;
-``tests/test_api_contract.py`` checks it against ``api/codes.py``.
+``tests/api/test_api_contract.py`` checks it against ``api/codes.py``.
 """
 
 from __future__ import annotations

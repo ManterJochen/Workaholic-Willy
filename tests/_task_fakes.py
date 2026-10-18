@@ -6,7 +6,7 @@
   scripts, models a carried part (``CarriesPayload``), reports its controller (``SupportsRobotStatus``; clearing a stop
   raises: nothing on the task's path may), and holds a live planner world that holds a pick's frames.
 * The hand is the real ``JawIOGripper`` single_toggle on tool DO0 over the recording I/O of
-  ``tests/test_a_stopped_controller_moves_no_jaws.py``: a change of DO0 is read off the outputs, never off a double's
+  ``tests/robot/execution/test_a_stopped_controller_moves_no_jaws.py``: a change of DO0 is read off the outputs, never off a double's
   bookkeeping (:func:`do0_changes`).
 * :class:`TaskService` is the pick service as a task drives it, duck-typed: each ``pick()`` plays the next scripted
   pick on the real arm and hand (a part picked closes the toggle once, with the arm's motions around it), and
@@ -56,7 +56,7 @@ from src.robot.grippers.jaw_io import JawIOGripper
 from src.robot.perception.locator import Located, LocatedObject
 from src.robot.safety.planning.band import PoseScreen, PoseVerdict
 from tests._helpers import PlansItsMotions
-from tests.test_a_stopped_controller_moves_no_jaws import _IO, _Write
+from tests.robot.execution.test_a_stopped_controller_moves_no_jaws import _IO, _Write
 
 __all__ = [
     "BIN_CENTRE",

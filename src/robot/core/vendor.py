@@ -14,7 +14,7 @@ Used by:
 
 Adding a vendor is a deliberate two-line change here plus a driver package under
 ``src/robot/drivers/<name>/`` that registers its factory. Every member has a driver:
-``tests/test_robot_vendor_refusal_names_what_can_be_built.py`` goes red for one that has
+``tests/robot/drivers/test_robot_vendor_refusal_names_what_can_be_built.py`` goes red for one that has
 none. Pipelines do not read this enum; they go through the
 :class:`~src.robot.core.RobotArm` Protocol.
 """

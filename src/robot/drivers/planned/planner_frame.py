@@ -4,7 +4,7 @@ UR's macro puts the controller's Base, ``base``, at ``base_link`` turned by pi a
 and the frame the DH chain starts in, ``base_link_inertia``, the same way, so RTDE and the DH chain share one frame.
 Each arm description states the first as ``base.controller_yaw_deg``, and since P0f F9c the glue reads it: an arm
 that says 180 is planned through this client, and one that says 0 through none
-(``tests/test_the_planner_turns_as_the_description_says.py``).
+(``tests/robot/drivers/planned/test_the_planner_turns_as_the_description_says.py``).
 The planner's tool0 is the DH flange turned half a turn about Z to 0.0001 mm, and 1019 mm from it without the turn
 (measured 2026-09-18 by the carried part's probe, deleted with it on 2026-10-17;
 ``scripts/curobo/probe_ur_planner_frame.py`` holds the turn through this client).

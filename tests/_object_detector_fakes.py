@@ -1,7 +1,7 @@
 """Stand-ins for the two models ``ObjectDetector`` drives, so its tests run on a CPU with no weights.
 
 ``rtdetr(scene)`` patches the transformers loaders ``RtDetrObjectDetector`` builds from, and ``sam2()`` the ones
-``Sam2Segmenter`` builds from, as ``tests/test_model_load_error_naming.py`` patches them: both wrappers run as they do
+``Sam2Segmenter`` builds from, as ``tests/models/test_model_load_error_naming.py`` patches them: both wrappers run as they do
 at a cell, and only ``from_pretrained`` answers, with a stand-in that keeps what it was given and counts its calls.
 
 The RT-DETR stand-in answers with the scene a test chose, every box above the threshold it is asked for. The SAM2

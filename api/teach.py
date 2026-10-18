@@ -68,7 +68,6 @@ __all__ = [
     "cancel",
     "capture",
     "choose_default_place",
-    "drive_teach",
     "end_and_join",
     "hold_open_teaches",
     "payload",
@@ -672,19 +671,6 @@ def payload(console: "Console") -> PayloadOut:
         return PayloadOut(readable=False, source="the controller does not report its payload: check it on the pendant")
     return PayloadOut(mass_kg=float(found.mass_kg), cog_mm=[float(v) for v in found.cog_mm], readable=True,
                       source="the controller, read now")
-
-
-def drive_teach(console: "Console", run: "Run") -> StopCode:
-    """The body of a teach run started with ``RunRegistry.start_kind``: the session :func:`start` opened for ``run``.
-
-    :func:`start` hands the session's own body to the run, so this is for a caller that started a teach run itself; a
-    run with no session frees nothing and ends ``cancelled``.
-    """
-    session = _session_of(console, run.id)
-    if session is None:
-        run.error = "no teach session was opened for this run; the arm was not freed"
-        return StopCode.CANCELLED
-    return session.drive(console, run)
 
 
 def snapshot(console: "Console", run_id: str, token: str) -> TeachStateOut | None:

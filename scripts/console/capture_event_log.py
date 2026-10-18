@@ -12,7 +12,7 @@ too (``QUESTION_IDS``). A fixture is
     {"about": "...", "scenario": "<file name>", "events": [<every envelope, every stream, in arrival order>],
      "runs": {"<run id>": <the run as GET /v1/runs/<id> answers once it ended>}}
 
-which ``tests/test_api_contract.py`` checks against the contract, and ``frontend/src/model/runModel.test.ts`` replays.
+which ``tests/api/test_api_contract.py`` checks against the contract, and ``frontend/src/model/runModel.test.ts`` replays.
 
 Two cells, and each fixture says in its ``about`` which one told it:
 

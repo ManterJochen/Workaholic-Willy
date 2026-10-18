@@ -50,4 +50,4 @@ the two readings the command reader asks are kept, word for word.
 
 - [`../vlm/`](../vlm/README.md), the command reader and the detector; [`../README.md`](../README.md), the
   perception layer
-- Tests: `tests/test_a_phrase_reads_as_english_or_not_and_with_a_quantifier_or_not.py`, `tests/test_vlm_command.py`
+- Tests: `tests/models/routing/test_a_phrase_reads_as_english_or_not_and_with_a_quantifier_or_not.py`, `tests/models/vlm/test_vlm_command.py`

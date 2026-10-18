@@ -55,7 +55,7 @@ comparison can never be quoted as one another.
 ## How far a label can be trusted
 
 Every label is computed from the primitive or closed mesh the renderer authored, at the pose physics left it
-in. The table from kind to solid is the one the renderer reads, and `tests/test_datagen_grasps.py` pins that.
+in. The table from kind to solid is the one the renderer reads, and `tests/datagen/grasps/test_datagen_grasps.py` pins that.
 
 | Object | Closing axes | So |
 |---|---|---|
@@ -116,7 +116,7 @@ every arm, so the arms are the only thing that varies.
 
 | Capability | Evidence |
 |---|---|
-| Closed-form spans, widths and normals | measured in simulation: checked against a brute-force ray march in `tests/test_datagen_grasps.py` |
+| Closed-form spans, widths and normals | measured in simulation: checked against a brute-force ray march in `tests/datagen/grasps/test_datagen_grasps.py` |
 | The MuJoCo and Isaac referees | measured in simulation: each passes the four controls; the two have not been compared on the same grasps |
 | The referee in a full bin | measured in simulation: it refuses rather than scores, because the gripper is teleported |
 | A label holding on a physical gripper | never touched hardware |
@@ -144,5 +144,5 @@ belongs to the same object before a cloud is fused across views.
   corpus built on them is worth training on.
 - [src/robot/grasping/](../../src/robot/grasping/README.md), the stack under test, and
   [docs/grasping-math.md](../../docs/grasping-math.md), the formulas it evaluates.
-- Tests: `tests/test_datagen_grasps.py`, `tests/test_physics_mujoco.py`, `tests/test_ladder_gate_baseline.py`,
-  `tests/test_grasp_floors.py`.
+- Tests: `tests/datagen/grasps/test_datagen_grasps.py`, `tests/datagen/grasps/test_physics_mujoco.py`, `tests/datagen/eval/test_ladder_gate_baseline.py`,
+  `tests/datagen/eval/test_grasp_floors.py`.

@@ -1007,7 +1007,7 @@ move in flight when a person halts (URSim CB3, 17 of 17 checks; the bench; the b
 
 | Key | Default | The owner's cell | Checked before the cell |
 | --- | --- | --- | --- |
-| `runtime.commands.known_sentences` (app config) | `true` | `true` | the 4B's measured answers (`tests/test_vlm_command.py`) |
+| `runtime.commands.known_sentences` (app config) | `true` | `true` | the 4B's measured answers (`tests/models/vlm/test_vlm_command.py`) |
 | `robot.motion.place.carry` | `via_the_look` | `over_the_rim`, the owner's choice | desk doubles; at the cell |
 | `robot.motion.place.release_in_a_box` | `over_the_rim` | `below_the_rim` | desk doubles; at the cell |
 | `robot.motion.place.side_by_side` (`grid`) | `false` (3 by 3) | `true` | desk doubles; at the cell |
@@ -1568,11 +1568,11 @@ A green simulation gate does not suggest otherwise.
 | what a Qwen answer costs, the known sentences | [vlm README](../../src/models/vlm/README.md) |
 | where a cell's seconds went, from its logs | [`scripts/cell/`](../../scripts/cell/README.md) |
 | rescan, the next target, the push and its budgets | [recovery README](../../src/robot/grasping/recovery/README.md) |
-| candidate generation, the generators, the scoring axes | [generation README](../../src/robot/grasping/generation/README.md) . [scoring README](../../src/robot/grasping/scoring/README.md) |
+| candidate generation, the generators, the score record a candidate carries | [generation README](../../src/robot/grasping/generation/README.md) . [scoring README](../../src/robot/grasping/scoring/README.md) |
 | motion and gripper choreography | [motion README](../../src/robot/grasping/motion/README.md) |
 | the record contract, and the soak and KPI command line | [telemetry README](../../src/robot/grasping/telemetry/README.md) . [replay README](../../src/robot/grasping/replay/README.md) |
 | the simulator runners and their gate rule | [willy_sim README](../../src/willy_sim/README.md) |
 | every `robot.grasping` block, its mode gate and its traps | [grasping-config-reference.md](../grasping-config-reference.md) |
 | every key the schema accepts, with defaults | [`config/all_keys/`](../../config/all_keys/) |
-| the formulas: back-projection, normals, antipodal search, scoring | [grasping-math.md](../grasping-math.md) |
+| the formulas: back-projection, normals, antipodal search, the generator's score | [grasping-math.md](../grasping-math.md) |
 | workspace, forward kinematics, Jacobian, capsules, mesh distance | [safety-math.md](../safety-math.md) |

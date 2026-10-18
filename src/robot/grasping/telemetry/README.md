@@ -33,7 +33,10 @@ python -m src.robot.grasping.replay --records logs/attempts.jsonl
 | Noun | Built by | Verb | Returns |
 | --- | --- | --- | --- |
 | `GraspAttemptRecord` | the pick service, one per `pick()` | `to_dict()`, `to_json()`, `from_dict()` | a lossless round trip |
-| a record log | `append_jsonl(record, path)` | `iter_jsonl(path)` | the records, one per line |
+| a record log | the pick service: `log_record` in [`execution/autonomous_grasp/`](../../execution/autonomous_grasp/README.md) appends one line per pick | `iter_jsonl(path)` | the records, one per line |
+
+`append_jsonl` and `frame_metadata_from` left on 2026-10-18 with the code nothing called; the pick
+service writes its lines itself.
 
 ## `GraspAttemptRecord`, a frozen contract
 
@@ -109,7 +112,7 @@ can fail; the synthetic soak that passed by construction left on 2026-10-16.
 
 | File | Holds |
 | --- | --- |
-| [`outcome_logging.py`](outcome_logging.py) | `GraspAttemptRecord`, the `*_metadata_from` serialisers, `append_jsonl`, `iter_jsonl`, `json_safe` |
+| [`outcome_logging.py`](outcome_logging.py) | `GraspAttemptRecord`, the `profile_`, `grasp_` and `execution_metadata_from` serialisers, `iter_jsonl`, `json_safe` |
 
 ## Details
 
@@ -117,5 +120,5 @@ can fail; the synthetic soak that passed by construction left on 2026-10-16.
 - [`types/`](../types/README.md) for `GraspResult` and the typed reasons behind a failed attempt.
 - [Guide 05, record logging](../../../../docs/guide/05-pick-loop.md) for what lands in a line, and
   [the console](../../../../api/README.md) for the history screen.
-- Tests: `tests/test_grasp_outcome_logging.py`, `tests/test_k1_record_logging.py`,
-  `tests/test_u0_telemetry_contract.py`, `tests/test_record_schema_evolution.py`.
+- Tests: `tests/robot/grasping/telemetry/test_grasp_outcome_logging.py`, `tests/robot/execution/autonomous_grasp/test_k1_record_logging.py`,
+  `tests/robot/grasping/telemetry/test_u0_telemetry_contract.py`, `tests/robot/grasping/telemetry/test_record_schema_evolution.py`.

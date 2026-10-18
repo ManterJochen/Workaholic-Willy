@@ -31,8 +31,9 @@ if not result.valid:
 | a declared bin | `robot.grasping.support.container` | `container_wall_points_base_mm(...)` | wall points in BASE mm |
 
 `GraspCollisionResult` is frozen: `valid`, `reasons`, `min_table_clearance_mm`, `collision_count`,
-`colliding_indices`, `colliding_boxes`, `metadata`, and `to_dict()`. `validate_grasp_collisions` checks
-a batch in input order. Everything is NumPy, deterministic and in millimetres.
+`colliding_indices`, `colliding_boxes`, `metadata`, and `to_dict()`. A batch goes through
+`filter_candidates`; the batch form of the single check, `validate_grasp_collisions`, left on 2026-10-18
+with the code nothing called. Everything is NumPy, deterministic and in millimetres.
 
 ## The rejection stage
 
@@ -105,7 +106,7 @@ suction cup's envelope is built by whoever plans one, as `SuctionCupGripperModel
 | File | Holds |
 | --- | --- |
 | `gripper_model.py` | `CollisionBox`, `ParallelJawGripperModel`, `SuctionCupGripperModel`, `GripperGeometryStrategy`, `points_to_grasp_frame` |
-| `collision_checker.py` | `GraspCollisionResult`, `validate_grasp_collision`, `validate_grasp_collisions`, `colliding_point_indices` |
+| `collision_checker.py` | `GraspCollisionResult`, `validate_grasp_collision`, `colliding_point_indices` |
 | `candidate_filter.py` | `filter_candidates`, `FilterOutcome`, `REJECTION_KEYS`, `rejection_reasons`, `grasp_point_to_pose` |
 | `table_collision.py` | `SupportPlane`, `gripper_table_clearance_mm` |
 | `support_resolver.py` | `resolve_support_plane`, `SupportResolution` |
@@ -120,6 +121,6 @@ suction cup's envelope is built by whoever plans one, as `SuctionCupGripperModel
   does not duplicate.
 - [Guide 06, grippers](../../../../docs/guide/06-grippers.md) and
   [your own gripper](../../../../docs/runbooks/your_own_gripper.md) for a hand's registry file.
-- Tests: `tests/test_container_walls.py`, `tests/test_support_resolver.py`,
-  `tests/test_support_plane_frame.py`, `tests/test_gripper_dimensions_agree.py`,
-  `tests/test_deep_rejection_stage.py`.
+- Tests: `tests/robot/grasping/test_container_walls.py`, `tests/robot/grasping/collision/test_support_resolver.py`,
+  `tests/robot/grasping/collision/test_support_plane_frame.py`, `tests/robot/grasping/collision/test_gripper_dimensions_agree.py`,
+  `tests/robot/grasping/deep/test_deep_rejection_stage.py`.

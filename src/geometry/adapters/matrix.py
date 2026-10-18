@@ -16,22 +16,11 @@ from src.geometry.matrix import position_quaternion_to_matrix
 from src.geometry.validation import validate_homogeneous_matrix
 
 if TYPE_CHECKING:  # pragma: no cover (typing only)
-    from src.calibration.extrinsics import Extrinsics
     from src.geometry.pose import Pose
-    from src.geometry.transform import Transform
 
 __all__ = [
-    "extrinsics_to_matrix",
     "pose_to_matrix",
-    "transform_to_matrix",
 ]
-
-
-def transform_to_matrix(transform: Transform) -> np.ndarray:
-    """Return ``transform`` as a fresh validated 4x4 homogeneous matrix (mm)."""
-    return validate_homogeneous_matrix(
-        position_quaternion_to_matrix(transform.translation_mm, transform.quaternion_xyzw)
-    )
 
 
 def pose_to_matrix(pose: Pose) -> np.ndarray:
@@ -44,6 +33,3 @@ def pose_to_matrix(pose: Pose) -> np.ndarray:
     )
 
 
-def extrinsics_to_matrix(extrinsics: Extrinsics) -> np.ndarray:
-    """Return ``extrinsics.transform`` as a fresh validated 4x4 matrix."""
-    return transform_to_matrix(extrinsics.transform)

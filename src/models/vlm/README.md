@@ -120,7 +120,7 @@ are one object, and where that object carries two descriptions every one of its 
 (`AMBIGUOUS_LABEL`), as is a box the model named by none. `ambiguous` is no description's: no rule takes such a part, and
 it stays an obstacle. A description that holds the bar or the word `ambiguous` is refused by `class_list_prompt`.
 How well the cell's 8B, or
-the 4B, keeps two colours apart in one call is not measured: `tests/test_vlm_class_list_inference.py` is written and has
+the 4B, keeps two colours apart in one call is not measured: `tests/models/vlm/test_vlm_class_list_inference.py` is written and has
 not run.
 
 ## Reading a command
@@ -183,7 +183,7 @@ or name or a box (Kiste, Box, Kasten, bin). A sentence that is nothing but a gre
 goes to the model: a count ("einen Würfel" and "a cube" included), a negation, Home as the place, where the parts
 lie ("in der Kiste", "auf der schwarzen Matte"), a plural without "alle", "bitte", two languages, another word. Its
 reading's `model_id` is `known-sentence` (`CommandReading.known`), with no attempt and nothing loaded. Of the 4B's
-measured answers in `tests/test_vlm_command.py` the table takes 7, and each reads as the model read it.
+measured answers in `tests/models/vlm/test_vlm_command.py` the table takes 7, and each reads as the model read it.
 
 **Remembered answers** (the owner's R2, 2026-10-08). The model decodes greedily, so the same weights asked the same
 question give the same answer, and a question the loaded copy answered before is answered from memory
@@ -293,16 +293,16 @@ never when the cell is built: `preload`, which could load it at the build, left 
 | Capability | Evidence |
 | --- | --- |
 | The VLM picking the intended object, and the grounding table above | measured in simulation |
-| The coordinate space, against real weights on a synthetic scene (IoU about 0.87) | measured in simulation (`tests/test_vlm_inference.py`) |
+| The coordinate space, against real weights on a synthetic scene (IoU about 0.87) | measured in simulation (`tests/models/vlm/test_vlm_inference.py`) |
 | The VLM on a real cell's camera | run on a physical cell: a wrist D415 on a UR10 (CB3); no measurement is kept here |
-| The command reader against the real 4B weights: German part nouns translated, a spoken label read back as the pose's name, the load and the VRAM | measured on the development box's RTX 5080 (`tests/test_vlm_command_inference.py`); not on the cell PC |
-| The decode graphs: every answer byte-identical, 19.7 ms a pass instead of 46.3 | measured with the 4B on the development box's RTX 5080, 90 calls on the cell's frames (`tests/test_vlm_decode_graphs_inference.py`); the cell's 8B and card not measured |
-| The known sentences: each of the 7 measured sentences the table takes reads as the 4B read it, its near misses go to the model, and nothing is loaded | pinned by tests against the 4B's recorded answers (`tests/test_vlm_command.py`); the 8B's words for the same sentences not measured |
-| Remembered answers: the same question to the same loaded copy is answered once | pinned by tests on a stand-in model (`tests/test_vlm_command.py`, `tests/test_api_commands.py`) |
-| One call for several kinds: the class-list instruction, one description byte for byte as before, `ambiguous` for an object two descriptions claim | pinned by tests on a stand-in model through the real grounder and parser (`tests/test_vlm_class_list.py`, `tests/test_a_sorts_pick_prompt_passes_only_its_kinds.py`); against real weights not measured (`tests/test_vlm_class_list_inference.py` has not run) |
+| The command reader against the real 4B weights: German part nouns translated, a spoken label read back as the pose's name, the load and the VRAM | measured on the development box's RTX 5080 (`tests/models/vlm/test_vlm_command_inference.py`); not on the cell PC |
+| The decode graphs: every answer byte-identical, 19.7 ms a pass instead of 46.3 | measured with the 4B on the development box's RTX 5080, 90 calls on the cell's frames (`tests/models/vlm/test_vlm_decode_graphs_inference.py`); the cell's 8B and card not measured |
+| The known sentences: each of the 7 measured sentences the table takes reads as the 4B read it, its near misses go to the model, and nothing is loaded | pinned by tests against the 4B's recorded answers (`tests/models/vlm/test_vlm_command.py`); the 8B's words for the same sentences not measured |
+| Remembered answers: the same question to the same loaded copy is answered once | pinned by tests on a stand-in model (`tests/models/vlm/test_vlm_command.py`, `tests/api/test_api_commands.py`) |
+| One call for several kinds: the class-list instruction, one description byte for byte as before, `ambiguous` for an object two descriptions claim | pinned by tests on a stand-in model through the real grounder and parser (`tests/models/vlm/test_vlm_class_list.py`, `tests/robot/execution/autonomous_grasp/test_a_sorts_pick_prompt_passes_only_its_kinds.py`); against real weights not measured (`tests/models/vlm/test_vlm_class_list_inference.py` has not run) |
 
 The parser, the coordinate space and the refusals are also tested without a GPU, and no module here imports
-torch or transformers at import time, so nothing pays for the model before its first prompt. `tests/test_vlm_inference.py` needs CUDA and the weights, and skips without them.
+torch or transformers at import time, so nothing pays for the model before its first prompt. `tests/models/vlm/test_vlm_inference.py` needs CUDA and the weights, and skips without them.
 
 ## Files
 
@@ -321,8 +321,8 @@ torch or transformers at import time, so nothing pays for the model before its f
 - [`../README.md`](../README.md) is the perception layer and its factory
 - Weights: `python scripts/model_weights/fetch.py vlm-4b` (`vlm-8b`, the owner's cell's), under `models.weights_root`
 - The console's commands: [`api/README.md`](../../../api/README.md), Commands
-- Tests: `tests/test_vlm_grounding.py`, `tests/test_vlm_inference.py`, `tests/test_vlm_command.py`,
-  `tests/test_vlm_holder.py`, `tests/test_vlm_command_inference.py` (real weights, skips without them),
-  `tests/test_a_failed_detector_is_not_nothing_found.py`, `tests/test_a_clean_holder_loads_nothing_at_build.py`;
-  what an answer costs: `tests/test_vlm_answer_speed.py`, `tests/test_vlm_decode_graphs.py` (no card) and their
-  `_inference` twins (real weights), and `tests/test_a_command_reads_with_the_cells_answer_settings.py`
+- Tests: `tests/models/vlm/test_vlm_grounding.py`, `tests/models/vlm/test_vlm_inference.py`, `tests/models/vlm/test_vlm_command.py`,
+  `tests/models/vlm/test_vlm_holder.py`, `tests/models/vlm/test_vlm_command_inference.py` (real weights, skips without them),
+  `tests/models/test_a_failed_detector_is_not_nothing_found.py`, `tests/models/test_a_clean_holder_loads_nothing_at_build.py`;
+  what an answer costs: `tests/models/vlm/test_vlm_answer_speed.py`, `tests/models/vlm/test_vlm_decode_graphs.py` (no card) and their
+  `_inference` twins (real weights), and `tests/models/vlm/test_a_command_reads_with_the_cells_answer_settings.py`

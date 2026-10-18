@@ -2,7 +2,7 @@
 
 The rig and its calibration are what ``execution.wrist_bodies`` reads: a rig with ``body`` and ``extrinsics``, and an
 owner whose calibration answers ``camera_to_tool()``, ``flange_to_tcp`` and ``artifact_path`` as ``RigCalibration``
-does. The world half comes from tests/test_camera_world_wiring.py, so a robot built with this owner also builds a live
+does. The world half comes from tests/robot/execution/test_camera_world_wiring.py, so a robot built with this owner also builds a live
 world.
 """
 
@@ -46,7 +46,7 @@ def declared_frame() -> np.ndarray:
 
 
 def camera_to_tool() -> Any:
-    from tests.test_camera_world_wiring import _CAMERA_TO_TOOL
+    from tests.robot.execution.test_camera_world_wiring import _CAMERA_TO_TOOL
 
     return _CAMERA_TO_TOOL
 
@@ -70,7 +70,7 @@ class WristOwner:
     """An open wrist camera: the rig, a handle the world reads, and a calibration with or without its record."""
 
     def __init__(self, rig_id: str = "wrist", *, record: Any = "declared", source: str = "willy", **rig: Any) -> None:
-        from tests.test_camera_world_wiring import _Owner
+        from tests.robot.execution.test_camera_world_wiring import _Owner
 
         self.rig_id = rig_id
         self.rig = wrist_rig(rig_id, **rig)

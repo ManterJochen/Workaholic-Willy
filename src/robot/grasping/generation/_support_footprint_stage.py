@@ -9,8 +9,8 @@ very end. So the candidates are rotated into CAMERA here, once, at the seam.
 The order. SFE's own score is what produced its measured top-1 (58.5 % against the calculator's
 27.2 %), and the calculator's geometric ranker is anti-correlated with physical validity on this
 data: AUC 0.419, worse than a coin. Re-ranking SFE's candidates with it would throw away the result.
-So the breakdowns are built directly with SFE's score as ``total_score`` instead of going through
-:func:`rank_grasp_poses`.
+So the breakdowns are built directly with SFE's score as ``total_score`` (the ranker left on
+2026-10-18).
 
 ``stability_score`` and ``reachability_score`` are left at 0.0 and said so: SFE's score is a single
 blend of measured physical margins (friction-cone slack, aperture left, table clearance, uprightness,

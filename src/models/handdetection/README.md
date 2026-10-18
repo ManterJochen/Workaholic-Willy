@@ -123,7 +123,7 @@ The palm centre, the gesture mapping and the 3-D projection are unit-tested with
 of MediaPipe's own test photographs the `float16/latest` bundles found thumbs up (0.73) and
 thumbs down (0.77), reported victory and pointing up as `OTHER` with their raw labels, and found both
 hands in a two-hand frame; the palm centre landed inside the palm in every one.
-`tests/test_hand_detection_bundle.py` reads the label vocabulary out of the bundle, and skips when the
+`tests/models/handdetection/test_hand_detection_bundle.py` reads the label vocabulary out of the bundle, and skips when the
 bundles are absent.
 
 ## Files
@@ -141,5 +141,5 @@ bundles are absent.
 ## Details
 
 - [`../README.md`](../README.md), the model layer; [`../../camera/`](../../camera/README.md), the frame provider
-- Tests: `tests/test_hand_detection.py`, `tests/test_hand_detection_wiring.py`, `tests/test_hand_detection_cli.py`,
-  `tests/test_hand_detection_on_one_camera.py`
+- Tests: `tests/models/handdetection/test_hand_detection.py`, `tests/models/handdetection/test_hand_detection_wiring.py`, `tests/models/handdetection/test_hand_detection_cli.py`,
+  `tests/models/handdetection/test_hand_detection_on_one_camera.py`

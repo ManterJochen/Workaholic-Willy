@@ -167,6 +167,6 @@ transforms its grasps or refuses to move them.
 - [`planning/`](../planning/README.md) builds the standoff and lift poses.
 - [`robot/core`](../../core/README.md) holds `RobotArm`, `Gripper` and `ObjectDetectingGripper`.
 - [Guide 05, the pick loop](../../../../docs/guide/05-pick-loop.md).
-- Tests: `tests/test_grasp_motion.py`, `tests/test_grasp_execution_policy.py`,
-  `tests/test_frame_resolver.py`,
-  `tests/test_what_the_hand_verbs_read.py`, `tests/test_a_pick_closes_along_the_axis_its_program_names.py`.
+- Tests: `tests/robot/execution/test_grasp_motion.py`, `tests/robot/grasping/motion/test_grasp_execution_policy.py`,
+  `tests/robot/grasping/types/test_frame_resolver.py`,
+  `tests/robot/grippers/test_what_the_hand_verbs_read.py`, `tests/robot/grasping/types/test_a_pick_closes_along_the_axis_its_program_names.py`.

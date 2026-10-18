@@ -68,10 +68,12 @@ and a mismatch is refused on load, so a later layout cannot be misread as this o
 full-precision floats.
 
 **No SciPy, and no vendor types.** Every operation is closed-form NumPy. A vendor pose type, such as the
-UR axis-angle pose, stays in its driver; generic numeric bridges belong in `conversions.py` and `adapters/`.
+UR axis-angle pose, stays in its driver; the generic bridges are the axis-angle and rotation-vector
+conversions of `quaternion.py`, and `matrix.py` and `adapters/` for bare 4x4 arrays.
 
-At run time the package imports NumPy and its own modules only. The one outward reference is a
-typing-only annotation of `Extrinsics` in `adapters/matrix.py`.
+The package imports NumPy and its own modules only. `conversions.py`, the `Extrinsics` and `Transform`
+matrix adapters and the `make_homogeneous` and `compose_homogeneous` helpers left on 2026-10-18 with the
+code nothing called.
 
 ## Files
 
@@ -85,7 +87,7 @@ typing-only annotation of `Extrinsics` in `adapters/matrix.py`.
 | [`matrix.py`](matrix.py) | homogeneous 4x4 helpers for boundary code and inner loops, and the flange-to-TCP comparison (`compare_tool_frames`); no frames |
 | [`validation.py`](validation.py) | shape, finiteness, rotation and frame checks, and the three tolerances |
 | [`serialization.py`](serialization.py) | the versioned dict form of `Pose` and `Transform` |
-| [`conversions.py`](conversions.py), [`adapters/`](adapters/) | the only modules that know raw 4x4 arrays, axis-angle vectors and `Extrinsics` |
+| [`adapters/`](adapters/) | `pose_to_matrix`: a `Pose` as a fresh validated 4x4, its frame dropped |
 | [`exceptions.py`](exceptions.py) | `GeometryError` and its subclasses, `FrameMismatchError` among them |
 
 ## Details
@@ -93,4 +95,4 @@ typing-only annotation of `Extrinsics` in `adapters/matrix.py`.
 - [`../calibration/README.md`](../calibration/README.md) stores every hand-eye result as a `Transform` or an `Extrinsics`
 - [`../utility/README.md`](../utility/README.md) holds the millimetre scale factors these units are defined against
 - Maths: [safety-math.md](../../docs/safety-math.md) and [grasping-math.md](../../docs/grasping-math.md)
-- Tests: `tests/test_geometry_hardening.py`, `tests/test_geometry_precision.py`, `tests/test_geometry_error_types.py`
+- Tests: `tests/robot/grasping/geometry/test_geometry_hardening.py`, `tests/geometry/test_geometry_precision.py`, `tests/geometry/test_geometry_error_types.py`

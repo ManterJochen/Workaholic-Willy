@@ -66,7 +66,7 @@ Every "yes" was measured by loading it, not by finding the file:
   measured, because a cell may not name an arm that is not admitted and the gate builds a cell.
 - `scripts/arms/retract.py --check` judged the seven arms' pairs at +Y+X again the same day and found the table as
   committed.
-- `tests/test_arm_bundles_reproduce_from_pinned_stl.py` bakes every arm's links again from the pinned meshes, where
+- `tests/scripts/arms/test_arm_bundles_reproduce_from_pinned_stl.py` bakes every arm's links again from the pinned meshes, where
   they are installed, and compares them array for array.
 
 ur20 is described and nothing else: no pinned meshes, no bundle, no fit, no descriptor and no retract anchor, so
@@ -104,7 +104,7 @@ The order matters, because each step is gated on the one before it.
    from Universal Robots' pinned description (`scripts/arms/ur_ros2_description`), each joint's envelope and home
    angle, the datasheet reach and payload, and a `sim` block with the simulator asset and a workspace patch if the
    simulator ships the arm. Leave `admitted: false` until step 4. Keep the `upstream` block the copied arm carries:
-   every UR arm is read from the same pin, and `tests/test_the_description_names_its_upstream.py` refuses a block
+   every UR arm is read from the same pin, and `tests/scripts/arms/test_the_description_names_its_upstream.py` refuses a block
    that differs from `scripts/arms/fetch.py`. Each joint row names its `link` and bundle `part` as UR's description
    spells them; the frame is the row, and the flange is the last row. `base` stays `base_link` with both turns at
    180, which is UR's own macro for every model. Each row's `planner_limit_deg` is UR's `joint_limits.yaml` (the
@@ -112,8 +112,8 @@ The order matters, because each step is gated on the one before it.
    `default_q` as `retract_anchor_rad` on every joint, `0.0` for the simulator's `-0.0`, with
    `retract_anchor_source` naming that file. An arm with none leaves both out, and then neither the seed build nor
    the retract chooser of step 3 has a pose to start from, so the arm cannot be judged (ur20 describes no anchor).
-   `tests/test_arm_descriptions_are_urs_numbers.py` holds the numbers to UR's, `tests/test_ur_model_family.py`
-   refuses a patch that reaches past its own arm, and `tests/test_arm_registry.py` lists every described arm by
+   `tests/robot/safety/test_arm_descriptions_are_urs_numbers.py` holds the numbers to UR's, `tests/robot/safety/planning/test_ur_model_family.py`
+   refuses a patch that reaches past its own arm, and `tests/robot/safety/planning/test_arm_registry.py` lists every described arm by
    hand (`_DESCRIBED`), so add the new one there.
 
 2. **Build it.** One command runs every stage in order, each under the interpreter it needs, and stops at the first
@@ -138,7 +138,7 @@ The order matters, because each step is gated on the one before it.
      has nothing to compare with, and the bake says so. Record its row in `bundles.json` beside it by hand, copied
      from the nearest arm's (`model`, `source`, `upstream`, `note`, and the `arrays_sha256` that
      `src/robot/safety/planning/bundle_index.py` computes): no writer records an arm row,
-     `tests/test_bundle_provenance.py` refuses a bundle nobody recorded, and the rebake test skips a row without
+     `tests/scripts/grippers/test_bundle_provenance.py` refuses a bundle nobody recorded, and the rebake test skips a row without
      `model`.
    - **fit** writes the arm's cover-fit sphere map `src/robot/safety/planning/robot/<model>_arm_spheres.yml`:
      `python scripts/arms/fit.py --arm <model> --write`. A refit of the same bundle writes the same file byte for
@@ -176,7 +176,7 @@ The order matters, because each step is gated on the one before it.
    plates names them (`--plate-mm`), as the owner's UR10 did for the 23 mm plate under its Hand-E, and its doctor
    prints the whole command. A seed descriptor is never what a cell holds.
 
-4. **Admit the arm.** Set `admitted: true` in its description. `tests/test_arm_registry.py` refuses that while the
+4. **Admit the arm.** Set `admitted: true` in its description. `tests/robot/safety/planning/test_arm_registry.py` refuses that while the
    bundle or the sphere map is missing, and it writes out the admitted arms by hand
    (`test_the_admitted_arms_are_the_six_the_owner_admitted`): admitting an arm is the owner's decision, and that
    test is where it is recorded. Until the arm is admitted a cell may not name it at all: the config refuses it at
@@ -217,9 +217,9 @@ On the box, after any change to a description, a bundle or a bake recipe, also r
 
 ```bash
 python scripts/arms/retract.py --check        # exits 1 when the committed table is not what this box measures
-python -m pytest tests/test_arm_registry.py tests/test_ur_model_family.py tests/test_arm_profiles.py \
-                 tests/test_ur_series_twin.py tests/test_the_committed_bundles_hold_their_arrays.py \
-                 tests/test_the_committed_evidence_recomputes.py
+python -m pytest tests/robot/safety/planning/test_arm_registry.py tests/robot/safety/planning/test_ur_model_family.py tests/config/test_arm_profiles.py \
+                 tests/robot/drivers/ur/test_ur_series_twin.py tests/scripts/arms/test_the_committed_bundles_hold_their_arrays.py \
+                 tests/robot/safety/planning/test_the_committed_evidence_recomputes.py
 ```
 
 The last two tests are the ones worth understanding: every bundle has to be the arrays its index records, and every
@@ -295,4 +295,4 @@ genuinely wrong TCP can also produce it.
 There is **no validator tying `robot.motion.workspace` to the configured model.** A cell that sets `ur.model: ur3` and
 keeps the base box declares a far corner 837 mm from the shoulder on an arm that reaches 500 (`robot.ur3.yaml`
 measures it). The profiles above are what keeps you out of it, and nothing refuses a hand-written tree that walks
-back in. `tests/test_arm_profiles.py` checks the shipped profiles; it cannot check yours.
+back in. `tests/config/test_arm_profiles.py` checks the shipped profiles; it cannot check yours.

@@ -223,7 +223,7 @@ NARROW_ROOM_MM: Final[float] = JAW_SIDE_ROOM_MM + 5.0
 _SEEN_FROM_TILT_DEG: Final[float] = 15.0
 #: Scores this near the best of a run are equal by geometry, and the run is ranked vertical first. A face's normal read
 #: off a noisy footprint moves the contact angle by hundredths of a degree from one anchor to the next, 0.0008 of score
-#: on the straight-down cube of ``tests/test_a_tilted_view_grasps_on_the_part.py``; rounded to 0.001 the two sat either
+#: on the straight-down cube of ``tests/robot/grasping/generation/test_a_tilted_view_grasps_on_the_part.py``; rounded to 0.001 the two sat either
 #: side of a rounding edge, and a 15 degree tilt took the rank from the vertical grasp.
 _TIE_SCORE: Final[float] = 0.001
 

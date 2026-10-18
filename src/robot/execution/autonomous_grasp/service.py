@@ -199,7 +199,6 @@ class _RecoveryReportAdapter:
         self.failure_reasons = reasons
 
 
-
 #: The service's own lines, the pick path's among them, to the robot log and ``grasp_service.log`` (RC6 of the
 #: cell-fix plan: they reached no file).
 _LOG: logging.Logger = create_robot_logger(__name__, "grasp_service.log")
@@ -1962,22 +1961,6 @@ def _report_of_looking(
         both_faces=bool(both_faces),
         generated_view_deg=looked.generated_view_deg if handed else None,
     )
-
-
-def _both_faces_unseen(orchestrator: Any, looked: "LookedAround") -> bool:
-    """Whether a pick that asked for both jaw contact faces (``orch.both_faces``) would grip a grasp whose faces its
-    looks did not both see: the owner's switch for safety-critical processes then refuses the grip (addendum 1).
-
-    As the pick loop judges a look good: a hand with no jaw faces, a suction cup, has none to see; faces that could not
-    be judged are not seen, so the switch fails closed.
-    """
-    if getattr(orchestrator, "both_faces", False) is not True:
-        return False
-    from src.robot.grasping.collision.gripper_model import SuctionCupGripperModel  # noqa: PLC0415
-
-    if isinstance(getattr(orchestrator, "gripper_model", None), SuctionCupGripperModel):
-        return False
-    return looked.jaw_faces_seen != (True, True)
 
 
 def found_nothing(report: AutonomousGraspReport) -> bool:

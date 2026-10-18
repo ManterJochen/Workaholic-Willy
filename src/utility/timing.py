@@ -7,17 +7,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-__all__ = ["now_ms", "timed"]
-
-
-def now_ms() -> float:
-    """Monotonic milliseconds since an arbitrary epoch.
-
-    Only differences are meaningful. Measure durations with this rather than
-    ``time.time() * 1000``, which is wall-clock and can jump backwards on an
-    NTP correction.
-    """
-    return time.perf_counter() * 1000.0
+__all__ = ["timed"]
 
 
 @contextmanager

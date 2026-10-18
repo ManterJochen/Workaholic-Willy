@@ -433,14 +433,14 @@ gap. Planner collision awareness is not a certified functional-safety stop.
 - [Robot and safety guide](../../../../docs/guide/04-robot-and-safety.md), section 6; [safety-math.md](../../../../docs/safety-math.md)
 - New hand: `scripts/grippers/write_hand_from_mesh.py`, then [your_own_gripper.md](../../../../docs/runbooks/your_own_gripper.md)
 - Descriptors: `scripts/arms/descriptor.py` builds `willy_{arm}.yml` inside `ext_deps/`
-- Tests: `tests/test_motion_stack.py`, `tests/test_planning_doctor.py`, `tests/test_curobo_batch_check.py`,
-  `tests/test_the_exact_guard_decides_the_planners_self_pairs.py`,
-  `tests/test_a_pose_only_the_planners_spheres_refuse_is_the_exact_guards.py`,
-  `tests/test_the_camera_world_is_a_height_map_of_what_it_saw.py`,
-  `tests/test_the_guard_holds_the_boxes_the_planner_holds.py`,
-  `tests/test_what_the_robot_hides_from_a_camera_is_not_free.py`,
-  `tests/test_the_band_admission_judges_with_the_boxes_the_camera_saw.py`,
-  `tests/test_the_planner_judges_again_without_the_boxes_the_camera_saw.py`,
-  `tests/test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards.py`,
-  `tests/test_the_cameras_boxes_are_set_aside_whatever_the_hand_holds.py`,
-  `tests/test_a_grasp_judges_its_lift_carrying_before_it_closes.py`
+- Tests: `tests/robot/safety/planning/test_motion_stack.py`, `tests/robot/safety/planning/test_planning_doctor.py`, `tests/robot/safety/planning/test_curobo_batch_check.py`,
+  `tests/robot/safety/planning/test_the_exact_guard_decides_the_planners_self_pairs.py`,
+  `tests/robot/safety/planning/test_a_pose_only_the_planners_spheres_refuse_is_the_exact_guards.py`,
+  `tests/robot/safety/planning/test_the_camera_world_is_a_height_map_of_what_it_saw.py`,
+  `tests/robot/safety/test_the_guard_holds_the_boxes_the_planner_holds.py`,
+  `tests/robot/safety/planning/test_what_the_robot_hides_from_a_camera_is_not_free.py`,
+  `tests/robot/safety/test_the_band_admission_judges_with_the_boxes_the_camera_saw.py`,
+  `tests/robot/safety/planning/test_the_planner_judges_again_without_the_boxes_the_camera_saw.py`,
+  `tests/robot/safety/test_a_bin_the_camera_saw_beside_the_base_is_the_exact_guards.py`,
+  `tests/robot/execution/test_the_cameras_boxes_are_set_aside_whatever_the_hand_holds.py`,
+  `tests/robot/execution/test_a_grasp_judges_its_lift_carrying_before_it_closes.py`

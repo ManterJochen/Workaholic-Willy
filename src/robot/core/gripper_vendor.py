@@ -122,6 +122,6 @@ class GripperVendor(StrEnum):
 #: layers up (``grippers/registry.py``), and ``core`` imports nothing above itself. The same kind
 #: of hand-kept membership test in ``doctor.py`` reported first ``vacuum`` and then ``jaw_io`` as
 #: having no driver while both had one, so this one is pinned against the registry in both
-#: directions by ``tests/test_gripper_vendor_refusal_names_what_can_be_built.py``: a driver that
+#: directions by ``tests/robot/grippers/test_gripper_vendor_refusal_names_what_can_be_built.py``: a driver that
 #: lands without leaving this set, or a member added without entering it, goes red.
 _RESERVED_VENDORS: frozenset[str] = frozenset({"franka_hand", "schunk"})

@@ -164,8 +164,9 @@ on in runner code, so a simulation result says nothing about a config-built cell
 off. A desk rehearsal on a dummy arm proves the config-built wiring, not a grasp. The records gate
 judges a real log of picks and can fail ([replay/](replay/README.md)). Transparent,
 reflective and specular objects drop out of depth and are not handled; read `depth_confidence` and
-rescan or refuse. Deformables have a refuse-safe seam only. The force-closure certificate is a
-friction-cone argument under a contact model, not a substitute for force feedback.
+rescan or refuse. Deformables have an inert seam only ([generation/](generation/README.md)). The friction
+cone the generator holds each contact to is an argument under a contact model, not a substitute for force
+feedback.
 
 ## Files
 
@@ -175,8 +176,8 @@ friction-cone argument under a contact model, not a substitute for force feedbac
 | [geometry/](geometry/README.md), [contacts/](contacts/README.md) | masked point cloud, normals, projection; antipodal contact pairs |
 | [collision/](collision/README.md) | the gripper against the cloud and the table; jaw and suction-cup envelopes |
 | [generation/](generation/README.md) | `GraspCalculator`: a mask and a depth image to ranked `GraspPoint`s |
-| [scoring/](scoring/README.md) | the deterministic scorers, `rank_grasp_poses`, force closure |
-| [planning/](planning/README.md), [motion/](motion/README.md) | the approach pose, the IK seam; approach, close and retreat, and the CAMERA to BASE resolver |
+| [scoring/](scoring/README.md) | the score record a candidate carries, the workspace box, the occlusion and outline signals |
+| [planning/](planning/README.md), [motion/](motion/README.md) | the grasp pose, the IK seam; approach, close and retreat, and the CAMERA to BASE resolver |
 | [recovery/](recovery/README.md) | bounded recovery: rescan, skip a failed part, the push, on every cell. `closed_loop/`, which held the post-grasp verifiers no pick path ran, left on 2026-09-29 |
 | [loop/](loop/README.md), [telemetry/](telemetry/README.md) | `BinPickingOrchestrator`, one attempt across the tiers and a wrist camera's looks; the frozen `GraspAttemptRecord` |
 | [multiview/](multiview/README.md), [suction/](suction/README.md) | fusion across fixed cameras and a wrist camera's looks, and which jaw contact faces were seen; suction candidates |
@@ -193,4 +194,4 @@ friction-cone argument under a contact model, not a substitute for force feedbac
 - [safety/](../safety/README.md) guards every commanded move; [robot/core](../core/README.md) holds the
   `RobotArm` and `Gripper` Protocols this package depends on. It imports no vendor SDK and no web
   framework.
-- [tests/test_t8_docs.py](../../../tests/test_t8_docs.py) pins the mode table and the KPI names on this page
+- [tests/repo/test_t8_docs.py](../../../tests/repo/test_t8_docs.py) pins the mode table and the KPI names on this page

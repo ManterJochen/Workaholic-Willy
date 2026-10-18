@@ -1237,7 +1237,7 @@ class TeachStateOut(BaseModel):
 # --- the cell's task settings (GET and PATCH /v1/task/settings): what a task takes where its sentence says nothing --
 
 #: How the console starts a typed or spoken task, ``runtime.task.start`` (``src.config.schema.runtime.TaskStart``, which
-#: ``tests/test_the_task_settings_are_the_cells.py`` pins against this).
+#: ``tests/config/test_the_task_settings_are_the_cells.py`` pins against this).
 TaskStartName: TypeAlias = Literal["enter", "card"]
 #: How each pick of a task looks, ``runtime.task.looks`` (``src.config.schema.runtime.TaskLooks``, pinned the same way).
 TaskLooksName: TypeAlias = Literal["first", "when_needed", "every"]
@@ -1356,7 +1356,7 @@ class CommandModelOut(BaseModel):
 
 
 #: How the console answers a greeting, ``runtime.greeting.wave`` of the app config
-#: (``src.config.schema.runtime.GreetingWave``, which ``tests/test_a_greeting_waves.py`` pins against this).
+#: (``src.config.schema.runtime.GreetingWave``, which ``tests/api/test_a_greeting_waves.py`` pins against this).
 GreetingAnswer: TypeAlias = Literal["direct", "confirm", "off"]
 
 

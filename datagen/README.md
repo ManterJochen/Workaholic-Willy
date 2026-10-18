@@ -204,4 +204,4 @@ three hundredth. `python -m datagen verify --name first` checks the labels, mask
   corpus is worth training on; [src/robot/grasping/deep/](../src/robot/grasping/deep/README.md), the generator it trains.
 - [docs/cli.md](../docs/cli.md), [train_your_own_generator.md](../docs/runbooks/train_your_own_generator.md) and
   [corpus_v5_build.md](../docs/runbooks/corpus_v5_build.md) for the commands and the procedures.
-- Tests: `tests/test_datagen_layering.py`, `tests/test_datagen_api.py`, `tests/test_license_boundary.py`.
+- Tests: `tests/datagen/test_datagen_layering.py`, `tests/datagen/test_datagen_api.py`, `tests/repo/test_license_boundary.py`.

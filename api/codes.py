@@ -10,7 +10,7 @@ and read wrong in the other. Hence the rules this module keeps:
   code, a refusal and a light) only where it says the same thing in each.
 * **Typed twice, on purpose.** Each catalog is a ``Literal`` (so the OpenAPI document carries the union and the
   frontend's ``schema.d.ts`` types every i18n map over it exhaustively) and a ``StrEnum`` of the same values, in the
-  same order (so Python code names members instead of repeating strings). ``tests/test_api_contract.py`` asserts the
+  same order (so Python code names members instead of repeating strings). ``tests/api/test_api_contract.py`` asserts the
   two are equal, and that ``frontend/src/api/codes.ts`` lists the same values.
 * **Served whole.** ``GET /v1/codes`` answers :func:`catalog`, so a client can read the vocabulary instead of copying
   it.

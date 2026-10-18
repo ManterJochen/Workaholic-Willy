@@ -3,7 +3,7 @@
 The owner, 2026-10-09 (map4 motion C7b): judge the next leg on a second thread while the current leg runs, with the
 watched send every UR has (a halt brakes the leg in flight along its judged line), "but only after a
 URSim test". This is that test. The arm, its guard, its planner glue, its connection and URSim's controller are real; the
-camera and the planning sidecar are the unit tests' stand-ins (``tests/test_every_verb_meets_the_camera_world.py``: a
+camera and the planning sidecar are the unit tests' stand-ins (``tests/robot/safety/planning/test_every_verb_meets_the_camera_world.py``: a
 bench a metre below an overhead camera, a sidecar that confirms what it is sent), because URSim has no camera and this
 needs no GPU. The UR10 holds a Hand-E 157 mm out on its flange, as the owner's cell does (the controller's TCP is set to
 it here, and back to the bare flange at the end).
@@ -64,7 +64,7 @@ from src.geometry import Frame, Pose  # noqa: E402
 from src.robot.core import JointPositions, MotionStatus  # noqa: E402
 from src.robot.drivers.ur.arm import URRobotArm  # noqa: E402
 from tests._sidecar_identity import arm_identity  # noqa: E402
-from tests.test_every_verb_meets_the_camera_world import _Camera, _Client, _world  # noqa: E402
+from tests.robot.safety.planning.test_every_verb_meets_the_camera_world import _Camera, _Client, _world  # noqa: E402
 
 _OK, _FAILED, _BAD_REQUEST = 0, 1, 2
 #: Tool down, upper arm up, forearm level: free space on every URSim model, and the start of every check here.

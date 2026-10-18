@@ -175,4 +175,4 @@ python -m src.models.detection.closed_set.train eval --model-dir assets/models/r
 - Guide: [models](../../docs/guide/02-models.md), install, weights, `models.pipeline` and the dtype trap
 - [`src/robot/perception/`](../robot/perception/README.md), the real-camera `Locator` built on this stack
 - [`src/camera/`](../camera/README.md) supplies the images; [`src/calibration/`](../calibration/README.md) the CAMERA to BASE transform
-- Tests: `tests/test_perception_spec.py`, `tests/test_a_model_reads_its_weights_from_its_id.py`, `tests/test_models_imports.py`
+- Tests: `tests/models/test_perception_spec.py`, `tests/models/test_a_model_reads_its_weights_from_its_id.py`, `tests/models/handdetection/test_models_imports.py`

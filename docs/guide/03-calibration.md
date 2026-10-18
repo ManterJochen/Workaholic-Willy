@@ -505,7 +505,7 @@ above = tcp_above(point.base_mm, point.normal, 20.0) # the TCP 20 mm over it, sq
 - **What it is worth.** On a ray-cast bench the point comes back within 1e-6 mm, and a BASE point goes
   to its pixel and back within 0.1 mm; on depth rounded to whole millimetres, as a RealSense reads it,
   within 0.5 mm, the most where the surface faces the camera square
-  ([test](../../tests/test_a_pixel_of_your_own_lands_in_base.py)). At the cell what is left is the
+  ([test](../../tests/calibration/test_a_pixel_of_your_own_lands_in_base.py)). At the cell what is left is the
   calibration's own error, and example 18 measures it on the marker (section 3.4).
 - **What it refuses.** `PixelRefused`, its `reason` one of `outside` (the pixel lies off the image),
   `no_depth` (the camera measured less than a quarter of the window: name a plane), `no_surface` (an
@@ -579,7 +579,7 @@ torch-free): the solver, the frame contracts, the artifact round trips and the r
 |---|---|
 | Eye-to-hand and eye-in-hand through `CalibrationRoutine` | measured in simulation: both run end to end, and the eye-in-hand wrist-camera pick lands on target |
 | The real-cell sweep through `HandEyeCalibration` | run on a physical cell: a wrist D415 on a UR10 (CB3), against one printed ArUco marker; a fixed camera and a ChArUco board have not, and the mock suite covers the flow |
-| The same sweep on a stereo pair | never run on a webcam pair or a stereo device; pinned on a rendered pair whose right camera is turned three degrees: the marker is posed on the left image rectified within 6 mm and 4 degrees of where it lies, where the raw lens puts it 48 mm off ([test](../../tests/test_a_stereo_rig_is_calibrated_against_the_robot.py)) |
+| The same sweep on a stereo pair | never run on a webcam pair or a stereo device; pinned on a rendered pair whose right camera is turned three degrees: the marker is posed on the left image rectified within 6 mm and 4 degrees of where it lies, where the raw lens puts it 48 mm off ([test](../../tests/camera/setup/image_taking/test_a_stereo_rig_is_calibrated_against_the_robot.py)) |
 
 **Two kinds of simulated run.** The ground-truth marker source is derived from the same oracle the
 result is compared against, so its near-zero residual is **circular**. It validates collection, the
