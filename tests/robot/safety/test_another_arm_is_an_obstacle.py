@@ -90,6 +90,27 @@ class AnotherArmIsAnObstacleTests(unittest.TestCase):
         self.guard.set_partner_bodies((AxisAlignedBox(**box),))
         self.assertFalse(_judge(self.guard, self.halter, _Q).accepted)
 
+    def test_on_python_fcl_a_hull_is_a_solid_too(self) -> None:
+        """CI's engine on Linux builds no hull of its own: there the part is a ``Convex`` of its hull's faces, a solid
+        as Coal's is, so a part inside it is a collision and not the distance to its surface."""
+        import fcl
+
+        from src.robot.safety._fcl_self_collision import _EngineAdapter
+
+        engine = _EngineAdapter(fcl, "fcl")
+        cube = np.array([[x, y, z] for x in (0.0, 100.0) for y in (0.0, 100.0) for z in (0.0, 100.0)])
+        hull = engine.hull_object(cube)
+        self.assertIsNotNone(hull)
+        part = np.array([[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [0.0, 10.0, 0.0], [0.0, 0.0, 10.0]])
+        for name, offset, near in (("inside", (40.0, 40.0, 40.0), (-1e9, 0.0)), ("50 mm off", (150.0, 40.0, 40.0),
+                                                                                     (49.999, 50.001))):
+            with self.subTest(name):
+                inner = engine.build_object(part + np.array(offset), np.array([[0, 1, 2], [0, 1, 3], [0, 2, 3],
+                                                                               [1, 2, 3]]))
+                gap = engine.distance(hull, inner)
+                self.assertTrue(near[0] <= gap <= near[1], gap)
+        self.assertIsNone(engine.hull_object(cube[:4] * [1.0, 1.0, 0.0]), "a flat set spans no volume: its box judges")
+
     def test_a_path_through_the_other_arm_is_suspect_before_its_end(self) -> None:
         path = np.linspace(_UP, _Q, 24)
         self.assertEqual(self.guard.first_suspect(self.halter, path, len(path)), len(path))

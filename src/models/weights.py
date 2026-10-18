@@ -30,7 +30,7 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Final, Literal, TypeAlias
 
 __all__ = [
@@ -262,7 +262,8 @@ def _root(root: str | os.PathLike[str] | None) -> Path:
 
 def names_a_folder(model_id: str | os.PathLike[str]) -> bool:
     """Whether ``model_id`` names a folder rather than a Hugging Face id: absolute, from home, relative by a dot, or
-    written with a backslash. A plain ``org/name`` is an id, never a path.
+    written with a backslash. A plain ``org/name`` is an id, never a path. A Windows drive (``D:/models``) is a folder
+    on every system, so a tree written at the cell reads the same on a Linux box.
 
     Args:
         model_id (str | os.PathLike[str]): A model id as a block or a caller names it.
@@ -273,8 +274,8 @@ def names_a_folder(model_id: str | os.PathLike[str]) -> bool:
     if isinstance(model_id, os.PathLike):
         return True
     text = str(model_id).strip()
-    return (Path(text).anchor != "" or text.startswith(("~", "./", "../", ".\\", "..\\")) or "\\" in text
-            or text in (".", ".."))
+    return (Path(text).anchor != "" or PureWindowsPath(text).drive != ""
+            or text.startswith(("~", "./", "../", ".\\", "..\\")) or "\\" in text or text in (".", ".."))
 
 
 def model_folder(model_id: str | os.PathLike[str], *, kind: WeightsKind,

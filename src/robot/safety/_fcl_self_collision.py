@@ -226,6 +226,27 @@ class _EngineAdapter:
             points.append(v)
         return m.CollisionObject(hull_of(points, False, None), m.Transform3s())
 
+    def hull_object(self, vertices: np.ndarray) -> Any:
+        """The convex hull of ``vertices`` as a solid engine object, or ``None`` where the points span no volume.
+
+        For another arm's part (the fixtures' probes): Coal's own hull (:meth:`convex_object`), and on python-fcl a
+        ``Convex`` of the hull's faces (``scipy.spatial.ConvexHull``), a solid as Coal's is, so a part inside it is a
+        collision and not the distance to its surface. The whole-path judge's hull layer stays :meth:`convex_object`.
+        """
+        if self.kind == "coal":
+            return self.convex_object(vertices)
+        from scipy.spatial import ConvexHull, QhullError  # noqa: PLC0415
+
+        points = np.asarray(vertices, dtype=np.float64).reshape(-1, 3)
+        try:
+            hull = ConvexHull(points)
+        except (QhullError, ValueError):
+            return None
+        index = {int(v): i for i, v in enumerate(hull.vertices)}
+        faces = np.array([[3, *(index[int(v)] for v in triangle)] for triangle in hull.simplices], dtype=np.int64)
+        m = self._m
+        return m.CollisionObject(m.Convex(points[hull.vertices], len(faces), faces.ravel()), m.Transform())
+
 
 #: How many fixture tuples' engine objects a backend keeps: the declared fixtures, the boxes a camera saw, and the sets a
 #: judgement asks beside them.
@@ -705,8 +726,8 @@ class MeshSelfCollisionBackend:
             radii[column] = float(np.linalg.norm(np.asarray(fx.half_extents_mm, dtype=np.float64)))
             turned = getattr(fx, "turned", None)
             hull = getattr(fx, "hull_mm", None)
-            # Another arm's part as its hull, where the engine builds one; its enclosure where it does not.
-            body = None if hull is None else getattr(a, "convex_object", lambda _v: None)(hull)
+            # Another arm's part as its hull, a solid on either engine; its enclosure where the points span no volume.
+            body = None if hull is None else getattr(a, "hull_object", lambda _v: None)(hull)
             if body is not None:
                 boxes.append(body)
             elif turned is None:
